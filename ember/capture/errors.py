@@ -82,3 +82,15 @@ class UserAbort(CaptureError):
 
     code = "CAPTURE-014"
     name = "UserAbort"
+
+
+class ItemNotFound(CaptureError):
+    code = "CAPTURE-015"
+    name = "ItemNotFound"
+
+
+class NotAnAssumption(CaptureError):
+    """Only Assumption rows carry the `validated` flag (spec 3.5)."""
+
+    code = "CAPTURE-016"
+    name = "NotAnAssumption"

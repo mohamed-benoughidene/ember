@@ -171,3 +171,27 @@ Extra decisions this step had to make:
 - Rule T9: `.github/workflows/test.yml` runs pytest (architecture test included)
   on push and pull requests.
 
+### 11.2 Follow-up resolutions
+
+- **`set_validated` (item 1).** The Assumption flag can now be set and cleared,
+  so the `validated` column written in Phase 4 is reachable. Two commands:
+  `ember set-validated --item <id>` and `ember clear-validated --item <id>`.
+  The check `validate_set_validated` (the L1 section 3 gatekeeper name) refuses
+  a missing item (CAPTURE-015) and any item that is not an Assumption
+  (CAPTURE-016). Each change writes one `change_log` row with
+  `field_changed='validated'`, `old_value` and `new_value` as "true"/"false",
+  and `trigger_cause='user_set_validated'`.
+- **Raw AI answer on a parse failure (item 4).** Left as is, on purpose. L2
+  section 5 and step 2 section 5 both say "AI response unparseable: treat as
+  call fail, retry", so a broken answer is consumed by the retry and not stored.
+  D8's "save raw model response verbatim" is read as covering the answer we use.
+  Note: L1 section 3 cites "Spec 3.7 I16, D8" for the `ai_responses` table, but
+  the V1 spec has no such rule; it lives in the Constitution only.
+- **Printed summary (item 5).** `capture` now prints
+  `accepted: N, rejected: N, warnings: N, aborted: true|false`, which is this
+  step's section 3 output list.
+- **Deferred to later engines.** Writing `items.rationale` / `items.source`
+  (waits on the step that stores rationale and evidence text), and the
+  `change_log.link_id` foreign key (waits on the `links` table, Engine B).
+  Recorded as GitHub issues labelled `deferred`.
+

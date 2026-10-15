@@ -14,7 +14,7 @@ from ember.capture.errors import (
     SourceDbReadError,
     SourceDbWriteError,
 )
-from ember.capture.item_gatekeeper import ExistingItem, ValidatedItem
+from ember.capture.item_gatekeeper import ExistingItem, StoredItem, ValidatedItem
 from ember.capture.item_proposal import ContextItem
 from ember.capture.source_storage import SourceRecord
 
@@ -177,6 +177,25 @@ class SqliteItemGatekeeper:
             for row in rows
         ]
 
+    def find_item(self, item_id: int) -> StoredItem | None:
+        """Return one stored item's type and current flag, or None.
+
+        Raise `ItemDbReadError` (CAPTURE-011) on a read failure.
+        """
+        try:
+            row = self._conn.execute(
+                "SELECT id, type, validated FROM items WHERE id = ?", (item_id,)
+            ).fetchone()
+        except sqlite3.Error as exc:
+            raise ItemDbReadError("item read fail", item_id=item_id) from exc
+        if row is None:
+            return None
+        return StoredItem(
+            id=int(row["id"]),
+            type=row["type"],
+            validated=None if row["validated"] is None else bool(row["validated"]),
+        )
+
     def now(self) -> str:
         """The generated timestamp for a new item (Phase 3)."""
         return self._clock()
@@ -255,6 +274,38 @@ class SqliteItemGatekeeper:
             self._conn.commit()
         except sqlite3.Error as exc:
             raise ItemDbWriteError("db write fail") from exc
+
+    def save_validated_flag(self, item: StoredItem, *, validated: bool) -> None:
+        """Write the `validated` flag and append a `validated` change_log row.
+
+        Raise `ItemDbWriteError` (CAPTURE-013) on a write failure.
+        """
+        try:
+            self._conn.execute(
+                "UPDATE items SET validated = ? WHERE id = ?",
+                (validated, item.id),
+            )
+            self._conn.execute(
+                "INSERT INTO change_log"
+                " (item_id, link_id, field_changed, old_value, new_value, timestamp,"
+                " trigger_cause)"
+                " VALUES (?, NULL, 'validated', ?, ?, ?, 'user_set_validated')",
+                (
+                    item.id,
+                    _flag_text(item.validated),
+                    _flag_text(validated),
+                    self._clock(),
+                ),
+            )
+            self._conn.commit()
+        except sqlite3.Error as exc:
+            raise ItemDbWriteError("db write fail", item_id=item.id) from exc
+
+
+def _flag_text(value: bool | None) -> str | None:
+    if value is None:
+        return None
+    return "true" if value else "false"
 
 
 class SqliteAiResponseStore:

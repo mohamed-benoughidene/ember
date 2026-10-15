@@ -11,7 +11,11 @@ from dataclasses import dataclass
 from difflib import SequenceMatcher
 from typing import Callable, Protocol
 
-from ember.capture.errors import ItemSourceMissing
+from ember.capture.errors import (
+    ItemNotFound,
+    ItemSourceMissing,
+    NotAnAssumption,
+)
 from ember.capture.item_proposal import ItemProposal, ItemType
 
 NEAR_DUP_THRESHOLD = 0.85
@@ -47,6 +51,15 @@ class ExistingItem:
 
     item_id: int
     statement: str
+
+
+@dataclass(frozen=True)
+class StoredItem:
+    """One row read back from `items`, for the human flag change."""
+
+    id: int
+    type: str
+    validated: bool | None
 
 
 @dataclass(frozen=True)
@@ -144,6 +157,20 @@ def load_source_text(sources: SourceTextPort, source_id: int) -> str:
     if text is None:
         raise ItemSourceMissing("source not found", source_id=source_id)
     return text
+
+
+def validate_set_validated(item: StoredItem | None, item_id: int) -> StoredItem:
+    """Check the `validated` flag change is allowed, and return the item.
+
+    Raise `ItemNotFound` (CAPTURE-015) when no row has `item_id`, and
+    `NotAnAssumption` (CAPTURE-016) when the item is not an Assumption:
+    only Assumptions carry the flag (spec 3.5, L1 section 3 `set_validated`).
+    """
+    if item is None:
+        raise ItemNotFound("item not found", item_id=item_id)
+    if item.type != ItemType.ASSUMPTION.value:
+        raise NotAnAssumption("validated flag is Assumption-only", item_id=item_id)
+    return item
 
 
 def validate_add_item(

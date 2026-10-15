@@ -25,6 +25,7 @@ from ember.capture.item_gatekeeper import (
     load_source_text,
     validate_add_item,
     validate_proposals,
+    validate_set_validated,
 )
 from ember.capture.item_proposal import (
     ProposalBatch,
@@ -146,6 +147,49 @@ def capture(file_path: str | None, db_path: str) -> None:
 
     if result.aborted:
         sys.exit(2)
+
+
+@main.command("set-validated")
+@click.option(
+    "--item", "item_id", type=int, required=True, help="Item id to mark validated."
+)
+@click.option(
+    "--db",
+    "db_path",
+    default=DEFAULT_DB_PATH,
+    help="SQLite database path.",
+)
+def set_validated(item_id: int, db_path: str) -> None:
+    """Mark an Assumption as validated (human-only, spec 3.5)."""
+    _write_validated_flag(item_id, db_path, new_value=True)
+
+
+@main.command("clear-validated")
+@click.option(
+    "--item", "item_id", type=int, required=True, help="Item id to unmark."
+)
+@click.option(
+    "--db",
+    "db_path",
+    default=DEFAULT_DB_PATH,
+    help="SQLite database path.",
+)
+def clear_validated(item_id: int, db_path: str) -> None:
+    """Clear the validated flag on an Assumption (human-only, spec 3.5)."""
+    _write_validated_flag(item_id, db_path, new_value=False)
+
+
+def _write_validated_flag(item_id: int, db_path: str, *, new_value: bool) -> None:
+    """Write the flag on an Assumption. `new_value` is data, not a mode switch."""
+    try:
+        conn = open_database(db_path)
+        gatekeeper = SqliteItemGatekeeper(conn)
+        item = validate_set_validated(gatekeeper.find_item(item_id), item_id)
+        gatekeeper.save_validated_flag(item, validated=new_value)
+    except EmberError as exc:
+        click.echo(f"error: {exc.log_line()}", err=True)
+        sys.exit(1)
+    click.echo(f"item {item.id} validated: {str(new_value).lower()}")
 
 
 def _store(conn, raw_text: str) -> StoredSource:

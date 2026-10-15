@@ -66,17 +66,17 @@ Earlier logo and character images, kept for history.
 - `pyproject.toml`: Package metadata, locked stack deps (click, openai, pydantic; pytest is a dev dep), pytest config.
 - `ember/__init__.py`: Package version.
 - `ember/__main__.py`: Runs the CLI via `python -m ember`.
-- `ember/cli.py`: Click CLI. `capture` runs the full 4-phase pipeline; `capture-source` is the Phase 1 standalone command.
+- `ember/cli.py`: Click CLI. `capture` runs the full 4-phase pipeline; `capture-source` is the Phase 1 standalone command; `set-validated` / `clear-validated` write the Assumption flag.
 - `ember/errors.py`: Base `EmberError`. Carries a stable code and the raising module.function, no secrets.
 - `ember/capture/__init__.py`: Marks the capture engine folder as a package.
-- `ember/capture/errors.py`: Capture error codes `CAPTURE-001` to `CAPTURE-014`.
+- `ember/capture/errors.py`: Capture error codes `CAPTURE-001` to `CAPTURE-016`.
 - `ember/capture/source_storage.py`: Phase 1 core. SHA-256 dedup behind `SourceStorePort`, returns `{source_id, raw_text, content_hash}`.
 - `ember/capture/input_reader.py`: Edge reader for STDIN or file, 5 MiB file limit, UTF-8 decode.
 - `ember/capture/item_proposal.py`: Phase 2 core. The 4 item types, the AI port `ItemProposerPort`, the item-context port, context mode A/B, the AI system prompt, parse + validate the AI answer, retry once.
-- `ember/capture/item_gatekeeper.py`: Phase 3 core. The 4 checks (type, statement, quote, near-dup warning), id/timestamp/Active generation, and the source-text read port.
+- `ember/capture/item_gatekeeper.py`: Phase 3 core plus the human flag check. The 4 checks (type, statement, quote, near-dup warning), id/timestamp/Active generation, the source-text read port, and `validate_set_validated` for the Assumption flag.
 - `ember/capture/confirm_write.py`: Phase 4 core. The `y/n/e/q` confirm loop and the confirm/commit ports.
 - `ember/adapters/__init__.py`: Marks the adapters layer folder as a package.
-- `ember/adapters/sqlite.py`: SQLite connection, numbered migrations, `SqliteSourceStore` and `SqliteItemGatekeeper` (writes are the gatekeeper boundary), `SqliteItemContext` (item reads).
+- `ember/adapters/sqlite.py`: SQLite connection, numbered migrations, `SqliteSourceStore` and `SqliteItemGatekeeper` (writes are the gatekeeper boundary), `SqliteItemContext` (item reads), `SqliteAiResponseStore` (raw AI answers).
 - `ember/adapters/llm.py`: `OpenAiItemProposer` (`ItemProposerPort` on the OpenAI SDK, OpenRouter base URL) and the env-driven factory.
 - `ember/adapters/migrations/__init__.py`: Marks the migrations folder as a package.
 - `ember/adapters/migrations/001_create_sources.sql`: Creates the `sources` table.
@@ -99,6 +99,7 @@ Earlier logo and character images, kept for history.
 - `tests/test_migrations.py`: Asserts the `items` and `change_log` schema after migrations.
 - `tests/test_cli.py`: CLI checks for the Phase 1 command, file/stdin modes and exit codes.
 - `tests/test_cli_capture.py`: CLI checks for the `capture` command with a fake AI.
+- `tests/test_cli_validated.py`: CLI checks for `set-validated` / `clear-validated` and the Assumption-only rule.
 - `tests/test_architecture.py`: Asserts engine core never imports an adapter.
 
 ### AI Answer Fixtures (`tests/fixtures/ai_responses/`)

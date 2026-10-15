@@ -10,7 +10,7 @@ from ember.adapters.sqlite import (
     SqliteItemGatekeeper,
     open_database,
 )
-from ember.capture.item_gatekeeper import ExistingItem, ValidatedItem
+from ember.capture.item_gatekeeper import ExistingItem, StoredItem, ValidatedItem
 
 FIXED_TIME = "2026-01-01T00:00:00+00:00"
 
@@ -187,3 +187,54 @@ def test_log_rejected_writes_a_null_item_id(db_path) -> None:
     assert row["timestamp"] == FIXED_TIME
     assert json.loads(row["new_value"])["statement"] == "Use SQLite"
     assert conn.execute("SELECT COUNT(*) FROM items").fetchone()[0] == 0
+
+
+def test_find_item_returns_the_row(db_path) -> None:
+    conn = open_database(db_path)
+    source_id = seed_source(conn)
+    add_item(
+        conn,
+        item_id=3,
+        source_id=source_id,
+        statement="Team ships weekly",
+        created_at=FIXED_TIME,
+        item_type="Assumption",
+    )
+    conn.commit()
+
+    item = SqliteItemGatekeeper(conn).find_item(3)
+
+    assert item == StoredItem(id=3, type="Assumption", validated=None)
+
+
+def test_find_item_returns_none_when_missing(db_path) -> None:
+    conn = open_database(db_path)
+
+    assert SqliteItemGatekeeper(conn).find_item(99) is None
+
+
+def test_save_validated_flag_flips_the_row_and_logs(db_path) -> None:
+    conn = open_database(db_path)
+    source_id = seed_source(conn)
+    add_item(
+        conn,
+        item_id=3,
+        source_id=source_id,
+        statement="Team ships weekly",
+        created_at=FIXED_TIME,
+        item_type="Assumption",
+    )
+    conn.commit()
+    gatekeeper = SqliteItemGatekeeper(conn, clock=lambda: FIXED_TIME)
+    item = gatekeeper.find_item(3)
+
+    gatekeeper.save_validated_flag(item, validated=True)
+
+    assert conn.execute("SELECT validated FROM items WHERE id = 3").fetchone()[0] == 1
+    log = conn.execute("SELECT * FROM change_log").fetchone()
+    assert log["item_id"] == 3
+    assert log["field_changed"] == "validated"
+    assert log["old_value"] is None
+    assert log["new_value"] == "true"
+    assert log["timestamp"] == FIXED_TIME
+    assert log["trigger_cause"] == "user_set_validated"

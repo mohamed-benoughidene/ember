@@ -6,7 +6,11 @@ from dataclasses import replace
 
 import pytest
 
-from ember.capture.errors import ItemSourceMissing
+from ember.capture.errors import (
+    ItemNotFound,
+    ItemSourceMissing,
+    NotAnAssumption,
+)
 from ember.capture.item_gatekeeper import (
     NEAR_DUP_THRESHOLD,
     STATUS_ACTIVE,
@@ -14,11 +18,13 @@ from ember.capture.item_gatekeeper import (
     GatekeeperRun,
     ProposalDraft,
     RejectedProposal,
+    StoredItem,
     ValidatedItem,
     is_allowed_type,
     load_source_text,
     validate_add_item,
     validate_proposals,
+    validate_set_validated,
 )
 from ember.capture.item_proposal import ItemProposal, ItemType
 
@@ -195,3 +201,28 @@ def test_load_source_text_raises_when_missing() -> None:
         load_source_text(_FakeSources({}), SOURCE_ID)
 
     assert excinfo.value.code == "CAPTURE-012"
+
+
+# --- the human `validated` flag change (spec 3.5) -------------------------
+
+
+def test_validate_set_validated_returns_the_assumption() -> None:
+    item = StoredItem(id=4, type="Assumption", validated=False)
+
+    assert validate_set_validated(item, 4) is item
+
+
+def test_validate_set_validated_refuses_a_missing_item() -> None:
+    with pytest.raises(ItemNotFound) as excinfo:
+        validate_set_validated(None, 4)
+
+    assert excinfo.value.code == "CAPTURE-015"
+
+
+def test_validate_set_validated_refuses_a_non_assumption() -> None:
+    item = StoredItem(id=4, type="Decision", validated=None)
+
+    with pytest.raises(NotAnAssumption) as excinfo:
+        validate_set_validated(item, 4)
+
+    assert excinfo.value.code == "CAPTURE-016"
