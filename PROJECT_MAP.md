@@ -3,6 +3,7 @@
 This file lists every file and its purpose in the repository. Update it when files or folders are added or removed.
 
 ## Root Files
+- `.gitignore`: Ignore rules for Python build files and local database files.
 - `AGENTS.md`: Rules for AI coding agents working in this repository.
 - `Constitution.md`: Core build rules for modules, data, interfaces and tests (AI caveman version).
 - `Personal guidelines.md`: Rules for tone, accuracy and review style (AI caveman version).
@@ -66,13 +67,17 @@ Earlier logo and character images, kept for history.
 - `ember/__main__.py`: Runs the CLI via `python -m ember`.
 - `ember/cli.py`: Click CLI. `capture-source` is the Phase 1 standalone command.
 - `ember/errors.py`: Base `EmberError`. Carries a stable code and the raising module.function, no secrets.
+- `ember/capture/__init__.py`: Marks the capture engine folder as a package.
 - `ember/capture/errors.py`: Capture error codes `CAPTURE-001` to `CAPTURE-006`.
 - `ember/capture/source_storage.py`: Phase 1 core. SHA-256 dedup behind `SourceStorePort`, returns `{source_id, raw_text, content_hash}`.
 - `ember/capture/input_reader.py`: Edge reader for STDIN or file, 5 MiB file limit, UTF-8 decode.
+- `ember/adapters/__init__.py`: Marks the adapters layer folder as a package.
 - `ember/adapters/sqlite.py`: SQLite connection, numbered migrations, `SqliteSourceStore` (write is the gatekeeper boundary).
+- `ember/adapters/migrations/__init__.py`: Marks the migrations folder as a package.
 - `ember/adapters/migrations/001_create_sources.sql`: Creates the `sources` table.
 
 ## Tests (`tests/`)
+- `tests/__init__.py`: Marks the tests folder as a package.
 - `tests/conftest.py`: `db_path` temp-file fixture.
 - `tests/fakes.py`: `FakeSourceStore`, in-memory stand-in for the port.
 - `tests/test_source_storage_unit.py`: Phase 1 unit tests on a fake store, no DB.
