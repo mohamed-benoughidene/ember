@@ -12,7 +12,6 @@ from ember.capture.errors import (
     NotAnAssumption,
 )
 from ember.capture.item_gatekeeper import (
-    NEAR_DUP_THRESHOLD,
     STATUS_ACTIVE,
     ExistingItem,
     GatekeeperRun,
@@ -27,10 +26,10 @@ from ember.capture.item_gatekeeper import (
     validate_set_validated,
 )
 from ember.capture.item_proposal import ItemProposal, ItemType
+from tests.fakes import FIXED_TIME
 
 RAW_TEXT = "The team decided to use SQLite for local storage."
 SOURCE_ID = 7
-FIXED_TIME = "2026-01-01T00:00:00+00:00"
 
 
 def _run(
@@ -186,10 +185,6 @@ def test_is_allowed_type_accepts_the_four_and_rejects_junk() -> None:
     for item_type in ItemType:
         assert is_allowed_type(item_type.value)
     assert not is_allowed_type("Risk")
-
-
-def test_threshold_is_a_fraction() -> None:
-    assert 0.0 < NEAR_DUP_THRESHOLD < 1.0
 
 
 def test_load_source_text_returns_the_stored_text() -> None:

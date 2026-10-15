@@ -3,50 +3,21 @@
 from __future__ import annotations
 
 import json
-import sqlite3
 
 from ember.adapters.sqlite import (
     SqliteItemContext,
     SqliteItemGatekeeper,
     open_database,
 )
-from ember.capture.item_gatekeeper import ExistingItem, StoredItem, ValidatedItem
-
-FIXED_TIME = "2026-01-01T00:00:00+00:00"
-
-
-def seed_source(conn: sqlite3.Connection, full_text: str = "body") -> int:
-    cursor = conn.execute(
-        "INSERT INTO sources (title, full_text, timestamp, content_hash)"
-        " VALUES ('t', ?, ?, ?)",
-        (full_text, FIXED_TIME, f"hash-{full_text}"),
-    )
-    return int(cursor.lastrowid)
-
-
-def add_item(
-    conn: sqlite3.Connection,
-    *,
-    item_id: int,
-    source_id: int,
-    statement: str,
-    created_at: str,
-    item_type: str = "Decision",
-) -> None:
-    conn.execute(
-        "INSERT INTO items (id, type, statement, source_id, status, created_at)"
-        " VALUES (?, ?, ?, ?, 'Active', ?)",
-        (item_id, item_type, statement, source_id, created_at),
-    )
+from ember.capture.item_gatekeeper import ExistingItem, StoredItem
+from tests.fakes import FIXED_TIME, insert_item, insert_source, make_item
 
 
 def test_recent_items_returns_newest_first(db_path) -> None:
     conn = open_database(db_path)
-    source_id = seed_source(conn)
-    add_item(
-        conn, item_id=1, source_id=source_id, statement="old", created_at=FIXED_TIME
-    )
-    add_item(
+    source_id = insert_source(conn)
+    insert_item(conn, item_id=1, source_id=source_id, statement="old")
+    insert_item(
         conn,
         item_id=2,
         source_id=source_id,
@@ -64,9 +35,9 @@ def test_recent_items_returns_newest_first(db_path) -> None:
 
 def test_recent_items_respects_limit(db_path) -> None:
     conn = open_database(db_path)
-    source_id = seed_source(conn)
+    source_id = insert_source(conn)
     for index in range(1, 6):
-        add_item(
+        insert_item(
             conn,
             item_id=index,
             source_id=source_id,
@@ -80,31 +51,11 @@ def test_recent_items_respects_limit(db_path) -> None:
     assert [item.id for item in items] == [5, 4, 3]
 
 
-def make_item(
-    item_id: int = 1,
-    *,
-    item_type: str = "Decision",
-    statement: str = "Use SQLite",
-    source_id: int = 1,
-) -> ValidatedItem:
-    return ValidatedItem(
-        id=item_id,
-        type=item_type,
-        statement=statement,
-        source_quote="use SQLite",
-        confidence=0.9,
-        source_id=source_id,
-        created_at=FIXED_TIME,
-        status="Active",
-        near_dup_warning=None,
-    )
-
-
 def test_statements_returns_id_and_statement_pairs(db_path) -> None:
     conn = open_database(db_path)
-    source_id = seed_source(conn)
-    add_item(conn, item_id=1, source_id=source_id, statement="a", created_at=FIXED_TIME)
-    add_item(conn, item_id=2, source_id=source_id, statement="b", created_at=FIXED_TIME)
+    source_id = insert_source(conn)
+    insert_item(conn, item_id=1, source_id=source_id, statement="a")
+    insert_item(conn, item_id=2, source_id=source_id, statement="b")
     conn.commit()
 
     assert SqliteItemGatekeeper(conn).statements() == [
@@ -115,10 +66,8 @@ def test_statements_returns_id_and_statement_pairs(db_path) -> None:
 
 def test_next_item_id_is_unique_and_above_existing(db_path) -> None:
     conn = open_database(db_path)
-    source_id = seed_source(conn)
-    add_item(
-        conn, item_id=5, source_id=source_id, statement="x", created_at=FIXED_TIME
-    )
+    source_id = insert_source(conn)
+    insert_item(conn, item_id=5, source_id=source_id, statement="x")
     conn.commit()
 
     gatekeeper = SqliteItemGatekeeper(conn)
@@ -129,7 +78,7 @@ def test_next_item_id_is_unique_and_above_existing(db_path) -> None:
 
 def test_insert_item_writes_the_row(db_path) -> None:
     conn = open_database(db_path)
-    source_id = seed_source(conn)
+    source_id = insert_source(conn)
 
     SqliteItemGatekeeper(conn).insert_item(
         make_item(source_id=source_id), validated=None
@@ -146,7 +95,7 @@ def test_insert_item_writes_the_row(db_path) -> None:
 
 def test_insert_assumption_sets_the_validated_flag(db_path) -> None:
     conn = open_database(db_path)
-    source_id = seed_source(conn)
+    source_id = insert_source(conn)
 
     SqliteItemGatekeeper(conn).insert_item(
         make_item(item_type="Assumption", source_id=source_id), validated=False
@@ -158,7 +107,7 @@ def test_insert_assumption_sets_the_validated_flag(db_path) -> None:
 
 def test_log_created_writes_a_change_log_row(db_path) -> None:
     conn = open_database(db_path)
-    source_id = seed_source(conn)
+    source_id = insert_source(conn)
     gatekeeper = SqliteItemGatekeeper(conn, clock=lambda: FIXED_TIME)
     item = make_item(source_id=source_id)
     gatekeeper.insert_item(item, validated=None)
@@ -191,13 +140,12 @@ def test_log_rejected_writes_a_null_item_id(db_path) -> None:
 
 def test_find_item_returns_the_row(db_path) -> None:
     conn = open_database(db_path)
-    source_id = seed_source(conn)
-    add_item(
+    source_id = insert_source(conn)
+    insert_item(
         conn,
         item_id=3,
         source_id=source_id,
         statement="Team ships weekly",
-        created_at=FIXED_TIME,
         item_type="Assumption",
     )
     conn.commit()
@@ -215,13 +163,12 @@ def test_find_item_returns_none_when_missing(db_path) -> None:
 
 def test_save_validated_flag_flips_the_row_and_logs(db_path) -> None:
     conn = open_database(db_path)
-    source_id = seed_source(conn)
-    add_item(
+    source_id = insert_source(conn)
+    insert_item(
         conn,
         item_id=3,
         source_id=source_id,
         statement="Team ships weekly",
-        created_at=FIXED_TIME,
         item_type="Assumption",
     )
     conn.commit()

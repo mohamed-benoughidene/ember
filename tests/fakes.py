@@ -1,11 +1,15 @@
-"""In-memory stand-ins for the ports (Rule T3: fakes over mocks)."""
+"""Shared test doubles, plus the fixed clock and row-seed helpers."""
 
 from __future__ import annotations
 
+import sqlite3
+
 from ember.capture.errors import UserAbort
-from ember.capture.item_gatekeeper import ValidatedItem
+from ember.capture.item_gatekeeper import NearDupWarning, ValidatedItem
 from ember.capture.item_proposal import ContextItem, ProposalResponse
 from ember.capture.source_storage import SourceRecord
+
+FIXED_TIME = "2026-01-01T00:00:00+00:00"
 
 
 class FakeItemProposer:
@@ -86,3 +90,54 @@ class FakeItemCommit:
 
     def log_rejected(self, item: ValidatedItem) -> None:
         self.rejected.append(item)
+
+
+def insert_source(conn: sqlite3.Connection, full_text: str = "body") -> int:
+    """Insert one `sources` row and return its id."""
+    cursor = conn.execute(
+        "INSERT INTO sources (title, full_text, timestamp, content_hash)"
+        " VALUES ('t', ?, ?, ?)",
+        (full_text, FIXED_TIME, f"hash-{full_text}"),
+    )
+    return int(cursor.lastrowid)
+
+
+def insert_item(
+    conn: sqlite3.Connection,
+    *,
+    source_id: int,
+    item_id: int | None = None,
+    item_type: str = "Decision",
+    statement: str = "Use SQLite",
+    created_at: str = FIXED_TIME,
+    validated: bool | None = None,
+) -> int:
+    """Insert one `items` row and return its id."""
+    cursor = conn.execute(
+        "INSERT INTO items (id, type, statement, source_id, status, created_at,"
+        " validated) VALUES (?, ?, ?, ?, 'Active', ?, ?)",
+        (item_id, item_type, statement, source_id, created_at, validated),
+    )
+    return int(cursor.lastrowid)
+
+
+def make_item(
+    item_id: int = 1,
+    *,
+    item_type: str = "Decision",
+    statement: str = "Use SQLite",
+    source_id: int = 1,
+    warning: NearDupWarning | None = None,
+) -> ValidatedItem:
+    """Build one `ValidatedItem` for the Phase 4 tests."""
+    return ValidatedItem(
+        id=item_id,
+        type=item_type,
+        statement=statement,
+        source_quote="use SQLite",
+        confidence=0.9,
+        source_id=source_id,
+        created_at=FIXED_TIME,
+        status="Active",
+        near_dup_warning=warning,
+    )

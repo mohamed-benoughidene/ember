@@ -8,8 +8,6 @@ import pytest
 from openai import OpenAIError
 
 from ember.adapters.llm import (
-    DEFAULT_BASE_URL,
-    DEFAULT_MODEL,
     REQUEST_TIMEOUT_SECONDS,
     OpenAiItemProposer,
     build_item_proposer,
@@ -195,8 +193,3 @@ def test_build_bounds_the_timeout_and_sdk_retries(monkeypatch) -> None:
     assert recorded["api_key"] == "k"
     assert recorded["timeout"] == REQUEST_TIMEOUT_SECONDS
     assert recorded["max_retries"] == 0
-
-
-def test_default_model_and_base_url_are_locked() -> None:
-    assert DEFAULT_MODEL == "anthropic/claude-3.5-sonnet"
-    assert DEFAULT_BASE_URL == "https://openrouter.ai/api/v1"

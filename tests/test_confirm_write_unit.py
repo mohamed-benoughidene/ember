@@ -13,31 +13,8 @@ from ember.capture.item_gatekeeper import (
     NearDupWarning,
     ProposalDraft,
     RejectedProposal,
-    ValidatedItem,
 )
-from tests.fakes import FakeConfirm, FakeItemCommit
-
-FIXED_TIME = "2026-01-01T00:00:00+00:00"
-
-
-def make_item(
-    item_id: int = 1,
-    *,
-    item_type: str = "Decision",
-    statement: str = "Use SQLite",
-    warning: NearDupWarning | None = None,
-) -> ValidatedItem:
-    return ValidatedItem(
-        id=item_id,
-        type=item_type,
-        statement=statement,
-        source_quote="use SQLite",
-        confidence=0.9,
-        source_id=1,
-        created_at=FIXED_TIME,
-        status="Active",
-        near_dup_warning=warning,
-    )
+from tests.fakes import FakeConfirm, FakeItemCommit, make_item
 
 
 def _never_called(draft: ProposalDraft):

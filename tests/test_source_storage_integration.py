@@ -7,8 +7,7 @@ import sqlite3
 from ember.adapters.sqlite import SqliteSourceStore, open_database
 from ember.capture.input_reader import InputMode, read_raw_text
 from ember.capture.source_storage import store_source
-
-FIXED_TIME = "2026-01-01T00:00:00+00:00"
+from tests.fakes import FIXED_TIME
 
 
 def _store(conn: sqlite3.Connection) -> SqliteSourceStore:

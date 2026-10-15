@@ -18,9 +18,8 @@ from ember.capture.item_gatekeeper import (
 )
 from ember.capture.item_proposal import ItemProposal, ItemType
 from ember.capture.source_storage import store_source
-from tests.fakes import FakeConfirm
+from tests.fakes import FIXED_TIME, FakeConfirm
 
-FIXED_TIME = "2026-01-01T00:00:00+00:00"
 RAW_TEXT = (
     "We decided to use SQLite for local storage. "
     "We assume the team ships weekly. "

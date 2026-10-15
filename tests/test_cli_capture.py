@@ -93,17 +93,11 @@ def test_summary_line_reports_the_counts(db_path, tmp_path, monkeypatch) -> None
     assert "accepted: 1, rejected: 1, warnings: 0, aborted: false" in result.output
 
 
-def test_summary_line_reports_an_abort(db_path, tmp_path, monkeypatch) -> None:
-    result = _run(tmp_path, db_path, _two_proposals(), "y\nq\n", monkeypatch)
-
-    assert result.exit_code == 2
-    assert "aborted: true" in result.output
-
-
 def test_quitting_exits_2_and_leaves_the_rest(db_path, tmp_path, monkeypatch) -> None:
     result = _run(tmp_path, db_path, _two_proposals(), "y\nq\n", monkeypatch)
 
     assert result.exit_code == 2
+    assert "aborted: true" in result.output
     assert _count(db_path, "SELECT COUNT(*) FROM items") == 1
 
 

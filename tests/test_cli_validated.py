@@ -8,27 +8,21 @@ from click.testing import CliRunner
 
 from ember.adapters.sqlite import open_database
 from ember.cli import main
-
-FIXED_TIME = "2026-01-01T00:00:00+00:00"
+from tests.fakes import insert_item, insert_source
 
 
 def seed_item(db_path: str, item_type: str) -> int:
     conn = open_database(db_path)
     try:
-        cursor = conn.execute(
-            "INSERT INTO sources (title, full_text, timestamp, content_hash)"
-            " VALUES ('t', 'body', ?, 'hash')",
-            (FIXED_TIME,),
-        )
-        source_id = int(cursor.lastrowid)
-        cursor = conn.execute(
-            "INSERT INTO items"
-            " (type, statement, source_id, status, created_at, validated)"
-            " VALUES (?, 'Team ships weekly', ?, 'Active', ?, NULL)",
-            (item_type, source_id, FIXED_TIME),
+        source_id = insert_source(conn)
+        item_id = insert_item(
+            conn,
+            source_id=source_id,
+            item_type=item_type,
+            statement="Team ships weekly",
         )
         conn.commit()
-        return int(cursor.lastrowid)
+        return item_id
     finally:
         conn.close()
 
