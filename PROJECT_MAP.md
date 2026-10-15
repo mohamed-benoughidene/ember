@@ -62,7 +62,7 @@ Earlier logo and character images, kept for history.
 - `plans/steps/capture/03-user-confirm-write.md`: L3 Step 3 plan. Phases 3+4, gatekeeper + user confirm + write.
 
 ## Python Implementation (`ember/`)
-- `pyproject.toml`: Package metadata, locked stack deps (click, pytest), pytest config.
+- `pyproject.toml`: Package metadata, locked stack deps (click, pydantic; pytest is a dev dep), pytest config.
 - `ember/__init__.py`: Package version.
 - `ember/__main__.py`: Runs the CLI via `python -m ember`.
 - `ember/cli.py`: Click CLI. `capture-source` is the Phase 1 standalone command.
