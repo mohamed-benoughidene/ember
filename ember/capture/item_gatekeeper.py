@@ -2,7 +2,8 @@
 
 Pure logic. The stored source text and the existing item statements sit behind
 ports, so the engine core never imports a database driver. The near-duplicate
-scan is a warning only; it never blocks a proposal (L2 section 3, Phase 3).
+scan uses plain text similarity, no embedder (Engine B owns vectors), and is a
+warning only; it never blocks a proposal (L2 section 3, Phase 3).
 """
 
 from __future__ import annotations
@@ -81,7 +82,6 @@ class ValidatedItem:
 class RejectedProposal:
     """A proposal a check threw away, with the rule it failed."""
 
-    draft: ProposalDraft
     rule: str
 
 
@@ -131,18 +131,13 @@ def is_allowed_type(value: str) -> bool:
     return value in _ITEM_TYPES
 
 
-def _similarity(left: str, right: str) -> float:
-    """Text similarity in [0, 1]. No embedder here; Engine B owns vectors."""
-    return SequenceMatcher(None, left, right).ratio()
-
-
 def _find_near_dup(
     statement: str, existing: list[ExistingItem]
 ) -> NearDupWarning | None:
     """Check #4: the closest existing statement above the threshold, or None."""
     best: NearDupWarning | None = None
     for item in existing:
-        score = _similarity(statement, item.statement)
+        score = SequenceMatcher(None, statement, item.statement).ratio()
         if score > NEAR_DUP_THRESHOLD and (best is None or score > best.similarity):
             best = NearDupWarning(matching_item_id=item.item_id, similarity=score)
     return best
@@ -185,11 +180,11 @@ def validate_add_item(
     `Active` status.
     """
     if not is_allowed_type(draft.type):
-        return RejectedProposal(draft, "type")
+        return RejectedProposal(rule="type")
     if not draft.statement.strip():
-        return RejectedProposal(draft, "statement")
+        return RejectedProposal(rule="statement")
     if draft.source_quote not in run.source_text:
-        return RejectedProposal(draft, "quote")
+        return RejectedProposal(rule="quote")
     return ValidatedItem(
         id=run.next_id(),
         type=draft.type,

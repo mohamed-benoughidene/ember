@@ -25,11 +25,10 @@ def read_raw_text(
     *,
     mode: InputMode,
     path: str | None = None,
-    max_bytes: int = MAX_SOURCE_BYTES,
 ) -> str:
     """Read input, enforce the size limit for files, decode as UTF-8."""
     if mode is InputMode.FILE:
-        raw_bytes = _read_file_bytes(path, max_bytes)
+        raw_bytes = _read_file_bytes(path)
     else:
         raw_bytes = _read_stdin_bytes()
     try:
@@ -38,16 +37,16 @@ def read_raw_text(
         raise InvalidUtf8Error("invalid utf-8") from exc
 
 
-def _read_file_bytes(path: str | None, max_bytes: int) -> bytes:
+def _read_file_bytes(path: str | None) -> bytes:
     if not path:
         raise SourceFileNotFound("file not found: <empty path>")
     file_path = Path(path)
     if not file_path.is_file():
         raise SourceFileNotFound(f"file not found: {path}", path=path)
     size = file_path.stat().st_size
-    if size > max_bytes:
+    if size > MAX_SOURCE_BYTES:
         raise SourceFileTooLarge(
-            "file too large", path=path, size=size, max_bytes=max_bytes
+            "file too large", path=path, size=size, max_bytes=MAX_SOURCE_BYTES
         )
     return file_path.read_bytes()
 

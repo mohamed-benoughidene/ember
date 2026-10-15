@@ -114,7 +114,7 @@ def test_confirm_block_is_printed(db_path, tmp_path, monkeypatch) -> None:
 def test_phase_2_drop_reason_is_printed(db_path, tmp_path, monkeypatch) -> None:
     batch = ProposalBatch(
         proposals=[_proposal("Use SQLite", "use SQLite")],
-        dropped=[DroppedProposal(rule="type", payload={"type": "Risk"})],
+        dropped=[DroppedProposal(rule="type")],
     )
 
     result = _run(tmp_path, db_path, batch, "n\n", monkeypatch)

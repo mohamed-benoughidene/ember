@@ -73,7 +73,6 @@ class DroppedProposal:
     """A proposal the checks threw away, with the rule it failed."""
 
     rule: str
-    payload: object
 
 
 @dataclass(frozen=True)
@@ -155,7 +154,7 @@ def parse_proposals(ai_response: str, raw_text: str) -> ProposalBatch:
         if proposal is not None:
             proposals.append(proposal)
         else:
-            dropped.append(DroppedProposal(rule=rule, payload=entry))
+            dropped.append(DroppedProposal(rule=rule))
     return ProposalBatch(proposals=proposals, dropped=dropped)
 
 

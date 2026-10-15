@@ -225,4 +225,14 @@ Extra decisions this step had to make:
   (waits on the step that stores rationale and evidence text), and the
   `change_log.link_id` foreign key (waits on the `links` table, Engine B).
   Recorded as GitHub issues labelled `deferred`.
+- **Over-engineering audit (ponytail-audit, whole repo).** Applied: shared test
+  helpers (one `FIXED_TIME`, `make_item`, `insert_source`, `insert_item`), four
+  tests deleted as duplicates or tautologies, the write-only fields
+  `DroppedProposal.payload` and `RejectedProposal.draft` deleted, six
+  single-call-site helpers inlined (`_report_proposals`, `_report_result`,
+  `_report_rejects`, `format_warning`, `ask_choice`, `_similarity`), and the
+  unused `max_bytes` parameter dropped. Rejected: dropping `openai`, `pydantic`
+  or `click`. L1 section 0 freezes the stack, so that needs an L1 amendment
+  first, not a refactor. Kept on purpose: `items.rationale` / `items.source`
+  and `change_log.link_id` (issues #1 and #2), and `CaptureError` (rule I6).
 

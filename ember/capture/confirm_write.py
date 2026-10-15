@@ -106,14 +106,6 @@ def format_block(item: ValidatedItem) -> str:
     )
 
 
-def format_warning(warning: NearDupWarning) -> str:
-    """The warning line printed above the prompt."""
-    return (
-        f"warning: near-duplicate of item {warning.matching_item_id}"
-        f" (similarity {warning.similarity:.2f})"
-    )
-
-
 def run_confirm_loop(
     items: list[ValidatedItem],
     *,
@@ -139,8 +131,15 @@ def run_confirm_loop(
             confirm.write(format_block(item))
             if item.near_dup_warning is not None:
                 warning_count += 1
-                confirm.write(format_warning(item.near_dup_warning))
-            choice = ask_choice(confirm)
+                warning = item.near_dup_warning
+                confirm.write(
+                    f"warning: near-duplicate of item {warning.matching_item_id}"
+                    f" (similarity {warning.similarity:.2f})"
+                )
+            while True:
+                choice = parse_choice(confirm.ask(PROMPT))
+                if choice is not None:
+                    break
             if choice is Choice.YES:
                 accept(item, commit=commit, accepted=accepted)
                 index += 1
@@ -159,14 +158,6 @@ def run_confirm_loop(
     except UserAbort:
         return ConfirmResult(accepted, rejected_count, warning_count, True)
     return ConfirmResult(accepted, rejected_count, warning_count, False)
-
-
-def ask_choice(confirm: ConfirmPort) -> Choice:
-    """Re-prompt on unknown input until an answer is understood."""
-    while True:
-        choice = parse_choice(confirm.ask(PROMPT))
-        if choice is not None:
-            return choice
 
 
 def accept(item: ValidatedItem, *, commit: ItemCommitPort, accepted: list[int]) -> None:

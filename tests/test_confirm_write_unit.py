@@ -198,7 +198,7 @@ def test_edit_re_prompts_until_the_type_is_allowed() -> None:
 
 def test_edit_dropped_by_the_gatekeeper_writes_nothing() -> None:
     def revalidate(draft: ProposalDraft):
-        return RejectedProposal(draft, "quote")
+        return RejectedProposal(rule="quote")
 
     result, confirm, commit = run(
         [make_item(1)], ["e", "Decision", "x"], revalidate=revalidate

@@ -16,11 +16,10 @@ from ember.adapters.sqlite import (
     SqliteSourceStore,
     open_database,
 )
-from ember.capture.confirm_write import ConfirmResult, run_confirm_loop
+from ember.capture.confirm_write import run_confirm_loop
 from ember.capture.errors import UserAbort
 from ember.capture.input_reader import InputMode, read_raw_text
 from ember.capture.item_gatekeeper import (
-    GatekeeperResult,
     GatekeeperRun,
     load_source_text,
     validate_add_item,
@@ -28,7 +27,6 @@ from ember.capture.item_gatekeeper import (
     validate_set_validated,
 )
 from ember.capture.item_proposal import (
-    ProposalBatch,
     ProposalResponse,
     build_context,
     propose_items,
@@ -127,12 +125,16 @@ def capture(file_path: str | None, db_path: str) -> None:
         stored = _store(conn, raw_text)
         response = _propose(conn, stored)
         _store_ai_response(conn, stored, response)
-        _report_proposals(response.batch)
+        for drop in response.batch.dropped:
+            click.echo(f"dropped proposal: {drop.rule}")
+        if not response.batch.proposals:
+            click.echo("0 valid proposals")
 
         gatekeeper = SqliteItemGatekeeper(conn)
         run = _gatekeeper_run(conn, gatekeeper, stored)
         outcome = validate_proposals(response.batch.proposals, run)
-        _report_rejects(outcome)
+        for reject in outcome.rejected:
+            click.echo(f"rejected by gatekeeper: {reject.rule}")
 
         result = run_confirm_loop(
             outcome.validated,
@@ -140,7 +142,12 @@ def capture(file_path: str | None, db_path: str) -> None:
             commit=gatekeeper,
             revalidate=lambda draft: validate_add_item(draft, run),
         )
-        _report_result(result)
+        click.echo(
+            f"accepted: {len(result.accepted_ids)}"
+            f", rejected: {result.rejected_count}"
+            f", warnings: {result.warning_count}"
+            f", aborted: {str(result.aborted).lower()}"
+        )
     except EmberError as exc:
         click.echo(f"error: {exc.log_line()}", err=True)
         sys.exit(1)
@@ -225,27 +232,3 @@ def _gatekeeper_run(
         next_id=gatekeeper.next_item_id,
         clock=gatekeeper.now,
     )
-
-
-def _report_proposals(batch: ProposalBatch) -> None:
-    """Print the Phase 2 drop reasons and the empty-result line (section 6.5.3)."""
-    for drop in batch.dropped:
-        click.echo(f"dropped proposal: {drop.rule}")
-    if not batch.proposals:
-        click.echo("0 valid proposals")
-
-
-def _report_result(result: ConfirmResult) -> None:
-    """Print the Phase 4 summary line (step 3 section 3)."""
-    click.echo(
-        f"accepted: {len(result.accepted_ids)}"
-        f", rejected: {result.rejected_count}"
-        f", warnings: {result.warning_count}"
-        f", aborted: {str(result.aborted).lower()}"
-    )
-
-
-def _report_rejects(outcome: GatekeeperResult) -> None:
-    """Print the Phase 3 drop reasons to STDOUT (section 4.1)."""
-    for reject in outcome.rejected:
-        click.echo(f"rejected by gatekeeper: {reject.rule}")

@@ -86,7 +86,7 @@ Earlier logo and character images, kept for history.
 ## Tests (`tests/`)
 - `tests/__init__.py`: Marks the tests folder as a package.
 - `tests/conftest.py`: `db_path` temp-file fixture.
-- `tests/fakes.py`: In-memory stand-ins for the ports: `FakeSourceStore`, `FakeItemProposer`, `FakeItemContext`, `FakeConfirm`, `FakeItemCommit`.
+- `tests/fakes.py`: Shared test helpers: the port stand-ins (`FakeSourceStore`, `FakeItemProposer`, `FakeItemContext`, `FakeConfirm`, `FakeItemCommit`), `FIXED_TIME`, and the row-seed helpers `insert_source`, `insert_item`, `make_item`.
 - `tests/test_source_storage_unit.py`: Phase 1 unit tests on a fake store, no DB.
 - `tests/test_source_storage_integration.py`: Phase 1 tests on a real SQLite temp DB.
 - `tests/test_item_proposal_unit.py`: Phase 2 unit tests on a fake AI and fake item reader, no network.
