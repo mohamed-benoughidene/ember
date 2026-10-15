@@ -94,6 +94,14 @@ Integration (real SQLite temp DB):
 - Edit flow: AI proposes wrong type, user `e` -> corrected type validates, accepted, written.
 - Abort: 5 proposals, user `q` after 2 -> 2 rows in `change_log` (or `items` if accepted), 3 not touched.
 
+## 6.5 Moved in from Step 2
+
+Step 2's plan left three things undone on purpose. This step owns them. Until they exist, the L3 plan is incomplete.
+
+1. **Create the `items` and `change_log` tables.** Numbered migrations: `002_create_items.sql` and `003_create_change_log.sql`. Columns and foreign keys per `plans/master-plan.md` §3 and the L2 plan §4 step 4.2. Existing data: the DB file does not exist yet, so 0 rows in either table.
+2. **Add the SQL reader behind `ItemContextPort`.** Reads the newest 50 items for Phase 2 context mode B. The port is defined in Step 2 (`ember/capture/item_proposal.py`); only the SQLite adapter is new.
+3. **Print Phase 2's drop reasons and the "0 valid proposals" line.** Step 2 carries the dropped proposals in its result; this step is where they are printed. Core must stay pure, so printing lives in the CLI edge.
+
 ## 7. Out of Scope (this step)
 
 - Source storage (Step 1, Phase 1).

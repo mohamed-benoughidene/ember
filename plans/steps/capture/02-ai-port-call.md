@@ -85,6 +85,4 @@ Step 3 takes these proposals, runs gatekeeper (Phase 3), and prompts user to con
 
 Built and tested: mode read, context mode A/B, the system prompt, `ItemProposerPort`, the 4 checks, the one-retry policy, and the empty result when every proposal fails.
 
-Not built in this step, moved to Step 3:
-- The SQL read of the `items` table (§4 step 2). Phase 2 defines `ItemContextPort` only. The table and its reader arrive with Step 3.
-- The STDOUT lines in §4 step 6 and §5 (drop reason, "0 valid proposals"). Core must stay pure, so Phase 2 returns the dropped proposals in its result and Step 3 prints them.
+Three items were moved to Step 3 and now live in its plan (§6.5): the `items` and `change_log` tables, the SQL reader behind `ItemContextPort`, and the STDOUT lines for drop reasons and "0 valid proposals".
