@@ -1,0 +1,10 @@
+# Archived image assets, kept on disk for now
+archive/
+
+# Editor temp files
+*.swp
+*.swo
+
+# OS noise
+.DS_Store
+Thumbs.db
