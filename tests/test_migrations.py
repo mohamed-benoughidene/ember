@@ -26,7 +26,16 @@ def test_items_table_has_expected_columns(db_path) -> None:
         "status",
         "created_at",
         "validated",
+        "rationale",
+        "source",
     ]
+
+
+def test_ai_responses_table_has_expected_columns(db_path) -> None:
+    conn = open_database(db_path)
+
+    columns = _columns(conn, "ai_responses")
+    assert list(columns) == ["id", "source_id", "response_text", "timestamp"]
 
 
 def test_change_log_table_has_expected_columns(db_path) -> None:
@@ -84,9 +93,9 @@ def test_change_log_allows_null_item_id(db_path) -> None:
     assert count == 1
 
 
-def test_migrations_run_once_and_reach_version_3(db_path) -> None:
+def test_migrations_run_once_and_reach_version_5(db_path) -> None:
     open_database(db_path).close()
     conn = open_database(db_path)
 
     version = conn.execute("SELECT version FROM schema_version").fetchone()[0]
-    assert version == 3
+    assert version == 5

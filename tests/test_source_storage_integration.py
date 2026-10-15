@@ -64,5 +64,5 @@ def test_migrations_are_idempotent(db_path) -> None:
     conn = open_database(db_path)
 
     version = conn.execute("SELECT version FROM schema_version").fetchone()[0]
-    assert version == 3
+    assert version == 5
     assert conn.execute("PRAGMA foreign_keys").fetchone()[0] == 1
