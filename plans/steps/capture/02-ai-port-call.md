@@ -4,11 +4,11 @@ Implements Phase 2 of L2 Capture plan. Send raw text + context to AI, get back t
 
 ## 1. Job
 
-Take `{source_id, raw_text}` from Step 1 and produce a list of proposals from the AI. Each proposal = `{type, statement, source_quote, confidence}`.
+Take `raw_text` from Step 1 and produce a list of proposals from the AI. Each proposal = `{type, statement, source_quote, confidence}`.
 
 ## 2. Inputs
 
-- From Step 1: `{source_id, raw_text}`.
+- From Step 1: `raw_text`. Step 1 also returns `source_id` and `content_hash`, but Phase 2 reads neither. Step 3 takes `source_id` from Step 1 directly, so Phase 2 does not carry it.
 - From env: `EMBER_CAPTURE_CONTEXT_MODE` = `A` (no context) or `B` (last 50 items). Default = `B`.
 - From env: AI provider config (API key, model name). Adapter owns this.
 
@@ -80,3 +80,11 @@ Step 3 takes these proposals, runs gatekeeper (Phase 3), and prompts user to con
 ## 10. Settings Already Fixed by L2 (NOT deferred)
 
 - Context window size — L2 §3 L31 already fixed at 50. This step uses 50 as default. Not from L2 §8.
+
+## 11. Build Notes (Phase 2 implemented)
+
+Built and tested: mode read, context mode A/B, the system prompt, `ItemProposerPort`, the 4 checks, the one-retry policy, and the empty result when every proposal fails.
+
+Not built in this step, moved to Step 3:
+- The SQL read of the `items` table (§4 step 2). Phase 2 defines `ItemContextPort` only. The table and its reader arrive with Step 3.
+- The STDOUT lines in §4 step 6 and §5 (drop reason, "0 valid proposals"). Core must stay pure, so Phase 2 returns the dropped proposals in its result and Step 3 prints them.
