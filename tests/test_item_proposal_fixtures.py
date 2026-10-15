@@ -1,8 +1,8 @@
 """Parser tests on saved AI answers (Rule T7: assert schema and types, not prose).
 
 The fixtures are hand-written sample answers that match the shape the provider
-is asked for. No real provider adapter exists yet (plan section 7), so they are
-representative rather than captured from a live call.
+adapter (`ember/adapters/llm.py`) is asked for. They are representative rather
+than captured from a live call, so the tests need no network and no API key.
 """
 
 from __future__ import annotations

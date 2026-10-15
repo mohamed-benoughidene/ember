@@ -120,3 +120,34 @@ All 3 L3 Capture steps written. After approval, implementation starts: Step 1 (s
 ## 10. L3 Extensions (beyond L2)
 
 - `q` quit branch added to Phase 4 prompt (L2 §3 L52 has only y/n/e). `q` = explicit abort = exit 2, with `aborted=true` flag in output. STDIN close mid-prompt also still triggers exit 2 (L2 §3 L64 unchanged).
+
+## 11. Build Notes (Phases 3 + 4 implemented)
+
+Built and tested: migrations 002/003, the 4 Phase 3 checks, the Phase 4
+`y/n/e/q` loop, the SQLite gatekeeper (items + change_log writes), the
+`ItemContextPort` SQL reader, and the `capture` CLI edge that wires all 4
+phases and prints the Phase 2 drop reasons.
+
+Section 6.5 items: all 3 done. `items` + `change_log` exist (002, 003), the
+`ItemContextPort` reader is `SqliteItemContext`, and the drop-reason lines print
+from the `capture` command.
+
+Picked settings (from L2 section 8):
+- Near-duplicate threshold: `0.85`, on `difflib.SequenceMatcher.ratio` over the
+  item statement. Warning only, never a block.
+- Confirm-path `trigger_cause`: `user_confirmed` (accept). `rejected` (reject)
+  is unchanged from L2 section 3.
+- Phase 3 folded into this step (L2 section 8 item 6).
+
+Extra decisions this step had to make:
+- `validated` on a new Assumption row is `False` (unvalidated at creation); the
+  other 3 types get `NULL`. Spec 3.5.
+- A rejection `change_log` row has `item_id` and `link_id` both `NULL`; the
+  proposal goes in `new_value` as a small JSON object.
+- `ItemProposerPort.propose` now returns `ProposalBatch` instead of a bare list,
+  so the Phase 2 drops survive to the CLI edge (section 6.5.3).
+- The AI adapter (`ember/adapters/llm.py`) and the `capture` command were built
+  here, although section 7 lists the Phase 2 AI call as out of scope: section
+  6.5.3 needs a CLI edge that runs Phase 2, and that needs a provider adapter.
+  Adds the `openai` dependency (L1 section 0).
+

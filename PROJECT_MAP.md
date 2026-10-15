@@ -62,30 +62,42 @@ Earlier logo and character images, kept for history.
 - `plans/steps/capture/03-user-confirm-write.md`: L3 Step 3 plan. Phases 3+4, gatekeeper + user confirm + write.
 
 ## Python Implementation (`ember/`)
-- `pyproject.toml`: Package metadata, locked stack deps (click, pydantic; pytest is a dev dep), pytest config.
+- `pyproject.toml`: Package metadata, locked stack deps (click, openai, pydantic; pytest is a dev dep), pytest config.
 - `ember/__init__.py`: Package version.
 - `ember/__main__.py`: Runs the CLI via `python -m ember`.
-- `ember/cli.py`: Click CLI. `capture-source` is the Phase 1 standalone command.
+- `ember/cli.py`: Click CLI. `capture` runs the full 4-phase pipeline; `capture-source` is the Phase 1 standalone command.
 - `ember/errors.py`: Base `EmberError`. Carries a stable code and the raising module.function, no secrets.
 - `ember/capture/__init__.py`: Marks the capture engine folder as a package.
-- `ember/capture/errors.py`: Capture error codes `CAPTURE-001` to `CAPTURE-010`.
+- `ember/capture/errors.py`: Capture error codes `CAPTURE-001` to `CAPTURE-014`.
 - `ember/capture/source_storage.py`: Phase 1 core. SHA-256 dedup behind `SourceStorePort`, returns `{source_id, raw_text, content_hash}`.
 - `ember/capture/input_reader.py`: Edge reader for STDIN or file, 5 MiB file limit, UTF-8 decode.
 - `ember/capture/item_proposal.py`: Phase 2 core. The 4 item types, the AI port `ItemProposerPort`, the item-context port, context mode A/B, the AI system prompt, parse + validate the AI answer, retry once.
+- `ember/capture/item_gatekeeper.py`: Phase 3 core. The 4 checks (type, statement, quote, near-dup warning), id/timestamp/Active generation, and the source-text read port.
+- `ember/capture/confirm_write.py`: Phase 4 core. The `y/n/e/q` confirm loop and the confirm/commit ports.
 - `ember/adapters/__init__.py`: Marks the adapters layer folder as a package.
-- `ember/adapters/sqlite.py`: SQLite connection, numbered migrations, `SqliteSourceStore` (write is the gatekeeper boundary).
+- `ember/adapters/sqlite.py`: SQLite connection, numbered migrations, `SqliteSourceStore` and `SqliteItemGatekeeper` (writes are the gatekeeper boundary), `SqliteItemContext` (item reads).
+- `ember/adapters/llm.py`: `OpenAiItemProposer` (`ItemProposerPort` on the OpenAI SDK, OpenRouter base URL) and the env-driven factory.
 - `ember/adapters/migrations/__init__.py`: Marks the migrations folder as a package.
 - `ember/adapters/migrations/001_create_sources.sql`: Creates the `sources` table.
+- `ember/adapters/migrations/002_create_items.sql`: Creates the `items` table.
+- `ember/adapters/migrations/003_create_change_log.sql`: Creates the `change_log` table.
 
 ## Tests (`tests/`)
 - `tests/__init__.py`: Marks the tests folder as a package.
 - `tests/conftest.py`: `db_path` temp-file fixture.
-- `tests/fakes.py`: In-memory stand-ins for the ports: `FakeSourceStore`, `FakeItemProposer`, `FakeItemContext`.
+- `tests/fakes.py`: In-memory stand-ins for the ports: `FakeSourceStore`, `FakeItemProposer`, `FakeItemContext`, `FakeConfirm`, `FakeItemCommit`.
 - `tests/test_source_storage_unit.py`: Phase 1 unit tests on a fake store, no DB.
 - `tests/test_source_storage_integration.py`: Phase 1 tests on a real SQLite temp DB.
 - `tests/test_item_proposal_unit.py`: Phase 2 unit tests on a fake AI and fake item reader, no network.
 - `tests/test_item_proposal_fixtures.py`: Phase 2 parser tests on saved AI answers.
-- `tests/test_cli.py`: CLI checks for file/stdin modes and exit codes.
+- `tests/test_llm_adapter_unit.py`: LLM adapter tests on a fake client, no network.
+- `tests/test_item_gatekeeper_unit.py`: Phase 3 unit tests on a fake source and item list, no DB.
+- `tests/test_confirm_write_unit.py`: Phase 4 unit tests on a fake user and fake commit, no DB.
+- `tests/test_item_store_integration.py`: SQLite item reader and gatekeeper-write tests on a real temp DB.
+- `tests/test_capture_pipeline_integration.py`: Phases 3 + 4 end to end on a real temp DB.
+- `tests/test_migrations.py`: Asserts the `items` and `change_log` schema after migrations.
+- `tests/test_cli.py`: CLI checks for the Phase 1 command, file/stdin modes and exit codes.
+- `tests/test_cli_capture.py`: CLI checks for the `capture` command with a fake AI.
 - `tests/test_architecture.py`: Asserts engine core never imports an adapter.
 
 ### AI Answer Fixtures (`tests/fixtures/ai_responses/`)
@@ -98,6 +110,8 @@ Saved AI answers for parser tests. Each pair is `case_NN.raw_text.txt` (the sour
 ## Database Tables (SQLite)
 - `schema_version`: Holds the applied migration number.
 - `sources`: Immutable raw input texts. Columns `id`, `title`, `full_text`, `timestamp`, `content_hash` (unique, the dedup key).
+- `items`: Confirmed typed items. Columns `id`, `type`, `statement`, `source_id` (foreign key to `sources.id`), `status`, `created_at`, `validated` (set only on Assumption rows).
+- `change_log`: Append-only ledger. Columns `id`, `item_id`, `link_id`, `field_changed`, `old_value`, `new_value`, `timestamp`, `trigger_cause`.
 
 ## Empty Folders
 These folders exist but hold no files yet.
