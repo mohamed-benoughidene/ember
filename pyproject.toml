@@ -9,6 +9,7 @@ description = "Ember: project context management system"
 requires-python = ">=3.12"
 dependencies = [
     "click>=8.1",
+    "pydantic>=2.7",
 ]
 
 [project.optional-dependencies]
