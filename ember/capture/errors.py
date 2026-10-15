@@ -38,3 +38,25 @@ class SourceDbReadError(CaptureError):
 class SourceDbWriteError(CaptureError):
     code = "CAPTURE-006"
     name = "DbWriteFail"
+
+
+class AiError(CaptureError):
+    """Base for AI failures. The retry loop catches this, nothing wider."""
+
+    code = "CAPTURE-007"
+    name = "AiFail"
+
+
+class AiCallError(AiError):
+    code = "CAPTURE-008"
+    name = "AiCallFail"
+
+
+class AiSchemaError(AiError):
+    code = "CAPTURE-009"
+    name = "AiSchemaFail"
+
+
+class ContextModeInvalid(CaptureError):
+    code = "CAPTURE-010"
+    name = "ContextModeInvalid"
