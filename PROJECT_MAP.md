@@ -68,9 +68,10 @@ Earlier logo and character images, kept for history.
 - `ember/cli.py`: Click CLI. `capture-source` is the Phase 1 standalone command.
 - `ember/errors.py`: Base `EmberError`. Carries a stable code and the raising module.function, no secrets.
 - `ember/capture/__init__.py`: Marks the capture engine folder as a package.
-- `ember/capture/errors.py`: Capture error codes `CAPTURE-001` to `CAPTURE-006`.
+- `ember/capture/errors.py`: Capture error codes `CAPTURE-001` to `CAPTURE-010`.
 - `ember/capture/source_storage.py`: Phase 1 core. SHA-256 dedup behind `SourceStorePort`, returns `{source_id, raw_text, content_hash}`.
 - `ember/capture/input_reader.py`: Edge reader for STDIN or file, 5 MiB file limit, UTF-8 decode.
+- `ember/capture/item_proposal.py`: Phase 2 core. The 4 item types, the AI port `ItemProposerPort`, the item-context port, context mode A/B, parse + validate the AI answer, retry once.
 - `ember/adapters/__init__.py`: Marks the adapters layer folder as a package.
 - `ember/adapters/sqlite.py`: SQLite connection, numbered migrations, `SqliteSourceStore` (write is the gatekeeper boundary).
 - `ember/adapters/migrations/__init__.py`: Marks the migrations folder as a package.
@@ -79,11 +80,20 @@ Earlier logo and character images, kept for history.
 ## Tests (`tests/`)
 - `tests/__init__.py`: Marks the tests folder as a package.
 - `tests/conftest.py`: `db_path` temp-file fixture.
-- `tests/fakes.py`: `FakeSourceStore`, in-memory stand-in for the port.
+- `tests/fakes.py`: In-memory stand-ins for the ports: `FakeSourceStore`, `FakeItemProposer`, `FakeItemContext`.
 - `tests/test_source_storage_unit.py`: Phase 1 unit tests on a fake store, no DB.
 - `tests/test_source_storage_integration.py`: Phase 1 tests on a real SQLite temp DB.
+- `tests/test_item_proposal_unit.py`: Phase 2 unit tests on a fake AI and fake item reader, no network.
+- `tests/test_item_proposal_fixtures.py`: Phase 2 parser tests on saved AI answers.
 - `tests/test_cli.py`: CLI checks for file/stdin modes and exit codes.
 - `tests/test_architecture.py`: Asserts engine core never imports an adapter.
+
+### AI Answer Fixtures (`tests/fixtures/ai_responses/`)
+Saved AI answers for parser tests. Each pair is `case_NN.raw_text.txt` (the source text) + `case_NN.response.json` (the AI's answer).
+- `tests/fixtures/ai_responses/case_01.raw_text.txt`: Source text for case 1.
+- `tests/fixtures/ai_responses/case_01.response.json`: Case 1 answer, all entries valid.
+- `tests/fixtures/ai_responses/case_02.raw_text.txt`: Source text for case 2.
+- `tests/fixtures/ai_responses/case_02.response.json`: Case 2 answer, 1 valid + 3 bad entries.
 
 ## Database Tables (SQLite)
 - `schema_version`: Holds the applied migration number.
