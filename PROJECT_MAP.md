@@ -23,6 +23,7 @@ This file lists every file and its purpose in the repository. Update it when fil
 
 ### AI Versions (`docs/ai version/`)
 - `docs/ai version/brand-philosophy-ai.md`: Brand philosophy, terse caveman style for AI readers.
+- `docs/ai version/planning-framework-ai.md`: 3-level planning framework (L1 System, L2 Engine, L3 Step), terse caveman style for AI readers.
 - `docs/ai version/project-context-system-v1-ai.md`: Project Context System V1 spec, terse caveman style for AI readers.
 
 ### Human Versions (`docs/humen version/`)
@@ -52,9 +53,15 @@ Earlier logo and character images, kept for history.
 - `archive/assets/Ember Rock Logo on Cream Background.png`
 - `archive/assets/Molten Ember Shard Emblem.png`
 
+## Planning Documents (`plans/`)
+- `plans/master-plan.md`: L1 System Master Plan. 4 engines (Capture, Relate, Maintain, Query), shared SQLite storage, global rules, test strategy, L1 §0 stack decisions.
+- `plans/engine-capture-plan.md`: L2 Capture engine master plan. Pipeline phases 1-4 (source storage, AI proposal, gatekeeper, user confirm + write).
+- `plans/steps/capture/01-source-storage.md`: L3 Step 1 plan. Phase 1, source dedup by content hash.
+- `plans/steps/capture/02-ai-port-call.md`: L3 Step 2 plan. Phase 2, AI proposal via `ItemProposerPort`.
+- `plans/steps/capture/03-user-confirm-write.md`: L3 Step 3 plan. Phases 3+4, gatekeeper + user confirm + write.
+
 ## Empty Folders
 These folders exist but hold no files yet.
 - `draft/`: Working drafts.
-- `plans/`: Planning documents.
 - `reports/`: Generated reports.
 - `research/`: Research notes.

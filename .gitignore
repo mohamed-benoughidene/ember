@@ -8,3 +8,6 @@ archive/
 # OS noise
 .DS_Store
 Thumbs.db
+
+# OpenCode local config
+.opencode/
