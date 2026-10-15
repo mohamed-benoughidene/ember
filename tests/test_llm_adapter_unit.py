@@ -70,7 +70,8 @@ class _Completions:
 
 
 class _FakeClient:
-    def __init__(self, outcome: object) -> None:
+    def __init__(self, outcome: object, api_key: str | None = None) -> None:
+        self.api_key = api_key
         self.completions = _Completions(outcome)
         self.chat = type("_Chat", (), {"completions": self.completions})()
 
@@ -140,6 +141,27 @@ def test_provider_failure_becomes_ai_call_error() -> None:
         proposer.propose(RAW_TEXT, [])
 
     assert excinfo.value.code == "CAPTURE-008"
+
+
+def test_provider_failure_keeps_the_provider_reason() -> None:
+    proposer = _proposer(_Boom("No endpoints found for model x"))
+
+    with pytest.raises(AiCallError) as excinfo:
+        proposer.propose(RAW_TEXT, [])
+
+    assert excinfo.value.context["reason"] == "_Boom"
+    assert "No endpoints found for model x" in str(excinfo.value.context["detail"])
+
+
+def test_provider_failure_never_carries_the_api_key() -> None:
+    client = _FakeClient(_Boom("rejected key sk-secret-123"), api_key="sk-secret-123")
+    proposer = OpenAiItemProposer(client, "test-model")
+
+    with pytest.raises(AiCallError) as excinfo:
+        proposer.propose(RAW_TEXT, [])
+
+    assert "sk-secret-123" not in excinfo.value.log_line()
+    assert "REDACTED" in excinfo.value.log_line()
 
 
 def test_non_json_answer_becomes_schema_error() -> None:

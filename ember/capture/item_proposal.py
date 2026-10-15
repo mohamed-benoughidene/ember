@@ -176,12 +176,23 @@ def propose_items(
 
 def _load_entries(ai_response: str) -> list[object]:
     try:
-        data = json.loads(ai_response)
+        data = json.loads(_without_fence(ai_response))
     except json.JSONDecodeError as exc:
         raise AiSchemaError("ai response not json") from exc
     if not isinstance(data, list):
         raise AiSchemaError("ai response not a list")
     return data
+
+
+def _without_fence(text: str) -> str:
+    """Drop a Markdown code fence, which models often wrap the answer in."""
+    stripped = text.strip()
+    if not stripped.startswith("```"):
+        return stripped
+    lines = stripped.splitlines()[1:]
+    if lines and lines[-1].strip().startswith("```"):
+        lines = lines[:-1]
+    return "\n".join(lines).strip()
 
 
 def _check_entry(entry: object, raw_text: str) -> tuple[ItemProposal | None, str]:

@@ -240,6 +240,27 @@ def test_all_invalid_returns_empty_without_raising() -> None:
     assert len(batch.dropped) == 2
 
 
+def test_code_fenced_answer_is_still_read() -> None:
+    fenced = "```json\n" + _response(_entry()) + "\n```"
+
+    batch = parse_proposals(fenced, RAW_TEXT)
+
+    assert [proposal.statement for proposal in batch.proposals] == ["Use SQLite"]
+
+
+def test_fence_without_a_language_tag_is_still_read() -> None:
+    fenced = "```\n" + _response(_entry()) + "\n```"
+
+    batch = parse_proposals(fenced, RAW_TEXT)
+
+    assert len(batch.proposals) == 1
+
+
+def test_fenced_prose_is_still_a_schema_error() -> None:
+    with pytest.raises(AiSchemaError):
+        parse_proposals("```\nhello\n```", RAW_TEXT)
+
+
 def test_whole_response_that_is_not_json_raises_schema_error() -> None:
     with pytest.raises(AiSchemaError) as excinfo:
         parse_proposals("the model said hello", RAW_TEXT)

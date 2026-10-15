@@ -20,7 +20,7 @@ from ember.capture.item_proposal import (
     parse_proposals,
 )
 
-DEFAULT_MODEL = "anthropic/claude-3.5-sonnet"
+DEFAULT_MODEL = "anthropic/claude-haiku-5.5"
 DEFAULT_BASE_URL = "https://openrouter.ai/api/v1"
 REQUEST_TIMEOUT_SECONDS = 60.0
 _API_KEY_VARS = ("EMBER_AI_API_KEY", "OPENROUTER_API_KEY")
@@ -36,9 +36,9 @@ class OpenAiItemProposer:
     def propose(self, raw_text: str, context: list[ContextItem]) -> ProposalResponse:
         """Return the raw provider answer and the proposals checked from it.
 
-        Raise `AiCallError` (CAPTURE-008) when the provider call fails, and
-        `AiSchemaError` (CAPTURE-009) when the answer cannot be read. Side
-        effect: one HTTP request to the configured provider.
+        Raise `AiCallError` (CAPTURE-008) with the provider's own status and
+        message when the call fails, and `AiSchemaError` (CAPTURE-009) when the
+        answer cannot be read. Side effect: one HTTP request to the provider.
         """
         try:
             response = self._client.chat.completions.create(
@@ -46,7 +46,12 @@ class OpenAiItemProposer:
                 messages=_messages(raw_text, context),
             )
         except OpenAIError as exc:
-            raise AiCallError("ai call fail") from exc
+            raise AiCallError(
+                "ai call fail",
+                reason=type(exc).__name__,
+                status=getattr(exc, "status_code", "?"),
+                detail=_without_secret(str(exc), self._client.api_key),
+            ) from exc
         content = _content(response)
         return ProposalResponse(
             raw_response=content,
@@ -86,6 +91,13 @@ def _first_present(values: Mapping[str, str], keys: Sequence[str]) -> str | None
         if found:
             return found
     return None
+
+
+def _without_secret(detail: str, secret: str | None) -> str:
+    """Trim the provider message and strip the API key if it was echoed back."""
+    if secret:
+        detail = detail.replace(secret, "REDACTED")
+    return detail[:200]
 
 
 def _messages(raw_text: str, context: list[ContextItem]) -> list[dict[str, str]]:
