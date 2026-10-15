@@ -6,6 +6,8 @@ Implements Phase 3 (gatekeeper validates + generates id) and Phase 4 (user confi
 
 Take proposals from Step 2, run each through gatekeeper (validate + generate id/timestamp/Active), then prompt user to accept/reject/edit each, and write to DB on confirm.
 
+Also exposes the human-only `validated` flag change on an Assumption (added in review, section 4.3).
+
 ## 2. Inputs
 
 From Step 2: `[{type, statement, source_quote, confidence}]`.
@@ -68,12 +70,27 @@ For each surviving proposal `{id, created_at, status='Active', near_dup_warning,
      2. Exit 2 = user abort.
 5. Repeat until all proposals handled or user quits.
 
+### 4.3 Human flag change: `set_validated` / `clear_validated` (added in review)
+
+Not part of the 4-phase pipeline. This is the human-only operation L1 §3.7 names `set_validated`. Phase 4 writes `validated = False` on a new Assumption, so without this no code path could ever write `True`.
+
+1. Command `ember set-validated --item <id>` writes `True`.
+2. Command `ember clear-validated --item <id>` writes `False`.
+3. Both call the gatekeeper check `validate_set_validated` with `{item_id}`:
+   - `item_id` exists in `items`, else fail `CAPTURE-015`.
+   - `items.type = 'Assumption'`, else fail `CAPTURE-016` (spec 3.5: only Assumptions carry the flag).
+4. On pass, the gatekeeper commit port sets the flag and appends one `change_log` row: `{item_id, link_id=null, field_changed='validated', old_value, new_value, timestamp, trigger_cause='user_set_validated'}`.
+   - `old_value` and `new_value` are the text `"true"` / `"false"`. `old_value` is null when the flag was empty.
+5. Print `item <id> validated: true|false` to STDOUT. Exit 0.
+
 ## 5. Errors
 
 - Gatekeeper fail (Phase 3): exit 1 with reason.
 - DB write fail (gatekeeper commit): exit 1 with reason.
 - User abort (q or STDIN closed mid-prompt): exit 2.
 - Invalid user input on `[y/n/e/q]`: re-prompt, no error.
+- Flag change on a missing item (4.3): exit 1, `CAPTURE-015 ItemNotFound`.
+- Flag change on a non-Assumption item (4.3): exit 1, `CAPTURE-016 NotAnAssumption`.
 
 ## 6. Test Targets
 
@@ -93,6 +110,17 @@ Integration (real SQLite temp DB):
 - Near-dup: existing item, paste similar text, AI proposes -> warning shown, accept still works.
 - Edit flow: AI proposes wrong type, user `e` -> corrected type validates, accepted, written.
 - Abort: 5 proposals, user `q` after 2 -> 2 rows in `change_log` (or `items` if accepted), 3 not touched.
+
+Flag change (unit, `validate_set_validated`):
+- Missing item -> `CAPTURE-015`. Non-Assumption -> `CAPTURE-016`. Assumption -> passes and the item comes back.
+
+Flag change (integration, real SQLite temp DB):
+- Set then clear -> `items.validated` goes null -> 1 -> 0, and 2 rows land in `change_log` with `field_changed='validated'` and the old/new text pair.
+- Missing item id -> `find_item` returns None.
+
+Flag change (CLI):
+- `set-validated` / `clear-validated` -> exit 0, flag flips, 1 log row, line printed.
+- Missing item and non-Assumption -> exit 1 with the code in the output.
 
 ## 6.5 Moved in from Step 2
 
@@ -116,6 +144,7 @@ All 3 L3 Capture steps written. After approval, implementation starts: Step 1 (s
 
 - `trigger_cause` vocabulary for confirm path (item 4) — L3 picks exact string. Picked here: `user_confirmed` for accept path (y). `rejected` for reject path (n) is inherited from L2 §3 L58, restated for clarity.
 - Phase 3 fold decision (item 6) — folded into this step per L2 Section 7.
+- `trigger_cause` word for the human flag change (4.3, new — not from L2) — picked here: `user_set_validated` for both set and clear; `old_value` / `new_value` carry the text `"true"` / `"false"`.
 
 ## 10. L3 Extensions (beyond L2)
 
@@ -156,7 +185,8 @@ Extra decisions this step had to make:
 - `ItemProposerPort.propose` now returns `ProposalResponse` (raw answer +
   batch), and the CLI stores the raw answer through `SqliteAiResponseStore` into
   the new `ai_responses` table (migration 005). Rules D8 / I16. Keyed by
-  `source_id` because no item exists yet at Phase 2; L1 section 3 says `item_id`.
+  `source_id` because no item exists yet at Phase 2 (L1 section 3 now agrees; it
+  previously said `item_id`).
 - `items` gains `rationale` and `source` (migration 004), per L1 section 5.
   Capture writes neither (the AI returns no rationale or evidence text).
 - Rule I15: the OpenAI client now gets `timeout=60s` and `max_retries=0`, so the
@@ -185,8 +215,9 @@ Extra decisions this step had to make:
   section 5 and step 2 section 5 both say "AI response unparseable: treat as
   call fail, retry", so a broken answer is consumed by the retry and not stored.
   D8's "save raw model response verbatim" is read as covering the answer we use.
-  Note: L1 section 3 cites "Spec 3.7 I16, D8" for the `ai_responses` table, but
-  the V1 spec has no such rule; it lives in the Constitution only.
+  L1 section 3 has been corrected: it cited "Spec 3.7 I16, D8", but the V1 spec
+  holds no such rule, and it named `item_id` as the key, which cannot exist when
+  the AI is called. It now cites Constitution D8 / I16 and keys by `source_id`.
 - **Printed summary (item 5).** `capture` now prints
   `accepted: N, rejected: N, warnings: N, aborted: true|false`, which is this
   step's section 3 output list.

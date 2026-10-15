@@ -74,7 +74,7 @@ Storage architecture (Spec 3.6):
 - `links`: typed directional edges. Status values `Confirmed` or `Rejected` (stored permanently).
 - `change_log`: append-only ledger. Columns: `item_id`, `link_id` (nullable, for link-driven mutations), `field_changed`, `old_value`, `new_value`, `timestamp`, `trigger_cause`. Immutable, append-only.
 - `sources`: full source texts. Columns: `id`, `title`, `full_text`, `timestamp`, `content_hash` (for tamper detection).
-- AI raw responses table: stores AI responses verbatim, keyed to `item_id` + `timestamp` (Spec 3.7 I16, D8).
+- AI raw responses table (`ai_responses`): stores AI responses verbatim, keyed by `source_id` + `timestamp` (Constitution D8, I16; `source_id` because no item exists yet when the AI is called).
 - Embedding table + metadata table: implementation detail, decided in L2 (do not invent in L1).
 
 Boundary rule: gatekeeper scripts are the castle gate. Engine core is the clean inside. Engine core trusts what gatekeeper gives it. Gatekeeper scripts:
