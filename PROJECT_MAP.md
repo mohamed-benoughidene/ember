@@ -60,6 +60,30 @@ Earlier logo and character images, kept for history.
 - `plans/steps/capture/02-ai-port-call.md`: L3 Step 2 plan. Phase 2, AI proposal via `ItemProposerPort`.
 - `plans/steps/capture/03-user-confirm-write.md`: L3 Step 3 plan. Phases 3+4, gatekeeper + user confirm + write.
 
+## Python Implementation (`ember/`)
+- `pyproject.toml`: Package metadata, locked stack deps (click, pytest), pytest config.
+- `ember/__init__.py`: Package version.
+- `ember/__main__.py`: Runs the CLI via `python -m ember`.
+- `ember/cli.py`: Click CLI. `capture-source` is the Phase 1 standalone command.
+- `ember/errors.py`: Base `EmberError`. Carries a stable code and the raising module.function, no secrets.
+- `ember/capture/errors.py`: Capture error codes `CAPTURE-001` to `CAPTURE-006`.
+- `ember/capture/source_storage.py`: Phase 1 core. SHA-256 dedup behind `SourceStorePort`, returns `{source_id, raw_text, content_hash}`.
+- `ember/capture/input_reader.py`: Edge reader for STDIN or file, 5 MiB file limit, UTF-8 decode.
+- `ember/adapters/sqlite.py`: SQLite connection, numbered migrations, `SqliteSourceStore` (write is the gatekeeper boundary).
+- `ember/adapters/migrations/001_create_sources.sql`: Creates the `sources` table.
+
+## Tests (`tests/`)
+- `tests/conftest.py`: `db_path` temp-file fixture.
+- `tests/fakes.py`: `FakeSourceStore`, in-memory stand-in for the port.
+- `tests/test_source_storage_unit.py`: Phase 1 unit tests on a fake store, no DB.
+- `tests/test_source_storage_integration.py`: Phase 1 tests on a real SQLite temp DB.
+- `tests/test_cli.py`: CLI checks for file/stdin modes and exit codes.
+- `tests/test_architecture.py`: Asserts engine core never imports an adapter.
+
+## Database Tables (SQLite)
+- `schema_version`: Holds the applied migration number.
+- `sources`: Immutable raw input texts. Columns `id`, `title`, `full_text`, `timestamp`, `content_hash` (unique, the dedup key).
+
 ## Empty Folders
 These folders exist but hold no files yet.
 - `draft/`: Working drafts.
