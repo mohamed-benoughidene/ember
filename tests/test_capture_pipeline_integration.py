@@ -12,6 +12,7 @@ from ember.adapters.sqlite import (
 from ember.capture.confirm_write import run_confirm_loop
 from ember.capture.item_gatekeeper import (
     GatekeeperRun,
+    load_source_text,
     validate_add_item,
     validate_proposals,
 )
@@ -47,7 +48,7 @@ def run_pipeline(
     gatekeeper = SqliteItemGatekeeper(conn, clock=lambda: FIXED_TIME)
     run = GatekeeperRun(
         source_id=stored.source_id,
-        source_text=stored.raw_text,
+        source_text=load_source_text(sources, stored.source_id),
         existing=gatekeeper.statements(),
         next_id=gatekeeper.next_item_id,
         clock=lambda: FIXED_TIME,

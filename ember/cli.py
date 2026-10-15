@@ -21,6 +21,7 @@ from ember.capture.input_reader import InputMode, read_raw_text
 from ember.capture.item_gatekeeper import (
     GatekeeperResult,
     GatekeeperRun,
+    load_source_text,
     validate_add_item,
     validate_proposals,
 )
@@ -125,7 +126,7 @@ def capture(file_path: str | None, db_path: str) -> None:
         _report_proposals(batch)
 
         gatekeeper = SqliteItemGatekeeper(conn)
-        run = _gatekeeper_run(gatekeeper, stored)
+        run = _gatekeeper_run(conn, gatekeeper, stored)
         outcome = validate_proposals(batch.proposals, run)
         _report_rejects(outcome)
 
@@ -157,11 +158,12 @@ def _propose(conn, stored: StoredSource) -> ProposalBatch:
 
 
 def _gatekeeper_run(
-    gatekeeper: SqliteItemGatekeeper, stored: StoredSource
+    conn, gatekeeper: SqliteItemGatekeeper, stored: StoredSource
 ) -> GatekeeperRun:
+    """Read the stored source text, so the quote check uses the stored row."""
     return GatekeeperRun(
         source_id=stored.source_id,
-        source_text=stored.raw_text,
+        source_text=load_source_text(SqliteSourceStore(conn), stored.source_id),
         existing=gatekeeper.statements(),
         next_id=gatekeeper.next_item_id,
         clock=gatekeeper.now,
