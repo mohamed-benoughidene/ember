@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import os
 import sys
 
 import click
@@ -14,7 +13,6 @@ from ember.capture.source_storage import store_source
 from ember.errors import EmberError
 
 DEFAULT_DB_PATH = "ember.db"
-DB_PATH_ENV = "EMBER_DB_PATH"
 
 
 @click.group()
@@ -33,20 +31,19 @@ def main() -> None:
 @click.option(
     "--db",
     "db_path",
-    default=None,
-    help="SQLite database path. Defaults to $EMBER_DB_PATH or ember.db.",
+    default=DEFAULT_DB_PATH,
+    help="SQLite database path.",
 )
-def capture_source(file_path: str | None, db_path: str | None) -> None:
+def capture_source(file_path: str | None, db_path: str) -> None:
     """Phase 1: store raw input, dedup by content hash, print source reference."""
-    resolved_db = db_path or os.environ.get(DB_PATH_ENV, DEFAULT_DB_PATH)
     mode = InputMode.FILE if file_path else InputMode.STDIN
     try:
-        raw_input = read_raw_text(mode=mode, path=file_path)
-        conn = open_database(resolved_db)
+        raw_text = read_raw_text(mode=mode, path=file_path)
+        conn = open_database(db_path)
         store = SqliteSourceStore(conn)
-        result = store_source(store, raw_input.raw_text)
+        result = store_source(store, raw_text)
     except EmberError as exc:
-        click.echo(f"error: {exc.message}", err=True)
+        click.echo(f"error: {exc.log_line()}", err=True)
         sys.exit(1)
     if result.reused:
         click.echo("source already stored", err=True)

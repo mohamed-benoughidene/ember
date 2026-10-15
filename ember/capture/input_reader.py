@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import sys
-from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 
@@ -22,31 +21,21 @@ class InputMode(str, Enum):
     FILE = "file"
 
 
-@dataclass(frozen=True)
-class RawInput:
-    """Raw text plus the byte count it was read from."""
-
-    raw_text: str
-    byte_length: int
-    mode: InputMode
-
-
 def read_raw_text(
     *,
     mode: InputMode,
     path: str | None = None,
     max_bytes: int = MAX_SOURCE_BYTES,
-) -> RawInput:
+) -> str:
     """Read input, enforce the size limit for files, decode as UTF-8."""
     if mode is InputMode.FILE:
         raw_bytes = _read_file_bytes(path, max_bytes)
     else:
         raw_bytes = _read_stdin_bytes()
     try:
-        raw_text = raw_bytes.decode("utf-8")
+        return raw_bytes.decode("utf-8")
     except UnicodeDecodeError as exc:
         raise InvalidUtf8Error("invalid utf-8") from exc
-    return RawInput(raw_text=raw_text, byte_length=len(raw_bytes), mode=mode)
 
 
 def _read_file_bytes(path: str | None, max_bytes: int) -> bytes:

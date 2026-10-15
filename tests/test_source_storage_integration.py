@@ -44,10 +44,10 @@ def test_file_mode_writes_one_row_with_fields(db_path, tmp_path) -> None:
     sample = tmp_path / "sample.txt"
     sample.write_text("file content", encoding="utf-8")
 
-    raw = read_raw_text(mode=InputMode.FILE, path=str(sample))
+    raw_text = read_raw_text(mode=InputMode.FILE, path=str(sample))
     conn = open_database(db_path)
     store = _store(conn)
-    result = store_source(store, raw.raw_text)
+    result = store_source(store, raw_text)
 
     row = conn.execute(
         "SELECT id, title, full_text, timestamp, content_hash FROM sources"
