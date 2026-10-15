@@ -5,13 +5,14 @@ from __future__ import annotations
 from pathlib import Path
 
 import ember.capture.input_reader as input_reader
+import ember.capture.item_proposal as item_proposal
 import ember.capture.source_storage as source_storage
 
-FORBIDDEN = ("sqlite3", "openai", "ember.adapters")
+FORBIDDEN = ("sqlite3", "openai", "anthropic", "ember.adapters")
 
 
 def test_capture_core_does_not_import_adapters() -> None:
-    for module in (source_storage, input_reader):
+    for module in (source_storage, input_reader, item_proposal):
         text = Path(module.__file__).read_text(encoding="utf-8")
         for token in FORBIDDEN:
             assert token not in text, f"{module.__name__} references {token}"
