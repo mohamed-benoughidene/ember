@@ -235,4 +235,11 @@ Extra decisions this step had to make:
   or `click`. L1 section 0 freezes the stack, so that needs an L1 amendment
   first, not a refactor. Kept on purpose: `items.rationale` / `items.source`
   and `change_log.link_id` (issues #1 and #2), and `CaptureError` (rule I6).
+- **Live AI round trip (item 6, done).** `tests/test_capture_live.py` runs the
+  real pipeline and skips unless a key is set, so CI stays offline. The first
+  live run found two real bugs: the adapter swallowed the provider's reason
+  (now carries `reason`, `status` and a key-redacted `detail`), and a bare
+  `json.loads` rejected the Markdown code fence real models wrap the answer in
+  (now stripped before parsing; the raw answer is still stored verbatim per D8).
+  Default model changed to `anthropic/claude-haiku-5.5` for cost (L1 section 0).
 

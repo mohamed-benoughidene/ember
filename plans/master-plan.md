@@ -10,7 +10,7 @@ Locked at L1. All L2 + L3 step plans assume this stack. Changes to stack = new L
 - **CLI:** Click (per-engine CLI commands).
 - **Tests:** pytest. TDD per Rule T4.
 - **Validation:** Pydantic. Validates outside data at the edge (Constitution I9), trusted inside.
-- **LLM adapter:** OpenAI Python SDK pointing at OpenRouter base URL. Model name in config (env var). Default model: `anthropic/claude-3.5-sonnet`. Future-proof: native Anthropic SDK can be added as 2nd adapter behind same `*Port` contract; engine core does not change.
+- **LLM adapter:** OpenAI Python SDK pointing at OpenRouter base URL. Model name in config (env var `EMBER_AI_MODEL`). Default model: `anthropic/claude-haiku-5.5`, the cheapest live model ($0.10/M prompt, about $0.0003 per capture run). Chosen 2026-10-15 for development cost. The earlier default `anthropic/claude-3.5-sonnet` now returns 404 "No endpoints found" on OpenRouter. Future-proof: native Anthropic SDK can be added as 2nd adapter behind same `*Port` contract; engine core does not change.
 - **Embedder:** `sentence-transformers` Python lib, model `bge-base-en-v1.5` (384d). Local, no API cost.
 
 Engine core imports only stdlib + Pydantic + Click + pytest. Adapters (LLM, embedder) are siblings, not dependencies of engine core (architecture test Rule T9).
