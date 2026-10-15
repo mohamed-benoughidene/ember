@@ -10,6 +10,7 @@ import click
 
 from ember.adapters.llm import build_item_proposer
 from ember.adapters.sqlite import (
+    SqliteAiResponseStore,
     SqliteItemContext,
     SqliteItemGatekeeper,
     SqliteSourceStore,
@@ -27,6 +28,7 @@ from ember.capture.item_gatekeeper import (
 )
 from ember.capture.item_proposal import (
     ProposalBatch,
+    ProposalResponse,
     build_context,
     propose_items,
     read_context_mode,
@@ -122,12 +124,13 @@ def capture(file_path: str | None, db_path: str) -> None:
         raw_text = read_raw_text(mode=mode, path=file_path)
         conn = open_database(db_path)
         stored = _store(conn, raw_text)
-        batch = _propose(conn, stored)
-        _report_proposals(batch)
+        response = _propose(conn, stored)
+        _store_ai_response(conn, stored, response)
+        _report_proposals(response.batch)
 
         gatekeeper = SqliteItemGatekeeper(conn)
         run = _gatekeeper_run(conn, gatekeeper, stored)
-        outcome = validate_proposals(batch.proposals, run)
+        outcome = validate_proposals(response.batch.proposals, run)
         _report_rejects(outcome)
 
         result = run_confirm_loop(
@@ -151,10 +154,19 @@ def _store(conn, raw_text: str) -> StoredSource:
     return stored
 
 
-def _propose(conn, stored: StoredSource) -> ProposalBatch:
+def _propose(conn, stored: StoredSource) -> ProposalResponse:
     proposer = build_item_proposer()
     context = build_context(SqliteItemContext(conn), read_context_mode(os.environ))
     return propose_items(proposer, raw_text=stored.raw_text, context=context)
+
+
+def _store_ai_response(
+    conn, stored: StoredSource, response: ProposalResponse
+) -> None:
+    """Store the raw AI answer verbatim, before anything is parsed away (D8)."""
+    SqliteAiResponseStore(conn).save(
+        source_id=stored.source_id, raw_response=response.raw_response
+    )
 
 
 def _gatekeeper_run(

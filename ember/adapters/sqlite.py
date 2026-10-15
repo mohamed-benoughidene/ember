@@ -257,6 +257,34 @@ class SqliteItemGatekeeper:
             raise ItemDbWriteError("db write fail") from exc
 
 
+class SqliteAiResponseStore:
+    """Write boundary for the raw AI answers (Constitution D8, spec 3.7 I16)."""
+
+    def __init__(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        clock: Callable[[], str] | None = None,
+    ) -> None:
+        self._conn = conn
+        self._clock = clock or _utc_now
+
+    def save(self, *, source_id: int, raw_response: str) -> None:
+        """Store one raw provider answer verbatim.
+
+        Raise `ItemDbWriteError` (CAPTURE-013) on a write failure.
+        """
+        try:
+            self._conn.execute(
+                "INSERT INTO ai_responses (source_id, response_text, timestamp)"
+                " VALUES (?, ?, ?)",
+                (source_id, raw_response, self._clock()),
+            )
+            self._conn.commit()
+        except sqlite3.Error as exc:
+            raise ItemDbWriteError("db write fail", source_id=source_id) from exc
+
+
 def _proposal_text(item: ValidatedItem) -> str:
     return json.dumps(
         {

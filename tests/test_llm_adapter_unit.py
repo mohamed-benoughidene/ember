@@ -119,10 +119,20 @@ def test_model_name_goes_into_the_request() -> None:
 def test_propose_returns_the_parsed_batch_with_drops() -> None:
     proposer = _proposer(_Response(ANSWER))
 
-    batch = proposer.propose(RAW_TEXT, [])
+    response = proposer.propose(RAW_TEXT, [])
 
-    assert [proposal.statement for proposal in batch.proposals] == ["Use SQLite"]
-    assert [drop.rule for drop in batch.dropped] == ["type"]
+    assert [proposal.statement for proposal in response.batch.proposals] == [
+        "Use SQLite"
+    ]
+    assert [drop.rule for drop in response.batch.dropped] == ["type"]
+
+
+def test_propose_hands_back_the_raw_answer_verbatim() -> None:
+    proposer = _proposer(_Response(ANSWER))
+
+    response = proposer.propose(RAW_TEXT, [])
+
+    assert response.raw_response == ANSWER
 
 
 def test_provider_failure_becomes_ai_call_error() -> None:

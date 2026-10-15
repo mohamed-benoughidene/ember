@@ -84,16 +84,28 @@ class ProposalBatch:
     dropped: list[DroppedProposal]
 
 
+@dataclass(frozen=True)
+class ProposalResponse:
+    """One AI call's raw answer plus the proposals checked from it.
+
+    The raw answer travels back to the edge so it can be stored verbatim
+    (rule D8, spec 3.7 I16).
+    """
+
+    raw_response: str
+    batch: ProposalBatch
+
+
 class ItemProposerPort(Protocol):
     """AI boundary. The adapter owns the provider SDK and request format."""
 
-    def propose(self, raw_text: str, context: list[ContextItem]) -> ProposalBatch:
-        """Return the checked proposals for `raw_text`, plus the drops.
+    def propose(self, raw_text: str, context: list[ContextItem]) -> ProposalResponse:
+        """Return the raw provider answer and the proposals checked from it.
 
         The adapter builds the provider request from `raw_text`, `context` and
         `SYSTEM_PROMPT`, then checks the raw answer with `parse_proposals`
-        (rule I9: outside data is checked at the boundary). The batch carries
-        the dropped entries so the CLI edge can print the reasons.
+        (rule I9: outside data is checked at the boundary). The raw answer
+        travels back untouched so the edge can store it verbatim (rule D8).
 
         Raise `AiCallError` when the provider call fails, and
         `AiSchemaError` when the answer cannot be read. Both are retried.
@@ -152,7 +164,7 @@ def propose_items(
     *,
     raw_text: str,
     context: list[ContextItem],
-) -> ProposalBatch:
+) -> ProposalResponse:
     """Ask the AI for proposals. One retry, no wait (plan section 5).
 
     The second call is not wrapped, so its failure reaches the caller.

@@ -11,11 +11,13 @@ from ember.capture.item_proposal import (
     ItemProposal,
     ItemType,
     ProposalBatch,
+    ProposalResponse,
 )
 from ember.cli import main
 from tests.fakes import FakeItemProposer
 
 SAMPLE = "We decided to use SQLite. We assume the team ships weekly."
+RAW_ANSWER = "RAW-AI-ANSWER"
 
 
 def _proposal(
@@ -45,8 +47,9 @@ def _count(db_path: str, query: str) -> int:
 
 
 def _run(tmp_path, db_path: str, batch: ProposalBatch, input_text: str, monkeypatch):
+    response = ProposalResponse(raw_response=RAW_ANSWER, batch=batch)
     monkeypatch.setattr(
-        "ember.cli.build_item_proposer", lambda: FakeItemProposer([batch])
+        "ember.cli.build_item_proposer", lambda: FakeItemProposer([response])
     )
     sample = tmp_path / "note.txt"
     sample.write_text(SAMPLE, encoding="utf-8")
@@ -118,6 +121,23 @@ def test_zero_valid_proposals_line(db_path, tmp_path, monkeypatch) -> None:
 
     assert result.exit_code == 0
     assert "0 valid proposals" in result.output
+
+
+def test_raw_ai_answer_is_stored_verbatim(db_path, tmp_path, monkeypatch) -> None:
+    batch = ProposalBatch(proposals=[_proposal("Use SQLite", "use SQLite")], dropped=[])
+
+    result = _run(tmp_path, db_path, batch, "n\n", monkeypatch)
+
+    assert result.exit_code == 0
+    conn = sqlite3.connect(db_path)
+    try:
+        row = conn.execute(
+            "SELECT source_id, response_text FROM ai_responses"
+        ).fetchone()
+    finally:
+        conn.close()
+    assert row[0] == 1
+    assert row[1] == RAW_ANSWER
 
 
 def test_editing_writes_the_corrected_type(db_path, tmp_path, monkeypatch) -> None:

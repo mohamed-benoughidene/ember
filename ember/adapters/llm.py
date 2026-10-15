@@ -16,7 +16,7 @@ from ember.capture.errors import AiCallError, AiSchemaError
 from ember.capture.item_proposal import (
     SYSTEM_PROMPT,
     ContextItem,
-    ProposalBatch,
+    ProposalResponse,
     parse_proposals,
 )
 
@@ -33,8 +33,8 @@ class OpenAiItemProposer:
         self._client = client
         self._model = model
 
-    def propose(self, raw_text: str, context: list[ContextItem]) -> ProposalBatch:
-        """Return the checked proposals for `raw_text`, plus the drops.
+    def propose(self, raw_text: str, context: list[ContextItem]) -> ProposalResponse:
+        """Return the raw provider answer and the proposals checked from it.
 
         Raise `AiCallError` (CAPTURE-008) when the provider call fails, and
         `AiSchemaError` (CAPTURE-009) when the answer cannot be read. Side
@@ -47,7 +47,11 @@ class OpenAiItemProposer:
             )
         except OpenAIError as exc:
             raise AiCallError("ai call fail") from exc
-        return parse_proposals(_content(response), raw_text)
+        content = _content(response)
+        return ProposalResponse(
+            raw_response=content,
+            batch=parse_proposals(content, raw_text),
+        )
 
 
 def build_item_proposer(
