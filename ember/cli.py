@@ -16,7 +16,7 @@ from ember.adapters.sqlite import (
     SqliteSourceStore,
     open_database,
 )
-from ember.capture.confirm_write import run_confirm_loop
+from ember.capture.confirm_write import ConfirmResult, run_confirm_loop
 from ember.capture.errors import UserAbort
 from ember.capture.input_reader import InputMode, read_raw_text
 from ember.capture.item_gatekeeper import (
@@ -139,6 +139,7 @@ def capture(file_path: str | None, db_path: str) -> None:
             commit=gatekeeper,
             revalidate=lambda draft: validate_add_item(draft, run),
         )
+        _report_result(result)
     except EmberError as exc:
         click.echo(f"error: {exc.log_line()}", err=True)
         sys.exit(1)
@@ -188,6 +189,16 @@ def _report_proposals(batch: ProposalBatch) -> None:
         click.echo(f"dropped proposal: {drop.rule}")
     if not batch.proposals:
         click.echo("0 valid proposals")
+
+
+def _report_result(result: ConfirmResult) -> None:
+    """Print the Phase 4 summary line (step 3 section 3)."""
+    click.echo(
+        f"accepted: {len(result.accepted_ids)}"
+        f", rejected: {result.rejected_count}"
+        f", warnings: {result.warning_count}"
+        f", aborted: {str(result.aborted).lower()}"
+    )
 
 
 def _report_rejects(outcome: GatekeeperResult) -> None:
