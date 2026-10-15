@@ -136,7 +136,10 @@ def _find_near_dup(
 
 
 def load_source_text(sources: SourceTextPort, source_id: int) -> str:
-    """Read the stored source text, or fail fast when the id is unknown."""
+    """Read the stored source text, or fail fast when the id is unknown.
+
+    Raise `ItemSourceMissing` (CAPTURE-012) when no row has this id.
+    """
     text = sources.full_text_for(source_id)
     if text is None:
         raise ItemSourceMissing("source not found", source_id=source_id)

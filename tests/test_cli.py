@@ -59,6 +59,7 @@ def test_missing_file_exits_1(db_path, tmp_path) -> None:
     )
 
     assert result.exit_code == 1
+    assert "CAPTURE-001" in result.output
     assert "file not found" in result.output
 
 
@@ -71,4 +72,5 @@ def test_invalid_utf8_exits_1(db_path, tmp_path) -> None:
     )
 
     assert result.exit_code == 1
+    assert "CAPTURE-004" in result.output
     assert "invalid utf-8" in result.output

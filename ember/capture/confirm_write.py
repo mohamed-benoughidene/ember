@@ -52,7 +52,7 @@ class ConfirmPort(Protocol):
     def ask(self, prompt: str) -> str:
         """Show `prompt`, return the raw answer.
 
-        The edge raises `UserAbort` when input ends (STDIN closed).
+        The edge raises `UserAbort` (CAPTURE-014) when input ends (STDIN closed).
         """
         ...
 

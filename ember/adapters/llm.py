@@ -34,6 +34,12 @@ class OpenAiItemProposer:
         self._model = model
 
     def propose(self, raw_text: str, context: list[ContextItem]) -> ProposalBatch:
+        """Return the checked proposals for `raw_text`, plus the drops.
+
+        Raise `AiCallError` (CAPTURE-008) when the provider call fails, and
+        `AiSchemaError` (CAPTURE-009) when the answer cannot be read. Side
+        effect: one HTTP request to the configured provider.
+        """
         try:
             response = self._client.chat.completions.create(
                 model=self._model,

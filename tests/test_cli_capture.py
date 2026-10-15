@@ -148,4 +148,5 @@ def test_missing_api_key_exits_1(db_path, tmp_path, monkeypatch) -> None:
     )
 
     assert result.exit_code == 1
+    assert "CAPTURE-008" in result.output
     assert "ai api key missing" in result.output

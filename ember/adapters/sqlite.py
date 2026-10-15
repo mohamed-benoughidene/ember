@@ -71,6 +71,10 @@ class SqliteSourceStore:
         self._clock = clock or _utc_now
 
     def find_by_hash(self, content_hash: str) -> SourceRecord | None:
+        """Return the stored source with this hash, or None.
+
+        Raise `SourceDbReadError` (CAPTURE-005) on a read failure.
+        """
         try:
             row = self._conn.execute(
                 "SELECT id, full_text FROM sources WHERE content_hash = ?",
@@ -87,6 +91,10 @@ class SqliteSourceStore:
         )
 
     def insert_source(self, *, title: str, full_text: str, content_hash: str) -> int:
+        """Insert one source, return the new id.
+
+        Raise `SourceDbWriteError` (CAPTURE-006) on a write failure.
+        """
         timestamp = self._clock()
         try:
             cursor = self._conn.execute(
@@ -100,6 +108,10 @@ class SqliteSourceStore:
         return int(cursor.lastrowid)
 
     def full_text_for(self, source_id: int) -> str | None:
+        """Return `sources.full_text` for `source_id`, or None.
+
+        Raise `SourceDbReadError` (CAPTURE-005) on a read failure.
+        """
         try:
             row = self._conn.execute(
                 "SELECT full_text FROM sources WHERE id = ?", (source_id,)
@@ -116,6 +128,10 @@ class SqliteItemContext:
         self._conn = conn
 
     def recent_items(self, limit: int) -> list[ContextItem]:
+        """Return the newest items first, at most `limit` of them.
+
+        Raise `ItemDbReadError` (CAPTURE-011) on a read failure.
+        """
         try:
             rows = self._conn.execute(
                 "SELECT id, type, statement FROM items"
@@ -148,6 +164,10 @@ class SqliteItemGatekeeper:
         self._next_id: int | None = None
 
     def statements(self) -> list[ExistingItem]:
+        """Return every stored item's id and statement.
+
+        Raise `ItemDbReadError` (CAPTURE-011) on a read failure.
+        """
         try:
             rows = self._conn.execute("SELECT id, statement FROM items").fetchall()
         except sqlite3.Error as exc:
@@ -162,6 +182,10 @@ class SqliteItemGatekeeper:
         return self._clock()
 
     def next_item_id(self) -> int:
+        """Return a fresh item id, counting up from the highest stored id.
+
+        Raise `ItemDbReadError` (CAPTURE-011) on a read failure.
+        """
         try:
             if self._next_id is None:
                 row = self._conn.execute(
@@ -175,6 +199,10 @@ class SqliteItemGatekeeper:
         return value
 
     def insert_item(self, item: ValidatedItem, *, validated: bool | None) -> None:
+        """Insert one accepted item, with `validated` set only for Assumptions.
+
+        Raise `ItemDbWriteError` (CAPTURE-013) on a write failure.
+        """
         try:
             self._conn.execute(
                 "INSERT INTO items"
@@ -195,6 +223,10 @@ class SqliteItemGatekeeper:
             raise ItemDbWriteError("db write fail", item_id=item.id) from exc
 
     def log_created(self, item: ValidatedItem) -> None:
+        """Append the `created` change_log row for an accepted item.
+
+        Raise `ItemDbWriteError` (CAPTURE-013) on a write failure.
+        """
         try:
             self._conn.execute(
                 "INSERT INTO change_log"
@@ -208,6 +240,10 @@ class SqliteItemGatekeeper:
             raise ItemDbWriteError("db write fail", item_id=item.id) from exc
 
     def log_rejected(self, item: ValidatedItem) -> None:
+        """Append the `proposed` change_log row, with a null item_id.
+
+        Raise `ItemDbWriteError` (CAPTURE-013) on a write failure.
+        """
         try:
             self._conn.execute(
                 "INSERT INTO change_log"
@@ -231,4 +267,3 @@ def _proposal_text(item: ValidatedItem) -> str:
         },
         ensure_ascii=False,
     )
-
