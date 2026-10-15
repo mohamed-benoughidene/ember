@@ -21,8 +21,6 @@ from ember.capture.errors import AiError, AiSchemaError, ContextModeInvalid
 
 CONTEXT_WINDOW = 50
 
-API_CALL_ATTEMPTS = 2
-
 SYSTEM_PROMPT = (
     "You turn one raw project note into typed items. "
     "Pick each item's type from exactly these four: "
@@ -122,12 +120,11 @@ def read_context_mode(env: Mapping[str, str]) -> ContextMode:
 def build_context(
     reader: ItemContextPort,
     mode: ContextMode,
-    limit: int = CONTEXT_WINDOW,
 ) -> list[ContextItem]:
-    """Mode A sends no context. Mode B sends the newest `limit` items."""
+    """Mode A sends no context. Mode B sends the newest `CONTEXT_WINDOW` items."""
     if mode is ContextMode.A:
         return []
-    return reader.recent_items(limit)
+    return reader.recent_items(CONTEXT_WINDOW)
 
 
 def parse_proposals(ai_response: str, raw_text: str) -> ProposalBatch:
@@ -155,14 +152,14 @@ def propose_items(
     raw_text: str,
     context: list[ContextItem],
 ) -> list[ItemProposal]:
-    """Ask the AI for proposals. One retry, no wait (plan section 5)."""
-    for attempt in range(API_CALL_ATTEMPTS):
-        try:
-            return proposer.propose(raw_text, context)
-        except AiError:
-            if attempt == API_CALL_ATTEMPTS - 1:
-                raise
-    raise AssertionError("retry loop fell through")
+    """Ask the AI for proposals. One retry, no wait (plan section 5).
+
+    The second call is not wrapped, so its failure reaches the caller.
+    """
+    try:
+        return proposer.propose(raw_text, context)
+    except AiError:
+        return proposer.propose(raw_text, context)
 
 
 def _load_entries(ai_response: str) -> list[object]:
