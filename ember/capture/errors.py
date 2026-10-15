@@ -70,3 +70,8 @@ class ItemDbReadError(CaptureError):
 class ItemSourceMissing(CaptureError):
     code = "CAPTURE-012"
     name = "ItemSourceMissing"
+
+
+class ItemDbWriteError(CaptureError):
+    code = "CAPTURE-013"
+    name = "ItemDbWriteFail"

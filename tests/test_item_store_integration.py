@@ -1,10 +1,16 @@
-"""Integration tests for the SQLite item adapters (not the gatekeeper writes)."""
+"""Integration tests for the SQLite item adapters (reads and gatekeeper writes)."""
 
 from __future__ import annotations
 
+import json
 import sqlite3
 
-from ember.adapters.sqlite import SqliteItemContext, open_database
+from ember.adapters.sqlite import (
+    SqliteItemContext,
+    SqliteItemGatekeeper,
+    open_database,
+)
+from ember.capture.item_gatekeeper import ValidatedItem
 
 FIXED_TIME = "2026-01-01T00:00:00+00:00"
 
@@ -72,3 +78,108 @@ def test_recent_items_respects_limit(db_path) -> None:
     items = SqliteItemContext(conn).recent_items(3)
 
     assert [item.id for item in items] == [5, 4, 3]
+
+
+def make_item(
+    item_id: int = 1,
+    *,
+    item_type: str = "Decision",
+    statement: str = "Use SQLite",
+    source_id: int = 1,
+) -> ValidatedItem:
+    return ValidatedItem(
+        id=item_id,
+        type=item_type,
+        statement=statement,
+        source_quote="use SQLite",
+        confidence=0.9,
+        source_id=source_id,
+        created_at=FIXED_TIME,
+        status="Active",
+        near_dup_warning=None,
+    )
+
+
+def test_statements_returns_id_and_statement_pairs(db_path) -> None:
+    conn = open_database(db_path)
+    source_id = seed_source(conn)
+    add_item(conn, item_id=1, source_id=source_id, statement="a", created_at=FIXED_TIME)
+    add_item(conn, item_id=2, source_id=source_id, statement="b", created_at=FIXED_TIME)
+    conn.commit()
+
+    assert SqliteItemGatekeeper(conn).statements() == [(1, "a"), (2, "b")]
+
+
+def test_next_item_id_is_unique_and_above_existing(db_path) -> None:
+    conn = open_database(db_path)
+    source_id = seed_source(conn)
+    add_item(
+        conn, item_id=5, source_id=source_id, statement="x", created_at=FIXED_TIME
+    )
+    conn.commit()
+
+    gatekeeper = SqliteItemGatekeeper(conn)
+
+    assert gatekeeper.next_item_id() == 6
+    assert gatekeeper.next_item_id() == 7
+
+
+def test_insert_item_writes_the_row(db_path) -> None:
+    conn = open_database(db_path)
+    source_id = seed_source(conn)
+
+    SqliteItemGatekeeper(conn).insert_item(
+        make_item(source_id=source_id), validated=None
+    )
+
+    row = conn.execute("SELECT * FROM items WHERE id = 1").fetchone()
+    assert row["type"] == "Decision"
+    assert row["statement"] == "Use SQLite"
+    assert row["source_id"] == source_id
+    assert row["status"] == "Active"
+    assert row["created_at"] == FIXED_TIME
+    assert row["validated"] is None
+
+
+def test_insert_assumption_sets_the_validated_flag(db_path) -> None:
+    conn = open_database(db_path)
+    source_id = seed_source(conn)
+
+    SqliteItemGatekeeper(conn).insert_item(
+        make_item(item_type="Assumption", source_id=source_id), validated=False
+    )
+
+    row = conn.execute("SELECT validated FROM items WHERE id = 1").fetchone()
+    assert row["validated"] == 0
+
+
+def test_log_created_writes_a_change_log_row(db_path) -> None:
+    conn = open_database(db_path)
+    source_id = seed_source(conn)
+    gatekeeper = SqliteItemGatekeeper(conn)
+    item = make_item(source_id=source_id)
+    gatekeeper.insert_item(item, validated=None)
+
+    gatekeeper.log_created(item, FIXED_TIME)
+
+    row = conn.execute("SELECT * FROM change_log").fetchone()
+    assert row["item_id"] == 1
+    assert row["link_id"] is None
+    assert row["field_changed"] == "created"
+    assert row["old_value"] is None
+    assert row["new_value"] == "Use SQLite"
+    assert row["timestamp"] == FIXED_TIME
+    assert row["trigger_cause"] == "user_confirmed"
+
+
+def test_log_rejected_writes_a_null_item_id(db_path) -> None:
+    conn = open_database(db_path)
+
+    SqliteItemGatekeeper(conn).log_rejected(make_item(item_id=9), FIXED_TIME)
+
+    row = conn.execute("SELECT * FROM change_log").fetchone()
+    assert row["item_id"] is None
+    assert row["field_changed"] == "proposed"
+    assert row["trigger_cause"] == "rejected"
+    assert json.loads(row["new_value"])["statement"] == "Use SQLite"
+    assert conn.execute("SELECT COUNT(*) FROM items").fetchone()[0] == 0
