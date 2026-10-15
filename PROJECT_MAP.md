@@ -7,6 +7,7 @@ This file lists every file and its purpose in the repository. Update it when fil
 - `Constitution.md`: Core build rules for modules, data, interfaces and tests (AI caveman version).
 - `Personal guidelines.md`: Rules for tone, accuracy and review style (AI caveman version).
 - `PROJECT_MAP.md`: This file. Index of files and their purpose.
+- `README.md`: Overview of the Ember project, its core purpose, and repository layout.
 
 ## Documentation (`docs/`)
 - `docs/brand-philosophy.md`: Brand meaning behind the name Ember, the logo, and the Lantern Keeper character.
