@@ -71,7 +71,7 @@ Earlier logo and character images, kept for history.
 - `ember/capture/errors.py`: Capture error codes `CAPTURE-001` to `CAPTURE-010`.
 - `ember/capture/source_storage.py`: Phase 1 core. SHA-256 dedup behind `SourceStorePort`, returns `{source_id, raw_text, content_hash}`.
 - `ember/capture/input_reader.py`: Edge reader for STDIN or file, 5 MiB file limit, UTF-8 decode.
-- `ember/capture/item_proposal.py`: Phase 2 core. The 4 item types, the AI port `ItemProposerPort`, the item-context port, context mode A/B, parse + validate the AI answer, retry once.
+- `ember/capture/item_proposal.py`: Phase 2 core. The 4 item types, the AI port `ItemProposerPort`, the item-context port, context mode A/B, the AI system prompt, parse + validate the AI answer, retry once.
 - `ember/adapters/__init__.py`: Marks the adapters layer folder as a package.
 - `ember/adapters/sqlite.py`: SQLite connection, numbered migrations, `SqliteSourceStore` (write is the gatekeeper boundary).
 - `ember/adapters/migrations/__init__.py`: Marks the migrations folder as a package.

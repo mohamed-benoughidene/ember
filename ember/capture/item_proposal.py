@@ -23,6 +23,19 @@ CONTEXT_WINDOW = 50
 
 API_CALL_ATTEMPTS = 2
 
+SYSTEM_PROMPT = (
+    "You turn one raw project note into typed items. "
+    "Pick each item's type from exactly these four: "
+    "Decision, Assumption, Finding, Question. "
+    "Return one item for each thing worth keeping, as a JSON list. "
+    "Each item has four keys: "
+    "type (one of the four), "
+    "statement (the item in your own words), "
+    "source_quote (an exact substring copied from the raw note), "
+    "confidence (your own score from 0.0 to 1.0). "
+    "Return an empty list when the note holds nothing worth keeping."
+)
+
 
 class ItemType(str, Enum):
     """The only 4 item types V1 allows (L1 section 1)."""
@@ -74,10 +87,14 @@ class ProposalBatch:
 
 
 class ItemProposerPort(Protocol):
-    """AI boundary. The adapter owns the provider SDK and the prompt."""
+    """AI boundary. The adapter owns the provider SDK and request format."""
 
     def propose(self, raw_text: str, context: list[ContextItem]) -> list[ItemProposal]:
         """Return checked proposals for `raw_text`.
+
+        The adapter builds the provider request from `raw_text`, `context` and
+        `SYSTEM_PROMPT`, then checks the raw answer with `parse_proposals`
+        (rule I9: outside data is checked at the boundary).
 
         Raise `AiCallError` when the provider call fails, and
         `AiSchemaError` when the answer cannot be read. Both are retried.

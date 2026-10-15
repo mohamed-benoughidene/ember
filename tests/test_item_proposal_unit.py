@@ -13,6 +13,7 @@ from ember.capture.errors import (
 )
 from ember.capture.item_proposal import (
     CONTEXT_WINDOW,
+    SYSTEM_PROMPT,
     ContextItem,
     ContextMode,
     ItemProposal,
@@ -109,6 +110,19 @@ def test_mode_b_context_is_passed_to_the_ai() -> None:
     _, sent_context = proposer.calls[0]
     assert len(sent_context) == CONTEXT_WINDOW
     assert sent_context == context
+
+
+# --- system prompt (plan step 3) ------------------------------------------
+
+
+def test_system_prompt_names_all_four_types() -> None:
+    for item_type in ItemType:
+        assert item_type.value in SYSTEM_PROMPT
+
+
+def test_system_prompt_asks_for_quote_and_confidence() -> None:
+    assert "source_quote" in SYSTEM_PROMPT
+    assert "confidence" in SYSTEM_PROMPT
 
 
 # --- retry policy (plan section 5) ----------------------------------------
