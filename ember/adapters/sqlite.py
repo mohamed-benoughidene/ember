@@ -154,6 +154,10 @@ class SqliteItemGatekeeper:
             raise ItemDbReadError("item read fail") from exc
         return [(int(row["id"]), row["statement"]) for row in rows]
 
+    def now(self) -> str:
+        """The generated timestamp for a new item (Phase 3)."""
+        return self._clock()
+
     def next_item_id(self) -> int:
         try:
             if self._next_id is None:
