@@ -10,7 +10,7 @@ from ember.adapters.sqlite import (
     SqliteItemGatekeeper,
     open_database,
 )
-from ember.capture.item_gatekeeper import ValidatedItem
+from ember.capture.item_gatekeeper import ExistingItem, ValidatedItem
 
 FIXED_TIME = "2026-01-01T00:00:00+00:00"
 
@@ -107,7 +107,10 @@ def test_statements_returns_id_and_statement_pairs(db_path) -> None:
     add_item(conn, item_id=2, source_id=source_id, statement="b", created_at=FIXED_TIME)
     conn.commit()
 
-    assert SqliteItemGatekeeper(conn).statements() == [(1, "a"), (2, "b")]
+    assert SqliteItemGatekeeper(conn).statements() == [
+        ExistingItem(1, "a"),
+        ExistingItem(2, "b"),
+    ]
 
 
 def test_next_item_id_is_unique_and_above_existing(db_path) -> None:

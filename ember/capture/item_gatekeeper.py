@@ -42,6 +42,14 @@ class NearDupWarning:
 
 
 @dataclass(frozen=True)
+class ExistingItem:
+    """One stored item's id and statement, for the near-duplicate scan."""
+
+    item_id: int
+    statement: str
+
+
+@dataclass(frozen=True)
 class ValidatedItem:
     """Phase 3 output, ready for the Phase 4 confirm loop."""
 
@@ -82,7 +90,7 @@ class GatekeeperRun:
 
     source_id: int
     source_text: str
-    existing: list[tuple[int, str]]
+    existing: list[ExistingItem]
     next_id: Callable[[], int]
     clock: Callable[[], str]
 
@@ -95,7 +103,7 @@ class SourceTextPort(Protocol):
         ...
 
 
-def to_draft(proposal: ItemProposal) -> ProposalDraft:
+def _to_draft(proposal: ItemProposal) -> ProposalDraft:
     """Turn a checked Phase 2 proposal into a Phase 3 draft."""
     return ProposalDraft(
         type=proposal.type.value,
@@ -110,20 +118,20 @@ def is_allowed_type(value: str) -> bool:
     return value in _ITEM_TYPES
 
 
-def similarity(left: str, right: str) -> float:
+def _similarity(left: str, right: str) -> float:
     """Text similarity in [0, 1]. No embedder here; Engine B owns vectors."""
     return SequenceMatcher(None, left, right).ratio()
 
 
-def find_near_dup(
-    statement: str, existing: list[tuple[int, str]]
+def _find_near_dup(
+    statement: str, existing: list[ExistingItem]
 ) -> NearDupWarning | None:
     """Check #4: the closest existing statement above the threshold, or None."""
     best: NearDupWarning | None = None
-    for item_id, other in existing:
-        score = similarity(statement, other)
+    for item in existing:
+        score = _similarity(statement, item.statement)
         if score > NEAR_DUP_THRESHOLD and (best is None or score > best.similarity):
-            best = NearDupWarning(matching_item_id=item_id, similarity=score)
+            best = NearDupWarning(matching_item_id=item.item_id, similarity=score)
     return best
 
 
@@ -161,7 +169,7 @@ def validate_add_item(
         source_id=run.source_id,
         created_at=run.clock(),
         status=STATUS_ACTIVE,
-        near_dup_warning=find_near_dup(draft.statement, run.existing),
+        near_dup_warning=_find_near_dup(draft.statement, run.existing),
     )
 
 
@@ -173,7 +181,7 @@ def validate_proposals(
     validated: list[ValidatedItem] = []
     rejected: list[RejectedProposal] = []
     for proposal in proposals:
-        outcome = validate_add_item(to_draft(proposal), run)
+        outcome = validate_add_item(_to_draft(proposal), run)
         if isinstance(outcome, RejectedProposal):
             rejected.append(outcome)
         else:

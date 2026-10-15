@@ -10,15 +10,13 @@ from ember.capture.errors import ItemSourceMissing
 from ember.capture.item_gatekeeper import (
     NEAR_DUP_THRESHOLD,
     STATUS_ACTIVE,
+    ExistingItem,
     GatekeeperRun,
     ProposalDraft,
     RejectedProposal,
     ValidatedItem,
-    find_near_dup,
     is_allowed_type,
     load_source_text,
-    similarity,
-    to_draft,
     validate_add_item,
     validate_proposals,
 )
@@ -31,7 +29,7 @@ FIXED_TIME = "2026-01-01T00:00:00+00:00"
 
 def _run(
     *,
-    existing: list[tuple[int, str]] | None = None,
+    existing: list[ExistingItem] | None = None,
     ids: tuple[int, ...] = (10, 11, 12),
     source_text: str = RAW_TEXT,
 ) -> GatekeeperRun:
@@ -109,7 +107,7 @@ def test_quote_not_in_source_is_dropped() -> None:
 
 
 def test_near_dup_attaches_warning_but_still_validates() -> None:
-    existing = [(3, "Use SQLite for local storage")]
+    existing = [ExistingItem(3, "Use SQLite for local storage")]
 
     outcome = validate_add_item(_draft(), _run(existing=existing))
 
@@ -120,7 +118,7 @@ def test_near_dup_attaches_warning_but_still_validates() -> None:
 
 
 def test_unrelated_existing_item_makes_no_warning() -> None:
-    existing = [(3, "Ship the onboarding screen")]
+    existing = [ExistingItem(3, "Ship the onboarding screen")]
 
     outcome = validate_add_item(_draft(), _run(existing=existing))
 
@@ -129,14 +127,14 @@ def test_unrelated_existing_item_makes_no_warning() -> None:
 
 def test_warning_picks_the_closest_item() -> None:
     existing = [
-        (1, "Use SQLite for local storage"),
-        (2, "Use SQLite for local storag"),
+        ExistingItem(1, "Use SQLite for local storage"),
+        ExistingItem(2, "Use SQLite for local storag"),
     ]
 
-    warning = find_near_dup("Use SQLite for local storage", existing)
+    outcome = validate_add_item(_draft(), _run(existing=existing))
 
-    assert warning is not None
-    assert warning.matching_item_id == 1
+    assert outcome.near_dup_warning is not None
+    assert outcome.near_dup_warning.matching_item_id == 1
 
 
 # --- batch loop -----------------------------------------------------------
@@ -154,6 +152,21 @@ def test_validate_proposals_splits_good_and_bad() -> None:
     assert [reject.rule for reject in result.rejected] == ["quote"]
 
 
+def test_validate_proposals_maps_proposal_fields_onto_the_item() -> None:
+    proposal = _proposal(
+        type=ItemType.ASSUMPTION,
+        statement="Team ships weekly",
+        confidence=0.4,
+    )
+
+    result = validate_proposals([proposal], _run())
+
+    item = result.validated[0]
+    assert item.type == "Assumption"
+    assert item.statement == "Team ships weekly"
+    assert item.confidence == 0.4
+
+
 def test_validate_proposals_gives_each_item_its_own_id() -> None:
     result = validate_proposals([_proposal(), _proposal()], _run(ids=(4, 5)))
 
@@ -163,25 +176,10 @@ def test_validate_proposals_gives_each_item_its_own_id() -> None:
 # --- small helpers --------------------------------------------------------
 
 
-def test_to_draft_copies_the_checked_fields() -> None:
-    proposal = _proposal(
-        type=ItemType.ASSUMPTION, statement="s", source_quote="q", confidence=0.4
-    )
-
-    assert to_draft(proposal) == ProposalDraft(
-        type="Assumption", statement="s", source_quote="q", confidence=0.4
-    )
-
-
 def test_is_allowed_type_accepts_the_four_and_rejects_junk() -> None:
     for item_type in ItemType:
         assert is_allowed_type(item_type.value)
     assert not is_allowed_type("Risk")
-
-
-def test_similarity_bounds() -> None:
-    assert similarity("abc", "abc") == 1.0
-    assert similarity("abc", "xyz") == 0.0
 
 
 def test_threshold_is_a_fraction() -> None:

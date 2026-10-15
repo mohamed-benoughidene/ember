@@ -14,7 +14,7 @@ from ember.capture.errors import (
     SourceDbReadError,
     SourceDbWriteError,
 )
-from ember.capture.item_gatekeeper import ValidatedItem
+from ember.capture.item_gatekeeper import ExistingItem, ValidatedItem
 from ember.capture.item_proposal import ContextItem
 from ember.capture.source_storage import SourceRecord
 
@@ -147,12 +147,15 @@ class SqliteItemGatekeeper:
         self._clock = clock or _utc_now
         self._next_id: int | None = None
 
-    def statements(self) -> list[tuple[int, str]]:
+    def statements(self) -> list[ExistingItem]:
         try:
             rows = self._conn.execute("SELECT id, statement FROM items").fetchall()
         except sqlite3.Error as exc:
             raise ItemDbReadError("item read fail") from exc
-        return [(int(row["id"]), row["statement"]) for row in rows]
+        return [
+            ExistingItem(item_id=int(row["id"]), statement=row["statement"])
+            for row in rows
+        ]
 
     def now(self) -> str:
         """The generated timestamp for a new item (Phase 3)."""
