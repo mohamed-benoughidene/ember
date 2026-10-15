@@ -8,9 +8,14 @@ This file lists every file and its purpose in the repository. Update it when fil
 - `Personal guidelines.md`: Rules for tone, accuracy and review style (AI caveman version).
 - `PROJECT_MAP.md`: This file. Index of files and their purpose.
 - `README.md`: Overview of the Ember project, its core purpose, and repository layout.
+- `SECURITY.md`: Security vulnerability reporting instructions and policy.
 
 ## GitHub Config (`.github/`)
+- `.github/CODEOWNERS`: Defines code and documentation ownership for pull requests.
 - `.github/dependabot.yml`: Dependabot settings. Watches GitHub Actions versions each week.
+- `.github/pull_request_template.md`: Default checklist and summary template for pull requests.
+- `.github/ISSUE_TEMPLATE/bug_report.md`: Issue template for reporting bugs.
+- `.github/ISSUE_TEMPLATE/feature_request.md`: Issue template for suggesting improvements.
 
 ## Documentation (`docs/`)
 - `docs/brand-philosophy.md`: Brand meaning behind the name Ember, the logo, and the Lantern Keeper character.
