@@ -9,6 +9,9 @@ This file lists every file and its purpose in the repository. Update it when fil
 - `PROJECT_MAP.md`: This file. Index of files and their purpose.
 - `README.md`: Overview of the Ember project, its core purpose, and repository layout.
 
+## GitHub Config (`.github/`)
+- `.github/dependabot.yml`: Dependabot settings. Watches GitHub Actions versions each week.
+
 ## Documentation (`docs/`)
 - `docs/brand-philosophy.md`: Brand meaning behind the name Ember, the logo, and the Lantern Keeper character.
 - `docs/pain statment.md`: The problem the product solves, written as a pain statement.
