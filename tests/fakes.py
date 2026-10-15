@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from ember.capture.errors import UserAbort
+from ember.capture.item_gatekeeper import ValidatedItem
 from ember.capture.item_proposal import ContextItem, ItemProposal
 from ember.capture.source_storage import SourceRecord
 
@@ -48,3 +50,39 @@ class FakeSourceStore:
         self._next_id += 1
         self.rows[content_hash] = SourceRecord(source_id, full_text, content_hash)
         return source_id
+
+
+class FakeConfirm:
+    """Scripted user. Answers in order; runs out -> UserAbort (STDIN closed)."""
+
+    def __init__(self, answers: list[str]) -> None:
+        self._answers = list(answers)
+        self.prompts: list[str] = []
+        self.written: list[str] = []
+
+    def ask(self, prompt: str) -> str:
+        self.prompts.append(prompt)
+        if not self._answers:
+            raise UserAbort("input ended")
+        return self._answers.pop(0)
+
+    def write(self, text: str) -> None:
+        self.written.append(text)
+
+
+class FakeItemCommit:
+    """Records every `items` and `change_log` write."""
+
+    def __init__(self) -> None:
+        self.items: list[tuple[ValidatedItem, bool | None]] = []
+        self.created: list[ValidatedItem] = []
+        self.rejected: list[ValidatedItem] = []
+
+    def insert_item(self, item: ValidatedItem, *, validated: bool | None) -> None:
+        self.items.append((item, validated))
+
+    def log_created(self, item: ValidatedItem) -> None:
+        self.created.append(item)
+
+    def log_rejected(self, item: ValidatedItem) -> None:
+        self.rejected.append(item)

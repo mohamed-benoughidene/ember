@@ -156,11 +156,11 @@ def test_insert_assumption_sets_the_validated_flag(db_path) -> None:
 def test_log_created_writes_a_change_log_row(db_path) -> None:
     conn = open_database(db_path)
     source_id = seed_source(conn)
-    gatekeeper = SqliteItemGatekeeper(conn)
+    gatekeeper = SqliteItemGatekeeper(conn, clock=lambda: FIXED_TIME)
     item = make_item(source_id=source_id)
     gatekeeper.insert_item(item, validated=None)
 
-    gatekeeper.log_created(item, FIXED_TIME)
+    gatekeeper.log_created(item)
 
     row = conn.execute("SELECT * FROM change_log").fetchone()
     assert row["item_id"] == 1
@@ -175,11 +175,12 @@ def test_log_created_writes_a_change_log_row(db_path) -> None:
 def test_log_rejected_writes_a_null_item_id(db_path) -> None:
     conn = open_database(db_path)
 
-    SqliteItemGatekeeper(conn).log_rejected(make_item(item_id=9), FIXED_TIME)
+    SqliteItemGatekeeper(conn, clock=lambda: FIXED_TIME).log_rejected(make_item(9))
 
     row = conn.execute("SELECT * FROM change_log").fetchone()
     assert row["item_id"] is None
     assert row["field_changed"] == "proposed"
     assert row["trigger_cause"] == "rejected"
+    assert row["timestamp"] == FIXED_TIME
     assert json.loads(row["new_value"])["statement"] == "Use SQLite"
     assert conn.execute("SELECT COUNT(*) FROM items").fetchone()[0] == 0

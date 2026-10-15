@@ -187,27 +187,27 @@ class SqliteItemGatekeeper:
         except sqlite3.Error as exc:
             raise ItemDbWriteError("db write fail", item_id=item.id) from exc
 
-    def log_created(self, item: ValidatedItem, timestamp: str) -> None:
+    def log_created(self, item: ValidatedItem) -> None:
         try:
             self._conn.execute(
                 "INSERT INTO change_log"
                 " (item_id, link_id, field_changed, old_value, new_value, timestamp,"
                 " trigger_cause)"
                 " VALUES (?, NULL, 'created', NULL, ?, ?, 'user_confirmed')",
-                (item.id, item.statement, timestamp),
+                (item.id, item.statement, self._clock()),
             )
             self._conn.commit()
         except sqlite3.Error as exc:
             raise ItemDbWriteError("db write fail", item_id=item.id) from exc
 
-    def log_rejected(self, item: ValidatedItem, timestamp: str) -> None:
+    def log_rejected(self, item: ValidatedItem) -> None:
         try:
             self._conn.execute(
                 "INSERT INTO change_log"
                 " (item_id, link_id, field_changed, old_value, new_value, timestamp,"
                 " trigger_cause)"
                 " VALUES (NULL, NULL, 'proposed', NULL, ?, ?, 'rejected')",
-                (_proposal_text(item), timestamp),
+                (_proposal_text(item), self._clock()),
             )
             self._conn.commit()
         except sqlite3.Error as exc:

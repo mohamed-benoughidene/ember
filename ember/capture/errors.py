@@ -75,3 +75,10 @@ class ItemSourceMissing(CaptureError):
 class ItemDbWriteError(CaptureError):
     code = "CAPTURE-013"
     name = "ItemDbWriteFail"
+
+
+class UserAbort(CaptureError):
+    """User quit the confirm prompt, or input ended mid-prompt. Exit 2."""
+
+    code = "CAPTURE-014"
+    name = "UserAbort"
