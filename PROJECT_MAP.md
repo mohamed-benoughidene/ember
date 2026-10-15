@@ -82,6 +82,8 @@ Earlier logo and character images, kept for history.
 - `ember/adapters/migrations/001_create_sources.sql`: Creates the `sources` table.
 - `ember/adapters/migrations/002_create_items.sql`: Creates the `items` table.
 - `ember/adapters/migrations/003_create_change_log.sql`: Creates the `change_log` table.
+- `ember/adapters/migrations/004_add_item_detail_columns.sql`: Adds the `items.rationale` and `items.source` columns.
+- `ember/adapters/migrations/005_create_ai_responses.sql`: Creates the `ai_responses` table.
 
 ## Tests (`tests/`)
 - `tests/__init__.py`: Marks the tests folder as a package.
