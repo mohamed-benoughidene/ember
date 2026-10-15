@@ -1,9 +1,11 @@
 """Live AI round trip (opt-in: needs an OpenRouter API key).
 
-Skipped unless `EMBER_AI_API_KEY` or `OPENROUTER_API_KEY` is set, so CI stays
-offline. Rule T7: assert the schema and the grounding, never the exact wording.
+The `live` marker keeps this file out of a plain pytest run, so a normal suite
+never calls the API and never costs money. Run it on purpose with:
 
-Run it yourself with:  ./.venv/bin/python -m pytest tests/test_capture_live.py -v
+    ./.venv/bin/python -m pytest -m live
+
+Rule T7: assert the schema and the grounding, never the exact wording.
 """
 
 from __future__ import annotations
@@ -36,10 +38,16 @@ from ember.capture.item_proposal import (
 from ember.capture.source_storage import store_source
 from tests.fakes import FakeConfirm
 
-pytestmark = pytest.mark.skipif(
-    not (os.environ.get("EMBER_AI_API_KEY") or os.environ.get("OPENROUTER_API_KEY")),
-    reason="no OpenRouter API key set",
-)
+pytestmark = [
+    pytest.mark.live,
+    pytest.mark.skipif(
+        not (
+            os.environ.get("EMBER_AI_API_KEY")
+            or os.environ.get("OPENROUTER_API_KEY")
+        ),
+        reason="no OpenRouter API key set",
+    ),
+]
 
 NOTE = (
     "We decided to use SQLite for local storage instead of Postgres, because "

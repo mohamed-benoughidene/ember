@@ -29,4 +29,7 @@ include = ["ember*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-q"
+addopts = "-q -m 'not live'"
+markers = [
+    "live: hits the real OpenRouter API and costs money; run with -m live",
+]

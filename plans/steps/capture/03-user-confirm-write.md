@@ -236,7 +236,9 @@ Extra decisions this step had to make:
   first, not a refactor. Kept on purpose: `items.rationale` / `items.source`
   and `change_log.link_id` (issues #1 and #2), and `CaptureError` (rule I6).
 - **Live AI round trip (item 6, done).** `tests/test_capture_live.py` runs the
-  real pipeline and skips unless a key is set, so CI stays offline. The first
+  real pipeline behind the `live` marker, so a plain pytest run never calls the
+  API (opt in with `-m live`); it also skips when no key is set, so CI stays
+  offline. The first
   live run found two real bugs: the adapter swallowed the provider's reason
   (now carries `reason`, `status` and a key-redacted `detail`), and a bare
   `json.loads` rejected the Markdown code fence real models wrap the answer in

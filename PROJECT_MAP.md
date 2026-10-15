@@ -100,7 +100,7 @@ Earlier logo and character images, kept for history.
 - `tests/test_cli.py`: CLI checks for the Phase 1 command, file/stdin modes and exit codes.
 - `tests/test_cli_capture.py`: CLI checks for the `capture` command with a fake AI.
 - `tests/test_cli_validated.py`: CLI checks for `set-validated` / `clear-validated` and the Assumption-only rule.
-- `tests/test_capture_live.py`: Live AI round trip. Skipped unless an OpenRouter key is in the environment, so CI stays offline.
+- `tests/test_capture_live.py`: Live AI round trip. Marked `live`, so a plain pytest run never calls the API; run it with `./.venv/bin/python -m pytest -m live`.
 - `tests/test_architecture.py`: Asserts engine core never imports an adapter.
 
 ### AI Answer Fixtures (`tests/fixtures/ai_responses/`)
