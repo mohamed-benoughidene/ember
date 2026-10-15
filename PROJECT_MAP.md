@@ -12,6 +12,7 @@ This file lists every file and its purpose in the repository. Update it when fil
 - `SECURITY.md`: Security vulnerability reporting instructions and policy.
 
 ## GitHub Config (`.github/`)
+- `.github/workflows/test.yml`: CI job. Installs the package and runs pytest on push and pull requests (rule T9, architecture test included).
 - `.github/CODEOWNERS`: Defines code and documentation ownership for pull requests.
 - `.github/dependabot.yml`: Dependabot settings. Watches GitHub Actions versions each week.
 - `.github/pull_request_template.md`: Default checklist and summary template for pull requests.
@@ -110,8 +111,9 @@ Saved AI answers for parser tests. Each pair is `case_NN.raw_text.txt` (the sour
 ## Database Tables (SQLite)
 - `schema_version`: Holds the applied migration number.
 - `sources`: Immutable raw input texts. Columns `id`, `title`, `full_text`, `timestamp`, `content_hash` (unique, the dedup key).
-- `items`: Confirmed typed items. Columns `id`, `type`, `statement`, `source_id` (foreign key to `sources.id`), `status`, `created_at`, `validated` (set only on Assumption rows).
+- `items`: Confirmed typed items. Columns `id`, `type`, `statement`, `source_id` (foreign key to `sources.id`), `status`, `created_at`, `validated` (set only on Assumption rows), `rationale` (Decision text), `source` (Finding evidence text).
 - `change_log`: Append-only ledger. Columns `id`, `item_id`, `link_id`, `field_changed`, `old_value`, `new_value`, `timestamp`, `trigger_cause`.
+- `ai_responses`: Raw AI answers, stored verbatim. Columns `id`, `source_id` (foreign key to `sources.id`), `response_text`, `timestamp`.
 
 ## Empty Folders
 These folders exist but hold no files yet.

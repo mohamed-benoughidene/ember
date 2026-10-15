@@ -151,3 +151,23 @@ Extra decisions this step had to make:
   6.5.3 needs a CLI edge that runs Phase 2, and that needs a provider adapter.
   Adds the `openai` dependency (L1 section 0).
 
+### 11.1 Constitution alignment pass (after review)
+
+- `ItemProposerPort.propose` now returns `ProposalResponse` (raw answer +
+  batch), and the CLI stores the raw answer through `SqliteAiResponseStore` into
+  the new `ai_responses` table (migration 005). Rules D8 / I16. Keyed by
+  `source_id` because no item exists yet at Phase 2; L1 section 3 says `item_id`.
+- `items` gains `rationale` and `source` (migration 004), per L1 section 5.
+  Capture writes neither (the AI returns no rationale or evidence text).
+- Rule I15: the OpenAI client now gets `timeout=60s` and `max_retries=0`, so the
+  SDK's own retries do not multiply the plan's "1 retry, 0s backoff".
+- Rule B4: the CLI reads `sources.full_text` by id, so `SourceTextPort` /
+  `load_source_text` / `full_text_for` are no longer dead code.
+- Rule I4: `ExistingItem` replaces the `(id, statement)` tuples.
+- Rule I10 / T6: `to_draft`, `similarity`, `find_near_dup` are private and are
+  covered through `validate_add_item`.
+- Rules I11 / I21: public functions name the error codes they raise, and the CLI
+  error tests assert the stable code.
+- Rule T9: `.github/workflows/test.yml` runs pytest (architecture test included)
+  on push and pull requests.
+
