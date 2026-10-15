@@ -65,3 +65,8 @@ class ContextModeInvalid(CaptureError):
 class ItemDbReadError(CaptureError):
     code = "CAPTURE-011"
     name = "ItemDbReadFail"
+
+
+class ItemSourceMissing(CaptureError):
+    code = "CAPTURE-012"
+    name = "ItemSourceMissing"
