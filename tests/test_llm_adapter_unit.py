@@ -10,6 +10,7 @@ from openai import OpenAIError
 from ember.adapters.llm import (
     DEFAULT_BASE_URL,
     DEFAULT_MODEL,
+    REQUEST_TIMEOUT_SECONDS,
     OpenAiItemProposer,
     build_item_proposer,
 )
@@ -168,6 +169,22 @@ def test_build_reads_the_env_and_returns_the_adapter() -> None:
     proposer = build_item_proposer({"OPENROUTER_API_KEY": "k", "EMBER_AI_MODEL": "m"})
 
     assert isinstance(proposer, OpenAiItemProposer)
+
+
+def test_build_bounds_the_timeout_and_sdk_retries(monkeypatch) -> None:
+    recorded: dict = {}
+
+    def fake_openai(**kwargs):
+        recorded.update(kwargs)
+        return object()
+
+    monkeypatch.setattr("ember.adapters.llm.OpenAI", fake_openai)
+
+    build_item_proposer({"OPENROUTER_API_KEY": "k"})
+
+    assert recorded["api_key"] == "k"
+    assert recorded["timeout"] == REQUEST_TIMEOUT_SECONDS
+    assert recorded["max_retries"] == 0
 
 
 def test_default_model_and_base_url_are_locked() -> None:

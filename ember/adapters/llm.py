@@ -22,6 +22,7 @@ from ember.capture.item_proposal import (
 
 DEFAULT_MODEL = "anthropic/claude-3.5-sonnet"
 DEFAULT_BASE_URL = "https://openrouter.ai/api/v1"
+REQUEST_TIMEOUT_SECONDS = 60.0
 _API_KEY_VARS = ("EMBER_AI_API_KEY", "OPENROUTER_API_KEY")
 
 
@@ -50,6 +51,11 @@ def build_item_proposer(
 
     Keys: `EMBER_AI_API_KEY` (or `OPENROUTER_API_KEY`), `EMBER_AI_MODEL`,
     `EMBER_AI_BASE_URL`.
+
+    Raise `AiCallError` (CAPTURE-008) when no API key is configured.
+
+    The client is built with an explicit timeout and `max_retries=0`, so the
+    only retry is the one `propose_items` owns (plan section 5, rule I15).
     """
     values = os.environ if env is None else env
     api_key = _first_present(values, _API_KEY_VARS)
@@ -58,6 +64,8 @@ def build_item_proposer(
     client = OpenAI(
         api_key=api_key,
         base_url=values.get("EMBER_AI_BASE_URL", DEFAULT_BASE_URL),
+        timeout=REQUEST_TIMEOUT_SECONDS,
+        max_retries=0,
     )
     return OpenAiItemProposer(client, values.get("EMBER_AI_MODEL", DEFAULT_MODEL))
 
