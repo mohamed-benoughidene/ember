@@ -60,3 +60,8 @@ class AiSchemaError(AiError):
 class ContextModeInvalid(CaptureError):
     code = "CAPTURE-010"
     name = "ContextModeInvalid"
+
+
+class ItemDbReadError(CaptureError):
+    code = "CAPTURE-011"
+    name = "ItemDbReadFail"

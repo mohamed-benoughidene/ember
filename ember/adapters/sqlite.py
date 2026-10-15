@@ -7,7 +7,8 @@ from datetime import datetime, timezone
 from importlib import resources
 from typing import Callable
 
-from ember.capture.errors import SourceDbReadError, SourceDbWriteError
+from ember.capture.errors import ItemDbReadError, SourceDbReadError, SourceDbWriteError
+from ember.capture.item_proposal import ContextItem
 from ember.capture.source_storage import SourceRecord
 
 _MIGRATIONS_MODULE = "ember.adapters.migrations"
@@ -90,3 +91,25 @@ class SqliteSourceStore:
         except sqlite3.Error as exc:
             raise SourceDbWriteError("db write fail", content_hash=content_hash) from exc
         return int(cursor.lastrowid)
+
+
+class SqliteItemContext:
+    """`ItemContextPort` on SQLite. Read-only: newest items first."""
+
+    def __init__(self, conn: sqlite3.Connection) -> None:
+        self._conn = conn
+
+    def recent_items(self, limit: int) -> list[ContextItem]:
+        try:
+            rows = self._conn.execute(
+                "SELECT id, type, statement FROM items"
+                " ORDER BY created_at DESC, id DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+        except sqlite3.Error as exc:
+            raise ItemDbReadError("item read fail") from exc
+        return [
+            ContextItem(id=row["id"], type=row["type"], statement=row["statement"])
+            for row in rows
+        ]
+
