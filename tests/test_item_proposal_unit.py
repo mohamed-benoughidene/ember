@@ -18,6 +18,7 @@ from ember.capture.item_proposal import (
     ContextMode,
     ItemProposal,
     ItemType,
+    ProposalBatch,
     build_context,
     parse_proposals,
     propose_items,
@@ -50,6 +51,10 @@ def _good_proposal() -> ItemProposal:
         source_quote="SQLite",
         confidence=0.9,
     )
+
+
+def _batch(*proposals: ItemProposal) -> ProposalBatch:
+    return ProposalBatch(proposals=list(proposals), dropped=[])
 
 
 def _context_items(count: int) -> list[ContextItem]:
@@ -103,7 +108,7 @@ def test_mode_b_reads_the_last_50_items() -> None:
 def test_mode_b_context_is_passed_to_the_ai() -> None:
     reader = FakeItemContext(_context_items(60))
     context = build_context(reader, ContextMode.B)
-    proposer = FakeItemProposer([[_good_proposal()]])
+    proposer = FakeItemProposer([_batch(_good_proposal())])
 
     propose_items(proposer, raw_text=RAW_TEXT, context=context)
 
@@ -129,12 +134,12 @@ def test_system_prompt_asks_for_quote_and_confidence() -> None:
 
 
 def test_first_call_fail_makes_a_second_call() -> None:
-    proposer = FakeItemProposer([AiCallError("ai call fail"), [_good_proposal()]])
+    proposer = FakeItemProposer([AiCallError("ai call fail"), _batch(_good_proposal())])
 
     result = propose_items(proposer, raw_text=RAW_TEXT, context=[])
 
     assert len(proposer.calls) == 2
-    assert result == [_good_proposal()]
+    assert result.proposals == [_good_proposal()]
 
 
 def test_second_call_fail_raises() -> None:
@@ -150,17 +155,17 @@ def test_second_call_fail_raises() -> None:
 
 def test_unreadable_response_also_retries_once() -> None:
     proposer = FakeItemProposer(
-        [AiSchemaError("ai response not json"), [_good_proposal()]]
+        [AiSchemaError("ai response not json"), _batch(_good_proposal())]
     )
 
     result = propose_items(proposer, raw_text=RAW_TEXT, context=[])
 
     assert len(proposer.calls) == 2
-    assert result == [_good_proposal()]
+    assert result.proposals == [_good_proposal()]
 
 
 def test_raw_text_is_handed_to_the_ai() -> None:
-    proposer = FakeItemProposer([[_good_proposal()]])
+    proposer = FakeItemProposer([_batch(_good_proposal())])
 
     propose_items(proposer, raw_text=RAW_TEXT, context=[])
 

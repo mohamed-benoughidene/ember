@@ -4,18 +4,18 @@ from __future__ import annotations
 
 from ember.capture.errors import UserAbort
 from ember.capture.item_gatekeeper import ValidatedItem
-from ember.capture.item_proposal import ContextItem, ItemProposal
+from ember.capture.item_proposal import ContextItem, ItemProposal, ProposalBatch
 from ember.capture.source_storage import SourceRecord
 
 
 class FakeItemProposer:
-    """Canned AI. Each call returns the next outcome, or raises it if it is one."""
+    """Canned AI. Each call returns the next batch, or raises it if it is one."""
 
-    def __init__(self, outcomes: list[list[ItemProposal] | Exception]) -> None:
+    def __init__(self, outcomes: list[ProposalBatch | Exception]) -> None:
         self._outcomes = list(outcomes)
         self.calls: list[tuple[str, list[ContextItem]]] = []
 
-    def propose(self, raw_text: str, context: list[ContextItem]) -> list[ItemProposal]:
+    def propose(self, raw_text: str, context: list[ContextItem]) -> ProposalBatch:
         self.calls.append((raw_text, context))
         if not self._outcomes:
             raise AssertionError("FakeItemProposer ran out of outcomes")
