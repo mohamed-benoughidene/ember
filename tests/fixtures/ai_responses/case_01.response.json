@@ -1,0 +1,20 @@
+[
+  {
+    "type": "Decision",
+    "statement": "Use SQLite for the local store",
+    "source_quote": "We picked SQLite for the local store",
+    "confidence": 0.93
+  },
+  {
+    "type": "Assumption",
+    "statement": "V1 is single-user only",
+    "source_quote": "The team assumes single-user only for V1",
+    "confidence": 0.81
+  },
+  {
+    "type": "Question",
+    "statement": "How to handle concurrent writes later?",
+    "source_quote": "How do we handle concurrent writes later?",
+    "confidence": 0.7
+  }
+]

@@ -8,3 +8,20 @@ archive/
 # OS noise
 .DS_Store
 Thumbs.db
+
+# OpenCode local config
+.opencode/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+*.egg-info/
+.pytest_cache/
+build/
+dist/
+
+# Local database files
+*.db
+*.sqlite
+*.sqlite3

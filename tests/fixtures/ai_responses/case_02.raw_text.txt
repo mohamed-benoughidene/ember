@@ -1,0 +1,1 @@
+Latency dropped to 40 ms after we added the index. Bob thinks caching will help more. Should we cache?

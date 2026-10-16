@@ -1,0 +1,1 @@
+We picked SQLite for the local store because it needs no server. The team assumes single-user only for V1. How do we handle concurrent writes later?

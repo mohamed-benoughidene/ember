@@ -1,0 +1,2 @@
+ALTER TABLE items ADD COLUMN rationale TEXT;
+ALTER TABLE items ADD COLUMN source TEXT;

@@ -1,0 +1,26 @@
+[
+  {
+    "type": "Finding",
+    "statement": "Adding the index cut latency to 40 ms",
+    "source_quote": "Latency dropped to 40 ms after we added the index",
+    "confidence": 0.88
+  },
+  {
+    "type": "Risk",
+    "statement": "Caching may add complexity",
+    "source_quote": "Bob thinks caching will help more",
+    "confidence": 0.5
+  },
+  {
+    "type": "Assumption",
+    "statement": "Caching will help",
+    "source_quote": "caching will make it instant",
+    "confidence": 0.6
+  },
+  {
+    "type": "Question",
+    "statement": "Should we cache?",
+    "source_quote": "Should we cache?",
+    "confidence": 1.2
+  }
+]
