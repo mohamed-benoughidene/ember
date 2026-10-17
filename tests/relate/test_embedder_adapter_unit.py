@@ -10,7 +10,6 @@ from __future__ import annotations
 import sys
 import time
 import types
-from typing import Any
 
 import pytest
 
@@ -29,7 +28,7 @@ def install_fake(
 ) -> type:
     """Inject a fake `sentence_transformers` module with a fake class."""
     module = types.ModuleType(MODULE)
-    module.SentenceTransformer = transformer_cls  # type: ignore[attr-defined]
+    module.SentenceTransformer = transformer_cls
     monkeypatch.setitem(sys.modules, MODULE, module)
     return transformer_cls
 
@@ -40,7 +39,7 @@ def recording_transformer() -> type:
     class FakeSentenceTransformer:
         load_ids: list[str] = []
 
-        def __init__(self, model_id: str, **kwargs: Any) -> None:
+        def __init__(self, model_id: str, **kwargs: object) -> None:
             self.model_id = model_id
             FakeSentenceTransformer.load_ids.append(model_id)
 
@@ -85,7 +84,7 @@ def test_other_names_pass_through_unchanged(
 
 def test_embed_returns_plain_lists_of_floats(monkeypatch: pytest.MonkeyPatch) -> None:
     class Fake:
-        def __init__(self, model_id: str, **kwargs: Any) -> None:
+        def __init__(self, model_id: str, **kwargs: object) -> None:
             pass
 
         def encode(self, texts: list[str]) -> list[list[int]]:
@@ -106,7 +105,7 @@ def test_embed_returns_plain_lists_of_floats(monkeypatch: pytest.MonkeyPatch) ->
 
 def test_encode_failure_raises_relate_018(monkeypatch: pytest.MonkeyPatch) -> None:
     class Fake:
-        def __init__(self, model_id: str, **kwargs: Any) -> None:
+        def __init__(self, model_id: str, **kwargs: object) -> None:
             pass
 
         def encode(self, texts: list[str]) -> list[list[float]]:
@@ -130,7 +129,7 @@ def test_existing_relate_error_is_reraised_unchanged(
     original = EmbedderEncodeFailed("already failed")
 
     class Fake:
-        def __init__(self, model_id: str, **kwargs: Any) -> None:
+        def __init__(self, model_id: str, **kwargs: object) -> None:
             pass
 
         def encode(self, texts: list[str]) -> list[list[float]]:
@@ -150,7 +149,7 @@ def test_existing_relate_error_is_reraised_unchanged(
 
 def test_constructor_failure_raises_relate_017(monkeypatch: pytest.MonkeyPatch) -> None:
     class Fake:
-        def __init__(self, model_id: str, **kwargs: Any) -> None:
+        def __init__(self, model_id: str, **kwargs: object) -> None:
             raise RuntimeError("cannot download weights")
 
     install_fake(monkeypatch, Fake)
@@ -177,7 +176,7 @@ def test_missing_module_raises_relate_017_with_install_hint(
 
 def test_slow_load_times_out_with_relate_017(monkeypatch: pytest.MonkeyPatch) -> None:
     class Fake:
-        def __init__(self, model_id: str, **kwargs: Any) -> None:
+        def __init__(self, model_id: str, **kwargs: object) -> None:
             time.sleep(0.3)
 
         def encode(self, texts: list[str]) -> list[list[float]]:
@@ -196,7 +195,7 @@ def test_slow_load_times_out_with_relate_017(monkeypatch: pytest.MonkeyPatch) ->
 
 def test_dim_returns_int(monkeypatch: pytest.MonkeyPatch) -> None:
     class Fake:
-        def __init__(self, model_id: str, **kwargs: Any) -> None:
+        def __init__(self, model_id: str, **kwargs: object) -> None:
             pass
 
         def encode(self, texts: list[str]) -> list[list[float]]:
@@ -245,7 +244,7 @@ def test_build_embedder_bad_timeout_raises_relate_035() -> None:
 
 def test_build_embedder_timeout_env_is_applied(monkeypatch: pytest.MonkeyPatch) -> None:
     class Fake:
-        def __init__(self, model_id: str, **kwargs: Any) -> None:
+        def __init__(self, model_id: str, **kwargs: object) -> None:
             time.sleep(0.3)
 
         def encode(self, texts: list[str]) -> list[list[float]]:

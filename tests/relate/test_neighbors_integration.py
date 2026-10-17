@@ -120,7 +120,7 @@ def test_an_unknown_item_has_no_neighbors(db_path) -> None:
 
 
 def test_read_failure_raises_relate_021() -> None:
-    lookup = SqliteLinkContext(BrokenConnection())  # type: ignore[arg-type]
+    lookup = SqliteLinkContext(BrokenConnection())
 
     with pytest.raises(GraphReadFailed) as exc:
         lookup.neighbors_of(1)
