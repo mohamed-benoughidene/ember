@@ -35,7 +35,7 @@ From Step 1: `NewItem`.
 From ports (L2 §4.5):
 - `LinkProposerPort.propose_links(new_item, candidates) -> LinkProposalResponse`
 - `AiResponseStorePort.save(item_id, raw_response) -> None`
-- `LinkLookupPort.item_exists / item_status / item_type / item_statement / supersedes_ancestors / find_existing`
+- `LinkLookupPort.item_exists / item_status / item_type / item_statement / supersedes_ancestors / find_existing` (Step 1's protocol amendment to `ember/relate/link_lookup.py` already added these signatures; the `SqliteLinkContext` adapter implements `item_status` and `supersedes_ancestors` in Step 3's adapter work, and `neighbors_of` for Step 2)
 - `LinkStorePort.insert_link_with_log(link_row, change_log_row) -> int`
 - `LinkLookupPort` is passed as a single object; the orchestrator holds it.
 
@@ -68,7 +68,7 @@ Plus the summary line `accepted: N, rejected: N, skipped: N, aborted: true|false
 
 ### 4.2 Phase 3.5: save raw AI response (D8 / I16)
 
-5. After the port returns and before returning to Phase 4, call `ai_response_store.save(item_id=new_item.id, raw_response=raw_response)`. Engine core catches `ValueError` (both/neither of `source_id`/`item_id` set) and re-raises as `RELATE-030 SchemaValidationFailed`. Any other exception (disk full, FK violation) is caught and re-raised as `RELATE-036 AiResponseWriteFailed`. The `ai_response_store.save` adapter is widened per L2 §3.4 / §5.4: `source_id: int` becomes `source_id: int | None`, an `item_id: int | None` parameter is added, and the INSERT body SQL widens from `(source_id, response_text, timestamp)` to `(source_id, item_id, response_text, timestamp)`. The ValueError guard is also added by the adapter widening. **Precondition:** this Step 3 call requires Step 1's adapter widening to have already landed in `ember/adapters/sqlite.py` (current code at line 323 still has `source_id: int` and the 3-column INSERT; Step 1's deliverable is migration 009 plus the adapter edit). Engine core never imports the adapter directly.
+5. After the port returns and before returning to Phase 4, call `ai_response_store.save(item_id=new_item.id, raw_response=raw_response)`. Engine core catches `ValueError` (both/neither of `source_id`/`item_id` set) and re-raises as `RELATE-030 SchemaValidationFailed`. Any other exception (disk full, FK violation) is caught and re-raised as `RELATE-036 AiResponseWriteFailed`. The `ai_response_store.save` adapter is widened per L2 §3.4 / §5.4: `source_id: int` becomes `source_id: int | None`, an `item_id: int | None` parameter is added, and the INSERT body SQL widens from `(source_id, response_text, timestamp)` to `(source_id, item_id, response_text, timestamp)`. The ValueError guard is also added by the adapter widening. (Step 1 already landed this widening at `ember/adapters/sqlite.py:545-573`; the precondition is satisfied.) Engine core never imports the adapter directly.
 
 ### 4.3 Phase 4: gatekeeper + confirm loop
 

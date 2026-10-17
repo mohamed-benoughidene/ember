@@ -150,14 +150,12 @@ Phase 4: User confirm + validate_add_link + change_log
 ### Phase 1: Load new item + filter
 
 - Input: `--item ID` flag, or `--latest` (pick the most recent `Active` item the user has not yet related).
-- **`--latest` algorithm:** walk `items WHERE status='Active' ORDER BY id DESC`, run the "not yet related" check (below) for each, return the first with no links. If none qualify, print "no unrelated items" to STDOUT and exit 0 (not an error).
-- **`--latest` definition:** "not yet related as source" means no row in `links` where `source_item_id = item.id` (any status: `Confirmed` or `Rejected`). The check is `SELECT 1 FROM links WHERE source_item_id = ? LIMIT 1`. If the query returns a row, the item has been related — skip to next. (A single rejected proposal disqualifies the item from `--latest` forever, by design: the user has already engaged with it.)
+- **`--latest` algorithm:** one query: `WHERE status='Active' AND id NOT IN (SELECT source_item_id FROM links) ORDER BY id DESC LIMIT 1`. If the result is empty, print "no unrelated items" to STDOUT and exit 0 (not an error). The `NOT IN` subquery has no status filter, so a row of any status (`Confirmed` or `Rejected`) disqualifies the item. A single rejected proposal disqualifies the item from `--latest` forever, by design: the user has already engaged with it.
 - If `--item ID` is given, fail fast at the DB lookup: if the item is not in the DB, exit with `RELATE-001` and a message naming `--item ID` and the DB path (so the user knows if they pointed at the wrong DB).
 - Read the item from `items`. L3 reads `id`, `type`, `statement`, and `created_at` into `NewItem`; `status` and `source_id` are not needed by Phases 2-4 and are trimmed from the model (M13).
-- **Filter the rest of the items table** to get a candidate universe:
-  - Drop the specific `(link_type, target)` pair from consideration: remove the `(source=new_item.id, target=X.id, link_type=T)` triple from `candidate_universe`, but keep `X` itself if at least one other `link_type` remains viable. (No duplicate links, no repeated suggestions for the same type. Different `link_type` for the same target is still suggested.)
-  - Phase 1 reads all existing outgoing links once with `existing_link_types(new_item.id)` and subtracts the used types per candidate in memory; it makes no per-candidate `find_existing` calls. `find_existing` stays for Phase 4's gatekeeper.
-  - Drop items where no `link_type` yields a valid `(source_type=new_item.type, target_type=X.type)` pair per the V1 spec 3.3 compatibility table. The table (inlined here so L3 does not re-read the spec):
+- **Build the candidate universe** with two filters, in order:
+  - **Filter #1 (batch read):** call `existing_link_types(new_item.id)` once. It returns, per target id, the set of link types already present from the new item (any status: `Confirmed` or `Rejected`). Subtract those used types in memory; for each candidate `X`, drop the `(new_item.id, X.id, T)` triple from consideration but keep `X` itself if at least one other `link_type` remains viable. (No duplicate links, no repeated suggestions for the same type. Different `link_type` for the same target is still suggested.) Step 1 makes no per-candidate `find_existing` calls; `find_existing` stays for Phase 4's gatekeeper.
+  - **Filter #2:** drop items where no remaining `link_type` yields a valid `(source_type=new_item.type, target_type=X.type)` pair per the V1 spec 3.3 compatibility table. The table (inlined here so L3 does not re-read the spec):
 
     | source_type \ link_type | supports | contradicts | depends_on | supersedes | answers |
     |---|---|---|---|---|---|
@@ -168,7 +166,7 @@ Phase 4: User confirm + validate_add_link + change_log
 
     For example, a `Question` new_item can only be a `supersedes` source (target same type), reducing its universe to other `Question` items. A `Finding` cannot be a `depends_on` source but can answer `Question`. This filter is an optimization — it shrinks the candidate universe passed to Phase 2's signals. The gatekeeper (Phase 4 rule #5) is the correctness check on the AI's specific proposal. Both can coexist.
   - Closed items are kept in the candidate universe (they remain valid targets for 4 of 5 link types). The gatekeeper's check #6 below rejects `supersedes` to a Closed target. This matches V1 spec 3.3 exactly.
-- Output: `{new_item: Item, candidate_universe: list[Item]}`.
+- Output: `LoadedCandidates(new_item: NewItem, universe: CandidateUniverse)` — the named wrapper from `ember/relate/load_filter.py` (per Constitution I4; a 2-tuple is acceptable but the named object documents the contract). `load_item_candidates` and `load_latest_candidates` are the two entry points (no boolean behavior flag; I2 compliance).
 
 ### Phase 2: Build candidate pool (3 signals, merged)
 
@@ -201,7 +199,7 @@ If the union has 1+ items: pass to Phase 3.
 
 Engine-core split: **`validate_add_link` is pure (no I/O); `SqliteLinkStore` is the edge adapter that does the writes.** The architecture test forbids `sqlite3` in `ember.relate.*`, so the gatekeeper must not import it. Core = `ember/relate/link_gatekeeper.py` (pure) + `ember/relate/link_proposal.py` (Phase 3.5 wrapper) + `ember/relate/confirm_write.py` (the user loop). Edge = `ember/adapters/sqlite.py` (new `SqliteLinkStore` + `SqliteLinkContext` classes — see §5.4 for the split).
 
-**Wiring:** the CLI builds `lookup = SqliteLinkContext(conn)` and `store = SqliteLinkStore(conn)` once at Relate invocation (not per proposal). The CLI builds a `LinkRun(lookup, store)` dataclass (§5.5) and passes it to Phase 4's orchestrator (`run_confirm_loop`). The orchestrator calls `validate_add_link(draft, run.lookup)` (pure, no I/O) for each proposal; if the gatekeeper returns `ValidatedLink`, the orchestrator calls `run.store.insert_link_with_log(link_row, change_log_row)` to commit. The gatekeeper never sees the store.
+**Wiring:** the CLI builds `lookup = SqliteLinkContext(conn)` and `store = SqliteLinkStore(conn)` once at Relate invocation (not per proposal). The orchestrator (`run_confirm_loop`) takes `lookup` and `store` as 2 separate args (per M8; the `LinkRun` bundle was dropped from §5.5). The orchestrator calls `validate_add_link(draft, lookup)` (pure, no I/O) for each proposal; if the gatekeeper returns `ValidatedLink`, the orchestrator calls `store.insert_link_with_log(link_row, change_log_row)` to commit. The gatekeeper never sees the store.
 
 Loop over `LinkProposal`s.
 
@@ -321,7 +319,7 @@ Loaded once at CLI startup via factory functions:
 - `ember/adapters/llm.py` — extended with `OpenAiLinkProposer` (L2 pick: same file as Capture, no new module). Returns `LinkProposalResponse(raw_response, proposals)`.
 - `ember/adapters/embedder.py` — new file. `SentenceTransformerEmbedder(model_name, load_timeout)`. Implements `EmbedderPort`. This is where `sentence-transformers` is imported; engine core never sees it.
 - `ember/adapters/sqlite.py` — extended with:
-  - `SqliteLinkContext(conn)` — implements `LinkLookupPort` (7 methods: `item_exists`, `item_status`, `item_type`, `item_statement`, `supersedes_ancestors`, `neighbors_of`, `find_existing`).
+  - `SqliteLinkContext(conn)` — implements `LinkLookupPort`. Step 1 ships 8 Phase 1 methods (`item_exists`, `item_type`, `item_statement`, `item_created_at`, `find_existing`, `existing_link_types`, `list_other_items`, `find_latest_unlinked_active`); `neighbors_of` lands with Step 2 and `item_status` + `supersedes_ancestors` with Step 3. After Step 3 lands, the full 11-method protocol is in place.
   - `SqliteLinkStore(conn)` — implements `LinkStorePort` (1 write method: `insert_link_with_log(link_row, change_log_row) -> int` — single `BEGIN` / `INSERT link` / capture `lastrowid` / `INSERT change_log` / `COMMIT`, atomic).
   - `SqliteEmbedderStore(conn)` — implements `EmbeddingStorePort` (4 methods: `get`, `upsert`, `model_name_of`, `wipe`).
   - `SqliteAiResponseStore.save` is extended per §3.4 to accept optional `item_id`. L3 must widen `source_id` from `int` to `int | None` in the type hint. The INSERT body SQL is also widened from `(source_id, response_text, timestamp)` to `(source_id, item_id, response_text, timestamp)`. The `save` call from Phase 3.5 goes through `build_ai_response_store` (engine core never imports the adapter directly).
@@ -335,10 +333,10 @@ Models:
 - `LinkProposalResponse(raw_response: str, proposals: list[LinkProposal])` — Phase 3 port return shape.
 - `LinkDraft(source_item_id: int, target_item_id: int, link_type: str, rationale: str | None)` — Phase 4 gatekeeper input.
 - `ValidatedLink(link_row: Link, change_log_row: ChangeLogEntry)` — gatekeeper success.
-- `RejectedLink(reason: str, code: str)` — gatekeeper failure (e.g. premise rule). The `code` is the RELATE-NNN string.
+- `RejectedLink(code: str)` — gatekeeper failure (e.g. premise rule). The CLI maps the `code` (RELATE-NNN string) to user-facing prose at print time; the engine core does not carry a `reason` field.
 - `ConfirmResult(accepted: list[link_id: int], rejected: int, skipped: int, aborted: bool)` — Phase 4 output.
 - `RankedCandidate(item: Item, cosine: float | None, source: SignalKind)` — transient Pydantic model for Phase 2 merge. `SignalKind` is a Pydantic `Enum` with values `dense`, `graph`, `metadata`.
-- **`LinkRun(lookup: LinkLookupPort, store: LinkStorePort)`** — Pydantic model (or `dataclass`) holding the two ports injected into Phase 4's orchestrator. Built once at Relate invocation by the CLI.
+- ~~`LinkRun(lookup: LinkLookupPort, store: LinkStorePort)`~~ — **dropped.** The orchestrator takes `lookup` and `store` as 2 separate args (a bundle was over-engineered per M8; the read/write asymmetry is clearer with explicit names). Per Step 3 v3 §10 amendment log.
 
 `Item`, `Link`, `ChangeLogEntry` are Pydantic models representing DB rows. Defined in `ember/relate/rows.py` (engine core) so the gatekeeper and adapter share a single source of truth.
 
@@ -471,12 +469,38 @@ L3 step plans (in `plans/steps/relate/`) will resolve these. They are recorded h
 ## 10. Next Step
 
 Human approves this L2 plan. Then 3 L3 step plans in `plans/steps/relate/`:
-- `01-load-and-filter.md` (Phase 1)
+- `01-load-and-filter.md` (Phase 1) — landed
 - `02-candidate-pool.md` (Phase 2: 3 signals + merge)
 - `03-ai-propose-and-confirm-write.md` (Phases 3 + 4, fold decision per §9 #1)
 
-L3 Step 1 deliverable checklist:
-- (a) `ember/relate/*.py` modules (errors, link_proposal, link_gatekeeper, link_lookup, link_store, ai_response_store, embedding_store, candidate_pool, confirm_write, load_filter, rows, ports).
-- (b) Extended architecture test per §7.3 (`test_relate_core_does_not_import_adapters`).
-- (c) `tests/relate/` directory with fakes for the 5 ports (`LinkProposerPort`, `EmbedderPort`, `LinkLookupPort`, `LinkStorePort`, `EmbeddingStorePort`; `AiResponseStorePort` is rarely faked — Capture's fakes pattern applies).
-- (d) Migrations 006/007/008/009 in `ember/adapters/migrations/`.
+L3 deliverable checklists:
+
+**Step 1 (landed on `feat/relate-engine`):**
+- (a) `ember/relate/*.py` modules: `compat.py`, `errors.py`, `link_lookup.py`, `load_filter.py`, `rows.py`. (`__init__.py` package marker.)
+- (b) `SqliteLinkContext` Phase 1 methods: `item_exists`, `item_type`, `item_statement`, `item_created_at`, `find_existing`, `existing_link_types`, `list_other_items`, `find_latest_unlinked_active` (8 methods in `ember/adapters/sqlite.py`).
+- (c) `compat.py` — V1 spec 3.3 type-compatibility table.
+- (d) Migrations 006 (`links`), 007 (`item_embeddings`), 008 (`change_log.link_id` FK), 009 (`ai_responses` widening) in `ember/adapters/migrations/`.
+- (e) `open_relate_database` + `ensure_relate_schema` boot checks in `ember/adapters/sqlite.py:48-91` (migrate-then-validate `schema_version >= 9`).
+- (f) Architecture test extension: `test_relate_core_does_not_import_adapters` added to `tests/test_architecture.py` (per §7.3).
+- (g) `tests/relate/` directory with fakes: `FakeLinkContext` + the per-method test suites (`test_load_filter_unit.py`, `test_load_filter_integration.py`, `test_relate_cli.py`).
+
+**Step 2 (planned):**
+- (a) `ember/relate/embedding_store.py` — `EmbeddingStorePort` protocol + adapter; methods `get`, `upsert`, `model_name_of`, `wipe`.
+- (b) `ember/relate/candidate_pool.py` — public `build_candidate_pool(LoadedCandidates, ...)` + private `_cosine` helper.
+- (c) `SqliteEmbedderStore` in `ember/adapters/sqlite.py`.
+- (d) `LinkLookupPort.neighbors_of` implementation in `SqliteLinkContext` (1-hop BFS via `Confirmed` links).
+- (e) `SentenceTransformerEmbedder` in new `ember/adapters/embedder.py` (where `sentence-transformers` is imported).
+- (f) Step 2 fakes + tests.
+
+**Step 3 (planned):**
+- (a) `ember/relate/link_proposal.py` — Phase 3 AI orchestration.
+- (b) `ember/relate/link_gatekeeper.py` — pure `validate_add_link` with 9 rules.
+- (c) `ember/relate/confirm_write.py` — user loop (y/n/s/q) + `format_link_block` YAML emitter.
+- (d) `ember/relate/ai_response_store.py` — `AiResponseStorePort` protocol.
+- (e) `SqliteLinkStore` in `ember/adapters/sqlite.py` — atomic `insert_link_with_log` (BEGIN / INSERT link / capture lastrowid / INSERT change_log / COMMIT).
+- (f) `OpenAiLinkProposer` in `ember/adapters/llm.py` (extending Capture's adapter).
+- (g) `LinkLookupPort.item_status` + `LinkLookupPort.supersedes_ancestors` implementations in `SqliteLinkContext`.
+- (h) The `ember relate` Click command in `ember/cli.py`.
+- (i) Step 3 fakes + tests.
+
+(Five new ports across Step 2 + Step 3: `LinkProposerPort`, `EmbedderPort`, `LinkLookupPort` extended with `neighbors_of` / `item_status` / `supersedes_ancestors`, `LinkStorePort`, `EmbeddingStorePort`, `AiResponseStorePort`. The `AiResponseStorePort` is rarely faked — Capture's fakes pattern applies.)

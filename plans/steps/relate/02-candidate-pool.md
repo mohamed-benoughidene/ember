@@ -22,12 +22,12 @@ Implements Phase 2 of L2 Relate plan. Build a ranked candidate pool from 3 signa
 
 ## 1. Job
 
-Take the `(NewItem, CandidateUniverse)` from Step 1 and produce a ranked `list[RankedCandidate]` for Phase 3. Three signals run independently and are merged by union (with cosine score if present, else 0.5).
+Take the `LoadedCandidates` from Step 1 and produce a ranked `list[RankedCandidate]` for Phase 3. Three signals run independently and are merged by union (with cosine score if present, else 0.5).
 
 ## 2. Inputs
 
-From Step 1: `NewItem` and `CandidateUniverse`.
-From ports (L2 §4.5):
+From Step 1: `LoadedCandidates(new_item: NewItem, universe: CandidateUniverse)` (the named wrapper from `ember/relate/load_filter.py:load_item_candidates` and `load_latest_candidates`; Step 2 destructures into `new_item` and `universe` internally).
+From ports (L2 §4.5 + Step 1 protocol amendments):
 - `LinkLookupPort.neighbors_of(item_id) -> list[int]`
 - `EmbeddingStorePort.get(item_id) -> list[float] | None`
 - `EmbeddingStorePort.upsert(item_id, vector, model_name) -> None`

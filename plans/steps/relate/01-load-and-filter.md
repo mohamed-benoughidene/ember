@@ -41,7 +41,8 @@ From the port (`LinkLookupPort`, L2 §4.5 + this step's amendments):
 ## 3. Outputs
 
 - `NewItem(id: int, type: str, statement: str, created_at: str)` — the item to relate. (4 fields; Phase 2 reads `id`, `type`, `statement`, `created_at` only. `status` and `source_id` are in the `items` row but are not used by Phase 2/3/4; per M13, trimmed from the model.)
-- `CandidateUniverse(items: list[NewItem])` — surviving candidates only. (Per M3, `dropped_pairs` is dropped: Phase 4 gatekeeper rule 9 uses `find_existing` to re-check uniqueness against the live DB, so no need to thread dropped pairs through. Per M2, `ContextSnapshot` wrapper is dropped: the orchestrator takes `NewItem` and `CandidateUniverse` as 2 separate args.)
+- `CandidateUniverse(items: list[NewItem])` — surviving candidates only. (Per M3, `dropped_pairs` is dropped: Phase 4 gatekeeper rule 9 uses `find_existing` to re-check uniqueness against the live DB, so no need to thread dropped pairs through.)
+- `LoadedCandidates(new_item: NewItem, universe: CandidateUniverse)` — the named wrapper returned by both `load_item_candidates` and `load_latest_candidates` (per Constitution I4; no boolean `latest=` flag, so I2 holds). Step 2 destructures this into `new_item` and `universe`. `load_latest_candidates` returns `None` (the soft exit) when no eligible item exists.
 
 ## 4. Steps
 
@@ -52,7 +53,7 @@ From the port (`LinkLookupPort`, L2 §4.5 + this step's amendments):
 3. Call `link_lookup.list_other_items(new_item.id)` to get the raw candidate pool. Build the initial universe.
 4. **Filter #1 — drop pairs.** Call `existing_link_types(new_item.id)` once. It returns, per target id, the set of link types already present from the new item (any status: `Confirmed` or `Rejected`). The dropped pairs are not tracked separately — Phase 4 re-checks via `find_existing` against the live DB.
 5. **Filter #2 — type compatibility.** For each candidate `X`, ask the compat table (L2 §4 spec 3.3 inlined in `ember/relate/compat.py`): is there at least one `link_type` where `(source_type=new_item.type, target_type=X.type)` is allowed? If no, drop `X`. If at least one allowed type is not in the existing set from step 4, keep `X`. The compat table is a `dict[tuple[str, str], set[str]]` keyed by `(source_type, target_type)`, values = allowed link_types.
-6. Build `CandidateUniverse`. Return `(NewItem, CandidateUniverse)` to the orchestrator. (2-tuple is fine here; both are named types.)
+6. Build `CandidateUniverse`. Wrap `new_item` + `universe` in `LoadedCandidates(new_item, universe)` and return that to the orchestrator (per Constitution I4: every public function returns a named object; a 2-tuple is also acceptable but the named object documents the contract).
 7. The orchestrator passes the candidate universe to Phase 2. Phase 1 is done.
 
 ## 5. Errors (codes only, per L2 §6)
