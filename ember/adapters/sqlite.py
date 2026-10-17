@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
+import sys
+from array import array
 from datetime import datetime, timezone
 from importlib import resources
 from typing import Callable
@@ -19,9 +21,12 @@ from ember.capture.item_gatekeeper import ExistingItem, StoredItem, ValidatedIte
 from ember.capture.item_proposal import ContextItem
 from ember.capture.source_storage import SourceRecord
 from ember.errors import EmberError
+from ember.relate.embedding_store import EmbeddingStorePort
 from ember.relate.errors import (
     DbMigrationFailed,
     DbOpenFailed,
+    EmbeddingWriteFailed,
+    GraphReadFailed,
     ItemsReadFailed,
     SchemaOutdated,
 )
@@ -232,7 +237,8 @@ class SqliteItemContext:
 class SqliteLinkContext:
     """`LinkLookupPort` on SQLite. Read-only item and link lookups for relate.
 
-    Every method raises `ItemsReadFailed` (RELATE-016) on a read failure.
+    Every item and link read raises `ItemsReadFailed` (RELATE-016) on a read
+    failure, except `neighbors_of`, which raises `GraphReadFailed` (RELATE-021).
     """
 
     def __init__(self, conn: sqlite3.Connection) -> None:
@@ -366,6 +372,32 @@ class SqliteLinkContext:
             statement=row["statement"],
             created_at=row["created_at"],
         )
+
+    def neighbors_of(self, item_id: int) -> list[int]:
+        """Return the 1-hop neighbors reached through Confirmed links.
+
+        Either side of a link counts, so a Confirmed row pointing at `item_id`
+        is a neighbor just like a row pointing away from it. The result is
+        sorted and deduplicated; `item_id` itself is never in it. Depth is 1:
+        this call does not recurse (plan step 2 section 4 step 4).
+
+        Raise `GraphReadFailed` (RELATE-021) on a read failure.
+        """
+        try:
+            rows = self._conn.execute(
+                "SELECT source_item_id, target_item_id FROM links"
+                " WHERE status = 'Confirmed'"
+                " AND (source_item_id = ? OR target_item_id = ?)",
+                (item_id, item_id),
+            ).fetchall()
+        except sqlite3.Error as exc:
+            raise GraphReadFailed("graph read fail", item_id=item_id) from exc
+        neighbors: set[int] = set()
+        for row in rows:
+            for other_id in (row["source_item_id"], row["target_item_id"]):
+                if other_id != item_id:
+                    neighbors.add(int(other_id))
+        return sorted(neighbors)
 
 
 class SqliteItemGatekeeper:
@@ -579,3 +611,128 @@ def _proposal_text(item: ValidatedItem) -> str:
         },
         ensure_ascii=False,
     )
+
+
+class SqliteEmbedderStore:
+    """`EmbeddingStorePort` on SQLite. Owns the packed vector format.
+
+    The cache is derived data: every method here reads or rewrites
+    `item_embeddings` rows only, and never touches `items`, `links`, or
+    `change_log` (Constitution D2).
+
+    Read failures raise `ItemsReadFailed` (RELATE-016); write failures raise
+    `EmbeddingWriteFailed` (RELATE-019).
+    """
+
+    def __init__(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        clock: Callable[[], str] | None = None,
+    ) -> None:
+        self._conn = conn
+        self._clock = clock or _utc_now
+
+    def get(self, item_id: int) -> list[float] | None:
+        """Return the cached vector for `item_id`, or None when it has no row.
+
+        Raise `ItemsReadFailed` (RELATE-016) on a read failure, including a
+        vector blob that cannot be decoded as float32.
+        """
+        try:
+            row = self._conn.execute(
+                "SELECT vector FROM item_embeddings WHERE item_id = ?", (item_id,)
+            ).fetchone()
+        except sqlite3.Error as exc:
+            raise ItemsReadFailed("embedding read fail", item_id=item_id) from exc
+        if row is None:
+            return None
+        try:
+            return _unpack_vector(row["vector"])
+        except (TypeError, ValueError) as exc:
+            raise ItemsReadFailed("embedding decode fail", item_id=item_id) from exc
+
+    def upsert(self, item_id: int, vector: list[float], model_name: str) -> None:
+        """Store one vector row, replacing any existing row for `item_id`.
+
+        `embedded_at` comes from the clock (UTC now by default). The row is
+        replaced unconditionally, so a stale vector from an older model never
+        survives a re-encode.
+
+        Raise `EmbeddingWriteFailed` (RELATE-019) on a write failure.
+        """
+        blob = _pack_vector(vector)
+        timestamp = self._clock()
+        try:
+            self._conn.execute(
+                "INSERT OR REPLACE INTO item_embeddings"
+                " (item_id, vector, model_name, embedded_at) VALUES (?, ?, ?, ?)",
+                (item_id, blob, model_name, timestamp),
+            )
+            self._conn.commit()
+        except sqlite3.Error as exc:
+            raise EmbeddingWriteFailed(
+                "embedding write fail", item_id=item_id
+            ) from exc
+
+    def model_name_of(self, item_id: int) -> str | None:
+        """Return the model name stored for `item_id`, or None when it is absent.
+
+        Raise `ItemsReadFailed` (RELATE-016) on a read failure.
+        """
+        try:
+            row = self._conn.execute(
+                "SELECT model_name FROM item_embeddings WHERE item_id = ?", (item_id,)
+            ).fetchone()
+        except sqlite3.Error as exc:
+            raise ItemsReadFailed("embedding read fail", item_id=item_id) from exc
+        return None if row is None else row["model_name"]
+
+    def first_model_name(self) -> str | None:
+        """Return the model name of any one cached row, or None when empty.
+
+        The pre-flight check (plan step 2 section 4 step 1) uses this to spot a
+        cache written by an older model.
+
+        Raise `ItemsReadFailed` (RELATE-016) on a read failure.
+        """
+        try:
+            row = self._conn.execute(
+                "SELECT model_name FROM item_embeddings LIMIT 1"
+            ).fetchone()
+        except sqlite3.Error as exc:
+            raise ItemsReadFailed("embedding read fail") from exc
+        return None if row is None else row["model_name"]
+
+    def wipe(self) -> None:
+        """Delete every cached vector. The next run re-encodes from items.
+
+        Raise `EmbeddingWriteFailed` (RELATE-019) on a write failure.
+        """
+        try:
+            self._conn.execute("DELETE FROM item_embeddings")
+            self._conn.commit()
+        except sqlite3.Error as exc:
+            raise EmbeddingWriteFailed("embedding wipe fail") from exc
+
+
+def build_embedding_store(conn: sqlite3.Connection) -> EmbeddingStorePort:
+    """Build the `item_embeddings` cache adapter for the relate engine."""
+    return SqliteEmbedderStore(conn)
+
+
+def _pack_vector(vector: list[float]) -> bytes:
+    """Pack a float vector as little-endian float32, the on-disk format."""
+    values = array("f", vector)
+    if sys.byteorder != "little":
+        values.byteswap()
+    return values.tobytes()
+
+
+def _unpack_vector(blob: bytes) -> list[float]:
+    """Decode a little-endian float32 blob back into floats."""
+    values = array("f")
+    values.frombytes(blob)
+    if sys.byteorder != "little":
+        values.byteswap()
+    return values.tolist()
