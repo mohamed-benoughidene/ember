@@ -221,22 +221,24 @@ def relate(item_id: int | None, latest: bool, db_path: str) -> None:
         lookup = SqliteLinkContext(conn)
         if latest:
             result = load_latest_candidates(lookup)
-        elif item_id is not None:
-            result = load_item_candidates(lookup, item_id=item_id, db_path=db_path)
         else:
-            raise click.UsageError("one of --item or --latest is required")
+            result = load_item_candidates(lookup, item_id=item_id, db_path=db_path)
         if result is None:
             click.echo("no unrelated items")
             return
-        counts: dict[str, int] = {}
-        pool = build_candidate_pool(
-            result,
-            link_lookup=lookup,
-            embedding_store=build_embedding_store(conn),
-            embedder=build_embedder(),
-            stderr=sys.stderr,
-            counts_out=counts,
-        )
+        if result.universe.items:
+            counts: dict[str, int] = {}
+            pool = build_candidate_pool(
+                result,
+                link_lookup=lookup,
+                embedding_store=build_embedding_store(conn),
+                embedder=build_embedder(),
+                stderr=sys.stderr,
+                counts_out=counts,
+            )
+        else:
+            counts = {"dense": 0, "graph": 0, "metadata": 0}
+            pool = []
     except EmberError as exc:
         click.echo(f"error: {exc.log_line()}", err=True)
         sys.exit(1)

@@ -143,6 +143,30 @@ def test_relate_latest_prints_json_when_eligible(db_path, monkeypatch) -> None:
     }
 
 
+def test_relate_empty_universe_skips_the_model(db_path, monkeypatch) -> None:
+    conn = open_database(db_path)
+    try:
+        source_id = insert_source(conn)
+        _seed_item(conn, source_id, 1)
+        conn.commit()
+    finally:
+        conn.close()
+
+    def _must_not_load():
+        raise AssertionError("the embedder must not load for an empty universe")
+
+    monkeypatch.setattr("ember.cli.build_embedder", _must_not_load)
+
+    result = CliRunner().invoke(main, ["relate", "--item", "1", "--db", db_path])
+
+    assert result.exit_code == 0
+    assert json.loads(result.output) == {
+        "phase": 2,
+        "pool_size": 0,
+        "signals": {"dense": 0, "graph": 0, "metadata": 0},
+    }
+
+
 def test_relate_embedder_load_failure_exits_1_with_relate_017(
     db_path, monkeypatch
 ) -> None:
