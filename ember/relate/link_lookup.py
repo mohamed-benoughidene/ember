@@ -15,6 +15,10 @@ class LinkLookupPort(Protocol):
     def find_existing(
         self, source_id: int, target_id: int, link_type: str
     ) -> Link | None: ...
+    def existing_link_types(self, source_item_id: int) -> dict[int, set[str]]:
+        """Return the link types already present from this source, by target id."""
+        ...
+
     def list_other_items(self, new_item_id: int) -> list[NewItem]:
         """Return every item except `new_item_id`, ordered by id."""
         ...

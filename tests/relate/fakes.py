@@ -41,6 +41,13 @@ class FakeLinkLookup:
                 return link
         return None
 
+    def existing_link_types(self, source_item_id: int) -> dict[int, set[str]]:
+        existing: dict[int, set[str]] = {}
+        for link in self._links:
+            if link.source_item_id == source_item_id:
+                existing.setdefault(link.target_item_id, set()).add(link.link_type)
+        return existing
+
     def list_other_items(self, new_item_id: int) -> list[NewItem]:
         return [item for item in self._items if item.id != new_item_id]
 

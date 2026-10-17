@@ -310,6 +310,23 @@ class SqliteLinkContext:
             created_at=row["created_at"],
         )
 
+    def existing_link_types(self, source_item_id: int) -> dict[int, set[str]]:
+        """Return the link types already present from this source, by target id."""
+        try:
+            rows = self._conn.execute(
+                "SELECT target_item_id, link_type FROM links"
+                " WHERE source_item_id = ?",
+                (source_item_id,),
+            ).fetchall()
+        except sqlite3.Error as exc:
+            raise ItemsReadFailed("link read fail", source_id=source_item_id) from exc
+        existing: dict[int, set[str]] = {}
+        for row in rows:
+            existing.setdefault(int(row["target_item_id"]), set()).add(
+                str(row["link_type"])
+            )
+        return existing
+
     def list_other_items(self, new_item_id: int) -> list[NewItem]:
         """Return every item except `new_item_id`, ordered by id."""
         try:

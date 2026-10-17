@@ -156,6 +156,7 @@ Phase 4: User confirm + validate_add_link + change_log
 - Read the item from `items`. L3 reads `id`, `type`, `statement`, and `created_at` into `NewItem`; `status` and `source_id` are not needed by Phases 2-4 and are trimmed from the model (M13).
 - **Filter the rest of the items table** to get a candidate universe:
   - Drop the specific `(link_type, target)` pair from consideration: remove the `(source=new_item.id, target=X.id, link_type=T)` triple from `candidate_universe`, but keep `X` itself if at least one other `link_type` remains viable. (No duplicate links, no repeated suggestions for the same type. Different `link_type` for the same target is still suggested.)
+  - Phase 1 reads all existing outgoing links once with `existing_link_types(new_item.id)` and subtracts the used types per candidate in memory; it makes no per-candidate `find_existing` calls. `find_existing` stays for Phase 4's gatekeeper.
   - Drop items where no `link_type` yields a valid `(source_type=new_item.type, target_type=X.type)` pair per the V1 spec 3.3 compatibility table. The table (inlined here so L3 does not re-read the spec):
 
     | source_type \ link_type | supports | contradicts | depends_on | supersedes | answers |
@@ -256,9 +257,10 @@ Loop over `LinkProposal`s.
   - `list_other_items(new_item_id: int) -> list[NewItem]` — Phase 1. Returns every item except `new_item_id`, ordered by id.
   - `find_latest_unlinked_active() -> NewItem | None` — Phase 1 (`--latest`). Newest `Active` item with no outgoing link (any status).
   - `find_existing(source_id: int, target_id: int, link_type: str) -> Link | None` — Phase 1/4. Returns the existing link row if any (any status: `Confirmed` or `Rejected`).
+  - `existing_link_types(source_item_id: int) -> dict[int, set[str]]` — Phase 1. One read of every outgoing link type (any status), keyed by target id. Replaces the per-candidate `find_existing` loop in Phase 1; `find_existing` stays for Phase 4's gatekeeper.
   - `supersedes_ancestors(item_id: int) -> set[int]` — Phase 4. BFS through `Confirmed` `supersedes` links, returns the set of all items reachable upstream.
   - `neighbors_of(item_id: int) -> list[int]` — Phase 2. 1-hop neighbors via `Confirmed` links (either side).
-  - Adapter: `SqliteLinkContext` in `ember/adapters/sqlite.py`. Protocol defined in `ember/relate/link_lookup.py` (engine core; can be co-located with `link_gatekeeper.py`). Step 1 implements the 7 Phase 1 methods; `neighbors_of` lands with Step 2 and `item_status` / `supersedes_ancestors` with Step 3.
+  - Adapter: `SqliteLinkContext` in `ember/adapters/sqlite.py`. Protocol defined in `ember/relate/link_lookup.py` (engine core; can be co-located with `link_gatekeeper.py`). Step 1 implements the 8 Phase 1 methods; `neighbors_of` lands with Step 2 and `item_status` / `supersedes_ancestors` with Step 3.
 - **`LinkStorePort`** — used by Phase 4 for the atomic link+log write:
   - `insert_link_with_log(link_row: Link, change_log_row: ChangeLogEntry) -> int` — one transaction, returns the new `link.id`. Raises `RELATE-029` on link-insert failure, `RELATE-011` on change_log-insert failure.
   - Adapter: `SqliteLinkStore` in `ember/adapters/sqlite.py`. Protocol in `ember/relate/link_store.py`.

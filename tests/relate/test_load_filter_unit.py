@@ -90,6 +90,29 @@ def test_filter_one_keeps_candidate_when_another_type_remains() -> None:
     assert [item.id for item in result.universe.items] == [2]
 
 
+class _BatchOnlyLookup(FakeLinkLookup):
+    def find_existing(
+        self, source_id: int, target_id: int, link_type: str
+    ) -> Link | None:
+        raise AssertionError("Phase 1 must not call find_existing")
+
+
+def test_candidate_universe_uses_one_batch_link_read() -> None:
+    lookup = _BatchOnlyLookup(
+        items=[_item(1, "Finding"), _item(2, "Decision"), _item(3, "Decision")],
+        links=[
+            _link(101, 1, 2, "supports"),
+            _link(102, 1, 3, "supports"),
+            _link(103, 1, 3, "contradicts"),
+        ],
+    )
+
+    result = load_item_candidates(lookup, item_id=1, db_path=DB_PATH)
+
+    assert result is not None
+    assert [item.id for item in result.universe.items] == [2]
+
+
 def test_filter_two_drops_incompatible_and_keeps_compatible() -> None:
     lookup = FakeLinkLookup(
         items=[_item(1, "Question"), _item(2, "Question"), _item(3, "Decision")]

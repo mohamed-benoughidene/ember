@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from pydantic import BaseModel
 
-from ember.relate.compat import LINK_TYPES, allowed_link_types
+from ember.relate.compat import allowed_link_types
 from ember.relate.errors import ItemIdNotFound, ItemsReadFailed
 from ember.relate.link_lookup import LinkLookupPort
 from ember.relate.rows import CandidateUniverse, NewItem
@@ -72,19 +72,18 @@ def build_candidate_universe(
 ) -> CandidateUniverse:
     """Keep items with a link type that is both unused and type-compatible.
 
-    Filter #1 drops link types already linked from the new item to a candidate
-    (any status). Filter #2 drops candidates with no type-compatible link type.
-    The port's order is preserved.
+    Filter #1 reads every existing outgoing link once and subtracts its
+    link types per candidate (any status). Filter #2 drops candidates with no
+    type-compatible link type. The port's order is preserved.
     """
+    existing = lookup.existing_link_types(new_item.id)
     survivors: list[NewItem] = []
     for candidate in lookup.list_other_items(new_item.id):
         if candidate.id == new_item.id:
             continue
-        viable = {
-            link_type
-            for link_type in LINK_TYPES
-            if lookup.find_existing(new_item.id, candidate.id, link_type) is None
-        }
-        if viable & allowed_link_types(new_item.type, candidate.type):
+        allowed = allowed_link_types(new_item.type, candidate.type)
+        if not allowed:
+            continue
+        if allowed - existing.get(candidate.id, set()):
             survivors.append(candidate)
     return CandidateUniverse(items=survivors)

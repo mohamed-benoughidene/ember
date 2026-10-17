@@ -26,6 +26,19 @@ def _insert_link(
     )
 
 
+def test_existing_link_types_includes_confirmed_and_rejected(db_path) -> None:
+    conn = open_database(db_path)
+    source_id = insert_source(conn)
+    for item_id in (1, 2, 3):
+        insert_item(conn, source_id=source_id, item_id=item_id, item_type="Question")
+    _insert_link(conn, 1, 2, "supersedes", "Confirmed")
+    _insert_link(conn, 1, 3, "supersedes", "Rejected")
+
+    existing = SqliteLinkContext(conn).existing_link_types(1)
+
+    assert existing == {2: {"supersedes"}, 3: {"supersedes"}}
+
+
 def test_item_one_drops_two_full_questions_and_keeps_three(db_path) -> None:
     conn = open_database(db_path)
     source_id = insert_source(conn)

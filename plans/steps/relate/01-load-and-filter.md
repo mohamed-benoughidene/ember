@@ -32,6 +32,7 @@ From the port (`LinkLookupPort`, L2 §4.5 + this step's amendments):
 - `item_type(item_id) -> str | None`
 - `item_statement(item_id) -> str | None`
 - `find_existing(source_id, target_id, link_type) -> Link | None`
+- `existing_link_types(source_item_id) -> dict[int, set[str]]` — one read of every outgoing link type (any status), keyed by target id. Added for option C; amend L2 §4.5.
 - `list_other_items(new_item_id) -> list[NewItem]` — returns all items except `new_item_id` (Phase 1 candidate universe). New method for this step; amend L2 §4.5 in the next Relate plan revision.
 - `find_latest_unlinked_active() -> NewItem | None` — for `--latest`. Returns the newest `Active` item that has no link of any status from it; `None` if no such item. New method for this step; amend L2 §4.5 in the next Relate plan revision.
 
@@ -49,8 +50,8 @@ From the port (`LinkLookupPort`, L2 §4.5 + this step's amendments):
    - `--latest`: call `link_lookup.find_latest_unlinked_active()`. The implementation runs `WHERE status='Active' AND id NOT IN (SELECT source_item_id FROM links) ORDER BY id DESC LIMIT 1` (per L2 §4 Phase 1 line 154: any link status disqualifies — B6 fix from a previous draft that narrowed to `status='Confirmed'`). If `None` is returned, **print "no unrelated items" to STDOUT and exit 0** — this is a soft exit per L2 §4 Phase 1 line 153 and L2 §6 line 385. No code is raised; the case is not an error.
 2. Read the new item row via `LinkLookupPort` (`item_type`, `item_statement`, plus the existing fields). Build the `NewItem` object.
 3. Call `link_lookup.list_other_items(new_item.id)` to get the raw candidate pool. Build the initial universe.
-4. **Filter #1 — drop pairs.** For each raw candidate `X`, for each of the 5 link_types, call `find_existing(new_item.id, X.id, T)`. If a `Link` is returned (any status: `Confirmed` or `Rejected`), drop the `(X.id, T)` pair from the universe. If a candidate loses all 5 pairs, also drop `X` itself. The dropped pairs are not tracked separately — Phase 4 will re-check via `find_existing` against the live DB.
-5. **Filter #2 — type compatibility.** For each surviving candidate `X`, ask the compat table (L2 §4 spec 3.3 inlined in `ember/relate/compat.py`): is there at least one `link_type` where `(source_type=new_item.type, target_type=X.type)` is allowed? If no, drop `X`. The compat table is a `dict[tuple[str, str], set[str]]` keyed by `(source_type, target_type)`, values = allowed link_types.
+4. **Filter #1 — drop pairs.** Call `existing_link_types(new_item.id)` once. It returns, per target id, the set of link types already present from the new item (any status: `Confirmed` or `Rejected`). The dropped pairs are not tracked separately — Phase 4 re-checks via `find_existing` against the live DB.
+5. **Filter #2 — type compatibility.** For each candidate `X`, ask the compat table (L2 §4 spec 3.3 inlined in `ember/relate/compat.py`): is there at least one `link_type` where `(source_type=new_item.type, target_type=X.type)` is allowed? If no, drop `X`. If at least one allowed type is not in the existing set from step 4, keep `X`. The compat table is a `dict[tuple[str, str], set[str]]` keyed by `(source_type, target_type)`, values = allowed link_types.
 6. Build `CandidateUniverse`. Return `(NewItem, CandidateUniverse)` to the orchestrator. (2-tuple is fine here; both are named types.)
 7. The orchestrator passes the candidate universe to Phase 2. Phase 1 is done.
 
@@ -72,10 +73,12 @@ Unit (in-memory `LinkLookupPort`, in-memory compat table):
 - `--latest` no eligible item: **soft exit 0**, prints "no unrelated items" to STDOUT, no code.
 - Filter #1: existing `(source, target, T)` triple removed from the universe, but `X` kept if another link_type still viable.
 - Filter #1: existing link of any status (`Confirmed` or `Rejected`) counts as a drop.
+- Filter #1: one batch link read per run; Phase 1 never calls `find_existing` per candidate.
 - Filter #2: type-incompatible candidate dropped; type-compatible kept.
 
 Integration (real SQLite temp DB, migrations 001-009 applied):
 - Seed: 6 items (the new item plus 5 candidates), 2 already linked from item #1 (one `Confirmed`, one `Rejected`). Run `--item 1` -> universe = 3 items; no `dropped_pairs` collection.
+- `existing_link_types(new_item.id)` returns both `Confirmed` and `Rejected` triples, keyed by target id.
 - `--item 999` -> `RELATE-001`, exit 1, message includes `999` and the DB path.
 - `schema_version.version` < 9 -> `RELATE-014`, exit 1. Version 8 must also reject; version 9 must pass. (Step 1 reads the table; `PRAGMA user_version` is unused. The check is defensive: `open_relate_database` migrates first.)
 - DB file missing or corrupt -> `RELATE-012`, exit 1.
@@ -121,7 +124,7 @@ Landed on `feat/relate-engine`.
 **Code**
 - `ember/relate/errors.py`: `RelateError` plus all 30 L2 §6 codes (001, 005-014, 016-019, 021-033, 035, 036).
 - `ember/relate/rows.py`: `NewItem`, `CandidateUniverse`, `Link`.
-- `ember/relate/link_lookup.py`: `LinkLookupPort` with 7 methods.
+- `ember/relate/link_lookup.py`: `LinkLookupPort` with 8 methods.
 - `ember/relate/compat.py`: `LINK_TYPES`, `TYPE_COMPAT`, `allowed_link_types`.
 - `ember/relate/load_filter.py`: `LoadedCandidates`, `_read_item`, `build_candidate_universe`, `load_item_candidates`, `load_latest_candidates`.
 - Migrations `006_create_links.sql`, `007_create_item_embeddings.sql`, `008_add_change_log_link_fk.sql`, `009_drop_source_id_not_null_and_add_item_id.sql` (L2 deliverable d). Schema version after apply = 9.
@@ -138,33 +141,43 @@ Landed on `feat/relate-engine`.
 - The CLI opens the DB through `open_relate_database`, not `open_database`, so the strict checks run before `load_item_candidates` / `load_latest_candidates`.
 - The schema gate was raised from `< 8` to `< 9` with user approval. After migration 009 the stored version is 9; L2 §6's trigger already says migrations 006-009. A version-8 DB must not pass, because Step 3 needs `ai_responses.item_id`.
 - `load_and_filter(latest=...)` was split into `load_item_candidates` and `load_latest_candidates` for strict I2 compliance. There is no boolean behavior flag and no invalid "both selectors" combination in the core.
-- `RELATE-016` now has a parametrized failure test for all seven `SqliteLinkContext` reads, plus a core test for a row that vanishes between the existence check and the field reads.
+- `RELATE-016` now has a parametrized failure test for all eight `SqliteLinkContext` reads, plus a core test for a row that vanishes between the existence check and the field reads.
 - The L2 plan was corrected in place (§3 schema version, §4 Phase 1 model, §4.5 port methods, §6 trigger text) instead of leaving the amendment log pending.
+- Option C was chosen for the link filter: `existing_link_types(new_item.id)` reads all outgoing links once, and `build_candidate_universe` subtracts the used types in memory. Phase 1 no longer calls `find_existing` per candidate. §4 step 4 was updated from the per-triple loop.
 
 **Tests**
-- Unit: `tests/relate/test_load_filter_unit.py` (6 tests: by-id happy path, missing item, `--latest` soft exit, both filters, any-status, vanishing row -> RELATE-016).
-- Integration: `tests/relate/test_load_filter_integration.py` (5 tests).
+- Unit: `tests/relate/test_load_filter_unit.py` (7 tests: by-id happy path, missing item, `--latest` soft exit, both filters, any-status, batch-only read, vanishing row -> RELATE-016).
+- Integration: `tests/relate/test_load_filter_integration.py` (6 tests, including the `existing_link_types` Confirmed/Rejected mapping).
 - CLI: `tests/relate/test_relate_cli.py` (9 tests: happy path, missing item, `--latest` soft exit + JSON, selector guard, missing DB -> RELATE-012, corrupt DB -> RELATE-012, migration failure -> RELATE-013, old schema -> RELATE-014).
 - DB open: `tests/test_relate_db_open.py` (9 tests: directory path, missing file, corrupt file, migration failure, version 5/8 reject, version 9 accept, old schema via open, all migrations applied).
-- Read failures: `tests/test_relate_read_failures.py` (7 parametrized tests, one per `SqliteLinkContext` read, all assert `RELATE-016`).
+- Read failures: `tests/test_relate_read_failures.py` (8 parametrized tests, one per `SqliteLinkContext` read, all assert `RELATE-016`).
 - Migration runner: `tests/test_migration_runner.py` (4 tests: failed DDL rolls back schema + version, a later failure keeps earlier migrations, foreign keys are restored, a successful run commits version 9).
 - Migrations: `tests/test_migrations.py` 12 tests, including `test_migrations_008_009_preserve_existing_rows` (a hand-built version-5 DB keeps its `change_log` / `ai_responses` rows and their `sqlite_sequence` values through 008/009).
 - AI response store: `tests/test_ai_response_store.py` (4 tests: save by `source_id`, save by `item_id`, reject both ids, reject neither id).
 - Architecture: `tests/test_architecture.py::test_relate_core_does_not_import_adapters`.
-- Full suite: 180 passed, 2 live tests deselected.
+- Full suite: 183 passed, 2 live tests deselected.
 - One stale assertion updated: `tests/test_source_storage_integration.py` expected schema version 5, now 9.
 
 **Performance measurement (Phase 1 query cost)**
 
-Measured with `sqlite3.set_trace_callback` and `time.perf_counter` on synthetic all-`Decision` DBs with no links. The one-query prototype replaces the per-candidate `find_existing` loop with one `SELECT target_item_id, link_type FROM links WHERE source_item_id = ?`.
+Measured with `sqlite3.set_trace_callback` and `time.perf_counter` on synthetic all-`Decision` DBs with no links. This measures the filter (`build_candidate_universe`): one `existing_link_types` query plus one `list_other_items` query. The full `load_item_candidates` adds 4 constant item reads (`item_exists`, `item_type`, `item_statement`, `item_created_at`), so a real run is 6 queries regardless of candidate count.
 
-| Items | Queries | Phase 1 | One-query prototype | Speedup |
-|---|---|---|---|---|
-| 100 | 496 | 9.94 ms | 0.58 ms | 17x |
-| 1,000 | 4,996 | 72.39 ms | 2.38 ms | 30x |
-| 5,000 | 24,996 | 372.02 ms | 11.11 ms | 33x |
+| Items | Filter queries | Filter time |
+|---|---|---|
+| 100 | 2 | 0.53 ms |
+| 1,000 | 2 | 5.43 ms |
+| 5,000 | 2 | 22.40 ms |
 
-The “SQLite is local so it is cheap” claim does not hold at 5,000 items. Decision pending: keep the plan-mandated per-triple port call, or add a batch port method (`existing_link_types(source_id) -> dict[int, set[str]]`) and reduce Phase 1 to one link query.
+Before option C, the filter made 496 / 4,996 / 24,996 queries (about 9.94 / 72.39 / 372.02 ms in the first run). The “SQLite is local so it is cheap” claim did not hold at 5,000 items. The batch read removes the per-candidate loop.
+
+**Terminal and live verification (real AI key)**
+
+- `pytest -m live` -> 2 passed.
+- Real `ember capture` on a temp DB -> 3 items (`Decision`, `Assumption`, `Question`), 1 `ai_responses` row, schema version 9.
+- `ember relate --item 1` -> `{"phase": 1, "new_item_id": 1, "candidates": 2}`.
+- `ember relate --latest` -> `{"phase": 1, "new_item_id": 3, "candidates": 0}` (Question has no compatible targets).
+- Full `load_item_candidates` on the real DB -> 6 queries, 2 candidates.
+- Error paths: missing item -> `RELATE-001` exit 1; missing DB -> `RELATE-012` exit 1; corrupt DB -> `RELATE-012` exit 1; both selectors -> exit 2; neither selector -> exit 2.
 
 **Migration runner (fixed)**
 

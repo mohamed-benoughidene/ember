@@ -82,7 +82,7 @@ Earlier logo and character images, kept for history.
 - `ember/relate/__init__.py`: Marks the relate engine folder as a package.
 - `ember/relate/errors.py`: Relate error codes `RELATE-001` to `RELATE-036` (with the documented gaps).
 - `ember/relate/rows.py`: Pydantic row models `NewItem`, `CandidateUniverse`, and `Link`.
-- `ember/relate/link_lookup.py`: The `LinkLookupPort` protocol (item and link reads).
+- `ember/relate/link_lookup.py`: The `LinkLookupPort` protocol (item reads plus per-triple and batch link reads).
 - `ember/relate/compat.py`: The 5 link types and the V1 spec 3.3 type-compatibility table.
 - `ember/relate/load_filter.py`: Relate Phase 1 core. Loads by id (`load_item_candidates`) or latest (`load_latest_candidates`) and builds the candidate universe.
 - `ember/adapters/__init__.py`: Marks the adapters layer folder as a package.
