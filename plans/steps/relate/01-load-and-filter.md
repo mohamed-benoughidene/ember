@@ -188,3 +188,4 @@ Verified end-to-end on a version-5 DB with a failing 006: the version stays 5, `
 - `7d17225 docs(map): list relate files and tables`
 - `665da96 fix(relate): reject missing and corrupt db`
 - `0e9e50e refactor(relate): split selectors and raise schema gate`
+- `4cc0690 fix(adapters): make migrations atomic`
