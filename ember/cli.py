@@ -13,8 +13,10 @@ from ember.adapters.sqlite import (
     SqliteAiResponseStore,
     SqliteItemContext,
     SqliteItemGatekeeper,
+    SqliteLinkContext,
     SqliteSourceStore,
     open_database,
+    open_relate_database,
 )
 from ember.capture.confirm_write import run_confirm_loop
 from ember.capture.errors import UserAbort
@@ -34,6 +36,7 @@ from ember.capture.item_proposal import (
 )
 from ember.capture.source_storage import StoredSource, store_source
 from ember.errors import EmberError
+from ember.relate.load_filter import load_and_filter
 
 DEFAULT_DB_PATH = "ember.db"
 
@@ -184,6 +187,50 @@ def set_validated(item_id: int, db_path: str) -> None:
 def clear_validated(item_id: int, db_path: str) -> None:
     """Clear the validated flag on an Assumption (human-only, spec 3.5)."""
     _write_validated_flag(item_id, db_path, new_value=False)
+
+
+@main.command("relate")
+@click.option("--item", "item_id", type=int, default=None, help="Item id to relate.")
+@click.option(
+    "--latest",
+    is_flag=True,
+    default=False,
+    help="Newest Active item with no link from it.",
+)
+@click.option(
+    "--db",
+    "db_path",
+    default=DEFAULT_DB_PATH,
+    help="SQLite database path.",
+)
+def relate(item_id: int | None, latest: bool, db_path: str) -> None:
+    """Phase 1: load the item and list type-compatible candidates."""
+    if (item_id is None) == (not latest):
+        raise click.UsageError("exactly one of --item or --latest is required")
+    try:
+        conn = open_relate_database(db_path)
+        lookup = SqliteLinkContext(conn)
+        result = load_and_filter(
+            lookup,
+            item_id=item_id,
+            latest=latest,
+            db_path=db_path,
+        )
+    except EmberError as exc:
+        click.echo(f"error: {exc.log_line()}", err=True)
+        sys.exit(1)
+    if result is None:
+        click.echo("no unrelated items")
+        return
+    click.echo(
+        json.dumps(
+            {
+                "phase": 1,
+                "new_item_id": result.new_item.id,
+                "candidates": len(result.universe.items),
+            }
+        )
+    )
 
 
 def _write_validated_flag(item_id: int, db_path: str, *, new_value: bool) -> None:
