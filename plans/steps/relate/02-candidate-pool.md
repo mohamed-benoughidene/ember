@@ -114,4 +114,24 @@ No rollback — embeddings are cached rows, but they are a derived cache, not an
 
 ## 12. Build Notes (post-implementation)
 
-TBD after code lands.
+### 12.1 Embedder package decision (approved 2026-10-17)
+
+The `sentence-transformers` package is **left for later**: it is declared as an optional extra (`[project.optional-dependencies] relate = ["sentence-transformers>=3"]`), not as a main dependency. A plain `pip install -e .` stays small and does not install the model library.
+
+- Install path for a developer who wants real embeddings: install CPU-only `torch` first from `https://download.pytorch.org/whl/cpu`, then install the extra. This avoids the CUDA packages (a normal Linux install pulled 47 packages, including `nvidia-*`).
+- The real adapter imports the library lazily. If the package is missing, `ember relate` fails fast with `RELATE-017 EmbedderLoadFailed`; the error names the missing optional extra.
+- Unit and integration tests use fakes. The real model is only used by the live terminal check.
+- Undo: remove the `relate` extra and uninstall `sentence-transformers` / `torch`. No `items`, `sources`, `links`, or `change_log` rows are touched.
+
+### 12.2 Implementation decisions made while building Step 2
+
+These are deviations or clarifications from the text above. They are recorded here so the reviewer can see them in one place.
+
+- **`EmbedderPort` location:** `ember/relate/embedder.py` (engine core). The spec named the adapter location but not the protocol file. Keeping it separate from `embedding_store.py` preserves B1 (one module, one purpose).
+- **Pre-flight "any row" read:** `EmbeddingStorePort` gains `first_model_name() -> str | None`. `model_name_of(item_id)` cannot read an arbitrary first row. This is the only added method on the port.
+- **Signal counts for the CLI stub:** `build_candidate_pool` keeps returning `list[RankedCandidate]` (Pool stays dropped) and accepts an optional `counts_out: dict[str, int]` sink. The CLI passes a dict and prints `{"dense", "graph", "metadata"}`. The counts never enter Step 3.
+- **Real model dimension:** `bge-base-en-v1.5` returns 768 floats; the L2 text says 384 (that is `bge-small`). The engine is dimension-agnostic: `_cosine` rejects unequal lengths with `RELATE-022`. Tests use the 384-dim fake from the plan.
+- **Model id mapping:** `SentenceTransformerEmbedder` maps a short `bge-*` name to its Hugging Face org id (`BAAI/...`) for loading, while `model_name()` returns the configured short name so the cache key stays stable.
+- **Cache read failures:** `EmbeddingStorePort.get` / `model_name_of` / `first_model_name` read failures map to `RELATE-016 ItemsReadFailed` (the spec has no embedding-read code). Write failures map to `RELATE-019` as specified.
+- **`upsert` replaces an existing row unconditionally.** The L2 text says "replace if `model_name` matches"; replacing a stale vector is safer than leaving a wrong-dimension row behind.
+- **Cosine clamp:** `_cosine` clamps tiny float overshoot to `[-1.0, 1.0]`; the plan's test target asserts that range.
