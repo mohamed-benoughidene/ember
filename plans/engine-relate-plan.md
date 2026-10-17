@@ -18,7 +18,7 @@ L1 §9 deferred 3 items to "Engine B L2 planning start". Decisions made here:
 
 ## 3. New Tables (Migrations 006 + 007 + 008 + 009)
 
-Migrations must run in numerical order. Migration 008 depends on 006 (`links(id)` must exist before `change_log.link_id` can reference it). Migration 009 depends on 002 (`items(id)` for the new `item_id` FK) and 005 (`ai_responses` table itself). Capture's `_apply_migrations` already orders scripts numerically; Relate adds 006/007/008/009 to the migrations directory — no engine-A change needed.
+Migrations must run in numerical order. Migration 008 depends on 006 (`links(id)` must exist before `change_log.link_id` can reference it). Migration 009 depends on 002 (`items(id)` for the new `item_id` FK) and 005 (`ai_responses` table itself). `_apply_migrations` orders scripts numerically and applies each script plus its `schema_version` bump in one transaction. Relate adds 006/007/008/009 to the migrations directory; the 008/009 scripts carry no transaction control of their own because the runner owns it.
 
 **Schema version:** the source-of-truth schema version is the `schema_version` **table** (row `version`), read by `_apply_migrations` in `ember/adapters/sqlite.py`. Migrations 006-009 must run before any Relate operation; after 009 the stored version is 9. `RELATE-014 SchemaOutdated` is raised by Phase 1 when `SELECT version FROM schema_version` < 9. `PRAGMA user_version` is not used. Capture's `_apply_migrations` is responsible for applying the scripts and bumping the row; Relate only reads it.
 

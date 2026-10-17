@@ -96,12 +96,35 @@ def _apply_migrations(conn: sqlite3.Connection) -> None:
     )
     if conn.execute("SELECT COUNT(*) FROM schema_version").fetchone()[0] == 0:
         conn.execute("INSERT INTO schema_version (version) VALUES (0)")
+    conn.commit()
     current = conn.execute("SELECT version FROM schema_version").fetchone()[0]
-    for number, script in _migration_scripts():
-        if number > current:
-            conn.executescript(script)
-            conn.execute("UPDATE schema_version SET version = ?", (number,))
-            conn.commit()
+    conn.execute("PRAGMA foreign_keys = OFF")
+    try:
+        for number, script in _migration_scripts():
+            if number > current:
+                _apply_migration(conn, number, script)
+    finally:
+        conn.execute("PRAGMA foreign_keys = ON")
+
+
+def _apply_migration(conn: sqlite3.Connection, number: int, script: str) -> None:
+    """Apply one migration and its version bump in one transaction.
+
+    Scripts must contain plain statements only. The runner owns the
+    transaction and the foreign-key switch, so a script with its own
+    `BEGIN` / `COMMIT` would nest transactions.
+    """
+    wrapped = (
+        "BEGIN;\n"
+        f"{script}\n"
+        f"UPDATE schema_version SET version = {int(number)};\n"
+        "COMMIT;"
+    )
+    try:
+        conn.executescript(wrapped)
+    except sqlite3.Error:
+        conn.rollback()
+        raise
 
 
 def _migration_scripts() -> list[tuple[int, str]]:

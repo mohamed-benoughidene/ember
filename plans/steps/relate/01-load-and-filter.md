@@ -112,7 +112,7 @@ Step 2 takes the `CandidateUniverse` and adds the 3 signals (content, graph, met
 
 ## 11. Rollback
 
-Reads are non-mutating, but the migrations this step applies (006-009) change the schema; 008 and 009 rebuild `change_log` and `ai_responses` with a row copy. Undo: back up `ember.db` before the first Relate run on an existing DB (`cp ember.db ember.db.bak`). No data rollback per L1 §4 rule 7.
+Reads are non-mutating, but the migrations this step applies (006-009) change the schema; 008 and 009 rebuild `change_log` and `ai_responses` with a row copy. The runner applies each migration and its version bump in one transaction, so a failed migration rolls back both. Undo: back up `ember.db` before the first Relate run on an existing DB (`cp ember.db ember.db.bak`). No data rollback per L1 §4 rule 7.
 
 ## 12. Build Notes (post-implementation)
 
@@ -147,10 +147,11 @@ Landed on `feat/relate-engine`.
 - CLI: `tests/relate/test_relate_cli.py` (9 tests: happy path, missing item, `--latest` soft exit + JSON, selector guard, missing DB -> RELATE-012, corrupt DB -> RELATE-012, migration failure -> RELATE-013, old schema -> RELATE-014).
 - DB open: `tests/test_relate_db_open.py` (9 tests: directory path, missing file, corrupt file, migration failure, version 5/8 reject, version 9 accept, old schema via open, all migrations applied).
 - Read failures: `tests/test_relate_read_failures.py` (7 parametrized tests, one per `SqliteLinkContext` read, all assert `RELATE-016`).
+- Migration runner: `tests/test_migration_runner.py` (4 tests: failed DDL rolls back schema + version, a later failure keeps earlier migrations, foreign keys are restored, a successful run commits version 9).
 - Migrations: `tests/test_migrations.py` 12 tests, including `test_migrations_008_009_preserve_existing_rows` (a hand-built version-5 DB keeps its `change_log` / `ai_responses` rows and their `sqlite_sequence` values through 008/009).
 - AI response store: `tests/test_ai_response_store.py` (4 tests: save by `source_id`, save by `item_id`, reject both ids, reject neither id).
 - Architecture: `tests/test_architecture.py::test_relate_core_does_not_import_adapters`.
-- Full suite: 176 passed, 2 live tests deselected.
+- Full suite: 180 passed, 2 live tests deselected.
 - One stale assertion updated: `tests/test_source_storage_integration.py` expected schema version 5, now 9.
 
 **Performance measurement (Phase 1 query cost)**
@@ -165,9 +166,11 @@ Measured with `sqlite3.set_trace_callback` and `time.perf_counter` on synthetic 
 
 The “SQLite is local so it is cheap” claim does not hold at 5,000 items. Decision pending: keep the plan-mandated per-triple port call, or add a batch port method (`existing_link_types(source_id) -> dict[int, set[str]]`) and reduce Phase 1 to one link query.
 
-**Known risk (not fixed): migration version-bump window**
+**Migration runner (fixed)**
 
-`_apply_migrations` runs `executescript(script)` and only then updates `schema_version` in a separate commit. Reproduction on a version-5 DB:
+`_apply_migrations` now wraps each migration script and its `schema_version` bump in one transaction. Migrations 008/009 no longer carry their own `BEGIN` / `COMMIT` or `PRAGMA foreign_keys` lines; the runner owns both. A failed migration rolls back its schema change and its version, and later migrations still apply. Tests: `tests/test_migration_runner.py`.
+
+Historical reproduction (old runner, version-5 DB):
 
 | Crash point | Reopen result |
 |---|---|
@@ -176,7 +179,7 @@ The “SQLite is local so it is cheap” claim does not hold at 5,000 items. Dec
 | after 008 script, before version bump | recovers (008 is re-runnable) |
 | after 009 script, before version bump | recovers (009 is re-runnable) |
 
-A prototype that wraps `script + UPDATE schema_version` in one `BEGIN` / `COMMIT` rolls back both the DDL and the version when a migration fails, and later migrations still apply. Options: (A) transactional runner in the shared `_apply_migrations` (recommended; affects Capture too), or (B) `CREATE TABLE IF NOT EXISTS` on 006/007 only (partial; 001-005 and 004 keep the same window). Awaiting a decision.
+Verified end-to-end on a version-5 DB with a failing 006: the version stays 5, `links` is absent, and existing `change_log` / `ai_responses` rows survive. A clean retry reaches version 9 with the rows intact.
 
 **Commits**
 - `a0bbc4b feat(relate): add load and filter core`

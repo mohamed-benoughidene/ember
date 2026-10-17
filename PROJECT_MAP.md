@@ -121,6 +121,7 @@ Earlier logo and character images, kept for history.
 - `tests/test_architecture.py`: Asserts the capture and relate engine cores never import an adapter.
 - `tests/test_relate_db_open.py`: Relate DB open checks: missing/corrupt file, migration fail, schema version 5/8/9 gate, and all migrations applied.
 - `tests/test_relate_read_failures.py`: Every `SqliteLinkContext` read maps a `sqlite3` failure to `RELATE-016`.
+- `tests/test_migration_runner.py`: Each migration and its version bump are one transaction; failures roll back.
 
 ### Relate Tests (`tests/relate/`)
 - `tests/relate/__init__.py`: Marks the relate tests folder as a package.

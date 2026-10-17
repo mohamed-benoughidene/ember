@@ -113,7 +113,7 @@ Phase 1 loads the item, drops pairs that already have a link (any status), and p
 ### Running Tests
 
 ```bash
-# Run all offline tests (176 tests)
+# Run all offline tests (180 tests)
 pytest
 
 # Run the live AI round-trip test (requires EMBER_AI_API_KEY)

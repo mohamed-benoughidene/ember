@@ -1,5 +1,3 @@
-PRAGMA foreign_keys=OFF;
-BEGIN;
 ALTER TABLE ai_responses RENAME TO ai_responses_old;
 CREATE TABLE ai_responses (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -12,5 +10,3 @@ INSERT INTO ai_responses (id, source_id, item_id, response_text, timestamp)
     SELECT id, source_id, NULL, response_text, timestamp
     FROM ai_responses_old;
 DROP TABLE ai_responses_old;
-COMMIT;
-PRAGMA foreign_keys=ON;
