@@ -184,3 +184,4 @@ A prototype that wraps `script + UPDATE schema_version` in one `BEGIN` / `COMMIT
 - `dccc6f1 feat(cli): wire relate load and filter`
 - `7d17225 docs(map): list relate files and tables`
 - `665da96 fix(relate): reject missing and corrupt db`
+- `0e9e50e refactor(relate): split selectors and raise schema gate`
