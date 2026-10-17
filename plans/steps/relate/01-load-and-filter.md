@@ -115,4 +115,34 @@ No rollback — this step only reads. Per framework v2 L3 rule.
 
 ## 12. Build Notes (post-implementation)
 
-TBD after code lands.
+Landed on `feat/relate-engine`.
+
+**Code**
+- `ember/relate/errors.py`: `RelateError` plus all 30 L2 §6 codes (001, 005-014, 016-019, 021-033, 035, 036).
+- `ember/relate/rows.py`: `NewItem`, `CandidateUniverse`, `Link`.
+- `ember/relate/link_lookup.py`: `LinkLookupPort` with 8 methods.
+- `ember/relate/compat.py`: `LINK_TYPES`, `TYPE_COMPAT`, `allowed_link_types`.
+- `ember/relate/load_filter.py`: `LoadedCandidates`, `resolve_new_item`, `build_candidate_universe`, `load_and_filter`.
+- Migrations `006_create_links.sql`, `007_create_item_embeddings.sql`, `008_add_change_log_link_fk.sql`, `009_drop_source_id_not_null_and_add_item_id.sql` (L2 deliverable d). Schema version after apply = 9.
+- `ember/adapters/sqlite.py`: `_connect` split out; `open_relate_database` maps open/migration failures to RELATE-012/013; `ensure_relate_schema` reads the `schema_version` table and raises RELATE-014 below 8; `SqliteLinkContext` implements the port; `SqliteAiResponseStore.save` now takes exactly one of `source_id` / `item_id`.
+- `ember/cli.py`: `ember relate --item ID | --latest [--db PATH]` prints `{"phase": 1, "new_item_id": <id>, "candidates": <count>}` or `no unrelated items` (exit 0). Step 3 replaces this stub.
+
+**Deviations recorded**
+- The port gained `item_created_at(item_id) -> str | None`. Step 1 §2 listed only `item_type` / `item_statement`, but `NewItem.created_at` is required by Phase 2's metadata signal, so the read cannot be built without it. Record as an L2 §4.5 amendment.
+- `load_and_filter` returns the named `LoadedCandidates` object instead of a raw 2-tuple, per Constitution I4. The CLI passes `new_item` and `universe` separately, so the M2 decision (no `ContextSnapshot`) still holds.
+- RELATE-014 is defensive: `open_relate_database` applies migrations before checking, so a normal DB never triggers it. The check is covered directly in `tests/test_relate_db_open.py`.
+- `find_latest_unlinked_active` uses `NOT IN (SELECT source_item_id FROM links)` with no status filter, so `Confirmed` and `Rejected` both disqualify (B6 fix).
+
+**Tests**
+- Unit: `tests/relate/test_load_filter_unit.py` (6 tests).
+- Integration: `tests/relate/test_load_filter_integration.py` (5 tests).
+- CLI: `tests/relate/test_relate_cli.py` (5 tests).
+- DB open: `tests/test_relate_db_open.py` (4 tests).
+- Architecture: `tests/test_architecture.py::test_relate_core_does_not_import_adapters`.
+- Full suite: 155 passed, 2 live tests deselected.
+- One stale assertion updated: `tests/test_source_storage_integration.py` expected schema version 5, now 9.
+
+**Commits**
+- `a0bbc4b feat(relate): add load and filter core`
+- `6d3e349 feat(relate): add links and embedding schema`
+- `dccc6f1 feat(cli): wire relate load and filter`

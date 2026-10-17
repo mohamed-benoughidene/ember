@@ -58,15 +58,19 @@ Earlier logo and character images, kept for history.
 ## Planning Documents (`plans/`)
 - `plans/master-plan.md`: L1 System Master Plan. 4 engines (Capture, Relate, Maintain, Query), shared SQLite storage, global rules, test strategy, L1 §0 stack decisions.
 - `plans/engine-capture-plan.md`: L2 Capture engine master plan. Pipeline phases 1-4 (source storage, AI proposal, gatekeeper, user confirm + write).
+- `plans/engine-relate-plan.md`: L2 Relate engine master plan. Pipeline phases 1-4 (load + filter, candidate pool, AI proposal, confirm + write).
 - `plans/steps/capture/01-source-storage.md`: L3 Step 1 plan. Phase 1, source dedup by content hash.
 - `plans/steps/capture/02-ai-port-call.md`: L3 Step 2 plan. Phase 2, AI proposal via `ItemProposerPort`.
 - `plans/steps/capture/03-user-confirm-write.md`: L3 Step 3 plan. Phases 3+4, gatekeeper + user confirm + write.
+- `plans/steps/relate/01-load-and-filter.md`: L3 Relate Step 1 plan. Phase 1, load the item and filter type-compatible candidates.
+- `plans/steps/relate/02-candidate-pool.md`: L3 Relate Step 2 plan. Phase 2, the 3 signals and merge.
+- `plans/steps/relate/03-ai-propose-and-confirm-write.md`: L3 Relate Step 3 plan. Phases 3+4, AI proposal, confirm, and write.
 
 ## Python Implementation (`ember/`)
 - `pyproject.toml`: Package metadata, locked stack deps (click, openai, pydantic; pytest is a dev dep), pytest config.
 - `ember/__init__.py`: Package version.
 - `ember/__main__.py`: Runs the CLI via `python -m ember`.
-- `ember/cli.py`: Click CLI. `capture` runs the full 4-phase pipeline; `capture-source` is the Phase 1 standalone command; `set-validated` / `clear-validated` write the Assumption flag.
+- `ember/cli.py`: Click CLI. `capture` runs the full 4-phase pipeline; `capture-source` is the Phase 1 standalone command; `relate` is the Relate Phase 1 command; `set-validated` / `clear-validated` write the Assumption flag.
 - `ember/errors.py`: Base `EmberError`. Carries a stable code and the raising module.function, no secrets.
 - `ember/capture/__init__.py`: Marks the capture engine folder as a package.
 - `ember/capture/errors.py`: Capture error codes `CAPTURE-001` to `CAPTURE-016`.
@@ -75,8 +79,14 @@ Earlier logo and character images, kept for history.
 - `ember/capture/item_proposal.py`: Phase 2 core. The 4 item types, the AI port `ItemProposerPort`, the item-context port, context mode A/B, the AI system prompt, parse + validate the AI answer, retry once.
 - `ember/capture/item_gatekeeper.py`: Phase 3 core plus the human flag check. The 4 checks (type, statement, quote, near-dup warning), id/timestamp/Active generation, the source-text read port, and `validate_set_validated` for the Assumption flag.
 - `ember/capture/confirm_write.py`: Phase 4 core. The `y/n/e/q` confirm loop and the confirm/commit ports.
+- `ember/relate/__init__.py`: Marks the relate engine folder as a package.
+- `ember/relate/errors.py`: Relate error codes `RELATE-001` to `RELATE-036` (with the documented gaps).
+- `ember/relate/rows.py`: Pydantic row models `NewItem`, `CandidateUniverse`, and `Link`.
+- `ember/relate/link_lookup.py`: The `LinkLookupPort` protocol (item and link reads).
+- `ember/relate/compat.py`: The 5 link types and the V1 spec 3.3 type-compatibility table.
+- `ember/relate/load_filter.py`: Relate Phase 1 core. Resolves the new item and builds the candidate universe.
 - `ember/adapters/__init__.py`: Marks the adapters layer folder as a package.
-- `ember/adapters/sqlite.py`: SQLite connection, numbered migrations, `SqliteSourceStore` and `SqliteItemGatekeeper` (writes are the gatekeeper boundary), `SqliteItemContext` (item reads), `SqliteAiResponseStore` (raw AI answers).
+- `ember/adapters/sqlite.py`: SQLite connection, numbered migrations, `SqliteSourceStore` and `SqliteItemGatekeeper` (writes are the gatekeeper boundary), `SqliteItemContext` (item reads), `SqliteAiResponseStore` (raw AI answers), `SqliteLinkContext` (relate item/link reads), `open_relate_database` / `ensure_relate_schema` (relate boot checks).
 - `ember/adapters/llm.py`: `OpenAiItemProposer` (`ItemProposerPort` on the OpenAI SDK, OpenRouter base URL) and the env-driven factory.
 - `ember/adapters/migrations/__init__.py`: Marks the migrations folder as a package.
 - `ember/adapters/migrations/001_create_sources.sql`: Creates the `sources` table.
@@ -84,6 +94,10 @@ Earlier logo and character images, kept for history.
 - `ember/adapters/migrations/003_create_change_log.sql`: Creates the `change_log` table.
 - `ember/adapters/migrations/004_add_item_detail_columns.sql`: Adds the `items.rationale` and `items.source` columns.
 - `ember/adapters/migrations/005_create_ai_responses.sql`: Creates the `ai_responses` table.
+- `ember/adapters/migrations/006_create_links.sql`: Creates the `links` table (typed edges, any status, no self-links).
+- `ember/adapters/migrations/007_create_item_embeddings.sql`: Creates the `item_embeddings` cache table.
+- `ember/adapters/migrations/008_add_change_log_link_fk.sql`: Rebuilds `change_log` with the `link_id` foreign key.
+- `ember/adapters/migrations/009_drop_source_id_not_null_and_add_item_id.sql`: Makes `ai_responses.source_id` nullable and adds `item_id`.
 
 ## Tests (`tests/`)
 - `tests/__init__.py`: Marks the tests folder as a package.
@@ -103,7 +117,15 @@ Earlier logo and character images, kept for history.
 - `tests/test_cli_capture.py`: CLI checks for the `capture` command with a fake AI.
 - `tests/test_cli_validated.py`: CLI checks for `set-validated` / `clear-validated` and the Assumption-only rule.
 - `tests/test_capture_live.py`: Live AI round trip. Marked `live`, so a plain pytest run never calls the API; run it with `./.venv/bin/python -m pytest -m live`.
-- `tests/test_architecture.py`: Asserts engine core never imports an adapter.
+- `tests/test_architecture.py`: Asserts the capture and relate engine cores never import an adapter.
+- `tests/test_relate_db_open.py`: Relate DB open checks: open fail, migration fail, old schema, and all migrations applied.
+
+### Relate Tests (`tests/relate/`)
+- `tests/relate/__init__.py`: Marks the relate tests folder as a package.
+- `tests/relate/fakes.py`: `FakeLinkLookup`, the in-memory read port.
+- `tests/relate/test_load_filter_unit.py`: Phase 1 unit tests on the fake port, no DB.
+- `tests/relate/test_load_filter_integration.py`: Phase 1 tests on a real SQLite temp DB.
+- `tests/relate/test_relate_cli.py`: `ember relate` CLI checks and exit codes.
 
 ### AI Answer Fixtures (`tests/fixtures/ai_responses/`)
 Saved AI answers for parser tests. Each pair is `case_NN.raw_text.txt` (the source text) + `case_NN.response.json` (the AI's answer).
@@ -116,8 +138,10 @@ Saved AI answers for parser tests. Each pair is `case_NN.raw_text.txt` (the sour
 - `schema_version`: Holds the applied migration number.
 - `sources`: Immutable raw input texts. Columns `id`, `title`, `full_text`, `timestamp`, `content_hash` (unique, the dedup key).
 - `items`: Confirmed typed items. Columns `id`, `type`, `statement`, `source_id` (foreign key to `sources.id`), `status`, `created_at`, `validated` (set only on Assumption rows), `rationale` (Decision text), `source` (Finding evidence text).
-- `change_log`: Append-only ledger. Columns `id`, `item_id`, `link_id`, `field_changed`, `old_value`, `new_value`, `timestamp`, `trigger_cause`.
-- `ai_responses`: Raw AI answers, stored verbatim. Columns `id`, `source_id` (foreign key to `sources.id`), `response_text`, `timestamp`.
+- `change_log`: Append-only ledger. Columns `id`, `item_id`, `link_id` (foreign key to `links.id`), `field_changed`, `old_value`, `new_value`, `timestamp`, `trigger_cause`.
+- `ai_responses`: Raw AI answers, stored verbatim. Columns `id`, `source_id` (nullable foreign key to `sources.id`), `item_id` (nullable foreign key to `items.id`), `response_text`, `timestamp`.
+- `links`: Typed directional edges. Columns `id`, `source_item_id`, `target_item_id`, `link_type`, `status` (`Confirmed` or `Rejected`), `created_at`. Unique per source/target/type.
+- `item_embeddings`: Rebuildable vector cache. Columns `item_id`, `vector`, `model_name`, `embedded_at`.
 
 ## Empty Folders
 These folders exist but hold no files yet.
