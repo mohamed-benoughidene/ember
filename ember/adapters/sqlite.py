@@ -698,7 +698,7 @@ class SqliteEmbedderStore:
         """
         try:
             row = self._conn.execute(
-                "SELECT model_name FROM item_embeddings LIMIT 1"
+                "SELECT model_name FROM item_embeddings ORDER BY item_id LIMIT 1"
             ).fetchone()
         except sqlite3.Error as exc:
             raise ItemsReadFailed("embedding read fail") from exc

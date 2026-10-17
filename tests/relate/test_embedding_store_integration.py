@@ -169,7 +169,7 @@ def test_first_model_name_returns_a_stored_name(db_path) -> None:
     store.upsert(1, VECTOR_A, MODEL_A)
     store.upsert(2, VECTOR_B, MODEL_B)
 
-    assert store.first_model_name() in {MODEL_A, MODEL_B}
+    assert store.first_model_name() == MODEL_A
 
 
 def test_wipe_empties_the_table(db_path) -> None:
@@ -252,7 +252,7 @@ def test_read_failure_raises_relate_016(
     name: str,
     read: Callable[[SqliteEmbedderStore], object],
 ) -> None:
-    store = SqliteEmbedderStore(BrokenConnection())  # type: ignore[arg-type]
+    store = SqliteEmbedderStore(BrokenConnection())
 
     with pytest.raises(ItemsReadFailed) as exc:
         read(store)
@@ -265,7 +265,7 @@ def test_write_failure_raises_relate_019(
     name: str,
     write: Callable[[SqliteEmbedderStore], object],
 ) -> None:
-    store = SqliteEmbedderStore(BrokenConnection())  # type: ignore[arg-type]
+    store = SqliteEmbedderStore(BrokenConnection())
 
     with pytest.raises(EmbeddingWriteFailed) as exc:
         write(store)
@@ -274,7 +274,7 @@ def test_write_failure_raises_relate_019(
 
 
 def test_read_failure_on_one_item_names_that_item() -> None:
-    store = SqliteEmbedderStore(BrokenConnection())  # type: ignore[arg-type]
+    store = SqliteEmbedderStore(BrokenConnection())
 
     with pytest.raises(ItemsReadFailed) as exc:
         store.get(7)
