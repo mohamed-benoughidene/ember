@@ -111,6 +111,7 @@ Earlier logo and character images, kept for history.
 - `tests/test_item_gatekeeper_unit.py`: Phase 3 unit tests on a fake source and item list, no DB.
 - `tests/test_confirm_write_unit.py`: Phase 4 unit tests on a fake user and fake commit, no DB.
 - `tests/test_item_store_integration.py`: SQLite item reader and gatekeeper-write tests on a real temp DB.
+- `tests/test_ai_response_store.py`: SQLite raw AI-answer store tests on a real temp DB: save by `source_id`, save by `item_id`, and the exactly-one-owner rule.
 - `tests/test_capture_pipeline_integration.py`: Phases 3 + 4 end to end on a real temp DB.
 - `tests/test_migrations.py`: Asserts the `items` and `change_log` schema after migrations.
 - `tests/test_cli.py`: CLI checks for the Phase 1 command, file/stdin modes and exit codes.
@@ -118,7 +119,7 @@ Earlier logo and character images, kept for history.
 - `tests/test_cli_validated.py`: CLI checks for `set-validated` / `clear-validated` and the Assumption-only rule.
 - `tests/test_capture_live.py`: Live AI round trip. Marked `live`, so a plain pytest run never calls the API; run it with `./.venv/bin/python -m pytest -m live`.
 - `tests/test_architecture.py`: Asserts the capture and relate engine cores never import an adapter.
-- `tests/test_relate_db_open.py`: Relate DB open checks: open fail, migration fail, old schema, and all migrations applied.
+- `tests/test_relate_db_open.py`: Relate DB open checks: missing file, corrupt file, migration fail, old schema, and all migrations applied.
 
 ### Relate Tests (`tests/relate/`)
 - `tests/relate/__init__.py`: Marks the relate tests folder as a package.

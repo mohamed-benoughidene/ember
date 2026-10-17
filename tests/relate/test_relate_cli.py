@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from pathlib import Path
 
 from click.testing import CliRunner
 
-from ember.adapters.sqlite import open_relate_database
+import ember.adapters.sqlite as sqlite_adapter
+from ember.adapters.sqlite import open_database
 from ember.cli import main
 from tests.fakes import FIXED_TIME, insert_item, insert_source
 
@@ -27,7 +29,7 @@ def _insert_link(
 
 
 def _seed_six_items_two_links(db_path: str) -> None:
-    conn = open_relate_database(db_path)
+    conn = open_database(db_path)
     try:
         source_id = insert_source(conn)
         insert_item(conn, source_id=source_id, item_id=1, item_type="Decision")
@@ -74,7 +76,7 @@ def test_relate_item_prints_phase1_json(db_path) -> None:
 
 
 def test_relate_missing_item_exits_1_with_code(db_path) -> None:
-    conn = open_relate_database(db_path)
+    conn = open_database(db_path)
     try:
         insert_source(conn)
         conn.commit()
@@ -90,7 +92,7 @@ def test_relate_missing_item_exits_1_with_code(db_path) -> None:
 
 
 def test_relate_latest_soft_exit_when_nothing_eligible(db_path) -> None:
-    conn = open_relate_database(db_path)
+    conn = open_database(db_path)
     try:
         source_id = insert_source(conn)
         _seed_item(conn, source_id, 1)
@@ -103,11 +105,12 @@ def test_relate_latest_soft_exit_when_nothing_eligible(db_path) -> None:
     result = CliRunner().invoke(main, ["relate", "--latest", "--db", db_path])
 
     assert result.exit_code == 0
-    assert result.output.strip() == "no unrelated items"
+    assert result.stdout.strip() == "no unrelated items"
+    assert result.stderr == ""
 
 
 def test_relate_latest_prints_json_when_eligible(db_path) -> None:
-    conn = open_relate_database(db_path)
+    conn = open_database(db_path)
     try:
         source_id = insert_source(conn)
         _seed_item(conn, source_id, 1)
@@ -130,3 +133,56 @@ def test_relate_requires_exactly_one_selector(db_path) -> None:
 
     assert missing.exit_code == 2
     assert both.exit_code == 2
+
+
+def test_relate_missing_db_exits_1_with_relate_012(tmp_path) -> None:
+    missing = tmp_path / "missing.db"
+
+    result = CliRunner().invoke(
+        main, ["relate", "--item", "1", "--db", str(missing)]
+    )
+
+    assert result.exit_code == 1
+    assert "RELATE-012" in result.output
+    assert str(missing) in result.output
+    assert not missing.exists()
+
+
+def test_relate_corrupt_db_exits_1_with_relate_012(tmp_path) -> None:
+    corrupt = tmp_path / "corrupt.db"
+    corrupt.write_text("not a sqlite database", encoding="utf-8")
+
+    result = CliRunner().invoke(
+        main, ["relate", "--item", "1", "--db", str(corrupt)]
+    )
+
+    assert result.exit_code == 1
+    assert "RELATE-012" in result.output
+
+
+def test_relate_migration_failure_exits_1_with_relate_013(db_path, monkeypatch) -> None:
+    Path(db_path).touch()
+    monkeypatch.setattr(
+        sqlite_adapter,
+        "_migration_scripts",
+        lambda: [(1, "CREATE TABLE ok (id INTEGER);"), (6, "NOT SQL;")],
+    )
+
+    result = CliRunner().invoke(main, ["relate", "--item", "1", "--db", db_path])
+
+    assert result.exit_code == 1
+    assert "RELATE-013" in result.output
+
+
+def test_relate_old_schema_exits_1_with_relate_014(db_path, monkeypatch) -> None:
+    conn = sqlite3.connect(db_path)
+    conn.execute("CREATE TABLE schema_version (version INTEGER NOT NULL)")
+    conn.execute("INSERT INTO schema_version (version) VALUES (5)")
+    conn.commit()
+    conn.close()
+    monkeypatch.setattr(sqlite_adapter, "_apply_migrations", lambda conn: None)
+
+    result = CliRunner().invoke(main, ["relate", "--item", "1", "--db", db_path])
+
+    assert result.exit_code == 1
+    assert "RELATE-014" in result.output

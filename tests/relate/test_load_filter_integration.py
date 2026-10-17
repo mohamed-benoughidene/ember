@@ -6,7 +6,7 @@ import sqlite3
 
 import pytest
 
-from ember.adapters.sqlite import SqliteLinkContext, open_relate_database
+from ember.adapters.sqlite import SqliteLinkContext, open_database
 from ember.relate.errors import ItemIdNotFound
 from ember.relate.load_filter import load_and_filter
 from tests.fakes import FIXED_TIME, insert_item, insert_source
@@ -27,7 +27,7 @@ def _insert_link(
 
 
 def test_item_one_drops_two_full_questions_and_keeps_three(db_path) -> None:
-    conn = open_relate_database(db_path)
+    conn = open_database(db_path)
     source_id = insert_source(conn)
     insert_item(conn, source_id=source_id, item_id=1, item_type="Decision")
     insert_item(conn, source_id=source_id, item_id=2, item_type="Question")
@@ -46,7 +46,7 @@ def test_item_one_drops_two_full_questions_and_keeps_three(db_path) -> None:
 
 
 def test_type_filter_drops_incompatible_types(db_path) -> None:
-    conn = open_relate_database(db_path)
+    conn = open_database(db_path)
     source_id = insert_source(conn)
     insert_item(conn, source_id=source_id, item_id=1, item_type="Question")
     insert_item(conn, source_id=source_id, item_id=2, item_type="Question")
@@ -62,7 +62,7 @@ def test_type_filter_drops_incompatible_types(db_path) -> None:
 
 
 def test_latest_returns_newest_active_with_no_outgoing_link(db_path) -> None:
-    conn = open_relate_database(db_path)
+    conn = open_database(db_path)
     source_id = insert_source(conn)
     insert_item(conn, source_id=source_id, item_id=1)
     insert_item(conn, source_id=source_id, item_id=2)
@@ -82,7 +82,7 @@ def test_latest_returns_newest_active_with_no_outgoing_link(db_path) -> None:
 
 
 def test_missing_item_reports_id_and_db_path(db_path) -> None:
-    conn = open_relate_database(db_path)
+    conn = open_database(db_path)
     insert_source(conn)
     conn.commit()
 
@@ -95,7 +95,7 @@ def test_missing_item_reports_id_and_db_path(db_path) -> None:
 
 
 def test_existing_link_of_any_status_is_dropped(db_path) -> None:
-    conn = open_relate_database(db_path)
+    conn = open_database(db_path)
     source_id = insert_source(conn)
     insert_item(conn, source_id=source_id, item_id=1, item_type="Question")
     insert_item(conn, source_id=source_id, item_id=2, item_type="Question")

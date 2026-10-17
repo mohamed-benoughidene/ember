@@ -67,6 +67,8 @@ def build_candidate_universe(
     """
     survivors: list[NewItem] = []
     for candidate in lookup.list_other_items(new_item.id):
+        if candidate.id == new_item.id:
+            continue
         viable = {
             link_type
             for link_type in LINK_TYPES
@@ -82,7 +84,7 @@ def load_and_filter(
     *,
     item_id: int | None = None,
     latest: bool = False,
-    db_path: str = "",
+    db_path: str,
 ) -> LoadedCandidates | None:
     """Resolve the new item and its filtered candidates. None is a soft exit."""
     new_item = resolve_new_item(

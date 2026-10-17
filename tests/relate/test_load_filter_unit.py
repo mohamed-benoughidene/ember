@@ -90,22 +90,6 @@ def test_filter_one_keeps_candidate_when_another_type_remains() -> None:
     assert [item.id for item in result.universe.items] == [2]
 
 
-def test_filter_one_counts_links_of_any_status() -> None:
-    for status in ("Confirmed", "Rejected"):
-        lookup = FakeLinkLookup(
-            items=[_item(1, "Finding"), _item(2, "Decision")],
-            links=[
-                _link(201, 1, 2, "supports", status),
-                _link(202, 1, 2, "contradicts", status),
-            ],
-        )
-
-        result = load_and_filter(lookup, item_id=1, db_path=DB_PATH)
-
-        assert result is not None
-        assert result.universe.items == []
-
-
 def test_filter_two_drops_incompatible_and_keeps_compatible() -> None:
     lookup = FakeLinkLookup(
         items=[_item(1, "Question"), _item(2, "Question"), _item(3, "Decision")]

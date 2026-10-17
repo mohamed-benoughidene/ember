@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 from datetime import datetime, timezone
 from importlib import resources
@@ -17,6 +18,7 @@ from ember.capture.errors import (
 from ember.capture.item_gatekeeper import ExistingItem, StoredItem, ValidatedItem
 from ember.capture.item_proposal import ContextItem
 from ember.capture.source_storage import SourceRecord
+from ember.errors import EmberError
 from ember.relate.errors import (
     DbMigrationFailed,
     DbOpenFailed,
@@ -44,20 +46,32 @@ def open_database(db_path: str) -> sqlite3.Connection:
 
 
 def open_relate_database(db_path: str) -> sqlite3.Connection:
-    """Open a connection for the relate engine, apply migrations, check the schema.
+    """Open an existing relate DB, apply migrations, check the schema.
 
-    Raise `DbOpenFailed` (RELATE-012) if the connection cannot open, and
-    `DbMigrationFailed` (RELATE-013) if any migration fails to apply.
+    Raise `DbOpenFailed` (RELATE-012) when the file is missing or is not a
+    readable SQLite database, and `DbMigrationFailed` (RELATE-013) when a
+    migration fails.
     """
+    if not os.path.exists(db_path):
+        raise DbOpenFailed("db file missing", db_path=db_path)
+    conn: sqlite3.Connection | None = None
     try:
         conn = _connect(db_path)
+        conn.execute("SELECT COUNT(*) FROM sqlite_master").fetchone()
     except sqlite3.Error as exc:
+        if conn is not None:
+            conn.close()
         raise DbOpenFailed("db open fail", db_path=db_path) from exc
     try:
         _apply_migrations(conn)
-    except sqlite3.Error as exc:
+    except (sqlite3.Error, ValueError) as exc:
+        conn.close()
         raise DbMigrationFailed("migration fail", db_path=db_path) from exc
-    ensure_relate_schema(conn)
+    try:
+        ensure_relate_schema(conn)
+    except EmberError:
+        conn.close()
+        raise
     return conn
 
 
@@ -69,9 +83,9 @@ def ensure_relate_schema(conn: sqlite3.Connection) -> None:
     """
     try:
         row = conn.execute("SELECT version FROM schema_version").fetchone()
-    except sqlite3.Error as exc:
-        raise DbOpenFailed("schema read fail") from exc
-    version = 0 if row is None else int(row["version"])
+        version = 0 if row is None else int(row["version"])
+    except (sqlite3.Error, ValueError, TypeError) as exc:
+        raise DbOpenFailed("schema version read fail") from exc
     if version < 8:
         raise SchemaOutdated("schema version too old", version=version, required=8)
 
@@ -510,7 +524,9 @@ class SqliteAiResponseStore:
             )
             self._conn.commit()
         except sqlite3.Error as exc:
-            raise ItemDbWriteError("db write fail", source_id=source_id) from exc
+            raise ItemDbWriteError(
+                "db write fail", source_id=source_id, item_id=item_id
+            ) from exc
 
 
 def _proposal_text(item: ValidatedItem) -> str:

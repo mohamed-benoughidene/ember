@@ -25,7 +25,7 @@ Take `--item ID` (or `--latest`) and a port-injected `LinkLookupPort`, and retur
 From the CLI:
 - `--item ID` (status-agnostic) **or** `--latest` (newest `Active` item that has no link of any status from it). Mutually exclusive; one is required.
 - `--db PATH` (default: `DEFAULT_DB_PATH` from `ember.cli`).
-- The CLI opens the DB via `open_database(db_path)` from `ember/adapters/sqlite.py:24-30`, which sets `PRAGMA foreign_keys=ON` at line 28. Required for migration 008's `change_log.link_id REFERENCES links(id)` to be enforced at runtime. The conn from `open_database` is what `SqliteLinkContext` wraps.
+- The CLI opens the DB via `open_relate_database(db_path)` from `ember/adapters/sqlite.py`, which sets `PRAGMA foreign_keys=ON` on connect. Required for migration 008's `change_log.link_id REFERENCES links(id)` to be enforced at runtime. This strict open requires an existing DB file: a missing or unreadable file raises `RELATE-012` and is never created. The conn from `open_relate_database` is what `SqliteLinkContext` wraps.
 
 From the port (`LinkLookupPort`, L2 §4.5 + this step's amendments):
 - `item_exists(item_id) -> bool`
@@ -75,7 +75,7 @@ Unit (in-memory `LinkLookupPort`, in-memory compat table):
 - Filter #2: type-incompatible candidate dropped; type-compatible kept.
 
 Integration (real SQLite temp DB, migrations 001-009 applied):
-- Seed: 5 items, 2 already linked from item #1 (one `Confirmed`, one `Rejected`). Run `--item 1` -> universe = 3 items; no `dropped_pairs` collection.
+- Seed: 6 items (the new item plus 5 candidates), 2 already linked from item #1 (one `Confirmed`, one `Rejected`). Run `--item 1` -> universe = 3 items; no `dropped_pairs` collection.
 - `--item 999` -> `RELATE-001`, exit 1, message includes `999` and the DB path.
 - `schema_version.version` < 8 -> `RELATE-014`, exit 1. (Step 1 reads the table; `PRAGMA user_version` is unused.)
 - DB file missing or corrupt -> `RELATE-012`, exit 1.
@@ -111,7 +111,7 @@ Step 2 takes the `CandidateUniverse` and adds the 3 signals (content, graph, met
 
 ## 11. Rollback
 
-No rollback — this step only reads. Per framework v2 L3 rule.
+Reads are non-mutating, but the migrations this step applies (006-009) change the schema; 008 and 009 rebuild `change_log` and `ai_responses` with a row copy. Undo: back up `ember.db` before the first Relate run on an existing DB (`cp ember.db ember.db.bak`). No data rollback per L1 §4 rule 7.
 
 ## 12. Build Notes (post-implementation)
 
@@ -120,7 +120,7 @@ Landed on `feat/relate-engine`.
 **Code**
 - `ember/relate/errors.py`: `RelateError` plus all 30 L2 §6 codes (001, 005-014, 016-019, 021-033, 035, 036).
 - `ember/relate/rows.py`: `NewItem`, `CandidateUniverse`, `Link`.
-- `ember/relate/link_lookup.py`: `LinkLookupPort` with 8 methods.
+- `ember/relate/link_lookup.py`: `LinkLookupPort` with 7 methods.
 - `ember/relate/compat.py`: `LINK_TYPES`, `TYPE_COMPAT`, `allowed_link_types`.
 - `ember/relate/load_filter.py`: `LoadedCandidates`, `resolve_new_item`, `build_candidate_universe`, `load_and_filter`.
 - Migrations `006_create_links.sql`, `007_create_item_embeddings.sql`, `008_add_change_log_link_fk.sql`, `009_drop_source_id_not_null_and_add_item_id.sql` (L2 deliverable d). Schema version after apply = 9.
@@ -132,14 +132,20 @@ Landed on `feat/relate-engine`.
 - `load_and_filter` returns the named `LoadedCandidates` object instead of a raw 2-tuple, per Constitution I4. The CLI passes `new_item` and `universe` separately, so the M2 decision (no `ContextSnapshot`) still holds.
 - RELATE-014 is defensive: `open_relate_database` applies migrations before checking, so a normal DB never triggers it. The check is covered directly in `tests/test_relate_db_open.py`.
 - `find_latest_unlinked_active` uses `NOT IN (SELECT source_item_id FROM links)` with no status filter, so `Confirmed` and `Rejected` both disqualify (B6 fix).
+- Missing DB file -> `RELATE-012`: `open_relate_database` requires an existing file and no longer creates it, so a typo'd `--db` (including the `--latest` path) fails fast.
+- Corrupt (not-a-database) file -> `RELATE-012`: the open probe reads `sqlite_master` and maps the failure to `DbOpenFailed`.
+- The CLI opens the DB through `open_relate_database`, not `open_database`, so the strict checks run before `load_and_filter`.
+- `ensure_relate_schema` keeps the plan's `< 8` threshold. Step 3 should raise it to 9 when `ai_responses.item_id` becomes required.
 
 **Tests**
-- Unit: `tests/relate/test_load_filter_unit.py` (6 tests).
+- Unit: `tests/relate/test_load_filter_unit.py` (5 tests).
 - Integration: `tests/relate/test_load_filter_integration.py` (5 tests).
-- CLI: `tests/relate/test_relate_cli.py` (5 tests).
-- DB open: `tests/test_relate_db_open.py` (4 tests).
+- CLI: `tests/relate/test_relate_cli.py` (9 tests: happy path, missing item, `--latest` soft exit + JSON, selector guard, missing DB -> RELATE-012, corrupt DB -> RELATE-012, migration failure -> RELATE-013, old schema -> RELATE-014).
+- DB open: `tests/test_relate_db_open.py` (6 tests: directory path, missing file, corrupt file, migration failure, old schema, all migrations applied).
+- Migrations: `tests/test_migrations.py` (`test_migrations_008_009_preserve_existing_rows`: a hand-built version-5 DB keeps its `change_log` / `ai_responses` rows and their `sqlite_sequence` values through 008/009).
+- AI response store: `tests/test_ai_response_store.py` (4 tests: save by `source_id`, save by `item_id`, reject both ids, reject neither id).
 - Architecture: `tests/test_architecture.py::test_relate_core_does_not_import_adapters`.
-- Full suite: 155 passed, 2 live tests deselected.
+- Full suite: 165 passed, 2 live tests deselected.
 - One stale assertion updated: `tests/test_source_storage_integration.py` expected schema version 5, now 9.
 
 **Commits**

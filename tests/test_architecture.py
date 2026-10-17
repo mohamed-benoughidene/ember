@@ -11,6 +11,7 @@ import ember.capture.item_proposal as item_proposal
 import ember.capture.source_storage as source_storage
 
 FORBIDDEN = ("sqlite3", "openai", "anthropic", "ember.adapters")
+FORBIDDEN_RELATE = (*FORBIDDEN, "sentence_transformers", "numpy")
 
 
 def test_capture_core_does_not_import_adapters() -> None:
@@ -27,7 +28,10 @@ def test_capture_core_does_not_import_adapters() -> None:
 
 
 def test_relate_core_does_not_import_adapters() -> None:
-    for path in Path("ember/relate").glob("*.py"):
+    relate_dir = Path(__file__).resolve().parents[1] / "ember" / "relate"
+    paths = sorted(relate_dir.glob("*.py"))
+    assert paths
+    for path in paths:
         text = path.read_text(encoding="utf-8")
-        for token in ("sentence_transformers", "numpy", "sqlite3", "openai", "anthropic", "ember.adapters"):
+        for token in FORBIDDEN_RELATE:
             assert token not in text, f"{path} references {token}"
