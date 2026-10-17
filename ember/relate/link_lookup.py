@@ -26,3 +26,15 @@ class LinkLookupPort(Protocol):
     def find_latest_unlinked_active(self) -> NewItem | None:
         """Return the newest Active item with no outgoing link, or None."""
         ...
+
+    def neighbors_of(self, item_id: int) -> list[int]:
+        """Return 1-hop neighbors via Confirmed links (either side). Step 2."""
+        ...
+
+    def item_status(self, item_id: int) -> str | None:
+        """Return the item's status, or None if missing. Step 3 (supersedes-Closed)."""
+        ...
+
+    def supersedes_ancestors(self, item_id: int) -> set[int]:
+        """BFS through Confirmed supersedes links upstream. Step 3 (cycle check)."""
+        ...
