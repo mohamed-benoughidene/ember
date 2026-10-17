@@ -8,6 +8,7 @@ import sys
 
 import click
 
+from ember.adapters.embedder import build_embedder
 from ember.adapters.llm import build_item_proposer
 from ember.adapters.sqlite import (
     SqliteAiResponseStore,
@@ -15,6 +16,7 @@ from ember.adapters.sqlite import (
     SqliteItemGatekeeper,
     SqliteLinkContext,
     SqliteSourceStore,
+    build_embedding_store,
     open_database,
     open_relate_database,
 )
@@ -36,6 +38,7 @@ from ember.capture.item_proposal import (
 )
 from ember.capture.source_storage import StoredSource, store_source
 from ember.errors import EmberError
+from ember.relate.candidate_pool import build_candidate_pool
 from ember.relate.load_filter import load_item_candidates, load_latest_candidates
 
 DEFAULT_DB_PATH = "ember.db"
@@ -204,7 +207,11 @@ def clear_validated(item_id: int, db_path: str) -> None:
     help="SQLite database path.",
 )
 def relate(item_id: int | None, latest: bool, db_path: str) -> None:
-    """Phase 1: load the item and list type-compatible candidates."""
+    """Phases 1 + 2: load candidates and print the ranked pool size.
+
+    Phase 3 replaces this stub. The command exits 0 on success and 1 on a
+    phase error.
+    """
     if item_id is not None and latest:
         raise click.UsageError("use either --item or --latest, not both")
     if item_id is None and not latest:
@@ -218,20 +225,23 @@ def relate(item_id: int | None, latest: bool, db_path: str) -> None:
             result = load_item_candidates(lookup, item_id=item_id, db_path=db_path)
         else:
             raise click.UsageError("one of --item or --latest is required")
+        if result is None:
+            click.echo("no unrelated items")
+            return
+        counts: dict[str, int] = {}
+        pool = build_candidate_pool(
+            result,
+            link_lookup=lookup,
+            embedding_store=build_embedding_store(conn),
+            embedder=build_embedder(),
+            stderr=sys.stderr,
+            counts_out=counts,
+        )
     except EmberError as exc:
         click.echo(f"error: {exc.log_line()}", err=True)
         sys.exit(1)
-    if result is None:
-        click.echo("no unrelated items")
-        return
     click.echo(
-        json.dumps(
-            {
-                "phase": 1,
-                "new_item_id": result.new_item.id,
-                "candidates": len(result.universe.items),
-            }
-        )
+        json.dumps({"phase": 2, "pool_size": len(pool), "signals": counts})
     )
 
 

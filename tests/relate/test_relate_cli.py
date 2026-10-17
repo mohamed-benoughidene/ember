@@ -9,9 +9,21 @@ from pathlib import Path
 from click.testing import CliRunner
 
 import ember.adapters.sqlite as sqlite_adapter
-from ember.adapters.sqlite import open_database
+from ember.adapters.sqlite import SqliteEmbedderStore, open_database
 from ember.cli import main
+from ember.relate.errors import EmbedderLoadFailed
 from tests.fakes import FIXED_TIME, insert_item, insert_source
+from tests.relate.fakes import FakeEmbedder
+
+
+def _patch_phase2_ports(monkeypatch, *, embedder=None) -> FakeEmbedder:
+    """Replace the real model and cache with fakes for CLI tests."""
+    fake_embedder = embedder or FakeEmbedder()
+    monkeypatch.setattr("ember.cli.build_embedder", lambda: fake_embedder)
+    monkeypatch.setattr(
+        "ember.cli.build_embedding_store", lambda conn: SqliteEmbedderStore(conn)
+    )
+    return fake_embedder
 
 
 def _insert_link(
@@ -62,16 +74,17 @@ def _error_text(result) -> str:
     return result.output + stderr
 
 
-def test_relate_item_prints_phase1_json(db_path) -> None:
+def test_relate_item_prints_phase2_json(db_path, monkeypatch) -> None:
     _seed_six_items_two_links(db_path)
+    _patch_phase2_ports(monkeypatch)
 
     result = CliRunner().invoke(main, ["relate", "--item", "1", "--db", db_path])
 
     assert result.exit_code == 0
     assert json.loads(result.output) == {
-        "phase": 1,
-        "new_item_id": 1,
-        "candidates": 3,
+        "phase": 2,
+        "pool_size": 3,
+        "signals": {"dense": 3, "graph": 0, "metadata": 3},
     }
 
 
@@ -109,7 +122,7 @@ def test_relate_latest_soft_exit_when_nothing_eligible(db_path) -> None:
     assert result.stderr == ""
 
 
-def test_relate_latest_prints_json_when_eligible(db_path) -> None:
+def test_relate_latest_prints_json_when_eligible(db_path, monkeypatch) -> None:
     conn = open_database(db_path)
     try:
         source_id = insert_source(conn)
@@ -118,11 +131,32 @@ def test_relate_latest_prints_json_when_eligible(db_path) -> None:
         conn.commit()
     finally:
         conn.close()
+    _patch_phase2_ports(monkeypatch)
 
     result = CliRunner().invoke(main, ["relate", "--latest", "--db", db_path])
 
     assert result.exit_code == 0
-    assert json.loads(result.output)["new_item_id"] == 2
+    assert json.loads(result.output) == {
+        "phase": 2,
+        "pool_size": 1,
+        "signals": {"dense": 1, "graph": 0, "metadata": 1},
+    }
+
+
+def test_relate_embedder_load_failure_exits_1_with_relate_017(
+    db_path, monkeypatch
+) -> None:
+    _seed_six_items_two_links(db_path)
+
+    def _fail():
+        raise EmbedderLoadFailed("model missing", model="fake")
+
+    monkeypatch.setattr("ember.cli.build_embedder", _fail)
+
+    result = CliRunner().invoke(main, ["relate", "--item", "1", "--db", db_path])
+
+    assert result.exit_code == 1
+    assert "RELATE-017" in _error_text(result)
 
 
 def test_relate_requires_exactly_one_selector(db_path) -> None:
