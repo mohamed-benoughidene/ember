@@ -24,3 +24,10 @@ def test_capture_core_does_not_import_adapters() -> None:
         text = Path(module.__file__).read_text(encoding="utf-8")
         for token in FORBIDDEN:
             assert token not in text, f"{module.__name__} references {token}"
+
+
+def test_relate_core_does_not_import_adapters() -> None:
+    for path in Path("ember/relate").glob("*.py"):
+        text = path.read_text(encoding="utf-8")
+        for token in ("sentence_transformers", "numpy", "sqlite3", "openai", "anthropic", "ember.adapters"):
+            assert token not in text, f"{path} references {token}"
