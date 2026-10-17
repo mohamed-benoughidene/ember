@@ -2,7 +2,15 @@
 
 from __future__ import annotations
 
+from enum import Enum
+
 from pydantic import BaseModel
+
+
+class SignalKind(str, Enum):
+    dense = "dense"
+    graph = "graph"
+    metadata = "metadata"
 
 
 class NewItem(BaseModel):
@@ -23,3 +31,9 @@ class Link(BaseModel):
     link_type: str
     status: str
     created_at: str
+
+
+class RankedCandidate(BaseModel):
+    item: NewItem
+    cosine: float | None
+    source: SignalKind

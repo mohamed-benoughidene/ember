@@ -53,3 +53,84 @@ class FakeLinkLookup:
 
     def find_latest_unlinked_active(self) -> NewItem | None:
         return self._latest
+
+    def neighbors_of(self, item_id: int) -> list[int]:
+        neighbors: set[int] = set()
+        for link in self._links:
+            if link.status != "Confirmed":
+                continue
+            if link.source_item_id == item_id:
+                neighbors.add(link.target_item_id)
+            elif link.target_item_id == item_id:
+                neighbors.add(link.source_item_id)
+        return sorted(neighbors)
+
+
+class FakeEmbedder:
+    """Canned embedder. Unknown text gets a fixed unit vector."""
+
+    def __init__(
+        self,
+        vectors: dict[str, list[float]] | None = None,
+        *,
+        model_name: str = "fake-model",
+        dim: int = 3,
+        error: Exception | None = None,
+    ) -> None:
+        self._vectors = dict(vectors or {})
+        self._model_name = model_name
+        self._dim = dim
+        self._error = error
+        self.calls: list[list[str]] = []
+
+    def embed(self, texts: list[str]) -> list[list[float]]:
+        self.calls.append(list(texts))
+        if self._error is not None:
+            raise self._error
+        vectors: list[list[float]] = []
+        for text in texts:
+            vector = self._vectors.get(text)
+            if vector is None:
+                vector = [1.0] + [0.0] * (self._dim - 1)
+            vectors.append(list(vector))
+        return vectors
+
+    def dim(self) -> int:
+        return self._dim
+
+    def model_name(self) -> str:
+        return self._model_name
+
+
+class FakeEmbeddingStore:
+    """In-memory `item_embeddings` cache."""
+
+    def __init__(
+        self,
+        rows: dict[int, list[float]] | None = None,
+        *,
+        model_name: str = "fake-model",
+    ) -> None:
+        self.rows = {item_id: list(vector) for item_id, vector in (rows or {}).items()}
+        self.model_names = {item_id: model_name for item_id in self.rows}
+        self.upserts: list[tuple[int, list[float], str]] = []
+        self.wipes = 0
+
+    def get(self, item_id: int) -> list[float] | None:
+        return self.rows.get(item_id)
+
+    def upsert(self, item_id: int, vector: list[float], model_name: str) -> None:
+        self.upserts.append((item_id, list(vector), model_name))
+        self.rows[item_id] = list(vector)
+        self.model_names[item_id] = model_name
+
+    def model_name_of(self, item_id: int) -> str | None:
+        return self.model_names.get(item_id)
+
+    def first_model_name(self) -> str | None:
+        return next(iter(self.model_names.values()), None)
+
+    def wipe(self) -> None:
+        self.wipes += 1
+        self.rows.clear()
+        self.model_names.clear()
