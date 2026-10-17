@@ -427,6 +427,31 @@ def test_merge_takes_the_higher_graph_cosine_but_keeps_the_dense_source() -> Non
     assert shared[0].source is SignalKind.dense
 
 
+def test_merge_prefers_graph_source_over_metadata_when_both_match() -> None:
+    """A neighbor inside the date window keeps the stronger `graph` source."""
+    new_item = _item(1)
+    items = [_item(item_id, days=FAR_DAYS) for item_id in range(2, 13)]
+    items.append(_item(13, days=5))
+    embedder = FakeEmbedder(_low_cosine_vectors(13), model_name=MODEL)
+    store = FakeEmbeddingStore({1: [1.0, 0.0, 0.0]}, model_name=MODEL)
+    lookup = FakeLinkLookup([new_item, *items], [_link(101, 1, 13)])
+    counts: dict[str, int] = {}
+
+    pool = _build(
+        _loaded(new_item, items),
+        embedder=embedder,
+        store=store,
+        lookup=lookup,
+        counts_out=counts,
+    )
+    shared = [candidate for candidate in pool if candidate.item.id == 13]
+
+    assert counts == {"dense": 10, "graph": 1, "metadata": 1}
+    assert len(shared) == 1
+    assert shared[0].cosine == 0.5
+    assert shared[0].source is SignalKind.graph
+
+
 def test_preflight_model_change_wipes_the_cache_and_reencodes() -> None:
     items = [_item(2, days=FAR_DAYS), _item(3, days=FAR_DAYS)]
     vectors = {
