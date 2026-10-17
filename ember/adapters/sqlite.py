@@ -17,17 +17,63 @@ from ember.capture.errors import (
 from ember.capture.item_gatekeeper import ExistingItem, StoredItem, ValidatedItem
 from ember.capture.item_proposal import ContextItem
 from ember.capture.source_storage import SourceRecord
+from ember.relate.errors import (
+    DbMigrationFailed,
+    DbOpenFailed,
+    ItemsReadFailed,
+    SchemaOutdated,
+)
+from ember.relate.rows import Link, NewItem
 
 _MIGRATIONS_MODULE = "ember.adapters.migrations"
 
 
-def open_database(db_path: str) -> sqlite3.Connection:
-    """Open a SQLite connection, enforce foreign keys, apply migrations."""
+def _connect(db_path: str) -> sqlite3.Connection:
+    """Open a raw SQLite connection with row access by name and foreign keys on."""
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
+    return conn
+
+
+def open_database(db_path: str) -> sqlite3.Connection:
+    """Open a SQLite connection, enforce foreign keys, apply migrations."""
+    conn = _connect(db_path)
     _apply_migrations(conn)
     return conn
+
+
+def open_relate_database(db_path: str) -> sqlite3.Connection:
+    """Open a connection for the relate engine, apply migrations, check the schema.
+
+    Raise `DbOpenFailed` (RELATE-012) if the connection cannot open, and
+    `DbMigrationFailed` (RELATE-013) if any migration fails to apply.
+    """
+    try:
+        conn = _connect(db_path)
+    except sqlite3.Error as exc:
+        raise DbOpenFailed("db open fail", db_path=db_path) from exc
+    try:
+        _apply_migrations(conn)
+    except sqlite3.Error as exc:
+        raise DbMigrationFailed("migration fail", db_path=db_path) from exc
+    ensure_relate_schema(conn)
+    return conn
+
+
+def ensure_relate_schema(conn: sqlite3.Connection) -> None:
+    """Check the applied schema version is new enough for the relate engine.
+
+    Raise `DbOpenFailed` (RELATE-012) if the version cannot be read, and
+    `SchemaOutdated` (RELATE-014) if the version is below the required 8.
+    """
+    try:
+        row = conn.execute("SELECT version FROM schema_version").fetchone()
+    except sqlite3.Error as exc:
+        raise DbOpenFailed("schema read fail") from exc
+    version = 0 if row is None else int(row["version"])
+    if version < 8:
+        raise SchemaOutdated("schema version too old", version=version, required=8)
 
 
 def _apply_migrations(conn: sqlite3.Connection) -> None:
@@ -144,6 +190,128 @@ class SqliteItemContext:
             ContextItem(id=row["id"], type=row["type"], statement=row["statement"])
             for row in rows
         ]
+
+
+class SqliteLinkContext:
+    """`LinkLookupPort` on SQLite. Read-only item and link lookups for relate.
+
+    Every method raises `ItemsReadFailed` (RELATE-016) on a read failure.
+    """
+
+    def __init__(self, conn: sqlite3.Connection) -> None:
+        self._conn = conn
+
+    def item_exists(self, item_id: int) -> bool:
+        """Return whether an item with this id exists."""
+        try:
+            row = self._conn.execute(
+                "SELECT 1 FROM items WHERE id = ?", (item_id,)
+            ).fetchone()
+        except sqlite3.Error as exc:
+            raise ItemsReadFailed("item read fail", item_id=item_id) from exc
+        return row is not None
+
+    def item_type(self, item_id: int) -> str | None:
+        """Return the item's type, or None if the item is missing."""
+        try:
+            row = self._conn.execute(
+                "SELECT type FROM items WHERE id = ?", (item_id,)
+            ).fetchone()
+        except sqlite3.Error as exc:
+            raise ItemsReadFailed("item read fail", item_id=item_id) from exc
+        return None if row is None else row["type"]
+
+    def item_statement(self, item_id: int) -> str | None:
+        """Return the item's statement, or None if the item is missing."""
+        try:
+            row = self._conn.execute(
+                "SELECT statement FROM items WHERE id = ?", (item_id,)
+            ).fetchone()
+        except sqlite3.Error as exc:
+            raise ItemsReadFailed("item read fail", item_id=item_id) from exc
+        return None if row is None else row["statement"]
+
+    def item_created_at(self, item_id: int) -> str | None:
+        """Return the item's created_at text, or None if the item is missing."""
+        try:
+            row = self._conn.execute(
+                "SELECT created_at FROM items WHERE id = ?", (item_id,)
+            ).fetchone()
+        except sqlite3.Error as exc:
+            raise ItemsReadFailed("item read fail", item_id=item_id) from exc
+        return None if row is None else row["created_at"]
+
+    def find_existing(
+        self,
+        source_id: int,
+        target_id: int,
+        link_type: str,
+    ) -> Link | None:
+        """Return the link row for this triple of any status, or None."""
+        try:
+            row = self._conn.execute(
+                "SELECT id, source_item_id, target_item_id, link_type, status,"
+                " created_at FROM links"
+                " WHERE source_item_id = ? AND target_item_id = ? AND link_type = ?",
+                (source_id, target_id, link_type),
+            ).fetchone()
+        except sqlite3.Error as exc:
+            raise ItemsReadFailed(
+                "link read fail",
+                source_id=source_id,
+                target_id=target_id,
+                link_type=link_type,
+            ) from exc
+        if row is None:
+            return None
+        return Link(
+            id=row["id"],
+            source_item_id=row["source_item_id"],
+            target_item_id=row["target_item_id"],
+            link_type=row["link_type"],
+            status=row["status"],
+            created_at=row["created_at"],
+        )
+
+    def list_other_items(self, new_item_id: int) -> list[NewItem]:
+        """Return every item except `new_item_id`, ordered by id."""
+        try:
+            rows = self._conn.execute(
+                "SELECT id, type, statement, created_at FROM items"
+                " WHERE id != ? ORDER BY id",
+                (new_item_id,),
+            ).fetchall()
+        except sqlite3.Error as exc:
+            raise ItemsReadFailed("item read fail", item_id=new_item_id) from exc
+        return [
+            NewItem(
+                id=row["id"],
+                type=row["type"],
+                statement=row["statement"],
+                created_at=row["created_at"],
+            )
+            for row in rows
+        ]
+
+    def find_latest_unlinked_active(self) -> NewItem | None:
+        """Return the newest Active item with no link from it, or None."""
+        try:
+            row = self._conn.execute(
+                "SELECT id, type, statement, created_at FROM items"
+                " WHERE status = 'Active'"
+                " AND id NOT IN (SELECT source_item_id FROM links)"
+                " ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+        except sqlite3.Error as exc:
+            raise ItemsReadFailed("item read fail") from exc
+        if row is None:
+            return None
+        return NewItem(
+            id=row["id"],
+            type=row["type"],
+            statement=row["statement"],
+            created_at=row["created_at"],
+        )
 
 
 class SqliteItemGatekeeper:
@@ -320,16 +488,25 @@ class SqliteAiResponseStore:
         self._conn = conn
         self._clock = clock or _utc_now
 
-    def save(self, *, source_id: int, raw_response: str) -> None:
-        """Store one raw provider answer verbatim.
+    def save(
+        self,
+        *,
+        source_id: int | None = None,
+        item_id: int | None = None,
+        raw_response: str,
+    ) -> None:
+        """Store one raw provider answer verbatim against exactly one owner.
 
-        Raise `ItemDbWriteError` (CAPTURE-013) on a write failure.
+        Raise `ValueError` when neither or both of `source_id` and `item_id`
+        are set, and `ItemDbWriteError` (CAPTURE-013) on a write failure.
         """
+        if (source_id is None) == (item_id is None):
+            raise ValueError("save requires exactly one of source_id, item_id")
         try:
             self._conn.execute(
-                "INSERT INTO ai_responses (source_id, response_text, timestamp)"
-                " VALUES (?, ?, ?)",
-                (source_id, raw_response, self._clock()),
+                "INSERT INTO ai_responses (source_id, item_id, response_text, timestamp)"
+                " VALUES (?, ?, ?, ?)",
+                (source_id, item_id, raw_response, self._clock()),
             )
             self._conn.commit()
         except sqlite3.Error as exc:
