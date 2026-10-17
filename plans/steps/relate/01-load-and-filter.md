@@ -152,3 +152,5 @@ Landed on `feat/relate-engine`.
 - `a0bbc4b feat(relate): add load and filter core`
 - `6d3e349 feat(relate): add links and embedding schema`
 - `dccc6f1 feat(cli): wire relate load and filter`
+- `7d17225 docs(map): list relate files and tables`
+- `665da96 fix(relate): reject missing and corrupt db`
