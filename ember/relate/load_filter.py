@@ -19,23 +19,10 @@ class LoadedCandidates(BaseModel):
     universe: CandidateUniverse
 
 
-def resolve_new_item(
-    lookup: LinkLookupPort,
-    *,
-    item_id: int | None,
-    latest: bool,
-    db_path: str,
-) -> NewItem | None:
-    """Load the new item to relate, or return None when `--latest` finds none.
-
-    Raises ValueError when not exactly one of `item_id` / `latest` is given,
-    ItemIdNotFound when `item_id` is not in the DB, and ItemsReadFailed when a
-    row disappears between the existence check and the field reads.
-    """
-    if (item_id is None) == (not latest):
-        raise ValueError("exactly one of item_id or latest is required")
-    if item_id is None:
-        return lookup.find_latest_unlinked_active()
+def _read_item(
+    lookup: LinkLookupPort, *, item_id: int, db_path: str
+) -> NewItem:
+    """Read one item by id, or raise a named error."""
     if not lookup.item_exists(item_id):
         raise ItemIdNotFound(
             f"item {item_id} not found in {db_path}",
@@ -52,6 +39,30 @@ def resolve_new_item(
         type=item_type,
         statement=statement,
         created_at=created_at,
+    )
+
+
+def load_item_candidates(
+    lookup: LinkLookupPort, *, item_id: int, db_path: str
+) -> LoadedCandidates:
+    """Load one item by id and return its filtered candidate universe."""
+    new_item = _read_item(lookup, item_id=item_id, db_path=db_path)
+    return LoadedCandidates(
+        new_item=new_item,
+        universe=build_candidate_universe(lookup, new_item),
+    )
+
+
+def load_latest_candidates(
+    lookup: LinkLookupPort,
+) -> LoadedCandidates | None:
+    """Load the newest unrelated Active item. None is the soft exit."""
+    new_item = lookup.find_latest_unlinked_active()
+    if new_item is None:
+        return None
+    return LoadedCandidates(
+        new_item=new_item,
+        universe=build_candidate_universe(lookup, new_item),
     )
 
 
@@ -77,25 +88,3 @@ def build_candidate_universe(
         if viable & allowed_link_types(new_item.type, candidate.type):
             survivors.append(candidate)
     return CandidateUniverse(items=survivors)
-
-
-def load_and_filter(
-    lookup: LinkLookupPort,
-    *,
-    item_id: int | None = None,
-    latest: bool = False,
-    db_path: str,
-) -> LoadedCandidates | None:
-    """Resolve the new item and its filtered candidates. None is a soft exit."""
-    new_item = resolve_new_item(
-        lookup,
-        item_id=item_id,
-        latest=latest,
-        db_path=db_path,
-    )
-    if new_item is None:
-        return None
-    return LoadedCandidates(
-        new_item=new_item,
-        universe=build_candidate_universe(lookup, new_item),
-    )

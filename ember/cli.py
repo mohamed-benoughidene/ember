@@ -36,7 +36,7 @@ from ember.capture.item_proposal import (
 )
 from ember.capture.source_storage import StoredSource, store_source
 from ember.errors import EmberError
-from ember.relate.load_filter import load_and_filter
+from ember.relate.load_filter import load_item_candidates, load_latest_candidates
 
 DEFAULT_DB_PATH = "ember.db"
 
@@ -205,17 +205,19 @@ def clear_validated(item_id: int, db_path: str) -> None:
 )
 def relate(item_id: int | None, latest: bool, db_path: str) -> None:
     """Phase 1: load the item and list type-compatible candidates."""
-    if (item_id is None) == (not latest):
-        raise click.UsageError("exactly one of --item or --latest is required")
+    if item_id is not None and latest:
+        raise click.UsageError("use either --item or --latest, not both")
+    if item_id is None and not latest:
+        raise click.UsageError("one of --item or --latest is required")
     try:
         conn = open_relate_database(db_path)
         lookup = SqliteLinkContext(conn)
-        result = load_and_filter(
-            lookup,
-            item_id=item_id,
-            latest=latest,
-            db_path=db_path,
-        )
+        if latest:
+            result = load_latest_candidates(lookup)
+        elif item_id is not None:
+            result = load_item_candidates(lookup, item_id=item_id, db_path=db_path)
+        else:
+            raise click.UsageError("one of --item or --latest is required")
     except EmberError as exc:
         click.echo(f"error: {exc.log_line()}", err=True)
         sys.exit(1)

@@ -84,7 +84,7 @@ Earlier logo and character images, kept for history.
 - `ember/relate/rows.py`: Pydantic row models `NewItem`, `CandidateUniverse`, and `Link`.
 - `ember/relate/link_lookup.py`: The `LinkLookupPort` protocol (item and link reads).
 - `ember/relate/compat.py`: The 5 link types and the V1 spec 3.3 type-compatibility table.
-- `ember/relate/load_filter.py`: Relate Phase 1 core. Resolves the new item and builds the candidate universe.
+- `ember/relate/load_filter.py`: Relate Phase 1 core. Loads by id (`load_item_candidates`) or latest (`load_latest_candidates`) and builds the candidate universe.
 - `ember/adapters/__init__.py`: Marks the adapters layer folder as a package.
 - `ember/adapters/sqlite.py`: SQLite connection, numbered migrations, `SqliteSourceStore` and `SqliteItemGatekeeper` (writes are the gatekeeper boundary), `SqliteItemContext` (item reads), `SqliteAiResponseStore` (raw AI answers), `SqliteLinkContext` (relate item/link reads), `open_relate_database` / `ensure_relate_schema` (relate boot checks).
 - `ember/adapters/llm.py`: `OpenAiItemProposer` (`ItemProposerPort` on the OpenAI SDK, OpenRouter base URL) and the env-driven factory.
@@ -119,7 +119,8 @@ Earlier logo and character images, kept for history.
 - `tests/test_cli_validated.py`: CLI checks for `set-validated` / `clear-validated` and the Assumption-only rule.
 - `tests/test_capture_live.py`: Live AI round trip. Marked `live`, so a plain pytest run never calls the API; run it with `./.venv/bin/python -m pytest -m live`.
 - `tests/test_architecture.py`: Asserts the capture and relate engine cores never import an adapter.
-- `tests/test_relate_db_open.py`: Relate DB open checks: missing file, corrupt file, migration fail, old schema, and all migrations applied.
+- `tests/test_relate_db_open.py`: Relate DB open checks: missing/corrupt file, migration fail, schema version 5/8/9 gate, and all migrations applied.
+- `tests/test_relate_read_failures.py`: Every `SqliteLinkContext` read maps a `sqlite3` failure to `RELATE-016`.
 
 ### Relate Tests (`tests/relate/`)
 - `tests/relate/__init__.py`: Marks the relate tests folder as a package.

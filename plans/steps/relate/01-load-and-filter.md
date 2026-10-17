@@ -59,7 +59,7 @@ From the port (`LinkLookupPort`, L2 §4.5 + this step's amendments):
 - `RELATE-001` — `--item ID` not in DB.
 - `RELATE-012` — DB open fail (DB file corrupt, permission denied, disk full at open). New in Step 1's §5 (M1).
 - `RELATE-013` — migration 006/007/008/009 crashed during apply. New in Step 1's §5 (M1).
-- `RELATE-014` — `schema_version.version` < 8 (migrations 006-009 not applied). (B5 fix: source of truth is the `schema_version` **table** per `ember/adapters/sqlite.py:35-43`, not `PRAGMA user_version`. L2 §3 line 23 was wrong; Step 1 reads `SELECT version FROM schema_version`.)
+- `RELATE-014` — `schema_version.version` < 9 (migrations 006-009 not applied). (B5 fix: source of truth is the `schema_version` **table** per `ember/adapters/sqlite.py:35-43`, not `PRAGMA user_version`. L2 §3 line 23 was wrong; Step 1 reads `SELECT version FROM schema_version`. The gate is defensive because `open_relate_database` applies migrations before checking.)
 - `RELATE-016` — Phase 1 read failed (covers `items` and `links` table reads: `item_exists`, `list_other_items`, `find_latest_unlinked_active`, `find_existing`). Per L2 amendment log entry recorded by this step, the L2 §6 line 359 trigger text is widened from "Reading items table failed" to "Phase 1 read failed (items or links table)". Replaces the previously-misattributed `RELATE-005` (M1).
 
 **No `RELATE-002`.** L2 §6 line 380 removed it. The `--latest` no-eligible-items case is a soft exit 0 per L2 §4 Phase 1 line 153 (B4 fix). Likewise no `RELATE-020` or `RELATE-034` (L2 §6 lines 382-383 remove both).
@@ -77,7 +77,7 @@ Unit (in-memory `LinkLookupPort`, in-memory compat table):
 Integration (real SQLite temp DB, migrations 001-009 applied):
 - Seed: 6 items (the new item plus 5 candidates), 2 already linked from item #1 (one `Confirmed`, one `Rejected`). Run `--item 1` -> universe = 3 items; no `dropped_pairs` collection.
 - `--item 999` -> `RELATE-001`, exit 1, message includes `999` and the DB path.
-- `schema_version.version` < 8 -> `RELATE-014`, exit 1. (Step 1 reads the table; `PRAGMA user_version` is unused.)
+- `schema_version.version` < 9 -> `RELATE-014`, exit 1. Version 8 must also reject; version 9 must pass. (Step 1 reads the table; `PRAGMA user_version` is unused. The check is defensive: `open_relate_database` migrates first.)
 - DB file missing or corrupt -> `RELATE-012`, exit 1.
 - Migration 006 fails mid-apply -> `RELATE-013`, exit 1.
 
@@ -104,10 +104,11 @@ Step 2 takes the `CandidateUniverse` and adds the 3 signals (content, graph, met
 - (L2 §9 #2) Graph signal BFS depth — Step 2 picks 1-hop (L2's default) or deeper. Step 1 does not pick.
 - (L2 §9 #3) Metadata signal temporal window — Step 2 picks.
 - Step 1 picks itself: how to query the "newest unlinked Active" for `--latest` (L2 deferred this in spirit by saying "L3 may pick"; no L2 §9 line for it). Encapsulated in the new `LinkLookupPort.find_latest_unlinked_active()` method; the SQL is `ORDER BY id DESC LIMIT 1` against `items WHERE status='Active' AND id NOT IN (SELECT source_item_id FROM links)`. No BFS, no time filter — simplest thing that satisfies the contract. The disqualifying condition is "any link status" (B6 fix from `status='Confirmed'`).
-- **L2 amendment log entries recorded by this step** (for the next Relate plan revision to fold in):
-  - L2 §4.5 needs 2 new `LinkLookupPort` methods: `list_other_items(new_item_id)` and `find_latest_unlinked_active()`. Without them, Phase 1 cannot enumerate candidates via the port pattern.
-  - L2 §3 line 23 (says "PRAGMA user_version") is wrong; the source of truth is the `schema_version` table. Step 1 reads the table per `ember/adapters/sqlite.py:35-43`. L2 §6 line 358 trigger text also needs updating from "DB has not had migrations 006/007/008/009 applied" to "`schema_version.version` < 8".
-  - L2 §6 line 359 trigger text for `RELATE-016 ItemsReadFailed` needs widening from "Reading items table failed" to "Phase 1 read failed (items or links table)", so Step 1's `find_existing` / `list_other_items` / `find_latest_unlinked_active` reads all map to the same code.
+- **L2 amendment log entries recorded by this step** (folded into `plans/engine-relate-plan.md` on 2026-10-17):
+  - L2 §4.5 now lists `item_created_at`, `list_other_items(new_item_id)`, and `find_latest_unlinked_active()`. Without them, Phase 1 cannot build `NewItem` or enumerate candidates through the port pattern.
+  - L2 §3 line 23 (said "PRAGMA user_version") was corrected: the source of truth is the `schema_version` table, and the RELATE-014 gate is `< 9`.
+  - L2 §6's `RELATE-016 ItemsReadFailed` trigger was widened from "Reading items table failed" to "Phase 1 read failed (items or links table)", so `find_existing` / `list_other_items` / `find_latest_unlinked_active` map to the same code.
+  - L2 §4 Phase 1 now records that `NewItem` carries `id`, `type`, `statement`, and `created_at` only.
 
 ## 11. Rollback
 
@@ -122,9 +123,9 @@ Landed on `feat/relate-engine`.
 - `ember/relate/rows.py`: `NewItem`, `CandidateUniverse`, `Link`.
 - `ember/relate/link_lookup.py`: `LinkLookupPort` with 7 methods.
 - `ember/relate/compat.py`: `LINK_TYPES`, `TYPE_COMPAT`, `allowed_link_types`.
-- `ember/relate/load_filter.py`: `LoadedCandidates`, `resolve_new_item`, `build_candidate_universe`, `load_and_filter`.
+- `ember/relate/load_filter.py`: `LoadedCandidates`, `_read_item`, `build_candidate_universe`, `load_item_candidates`, `load_latest_candidates`.
 - Migrations `006_create_links.sql`, `007_create_item_embeddings.sql`, `008_add_change_log_link_fk.sql`, `009_drop_source_id_not_null_and_add_item_id.sql` (L2 deliverable d). Schema version after apply = 9.
-- `ember/adapters/sqlite.py`: `_connect` split out; `open_relate_database` maps open/migration failures to RELATE-012/013; `ensure_relate_schema` reads the `schema_version` table and raises RELATE-014 below 8; `SqliteLinkContext` implements the port; `SqliteAiResponseStore.save` now takes exactly one of `source_id` / `item_id`.
+- `ember/adapters/sqlite.py`: `_connect` split out; `open_relate_database` maps open/migration failures to RELATE-012/013; `ensure_relate_schema` reads the `schema_version` table and raises RELATE-014 below 9; `SqliteLinkContext` implements the port; `SqliteAiResponseStore.save` now takes exactly one of `source_id` / `item_id`.
 - `ember/cli.py`: `ember relate --item ID | --latest [--db PATH]` prints `{"phase": 1, "new_item_id": <id>, "candidates": <count>}` or `no unrelated items` (exit 0). Step 3 replaces this stub.
 
 **Deviations recorded**
@@ -134,19 +135,48 @@ Landed on `feat/relate-engine`.
 - `find_latest_unlinked_active` uses `NOT IN (SELECT source_item_id FROM links)` with no status filter, so `Confirmed` and `Rejected` both disqualify (B6 fix).
 - Missing DB file -> `RELATE-012`: `open_relate_database` requires an existing file and no longer creates it, so a typo'd `--db` (including the `--latest` path) fails fast.
 - Corrupt (not-a-database) file -> `RELATE-012`: the open probe reads `sqlite_master` and maps the failure to `DbOpenFailed`.
-- The CLI opens the DB through `open_relate_database`, not `open_database`, so the strict checks run before `load_and_filter`.
-- `ensure_relate_schema` keeps the plan's `< 8` threshold. Step 3 should raise it to 9 when `ai_responses.item_id` becomes required.
+- The CLI opens the DB through `open_relate_database`, not `open_database`, so the strict checks run before `load_item_candidates` / `load_latest_candidates`.
+- The schema gate was raised from `< 8` to `< 9` with user approval. After migration 009 the stored version is 9; L2 §6's trigger already says migrations 006-009. A version-8 DB must not pass, because Step 3 needs `ai_responses.item_id`.
+- `load_and_filter(latest=...)` was split into `load_item_candidates` and `load_latest_candidates` for strict I2 compliance. There is no boolean behavior flag and no invalid "both selectors" combination in the core.
+- `RELATE-016` now has a parametrized failure test for all seven `SqliteLinkContext` reads, plus a core test for a row that vanishes between the existence check and the field reads.
+- The L2 plan was corrected in place (§3 schema version, §4 Phase 1 model, §4.5 port methods, §6 trigger text) instead of leaving the amendment log pending.
 
 **Tests**
-- Unit: `tests/relate/test_load_filter_unit.py` (5 tests).
+- Unit: `tests/relate/test_load_filter_unit.py` (6 tests: by-id happy path, missing item, `--latest` soft exit, both filters, any-status, vanishing row -> RELATE-016).
 - Integration: `tests/relate/test_load_filter_integration.py` (5 tests).
 - CLI: `tests/relate/test_relate_cli.py` (9 tests: happy path, missing item, `--latest` soft exit + JSON, selector guard, missing DB -> RELATE-012, corrupt DB -> RELATE-012, migration failure -> RELATE-013, old schema -> RELATE-014).
-- DB open: `tests/test_relate_db_open.py` (6 tests: directory path, missing file, corrupt file, migration failure, old schema, all migrations applied).
-- Migrations: `tests/test_migrations.py` (`test_migrations_008_009_preserve_existing_rows`: a hand-built version-5 DB keeps its `change_log` / `ai_responses` rows and their `sqlite_sequence` values through 008/009).
+- DB open: `tests/test_relate_db_open.py` (9 tests: directory path, missing file, corrupt file, migration failure, version 5/8 reject, version 9 accept, old schema via open, all migrations applied).
+- Read failures: `tests/test_relate_read_failures.py` (7 parametrized tests, one per `SqliteLinkContext` read, all assert `RELATE-016`).
+- Migrations: `tests/test_migrations.py` 12 tests, including `test_migrations_008_009_preserve_existing_rows` (a hand-built version-5 DB keeps its `change_log` / `ai_responses` rows and their `sqlite_sequence` values through 008/009).
 - AI response store: `tests/test_ai_response_store.py` (4 tests: save by `source_id`, save by `item_id`, reject both ids, reject neither id).
 - Architecture: `tests/test_architecture.py::test_relate_core_does_not_import_adapters`.
-- Full suite: 165 passed, 2 live tests deselected.
+- Full suite: 176 passed, 2 live tests deselected.
 - One stale assertion updated: `tests/test_source_storage_integration.py` expected schema version 5, now 9.
+
+**Performance measurement (Phase 1 query cost)**
+
+Measured with `sqlite3.set_trace_callback` and `time.perf_counter` on synthetic all-`Decision` DBs with no links. The one-query prototype replaces the per-candidate `find_existing` loop with one `SELECT target_item_id, link_type FROM links WHERE source_item_id = ?`.
+
+| Items | Queries | Phase 1 | One-query prototype | Speedup |
+|---|---|---|---|---|
+| 100 | 496 | 9.94 ms | 0.58 ms | 17x |
+| 1,000 | 4,996 | 72.39 ms | 2.38 ms | 30x |
+| 5,000 | 24,996 | 372.02 ms | 11.11 ms | 33x |
+
+The “SQLite is local so it is cheap” claim does not hold at 5,000 items. Decision pending: keep the plan-mandated per-triple port call, or add a batch port method (`existing_link_types(source_id) -> dict[int, set[str]]`) and reduce Phase 1 to one link query.
+
+**Known risk (not fixed): migration version-bump window**
+
+`_apply_migrations` runs `executescript(script)` and only then updates `schema_version` in a separate commit. Reproduction on a version-5 DB:
+
+| Crash point | Reopen result |
+|---|---|
+| after 006 script, before version bump | `OperationalError: table links already exists` on every reopen |
+| after 007 script, before version bump | `OperationalError: table item_embeddings already exists` on every reopen |
+| after 008 script, before version bump | recovers (008 is re-runnable) |
+| after 009 script, before version bump | recovers (009 is re-runnable) |
+
+A prototype that wraps `script + UPDATE schema_version` in one `BEGIN` / `COMMIT` rolls back both the DDL and the version when a migration fails, and later migrations still apply. Options: (A) transactional runner in the shared `_apply_migrations` (recommended; affects Capture too), or (B) `CREATE TABLE IF NOT EXISTS` on 006/007 only (partial; 001-005 and 004 keep the same window). Awaiting a decision.
 
 **Commits**
 - `a0bbc4b feat(relate): add load and filter core`

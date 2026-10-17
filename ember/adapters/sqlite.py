@@ -79,15 +79,15 @@ def ensure_relate_schema(conn: sqlite3.Connection) -> None:
     """Check the applied schema version is new enough for the relate engine.
 
     Raise `DbOpenFailed` (RELATE-012) if the version cannot be read, and
-    `SchemaOutdated` (RELATE-014) if the version is below the required 8.
+    `SchemaOutdated` (RELATE-014) if the version is below the required 9.
     """
     try:
         row = conn.execute("SELECT version FROM schema_version").fetchone()
         version = 0 if row is None else int(row["version"])
     except (sqlite3.Error, ValueError, TypeError) as exc:
         raise DbOpenFailed("schema version read fail") from exc
-    if version < 8:
-        raise SchemaOutdated("schema version too old", version=version, required=8)
+    if version < 9:
+        raise SchemaOutdated("schema version too old", version=version, required=9)
 
 
 def _apply_migrations(conn: sqlite3.Connection) -> None:

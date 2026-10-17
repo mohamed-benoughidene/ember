@@ -66,6 +66,42 @@ def test_ensure_relate_schema_rejects_old_version(tmp_path) -> None:
     assert exc.value.code == "RELATE-014"
 
 
+def test_ensure_relate_schema_rejects_version_8(tmp_path) -> None:
+    conn = sqlite3.connect(str(tmp_path / "raw.db"))
+    conn.row_factory = sqlite3.Row
+    conn.execute("CREATE TABLE schema_version (version INTEGER NOT NULL)")
+    conn.execute("INSERT INTO schema_version (version) VALUES (8)")
+
+    with pytest.raises(SchemaOutdated) as exc:
+        ensure_relate_schema(conn)
+
+    assert exc.value.code == "RELATE-014"
+    assert exc.value.context["required"] == 9
+
+
+def test_ensure_relate_schema_accepts_version_9(tmp_path) -> None:
+    conn = sqlite3.connect(str(tmp_path / "raw.db"))
+    conn.row_factory = sqlite3.Row
+    conn.execute("CREATE TABLE schema_version (version INTEGER NOT NULL)")
+    conn.execute("INSERT INTO schema_version (version) VALUES (9)")
+
+    ensure_relate_schema(conn)
+
+
+def test_open_relate_database_old_schema_exits_with_relate_014(db_path, monkeypatch) -> None:
+    conn = sqlite3.connect(db_path)
+    conn.execute("CREATE TABLE schema_version (version INTEGER NOT NULL)")
+    conn.execute("INSERT INTO schema_version (version) VALUES (8)")
+    conn.commit()
+    conn.close()
+    monkeypatch.setattr(sqlite_adapter, "_apply_migrations", lambda conn: None)
+
+    with pytest.raises(SchemaOutdated) as exc:
+        open_relate_database(db_path)
+
+    assert exc.value.code == "RELATE-014"
+
+
 def test_open_relate_database_applies_all_migrations(db_path) -> None:
     Path(db_path).touch()
     conn = open_relate_database(db_path)

@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import pytest
 
-from ember.relate.errors import ItemIdNotFound
-from ember.relate.load_filter import load_and_filter
+from ember.relate.errors import ItemIdNotFound, ItemsReadFailed
+from ember.relate.load_filter import load_item_candidates, load_latest_candidates
 from ember.relate.rows import Link, NewItem
 from tests.relate.fakes import FakeLinkLookup
 
@@ -50,7 +50,7 @@ def test_item_happy_path_keeps_only_type_compatible_candidates() -> None:
         ]
     )
 
-    result = load_and_filter(lookup, item_id=1, db_path=DB_PATH)
+    result = load_item_candidates(lookup, item_id=1, db_path=DB_PATH)
 
     assert result is not None
     assert result.new_item.id == 1
@@ -61,7 +61,7 @@ def test_missing_item_raises_item_id_not_found() -> None:
     lookup = FakeLinkLookup(items=[_item(1, "Question")])
 
     with pytest.raises(ItemIdNotFound) as excinfo:
-        load_and_filter(lookup, item_id=999, db_path=DB_PATH)
+        load_item_candidates(lookup, item_id=999, db_path=DB_PATH)
 
     assert excinfo.value.code == "RELATE-001"
     assert "999" in str(excinfo.value)
@@ -71,7 +71,7 @@ def test_missing_item_raises_item_id_not_found() -> None:
 def test_latest_with_no_eligible_item_returns_none() -> None:
     lookup = FakeLinkLookup(items=[_item(1, "Question")], latest=None)
 
-    assert load_and_filter(lookup, latest=True, db_path=DB_PATH) is None
+    assert load_latest_candidates(lookup) is None
 
 
 def test_filter_one_keeps_candidate_when_another_type_remains() -> None:
@@ -84,7 +84,7 @@ def test_filter_one_keeps_candidate_when_another_type_remains() -> None:
         ],
     )
 
-    result = load_and_filter(lookup, item_id=1, db_path=DB_PATH)
+    result = load_item_candidates(lookup, item_id=1, db_path=DB_PATH)
 
     assert result is not None
     assert [item.id for item in result.universe.items] == [2]
@@ -95,7 +95,41 @@ def test_filter_two_drops_incompatible_and_keeps_compatible() -> None:
         items=[_item(1, "Question"), _item(2, "Question"), _item(3, "Decision")]
     )
 
-    result = load_and_filter(lookup, item_id=1, db_path=DB_PATH)
+    result = load_item_candidates(lookup, item_id=1, db_path=DB_PATH)
 
     assert result is not None
     assert [item.id for item in result.universe.items] == [2]
+
+
+class _VanishingLookup:
+    """Port that claims the item exists but returns no fields for it."""
+
+    def item_exists(self, item_id: int) -> bool:
+        return True
+
+    def item_type(self, item_id: int) -> str | None:
+        return None
+
+    def item_statement(self, item_id: int) -> str | None:
+        return None
+
+    def item_created_at(self, item_id: int) -> str | None:
+        return None
+
+    def find_existing(
+        self, source_id: int, target_id: int, link_type: str
+    ) -> Link | None:
+        return None
+
+    def list_other_items(self, new_item_id: int) -> list[NewItem]:
+        return []
+
+    def find_latest_unlinked_active(self) -> NewItem | None:
+        return None
+
+
+def test_vanishing_row_raises_items_read_failed() -> None:
+    with pytest.raises(ItemsReadFailed) as excinfo:
+        load_item_candidates(_VanishingLookup(), item_id=1, db_path=DB_PATH)
+
+    assert excinfo.value.code == "RELATE-016"

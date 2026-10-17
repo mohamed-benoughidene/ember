@@ -8,7 +8,7 @@ import pytest
 
 from ember.adapters.sqlite import SqliteLinkContext, open_database
 from ember.relate.errors import ItemIdNotFound
-from ember.relate.load_filter import load_and_filter
+from ember.relate.load_filter import load_item_candidates
 from tests.fakes import FIXED_TIME, insert_item, insert_source
 
 
@@ -39,7 +39,7 @@ def test_item_one_drops_two_full_questions_and_keeps_three(db_path) -> None:
     _insert_link(conn, 1, 3, "answers", "Rejected")
     conn.commit()
 
-    result = load_and_filter(SqliteLinkContext(conn), item_id=1, db_path=db_path)
+    result = load_item_candidates(SqliteLinkContext(conn), item_id=1, db_path=db_path)
 
     assert result is not None
     assert [item.id for item in result.universe.items] == [4, 5, 6]
@@ -55,7 +55,7 @@ def test_type_filter_drops_incompatible_types(db_path) -> None:
     insert_item(conn, source_id=source_id, item_id=5, item_type="Finding")
     conn.commit()
 
-    result = load_and_filter(SqliteLinkContext(conn), item_id=1, db_path=db_path)
+    result = load_item_candidates(SqliteLinkContext(conn), item_id=1, db_path=db_path)
 
     assert result is not None
     assert [item.id for item in result.universe.items] == [2]
@@ -87,7 +87,7 @@ def test_missing_item_reports_id_and_db_path(db_path) -> None:
     conn.commit()
 
     with pytest.raises(ItemIdNotFound) as excinfo:
-        load_and_filter(SqliteLinkContext(conn), item_id=999, db_path=db_path)
+        load_item_candidates(SqliteLinkContext(conn), item_id=999, db_path=db_path)
 
     assert excinfo.value.code == "RELATE-001"
     assert "999" in str(excinfo.value)
@@ -104,7 +104,7 @@ def test_existing_link_of_any_status_is_dropped(db_path) -> None:
     _insert_link(conn, 1, 3, "supersedes", "Rejected")
     conn.commit()
 
-    result = load_and_filter(SqliteLinkContext(conn), item_id=1, db_path=db_path)
+    result = load_item_candidates(SqliteLinkContext(conn), item_id=1, db_path=db_path)
 
     assert result is not None
     assert result.universe.items == []

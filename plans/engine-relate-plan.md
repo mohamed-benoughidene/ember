@@ -20,7 +20,7 @@ L1 §9 deferred 3 items to "Engine B L2 planning start". Decisions made here:
 
 Migrations must run in numerical order. Migration 008 depends on 006 (`links(id)` must exist before `change_log.link_id` can reference it). Migration 009 depends on 002 (`items(id)` for the new `item_id` FK) and 005 (`ai_responses` table itself). Capture's `_apply_migrations` already orders scripts numerically; Relate adds 006/007/008/009 to the migrations directory — no engine-A change needed.
 
-**Schema version:** the source-of-truth schema version is `PRAGMA user_version` (managed by `_apply_migrations` in `ember/adapters/sqlite.py`). Migration 009 must run before any Relate operation. `RELATE-014 SchemaOutdated` is raised by Phase 1 when `PRAGMA user_version` < 8 (the version after migration 009 applied). Capture's `_apply_migrations` is responsible for the value; Relate only reads it.
+**Schema version:** the source-of-truth schema version is the `schema_version` **table** (row `version`), read by `_apply_migrations` in `ember/adapters/sqlite.py`. Migrations 006-009 must run before any Relate operation; after 009 the stored version is 9. `RELATE-014 SchemaOutdated` is raised by Phase 1 when `SELECT version FROM schema_version` < 9. `PRAGMA user_version` is not used. Capture's `_apply_migrations` is responsible for applying the scripts and bumping the row; Relate only reads it.
 
 ### 3.1 `links` table (migration `006_create_links.sql`)
 
@@ -153,7 +153,7 @@ Phase 4: User confirm + validate_add_link + change_log
 - **`--latest` algorithm:** walk `items WHERE status='Active' ORDER BY id DESC`, run the "not yet related" check (below) for each, return the first with no links. If none qualify, print "no unrelated items" to STDOUT and exit 0 (not an error).
 - **`--latest` definition:** "not yet related as source" means no row in `links` where `source_item_id = item.id` (any status: `Confirmed` or `Rejected`). The check is `SELECT 1 FROM links WHERE source_item_id = ? LIMIT 1`. If the query returns a row, the item has been related — skip to next. (A single rejected proposal disqualifies the item from `--latest` forever, by design: the user has already engaged with it.)
 - If `--item ID` is given, fail fast at the DB lookup: if the item is not in the DB, exit with `RELATE-001` and a message naming `--item ID` and the DB path (so the user knows if they pointed at the wrong DB).
-- Read the item from `items` (status, type, statement, source_id).
+- Read the item from `items`. L3 reads `id`, `type`, `statement`, and `created_at` into `NewItem`; `status` and `source_id` are not needed by Phases 2-4 and are trimmed from the model (M13).
 - **Filter the rest of the items table** to get a candidate universe:
   - Drop the specific `(link_type, target)` pair from consideration: remove the `(source=new_item.id, target=X.id, link_type=T)` triple from `candidate_universe`, but keep `X` itself if at least one other `link_type` remains viable. (No duplicate links, no repeated suggestions for the same type. Different `link_type` for the same target is still suggested.)
   - Drop items where no `link_type` yields a valid `(source_type=new_item.type, target_type=X.type)` pair per the V1 spec 3.3 compatibility table. The table (inlined here so L3 does not re-read the spec):
@@ -247,15 +247,18 @@ Loop over `LinkProposal`s.
 
 - `LinkProposerPort` — defined above (Phase 3). Adapter: `OpenAiLinkProposer` in `ember/adapters/llm.py`.
 - `EmbedderPort` — `embed(texts: list[str]) -> list[list[float]]` + `dim() -> int` + `model_name() -> str`. Adapter: `SentenceTransformerEmbedder` in `ember/adapters/embedder.py`.
-- **`LinkLookupPort`** — used by the gatekeeper for I/O-equivalent existence checks (engine core must not import `sqlite3`):
-  - `item_exists(item_id: int) -> bool`
-  - `item_status(item_id: int) -> str | None` — returns `'Active'`, `'Challenged'`, `'Closed'`, or `None` if missing.
-  - `item_type(item_id: int) -> str | None` — returns `'Decision'`, `'Assumption'`, `'Finding'`, `'Question'`, or `None`.
-  - `item_statement(item_id: int) -> str | None` — returns the item's `statement` text (needed by Phase 1 read and gatekeeper; Phase 1 needs `statement` only, not the full item).
-  - `supersedes_ancestors(item_id: int) -> set[int]` — BFS through `Confirmed` `supersedes` links, returns the set of all items reachable upstream.
-  - `neighbors_of(item_id: int) -> list[int]` — returns 1-hop neighbors via `Confirmed` links (either side). Used by Phase 2 graph signal.
-  - `find_existing(source_id: int, target_id: int, link_type: str) -> Link | None` — returns the existing link row if any (any status: `Confirmed` or `Rejected`).
-  - Adapter: `SqliteLinkContext` in `ember/adapters/sqlite.py`. Protocol defined in `ember/relate/link_lookup.py` (engine core; can be co-located with `link_gatekeeper.py`).
+- **`LinkLookupPort`** — used by Phase 1 (load/filter), Phase 2 (graph), and Phase 4 (gatekeeper). Engine core must not import `sqlite3`.
+  - `item_exists(item_id: int) -> bool` — Phase 1/4.
+  - `item_status(item_id: int) -> str | None` — Phase 4 (supersedes-Closed rule). Returns `'Active'`, `'Challenged'`, `'Closed'`, or `None` if missing.
+  - `item_type(item_id: int) -> str | None` — Phase 1/4. Returns `'Decision'`, `'Assumption'`, `'Finding'`, `'Question'`, or `None`.
+  - `item_statement(item_id: int) -> str | None` — Phase 1/4.
+  - `item_created_at(item_id: int) -> str | None` — Phase 1 (the metadata signal needs the timestamp). Returns ISO TEXT or `None`.
+  - `list_other_items(new_item_id: int) -> list[NewItem]` — Phase 1. Returns every item except `new_item_id`, ordered by id.
+  - `find_latest_unlinked_active() -> NewItem | None` — Phase 1 (`--latest`). Newest `Active` item with no outgoing link (any status).
+  - `find_existing(source_id: int, target_id: int, link_type: str) -> Link | None` — Phase 1/4. Returns the existing link row if any (any status: `Confirmed` or `Rejected`).
+  - `supersedes_ancestors(item_id: int) -> set[int]` — Phase 4. BFS through `Confirmed` `supersedes` links, returns the set of all items reachable upstream.
+  - `neighbors_of(item_id: int) -> list[int]` — Phase 2. 1-hop neighbors via `Confirmed` links (either side).
+  - Adapter: `SqliteLinkContext` in `ember/adapters/sqlite.py`. Protocol defined in `ember/relate/link_lookup.py` (engine core; can be co-located with `link_gatekeeper.py`). Step 1 implements the 7 Phase 1 methods; `neighbors_of` lands with Step 2 and `item_status` / `supersedes_ancestors` with Step 3.
 - **`LinkStorePort`** — used by Phase 4 for the atomic link+log write:
   - `insert_link_with_log(link_row: Link, change_log_row: ChangeLogEntry) -> int` — one transaction, returns the new `link.id`. Raises `RELATE-029` on link-insert failure, `RELATE-011` on change_log-insert failure.
   - Adapter: `SqliteLinkStore` in `ember/adapters/sqlite.py`. Protocol in `ember/relate/link_store.py`.
@@ -353,10 +356,10 @@ Codes in `ember/relate/errors.py` (30 codes total: 001 + 005-014 + 016-019 + 021
 | `RELATE-009` | `DuplicateLink` | 4 | Existing `Confirmed` or `Rejected` link of same `(source, target, link_type)`. | 1 |
 | `RELATE-010` | `SelfLink` | 4 | `source_item_id == target_item_id`. | 1 |
 | `RELATE-011` | `ChangeLogWriteFailed` | 4 | `change_log` row insert failed (after link row insert succeeded). | 1 |
-| `RELATE-012` | `DbOpenFailed` | 1 | DB file corrupt, permission denied, disk full at open. | 1 |
+| `RELATE-012` | `DbOpenFailed` | 1 | DB file missing, corrupt, permission denied, or otherwise unopenable. | 1 |
 | `RELATE-013` | `DbMigrationFailed` | 1 | Migration 006/007/008/009 crashed during apply. | 1 |
-| `RELATE-014` | `SchemaOutdated` | 1 | Running Relate against a DB that has not had migrations 006/007/008/009 applied. | 1 |
-| `RELATE-016` | `ItemsReadFailed` | 1 | Reading `items` table failed (disk mid-read, lock). | 1 |
+| `RELATE-014` | `SchemaOutdated` | 1 | `schema_version` version < 9 (migrations 006-009 not applied). | 1 |
+| `RELATE-016` | `ItemsReadFailed` | 1 | Phase 1 read failed (items or links table: disk mid-read, lock). | 1 |
 | `RELATE-017` | `EmbedderLoadFailed` | 2 | `sentence-transformers` model load timed out or network/DNS failed. | 1 |
 | `RELATE-018` | `EmbedderEncodeFailed` | 2 | `EmbedderPort.encode(text)` raised. | 1 |
 | `RELATE-019` | `EmbeddingWriteFailed` | 2 | `item_embeddings` row insert failed. | 1 |
@@ -381,6 +384,8 @@ Removed codes (v3 cleanup; were "soft" / "reserved" / unused per I17):
 - `RELATE-015` (was: "no unrelated active item" — soft exit 0; not raised; would be dead code).
 - `RELATE-020` (was: "embedding model mismatch" — pre-flight wipes cache; not raised; would be dead code. Replaced with a STDERR warning at the embedder adapter: `embedding model changed: wiping cache`).
 - `RELATE-034` (was: "invalid confirm input" — current behavior is silent re-prompt; reserved = dead code per I17).
+
+**RELATE-014 is defensive:** `open_relate_database` applies migrations before it checks the version, so a normal run reaches version 9 first. The code fires only when migrations are skipped or the schema is otherwise stale. Step 1 tests the mapping directly and through a simulated old DB.
 
 Empty candidate universe and empty `LinkProposerPort` return are soft exits 0 — no code, no row.
 
