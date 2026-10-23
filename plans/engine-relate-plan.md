@@ -343,6 +343,7 @@ Models:
 - `Pool(ranked: list[RankedCandidate], counts: dict[str, int], warning: str | None)` — Phase 2 return object; the CLI prints `warning` and the counts.
 - `RankedCandidate(item: NewItem, cosine: float | None, source: SignalKind)` — transient Pydantic model for Phase 2 merge. `SignalKind` is a Pydantic `Enum` with values `dense`, `graph`, `metadata`.
 - ~~`LinkRun(lookup: LinkLookupPort, store: LinkStorePort)`~~ — **dropped.** The orchestrator takes `lookup` and `store` as 2 separate args (a bundle was over-engineered per M8; the read/write asymmetry is clearer with explicit names). Per Step 3 v3 §10 amendment log.
+- `RelatePorts(link_lookup, link_store, link_proposer, ai_response_store)` and `RelateRequest(new_item, ranked, env)` — Step 3 input objects, so `run_relate(ports, request)` has 2 inputs (Constitution I3). This is not the `LinkRun` read/write pair; that stays dropped.
 
 `Item`, `Link`, `ChangeLogEntry` are Pydantic models representing DB rows. Defined in `ember/relate/rows.py` (engine core) so the gatekeeper and adapter share a single source of truth.
 
@@ -371,7 +372,7 @@ Codes in `ember/relate/errors.py` (31 codes total: 001 + 005-014 + 016-019 + 021
 | `RELATE-019` | `EmbeddingWriteFailed` | 2 | `item_embeddings` insert, replace, or wipe failed. | 1 |
 | `RELATE-021` | `GraphReadFailed` | 2 | Graph signal DB read failed. | 1 |
 | `RELATE-022` | `CosineComputeFailed` | 2 | Zero vector (denominator = 0) or unequal-length vectors in cosine math. | 1 |
-| `RELATE-023` | `MetadataReadFailed` | 2 | Metadata signal DB read or `datetime` parse failed. | 1 |
+| `RELATE-023` | `MetadataReadFailed` | 2 | Metadata `datetime` parse failed in the core temporal-window helper. | 1 |
 | `RELATE-024` | `TargetNotInCandidates` | 3 | AI returned `target_item_id` that was not in the `candidates` list. | 1 |
 | `RELATE-025` | `ProposalSourceMismatch` | 3 | AI returned a proposal whose `source_item_id` ≠ the new item id. | 1 |
 | `RELATE-026` | `SourceItemNotFound` | 4 | Gatekeeper pre-check: `source_item_id` not in `items`. | 1 |

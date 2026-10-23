@@ -105,10 +105,12 @@ Plus the summary line `accepted: N, rejected: N, skipped: N, aborted: true|false
    - `store = SqliteLinkStore(conn)`
    - `link_proposer = build_link_proposer(env)`
    - `ai_response_store = build_ai_response_store(conn)`
-   - `embedding_store` and `embedder` are built in Step 2 and re-passed in.
    - `--db` default imports `DEFAULT_DB_PATH` from `ember.cli` (no string-literal drift).
    - `PRAGMA foreign_keys=ON` is set **once at connection open** by `open_database` at `ember/adapters/sqlite.py:28`. No `try/finally` per-init; the pragma is per-connection and lives for the connection's lifetime.
-10. The CLI passes the four ports to the engine core's `run_relate(new_item, ranked, lookup, store, link_proposer, ai_response_store, env)` function (engine-core entry point; not a port itself). `LinkRun` (L2 §5.5) is **dropped** — the orchestrator takes `lookup` and `store` as 2 separate args (M8).
+10. The CLI passes two named objects to `run_relate(ports: RelatePorts, request: RelateRequest) -> ConfirmResult` (engine-core entry point; not a port itself). This keeps the public function at 2 inputs (Constitution I3: maximum 4). Shapes:
+   - `RelatePorts(link_lookup, link_store, link_proposer, ai_response_store)` — the four ports Phase 3+4 use.
+   - `RelateRequest(new_item, ranked, env)` — the data for this run; `ranked` is `Pool.ranked` from Step 2.
+   `LinkRun` (L2 §5.5) stays **dropped**; the new bundle is an input object required by I3, not the read/write pair M8 removed.
 
 ## 5. Errors (codes only, per L2 §6)
 
@@ -207,6 +209,7 @@ All 3 L3 Relate steps written. After approval, implementation starts. Bottom-up 
 - **L2 amendment log entries recorded by this step** (for the next Relate plan revision to fold in):
   - L2 §5.5 line 333 `RejectedLink(reason: str, code: str)` — the `reason` field is dropped; new shape is `RejectedLink(code: str)` (CLI maps code→prose at print time). See Step 3 §4.3 step 6 (M10).
   - L2 §5.5 line 336 `LinkRun(lookup: LinkLookupPort, store: LinkStorePort)` — the dataclass is dropped; the orchestrator takes `lookup` and `store` as 2 separate args. See Step 3 §4.4 step 10 (M8).
+  - **I3 supersedes M8 at the `run_relate` boundary:** `run_relate` takes `RelatePorts(link_lookup, link_store, link_proposer, ai_response_store)` and `RelateRequest(new_item, ranked, env)` (2 inputs). This is an input object required by I3, not the `LinkRun` read/write pair that M8 dropped. Record for the next Relate plan revision.
 
 ## 11. Rollback
 
