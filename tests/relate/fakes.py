@@ -81,10 +81,8 @@ class FakeEmbedder:
         self._model_name = model_name
         self._dim = dim
         self._error = error
-        self.calls: list[list[str]] = []
 
     def embed(self, texts: list[str]) -> list[list[float]]:
-        self.calls.append(list(texts))
         if self._error is not None:
             raise self._error
         vectors: list[list[float]] = []
@@ -114,7 +112,6 @@ class FakeEmbeddingStore:
         self.rows = {item_id: list(vector) for item_id, vector in (rows or {}).items()}
         self.model_names = {item_id: model_name for item_id in self.rows}
         self.upserts: list[tuple[int, list[float], str]] = []
-        self.wipes = 0
 
     def get(self, item_id: int) -> list[float] | None:
         return self.rows.get(item_id)
@@ -131,6 +128,5 @@ class FakeEmbeddingStore:
         return next(iter(self.model_names.values()), None)
 
     def wipe(self) -> None:
-        self.wipes += 1
         self.rows.clear()
         self.model_names.clear()

@@ -10,6 +10,7 @@ import pytest
 from click.testing import CliRunner
 
 import ember.adapters.sqlite as sqlite_adapter
+from ember.adapters.embedder import validate_embedder_config
 from ember.adapters.sqlite import SqliteEmbedderStore, open_database
 from ember.cli import main
 from ember.relate.errors import EmbedderLoadFailed
@@ -241,6 +242,22 @@ def test_relate_boot_validation_failure_exits_1_with_relate_017(
     assert result.exit_code == 1
     assert "RELATE-017" in _error_text(result)
     assert "torch is not installed" in _error_text(result)
+
+
+def test_relate_boot_validation_runs_before_the_db_open(
+    tmp_path, monkeypatch
+) -> None:
+    missing = tmp_path / "missing.db"
+    monkeypatch.setattr("ember.cli.validate_embedder_config", validate_embedder_config)
+    monkeypatch.setenv("EMBER_EMBEDDER_LOAD_TIMEOUT_SECONDS", "soon")
+
+    result = CliRunner().invoke(
+        main, ["relate", "--item", "1", "--db", str(missing)]
+    )
+
+    assert result.exit_code == 1
+    assert "RELATE-035" in _error_text(result)
+    assert not missing.exists()
 
 
 def test_relate_requires_exactly_one_selector(db_path) -> None:

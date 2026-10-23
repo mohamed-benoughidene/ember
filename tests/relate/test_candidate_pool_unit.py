@@ -17,7 +17,7 @@ from datetime import datetime, timedelta
 
 import pytest
 
-from ember.relate.candidate_pool import build_candidate_pool
+from ember.relate.candidate_pool import MODEL_CHANGED_LINE, build_candidate_pool
 from ember.relate.errors import (
     CosineComputeFailed,
     EmbedderEncodeFailed,
@@ -25,9 +25,9 @@ from ember.relate.errors import (
     EmbeddingReadFailed,
     EmbeddingWriteFailed,
     GraphReadFailed,
-    ItemsReadFailed,
     MetadataReadFailed,
     RelateError,
+    SchemaValidationFailed,
 )
 from ember.relate.load_filter import LoadedCandidates
 from ember.relate.rows import (
@@ -45,9 +45,7 @@ NEW_TIME = "2026-06-15T00:00:00+00:00"
 FAR_DAYS = 200
 # Id 90 is never in a universe, so its cached row proves a wipe really ran.
 DROPPED_ID = 90
-WARNING_LINE = (
-    "embedding model changed: wiping cache (this is a one-time minutes-long cost on large DBs)"
-)
+WARNING_LINE = MODEL_CHANGED_LINE
 
 
 def _stamp(days: int) -> str:
@@ -110,10 +108,6 @@ def _scored(ranked: list[RankedCandidate]) -> list[tuple[int, float | None]]:
 
 def _ids_with_source(ranked: list[RankedCandidate], kind: SignalKind) -> list[int]:
     return sorted(c.item.id for c in ranked if c.source is kind)
-
-
-def _upsert_ids(store: FakeEmbeddingStore) -> list[int]:
-    return [item_id for item_id, _, _ in store.upserts]
 
 
 def _low_cosine_vectors(*item_ids: int) -> dict[str, list[float]]:
@@ -289,7 +283,6 @@ def test_empty_universe_returns_an_empty_pool_without_running_signals() -> None:
     assert pool.warning is None
     assert store.rows == {}
     assert store.model_names == {}
-    assert store.upserts == []
 
 
 def test_empty_universe_still_reports_a_model_change_warning() -> None:
@@ -308,7 +301,6 @@ def test_empty_universe_still_reports_a_model_change_warning() -> None:
     # The dropped id's row is gone, so the pre-flight wipe really ran.
     assert store.rows == {}
     assert store.model_names == {}
-    assert store.upserts == []
 
 
 # --- content signal --------------------------------------------------------
@@ -352,7 +344,6 @@ def test_content_only_scores_the_cache_and_caches_every_encoded_vector() -> None
         6: [2.0, 0.0, 0.0],
     }
     assert store.model_names == {item_id: MODEL for item_id in range(1, 7)}
-    assert _upsert_ids(store) == [3, 4, 5, 6]
 
 
 def test_content_signal_keeps_only_the_top_ten_by_cosine() -> None:
@@ -590,7 +581,6 @@ def test_preflight_model_change_wipes_the_cache_and_reencodes() -> None:
         3: [0.0, 1.0, 0.0],
     }
     assert store.model_names == {1: MODEL, 2: MODEL, 3: MODEL}
-    assert _upsert_ids(store) == [1, 2, 3]
     assert pool.counts == {"dense": 2, "graph": 0, "metadata": 0}
     assert _scored(pool.ranked) == [(2, 1.0), (3, 0.0)]
 
@@ -612,7 +602,6 @@ def test_preflight_with_matching_model_name_uses_the_cache() -> None:
     assert pool.warning is None
     assert store.rows == cached
     assert store.model_names == {item_id: MODEL for item_id in cached}
-    assert store.upserts == []
     assert _scored(pool.ranked) == [(2, 1.0), (3, 0.0)]
 
 
@@ -637,7 +626,6 @@ def test_stale_per_item_model_name_reencodes_only_that_item() -> None:
         3: [1.0, 0.0, 0.0],
     }
     assert store.model_names == {1: MODEL, 2: MODEL, 3: MODEL}
-    assert store.upserts == [(3, [1.0, 0.0, 0.0], MODEL)]
     assert _scored(pool.ranked) == [(2, 1.0), (3, 1.0)]
 
 
@@ -668,10 +656,10 @@ def test_zero_vector_embedding_raises_relate_022(
         )
 
     assert excinfo.value.code == "RELATE-022"
-    assert excinfo.value.context == {"length": 3}
+    assert excinfo.value.context == {"item_id": 2, "length": 3}
 
 
-def test_unequal_length_embedding_raises_relate_022() -> None:
+def test_wrong_length_cached_vector_raises_relate_022() -> None:
     store = FakeEmbeddingStore({1: [1.0, 0.0, 0.0], 2: [1.0, 0.0]}, model_name=MODEL)
 
     with pytest.raises(CosineComputeFailed) as excinfo:
@@ -682,7 +670,7 @@ def test_unequal_length_embedding_raises_relate_022() -> None:
         )
 
     assert excinfo.value.code == "RELATE-022"
-    assert excinfo.value.context == {"left": 3, "right": 2}
+    assert excinfo.value.context == {"item_id": 2, "expected": 3, "got": 2}
 
 
 @pytest.mark.parametrize(
@@ -707,7 +695,7 @@ def test_pool_cosines_stay_in_the_closed_unit_range(
 
     pool = _build(
         _candidate(),
-        embedder=_NoEncodeEmbedder(model_name=MODEL),
+        embedder=_NoEncodeEmbedder(model_name=MODEL, dim=len(new_vector)),
         store=store,
     )
 
@@ -822,24 +810,24 @@ def test_graph_read_failure_propagates_relate_021() -> None:
 
 
 def test_unexpected_named_store_error_is_reraised_unchanged() -> None:
-    error = ItemsReadFailed("cache row unreadable", item_id=1)
+    error = SchemaValidationFailed("cache row unreadable", item_id=1)
     embedder, store, lookup = _ports_with_failure("upsert", error)
 
-    with pytest.raises(ItemsReadFailed) as excinfo:
+    with pytest.raises(SchemaValidationFailed) as excinfo:
         _build(_candidate(), embedder=embedder, store=store, lookup=lookup)
 
-    assert excinfo.value.code == "RELATE-016"
+    assert excinfo.value.code == "RELATE-030"
     assert excinfo.value is error
 
 
 def test_unexpected_named_graph_error_is_reraised_unchanged() -> None:
-    error = ItemsReadFailed("link read fail", item_id=1)
+    error = SchemaValidationFailed("link read fail", item_id=1)
     embedder, store, lookup = _ports_with_failure("neighbors_of", error)
 
-    with pytest.raises(ItemsReadFailed) as excinfo:
+    with pytest.raises(SchemaValidationFailed) as excinfo:
         _build(_candidate(), embedder=embedder, store=store, lookup=lookup)
 
-    assert excinfo.value.code == "RELATE-016"
+    assert excinfo.value.code == "RELATE-030"
     assert excinfo.value is error
 
 

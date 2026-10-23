@@ -43,3 +43,12 @@ class Pool(BaseModel):
     ranked: list[RankedCandidate]
     counts: dict[str, int]
     warning: str | None = None
+
+    @classmethod
+    def empty(cls, *, warning: str | None = None) -> "Pool":
+        """Return an empty pool with zero signal counts."""
+        return cls(
+            ranked=[],
+            counts={"dense": 0, "graph": 0, "metadata": 0},
+            warning=warning,
+        )

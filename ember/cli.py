@@ -236,10 +236,7 @@ def relate(item_id: int | None, latest: bool, db_path: str) -> None:
                 embedder=build_embedder(),
             )
         else:
-            pool = Pool(
-                ranked=[],
-                counts={"dense": 0, "graph": 0, "metadata": 0},
-            )
+            pool = Pool.empty()
     except EmberError as exc:
         click.echo(f"error: {exc.log_line()}", err=True)
         sys.exit(1)

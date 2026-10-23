@@ -75,8 +75,16 @@ class SentenceTransformerEmbedder:
         return rows
 
     def dim(self) -> int:
-        """Return the model's sentence embedding dimension as int."""
-        return int(self._model.get_sentence_embedding_dimension())
+        """Return the model's sentence embedding dimension as int.
+
+        `sentence-transformers` 6 renamed the getter to
+        `get_embedding_dimension`; use it when present and fall back to the
+        older `get_sentence_embedding_dimension` for older releases.
+        """
+        getter = getattr(self._model, "get_embedding_dimension", None)
+        if getter is None:
+            getter = self._model.get_sentence_embedding_dimension
+        return int(getter())
 
     def model_name(self) -> str:
         """Return the configured name unchanged (stable cache key)."""
@@ -117,6 +125,9 @@ def build_embedder(env: Mapping[str, str] | None = None) -> EmbedderPort:
     Raises `ConfigMissing` (RELATE-035) for a bad timeout and
     `EmbedderLoadFailed` (RELATE-017) for a missing package or a failed model
     load. Mirrors the factory style of `build_item_proposer` in the LLM adapter.
+
+    Output: an `EmbedderPort`. Side effects: loads the model, which may
+    download weights and blocks up to the configured timeout. No DB I/O.
     """
     values = os.environ if env is None else env
     timeout = _parse_timeout(values.get(LOAD_TIMEOUT_ENV))

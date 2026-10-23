@@ -62,14 +62,20 @@ def build_candidate_pool(
     warning = _model_change_warning(embedding_store, model=model)
     items = loaded.universe.items
     if not items:
-        return Pool(
-            ranked=[],
-            counts={"dense": 0, "graph": 0, "metadata": 0},
-            warning=warning,
-        )
+        return Pool.empty(warning=warning)
     new_item = loaded.new_item
-    new_vector = _resolve_vector(new_item, embedder, embedding_store, model=model)
-    content = _content_signal(items, new_vector, embedder, embedding_store, model=model)
+    dimension = embedder.dim()
+    new_vector = _resolve_vector(
+        new_item, embedder, embedding_store, model=model, dimension=dimension
+    )
+    content = _content_signal(
+        items,
+        new_vector,
+        embedder,
+        embedding_store,
+        model=model,
+        dimension=dimension,
+    )
     graph = _graph_signal(link_lookup, items, new_item_id=new_item.id)
     metadata = _metadata_signal(items, new_item)
     return Pool(
@@ -98,12 +104,27 @@ def _resolve_vector(
     store: EmbeddingStorePort,
     *,
     model: str,
+    dimension: int,
 ) -> list[float]:
     """Return the item's vector from the cache, or encode it and cache it."""
     cached = store.get(item.id)
     if cached is not None and store.model_name_of(item.id) == model:
+        if len(cached) != dimension:
+            raise CosineComputeFailed(
+                "cached vector length mismatch",
+                item_id=item.id,
+                expected=dimension,
+                got=len(cached),
+            )
         return cached
     vector = list(embedder.embed([item.statement])[0])
+    if len(vector) != dimension:
+        raise CosineComputeFailed(
+            "embedder vector length mismatch",
+            item_id=item.id,
+            expected=dimension,
+            got=len(vector),
+        )
     store.upsert(item.id, vector, model)
     return vector
 
@@ -115,12 +136,15 @@ def _content_signal(
     store: EmbeddingStorePort,
     *,
     model: str,
+    dimension: int,
 ) -> dict[int, float]:
     """Score every universe item by cosine, keeping the top `CONTENT_TOP_K`."""
     scores: dict[int, float] = {}
     for item in items:
-        vector = _resolve_vector(item, embedder, store, model=model)
-        scores[item.id] = _cosine(new_vector, vector)
+        vector = _resolve_vector(
+            item, embedder, store, model=model, dimension=dimension
+        )
+        scores[item.id] = _cosine(new_vector, vector, item_id=item.id)
     order = sorted(scores, key=lambda item_id: (-scores[item_id], item_id))
     return {item_id: scores[item_id] for item_id in order[:CONTENT_TOP_K]}
 
@@ -206,15 +230,18 @@ def _merge(
     ]
 
 
-def _cosine(left: list[float], right: list[float]) -> float:
+def _cosine(left: list[float], right: list[float], *, item_id: int) -> float:
     """Return the cosine similarity of two vectors, clamped to `[-1.0, 1.0]`.
 
     Stdlib `math` only. Unequal lengths and a zero denominator (a zero or
-    corrupted cache vector) both raise `RELATE-022`.
+    corrupted cache vector) both raise `RELATE-022` with the candidate id.
     """
     if len(left) != len(right):
         raise CosineComputeFailed(
-            "embedding length mismatch", left=len(left), right=len(right)
+            "embedding length mismatch",
+            item_id=item_id,
+            left=len(left),
+            right=len(right),
         )
     dot = 0.0
     left_squares = 0.0
@@ -225,6 +252,8 @@ def _cosine(left: list[float], right: list[float]) -> float:
         right_squares += right_value * right_value
     denominator = sqrt(left_squares) * sqrt(right_squares)
     if denominator == 0.0:
-        raise CosineComputeFailed("zero-vector embedding", length=len(left))
+        raise CosineComputeFailed(
+            "zero-vector embedding", item_id=item_id, length=len(left)
+        )
     score = dot / denominator
     return max(-1.0, min(1.0, score))
