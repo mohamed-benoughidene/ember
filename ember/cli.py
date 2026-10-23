@@ -9,13 +9,15 @@ import sys
 import click
 
 from ember.adapters.embedder import build_embedder, validate_embedder_config
-from ember.adapters.llm import build_item_proposer
+from ember.adapters.llm import build_item_proposer, build_link_proposer
 from ember.adapters.sqlite import (
     SqliteAiResponseStore,
     SqliteItemContext,
     SqliteItemGatekeeper,
     SqliteLinkContext,
+    SqliteLinkStore,
     SqliteSourceStore,
+    build_ai_response_store,
     build_embedding_store,
     open_database,
     open_relate_database,
@@ -41,6 +43,7 @@ from ember.errors import EmberError
 from ember.relate.candidate_pool import build_candidate_pool
 from ember.relate.load_filter import load_item_candidates, load_latest_candidates
 from ember.relate.rows import Pool
+from ember.relate.run_relate import RelatePorts, RelateRequest, run_relate
 
 DEFAULT_DB_PATH = "ember.db"
 
@@ -208,15 +211,17 @@ def clear_validated(item_id: int, db_path: str) -> None:
     help="SQLite database path.",
 )
 def relate(item_id: int | None, latest: bool, db_path: str) -> None:
-    """Phases 1 + 2: load candidates and print the ranked pool size.
+    """Run all 4 relate phases: load, pool, AI propose, confirm, write.
 
-    Phase 3 replaces this stub. The command exits 0 on success and 1 on a
-    phase error.
+    Exit 0 when every proposal is handled, 1 on a phase error, and 2 when the
+    user quits mid-prompt. An empty candidate pool prints the Phase 2 JSON and
+    exits 0 without an AI call.
     """
     if item_id is not None and latest:
         raise click.UsageError("use either --item or --latest, not both")
     if item_id is None and not latest:
         raise click.UsageError("one of --item or --latest is required")
+    aborted = False
     try:
         validate_embedder_config()
         conn = open_relate_database(db_path)
@@ -237,20 +242,38 @@ def relate(item_id: int | None, latest: bool, db_path: str) -> None:
             )
         else:
             pool = Pool.empty()
+        if pool.warning:
+            click.echo(pool.warning, err=True)
+        if not pool.ranked:
+            click.echo(
+                json.dumps(
+                    {"phase": 2, "pool_size": 0, "signals": pool.counts}
+                )
+            )
+            return
+        ports = RelatePorts(
+            link_lookup=lookup,
+            link_store=SqliteLinkStore(conn),
+            link_proposer=build_link_proposer(os.environ),
+            ai_response_store=build_ai_response_store(conn),
+            confirm=TerminalConfirm(),
+        )
+        request = RelateRequest(
+            new_item=result.new_item, ranked=pool.ranked, env=os.environ
+        )
+        outcome = run_relate(ports, request)
+        click.echo(
+            f"accepted: {len(outcome.accepted)}"
+            f", rejected: {outcome.rejected}"
+            f", skipped: {outcome.skipped}"
+            f", aborted: {str(outcome.aborted).lower()}"
+        )
+        aborted = outcome.aborted
     except EmberError as exc:
         click.echo(f"error: {exc.log_line()}", err=True)
         sys.exit(1)
-    if pool.warning:
-        click.echo(pool.warning, err=True)
-    click.echo(
-        json.dumps(
-            {
-                "phase": 2,
-                "pool_size": len(pool.ranked),
-                "signals": pool.counts,
-            }
-        )
-    )
+    if aborted:
+        sys.exit(2)
 
 
 def _write_validated_flag(item_id: int, db_path: str, *, new_value: bool) -> None:

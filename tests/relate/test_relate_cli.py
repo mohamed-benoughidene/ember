@@ -45,6 +45,31 @@ def _patch_phase2_ports(monkeypatch, *, embedder=None) -> FakeEmbedder:
     return fake_embedder
 
 
+class _FakeLinkProposer:
+    """Canned relate AI: proposes `depends_on` to every candidate."""
+
+    def __init__(self, link_type: str = "depends_on") -> None:
+        self._link_type = link_type
+        self.calls = 0
+
+    def propose_links(self, new_item, candidates):
+        from ember.relate.link_proposal import LinkProposal, LinkProposalResponse
+
+        self.calls += 1
+        proposals = [
+            LinkProposal(target_item_id=c.id, link_type=self._link_type)
+            for c in candidates
+        ]
+        return LinkProposalResponse(raw_response="canned", proposals=proposals)
+
+
+def _patch_phase34_ports(monkeypatch) -> None:
+    """Stub the relate AI with a canned proposer (a real temp DB backs the rest)."""
+    monkeypatch.setattr(
+        "ember.cli.build_link_proposer", lambda env: _FakeLinkProposer()
+    )
+
+
 def _insert_link(
     conn: sqlite3.Connection,
     source_id: int,
@@ -93,18 +118,20 @@ def _error_text(result) -> str:
     return result.output + stderr
 
 
-def test_relate_item_prints_phase2_json(db_path, monkeypatch) -> None:
+def test_relate_item_runs_phases_3_and_4(db_path, monkeypatch) -> None:
     _seed_six_items_two_links(db_path)
     _patch_phase2_ports(monkeypatch)
+    _patch_phase34_ports(monkeypatch)
 
-    result = CliRunner().invoke(main, ["relate", "--item", "1", "--db", db_path])
+    result = CliRunner().invoke(
+        main, ["relate", "--item", "1", "--db", db_path], input="y\ny\ny\n"
+    )
 
     assert result.exit_code == 0
-    assert json.loads(result.output) == {
-        "phase": 2,
-        "pool_size": 3,
-        "signals": {"dense": 3, "graph": 0, "metadata": 3},
-    }
+    assert result.output.count("- link_id:") == 3
+    assert (
+        "accepted: 3, rejected: 0, skipped: 0, aborted: false" in result.output
+    )
 
 
 def test_relate_prints_pool_warning_to_stderr(db_path, monkeypatch) -> None:
@@ -165,7 +192,7 @@ def test_relate_latest_soft_exit_when_nothing_eligible(db_path) -> None:
     assert result.stderr == ""
 
 
-def test_relate_latest_prints_json_when_eligible(db_path, monkeypatch) -> None:
+def test_relate_latest_runs_phases_3_and_4(db_path, monkeypatch) -> None:
     conn = open_database(db_path)
     try:
         source_id = insert_source(conn)
@@ -175,15 +202,17 @@ def test_relate_latest_prints_json_when_eligible(db_path, monkeypatch) -> None:
     finally:
         conn.close()
     _patch_phase2_ports(monkeypatch)
+    _patch_phase34_ports(monkeypatch)
 
-    result = CliRunner().invoke(main, ["relate", "--latest", "--db", db_path])
+    result = CliRunner().invoke(
+        main, ["relate", "--latest", "--db", db_path], input="y\n"
+    )
 
     assert result.exit_code == 0
-    assert json.loads(result.output) == {
-        "phase": 2,
-        "pool_size": 1,
-        "signals": {"dense": 1, "graph": 0, "metadata": 1},
-    }
+    assert result.output.count("- link_id:") == 1
+    assert (
+        "accepted: 1, rejected: 0, skipped: 0, aborted: false" in result.output
+    )
 
 
 def test_relate_empty_universe_skips_the_model(db_path, monkeypatch) -> None:
