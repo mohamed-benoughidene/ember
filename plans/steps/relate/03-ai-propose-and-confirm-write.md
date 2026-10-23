@@ -243,6 +243,7 @@ Full suite green: `350 passed, 2 deselected` (live tests excluded). Command: `./
 
 ### Known gaps
 
-- The live AI round-trip test now exists at `tests/test_relate_live.py` (`@pytest.mark.live`, opt-in); it is not run in the default suite.
+- The live AI round-trip test exists at `tests/test_relate_live.py` (`@pytest.mark.live`, opt-in); it is excluded from the default suite and passes with a live key (2 passed).
+- The boundary parser is tolerant of a Markdown fence and surrounding prose, because the live model returned ` ```json ` plus a trailing explanation; the system prompt also lists the allowed type pairs and asks for a bare JSON object.
 - The CLI happy path requires the optional `.[relate]` extra + an API key, so it is verified through tests, not a live run.
 - Embedder re-validation at scale is deferred to GitHub issue #12 (`deferred`).
