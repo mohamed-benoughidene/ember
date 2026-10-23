@@ -16,21 +16,21 @@ from ember.relate.errors import (
 from ember.relate.rows import NewItem
 
 SYSTEM_PROMPT = (
-    "You propose typed links from one new item to a short list of candidate items. "
-    "Pick every link's type from exactly these five: "
-    "supports, contradicts, depends_on, supersedes, answers. "
-    "Follow these type-compatibility rules: "
-    "(1) a Finding can support or contradict an Assumption, a Decision, or another Finding; "
-    "(2) a Decision or an Assumption can depend_on another item; "
-    "(3) a Decision or a Finding can answer a Question; "
-    "(4) only a Question can supersede a Question, and supersedes is the only "
-    "type allowed between two items of the same type. "
-    "Follow these directionality rules: "
-    "supports never comes from an Assumption or a Decision, use depends_on instead; "
-    "contradicts only ever comes from a Finding. "
-    "Drop any candidate that does not fit a rule. Never invent a link type "
-    "outside the five. "
-    "Return strict JSON: "
+    "You propose typed links from one new item to a list of candidate items. "
+    "Use ONLY these five link types: supports, contradicts, depends_on, "
+    "supersedes, answers. "
+    "Allowed pairs (source type -> target type : link types): "
+    "Finding -> Assumption, Decision or Finding : supports or contradicts; "
+    "Decision or Assumption -> Decision, Assumption or Finding : depends_on; "
+    "Decision or Finding -> Question : answers; "
+    "same type only (Decision -> Decision, Assumption -> Assumption, "
+    "Finding -> Finding, Question -> Question) : supersedes. "
+    "Direction is fixed: supports and contradicts only ever come from a "
+    "Finding; depends_on only ever comes from a Decision or an Assumption. "
+    "For every candidate whose type pair fits one of those rules, return one "
+    "proposal; drop a candidate that fits no rule. "
+    "Return ONLY a JSON object, with no Markdown code fence and no text before "
+    "or after it: "
     '{"proposals": [{"target_item_id": <int>, '
     '"link_type": <one of the five>, '
     '"rationale": <short string or null>}]}'
@@ -65,10 +65,10 @@ class LinkProposerPort(Protocol):
 
 def parse_proposals(ai_response: str) -> list[LinkProposal]:
     """Boundary parser. Raises AiResponseSchemaInvalid (RELATE-033) on the FIRST bad shape."""
-    try:
-        data = json.loads(_without_fence(ai_response))
-    except json.JSONDecodeError as exc:
-        raise AiResponseSchemaInvalid("ai response not json") from exc
+    payload = _json_payload(ai_response)
+    if payload == "":
+        raise AiResponseSchemaInvalid("ai response not json")
+    data = json.loads(payload)
 
     if isinstance(data, dict):
         entries = data.get("proposals")
@@ -146,3 +146,64 @@ def _without_fence(text: str) -> str:
     if lines and lines[-1].strip().startswith("```"):
         lines = lines[:-1]
     return "\n".join(lines).strip()
+
+
+def _json_payload(text: str) -> str:
+    """Return the JSON substring of `text`, or "" when none is present.
+
+    Handles: a bare JSON value; a whole-string Markdown fence; a fence plus
+    trailing/leading prose; the first balanced `{...}` or `[...]` found.
+    """
+    stripped = text.strip()
+    if _is_json(stripped):
+        return stripped
+    unfenced = _without_fence(stripped)
+    if _is_json(unfenced):
+        return unfenced
+    for opener, closer in (("{", "}"), ("[", "]")):
+        start = stripped.find(opener)
+        while start != -1:
+            end = _matching_end(stripped, start, opener, closer)
+            if end != -1:
+                candidate = stripped[start : end + 1]
+                if _is_json(candidate):
+                    return candidate
+            start = stripped.find(opener, start + 1)
+    return ""
+
+
+def _is_json(text: str) -> bool:
+    try:
+        json.loads(text)
+    except json.JSONDecodeError:
+        return False
+    return True
+
+
+def _matching_end(text: str, start: int, opener: str, closer: str) -> int:
+    """Return the index of the closer that balances `opener` at `start`, or -1.
+
+    Skips characters inside JSON strings (honouring backslash escapes).
+    """
+    depth = 0
+    in_string = False
+    escaped = False
+    for index in range(start, len(text)):
+        char = text[index]
+        if in_string:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+            continue
+        if char == '"':
+            in_string = True
+        elif char == opener:
+            depth += 1
+        elif char == closer:
+            depth -= 1
+            if depth == 0:
+                return index
+    return -1

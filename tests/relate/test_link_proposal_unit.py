@@ -68,6 +68,39 @@ def test_parse_not_json():
     assert excinfo.value.code == "RELATE-033"
 
 
+def test_parse_fenced_json_with_trailing_prose():
+    text = (
+        "```json\n"
+        '{"proposals": [{"target_item_id": 2, "link_type": "supports"}]}\n'
+        "```\n\n"
+        "The new item is a Decision, so the candidate was dropped."
+    )
+    proposals = parse_proposals(text)
+    assert len(proposals) == 1
+    assert proposals[0].target_item_id == 2
+
+
+def test_parse_json_after_leading_prose():
+    text = (
+        "Here is my answer:\n"
+        '{"proposals": [{"target_item_id": 3, "link_type": "answers"}]}'
+    )
+    proposals = parse_proposals(text)
+    assert len(proposals) == 1
+    assert proposals[0].link_type == "answers"
+
+
+def test_parse_empty_proposals_object():
+    proposals = parse_proposals('{"proposals": []}')
+    assert proposals == []
+
+
+def test_parse_prose_only_raises_033():
+    with pytest.raises(AiResponseSchemaInvalid) as excinfo:
+        parse_proposals("I could not find any fitting link types.")
+    assert excinfo.value.code == "RELATE-033"
+
+
 def test_parse_object_without_proposals_list():
     with pytest.raises(AiResponseSchemaInvalid):
         parse_proposals('{"x":1}')
