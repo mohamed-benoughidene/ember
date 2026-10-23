@@ -13,7 +13,11 @@ import types
 
 import pytest
 
-from ember.adapters.embedder import SentenceTransformerEmbedder, build_embedder
+from ember.adapters.embedder import (
+    SentenceTransformerEmbedder,
+    build_embedder,
+    validate_embedder_config,
+)
 from ember.relate.errors import (
     ConfigMissing,
     EmbedderEncodeFailed,
@@ -31,6 +35,24 @@ def install_fake(
     module.SentenceTransformer = transformer_cls
     monkeypatch.setitem(sys.modules, MODULE, module)
     return transformer_cls
+
+
+def patch_find_spec(
+    monkeypatch: pytest.MonkeyPatch, *, missing: set[str]
+) -> list[str]:
+    """Patch the module-level `find_spec` so `missing` looks uninstalled.
+
+    Returns the list `find_spec` appends to, so a test can assert which
+    packages the validator probed and in what order.
+    """
+    probed: list[str] = []
+
+    def fake_find_spec(name: str) -> object | None:
+        probed.append(name)
+        return None if name in missing else object()
+
+    monkeypatch.setattr("ember.adapters.embedder.find_spec", fake_find_spec)
+    return probed
 
 
 def recording_transformer() -> type:
@@ -121,6 +143,34 @@ def test_encode_failure_raises_relate_018(monkeypatch: pytest.MonkeyPatch) -> No
         embedder.embed(["a"])
 
     assert excinfo.value.code == "RELATE-018"
+
+
+def test_wrong_vector_count_raises_relate_018(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class Fake:
+        def __init__(self, model_id: str, **kwargs: object) -> None:
+            pass
+
+        def encode(self, texts: list[str]) -> list[list[float]]:
+            # One vector for two texts: the model dropped a row.
+            return [[1.0, 2.0, 3.0]]
+
+        def get_sentence_embedding_dimension(self) -> int:
+            return 3
+
+    install_fake(monkeypatch, Fake)
+    embedder = SentenceTransformerEmbedder("bge-base-en-v1.5")
+
+    with pytest.raises(EmbedderEncodeFailed) as excinfo:
+        embedder.embed(["a", "b"])
+
+    assert excinfo.value.code == "RELATE-018"
+    assert excinfo.value.context == {
+        "model": "bge-base-en-v1.5",
+        "expected": 2,
+        "got": 1,
+    }
 
 
 def test_existing_relate_error_is_reraised_unchanged(
@@ -259,3 +309,51 @@ def test_build_embedder_timeout_env_is_applied(monkeypatch: pytest.MonkeyPatch) 
         build_embedder({"EMBER_EMBEDDER_LOAD_TIMEOUT_SECONDS": "0.01"})
 
     assert excinfo.value.code == "RELATE-017"
+
+
+@pytest.mark.parametrize(
+    ("env", "expected"),
+    [
+        ({}, 120.0),
+        ({"EMBER_EMBEDDER_LOAD_TIMEOUT_SECONDS": "7.5"}, 7.5),
+    ],
+)
+def test_validate_embedder_config_returns_the_parsed_timeout(
+    monkeypatch: pytest.MonkeyPatch, env: dict[str, str], expected: float
+) -> None:
+    probed = patch_find_spec(monkeypatch, missing=set())
+
+    timeout = validate_embedder_config(env)
+
+    assert timeout == expected
+    assert type(timeout) is float
+    assert probed == ["sentence_transformers", "torch"]
+
+
+@pytest.mark.parametrize("missing", ["sentence_transformers", "torch"])
+def test_validate_embedder_config_missing_package_raises_relate_017(
+    monkeypatch: pytest.MonkeyPatch, missing: str
+) -> None:
+    patch_find_spec(monkeypatch, missing={missing})
+
+    with pytest.raises(EmbedderLoadFailed) as excinfo:
+        validate_embedder_config({})
+
+    assert excinfo.value.code == "RELATE-017"
+    assert excinfo.value.context["package"] == missing
+    assert missing in excinfo.value.message
+    assert ".[relate]" in excinfo.value.message
+
+
+def test_validate_embedder_config_bad_timeout_raises_relate_035(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def _must_not_probe(name: str) -> object:
+        raise AssertionError("the timeout is parsed before the packages are probed")
+
+    monkeypatch.setattr("ember.adapters.embedder.find_spec", _must_not_probe)
+
+    with pytest.raises(ConfigMissing) as excinfo:
+        validate_embedder_config({"EMBER_EMBEDDER_LOAD_TIMEOUT_SECONDS": "soon"})
+
+    assert excinfo.value.code == "RELATE-035"

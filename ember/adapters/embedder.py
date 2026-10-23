@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import os
 import threading
+from importlib.util import find_spec
 from typing import Any, Callable, Mapping
 
 from ember.relate.embedder import EmbedderPort
@@ -37,6 +38,9 @@ class SentenceTransformerEmbedder:
     model id is mapped to its Hugging Face org id for loading, while
     `model_name()` returns the configured short name unchanged so the
     `item_embeddings` cache key stays stable across environments.
+
+    Raise `EmbedderLoadFailed` (RELATE-017) when the optional packages are
+    missing or the model cannot load.
     """
 
     def __init__(self, model_name: str, *, load_timeout: float = 120.0) -> None:
@@ -46,12 +50,13 @@ class SentenceTransformerEmbedder:
     def embed(self, texts: list[str]) -> list[list[float]]:
         """Return one plain `list[float]` per text (never numpy arrays).
 
-        Any model failure becomes `EmbedderEncodeFailed` (RELATE-018); an
-        already-raised `RelateError` is re-raised unchanged.
+        Raise `EmbedderEncodeFailed` (RELATE-018) when the model fails or
+        returns a different number of vectors than texts. An already-raised
+        `RelateError` is re-raised unchanged.
         """
         try:
             encoded = self._model.encode(texts)
-            return [[float(value) for value in row] for row in encoded]
+            rows = [[float(value) for value in row] for row in encoded]
         except RelateError:
             raise
         except Exception as exc:  # noqa: BLE001 - any model failure is an encode fail
@@ -60,6 +65,14 @@ class SentenceTransformerEmbedder:
                 model=self._model_name,
                 detail=_detail(exc),
             ) from exc
+        if len(rows) != len(texts):
+            raise EmbedderEncodeFailed(
+                "embedder returned the wrong vector count",
+                model=self._model_name,
+                expected=len(texts),
+                got=len(rows),
+            )
+        return rows
 
     def dim(self) -> int:
         """Return the model's sentence embedding dimension as int."""
@@ -70,18 +83,44 @@ class SentenceTransformerEmbedder:
         return self._model_name
 
 
+def validate_embedder_config(
+    env: Mapping[str, str] | None = None,
+) -> float:
+    """Validate embedder config and the optional packages at CLI boot.
+
+    Input: an environment mapping (defaults to `os.environ`).
+    Output: the parsed load timeout in seconds.
+    Raises: `ConfigMissing` (RELATE-035) when the timeout is not a number, and
+    `EmbedderLoadFailed` (RELATE-017) when `sentence_transformers` or `torch`
+    is not installed.
+    Side effects: none; no model is loaded and nothing is imported.
+    """
+    values = os.environ if env is None else env
+    timeout = _parse_timeout(values.get(LOAD_TIMEOUT_ENV))
+    for package in ("sentence_transformers", "torch"):
+        if find_spec(package) is None:
+            raise EmbedderLoadFailed(
+                f"{package} is not installed; install the optional extra with: "
+                f"{_INSTALL_HINT}",
+                extra="relate",
+                package=package,
+            )
+    return timeout
+
+
 def build_embedder(env: Mapping[str, str] | None = None) -> EmbedderPort:
     """Build the embedder from env config, once at boot (Constitution I13).
 
     Keys: `EMBER_EMBEDDER_MODEL` (default `bge-base-en-v1.5`) and
     `EMBER_EMBEDDER_LOAD_TIMEOUT_SECONDS` (default 120).
 
-    Raise `ConfigMissing` (RELATE-035) when the timeout is not a number. Mirrors
-    the factory style of `build_item_proposer` in the LLM adapter.
+    Raises `ConfigMissing` (RELATE-035) for a bad timeout and
+    `EmbedderLoadFailed` (RELATE-017) for a missing package or a failed model
+    load. Mirrors the factory style of `build_item_proposer` in the LLM adapter.
     """
     values = os.environ if env is None else env
-    model_name = values.get(MODEL_ENV, DEFAULT_MODEL)
     timeout = _parse_timeout(values.get(LOAD_TIMEOUT_ENV))
+    model_name = values.get(MODEL_ENV, DEFAULT_MODEL)
     return SentenceTransformerEmbedder(model_name, load_timeout=timeout)
 
 
@@ -135,12 +174,24 @@ def _import_sentence_transformer() -> Callable[..., Any]:
     """Import the optional model library lazily, naming the extra when absent."""
     try:
         from sentence_transformers import SentenceTransformer
-    except ModuleNotFoundError as exc:
+    except RelateError:
+        raise
+    except Exception as exc:  # noqa: BLE001 - an import failure is RELATE-017
+        missing = getattr(exc, "name", None)
+        if missing:
+            message = (
+                f"{missing} is not installed; install the optional extra with: "
+                f"{_INSTALL_HINT}"
+            )
+        else:
+            message = (
+                "sentence-transformers import failed; install the optional extra "
+                f"with: {_INSTALL_HINT}"
+            )
         raise EmbedderLoadFailed(
-            "sentence-transformers is not installed; install the optional extra "
-            f"with: {_INSTALL_HINT}",
+            message,
             extra="relate",
-            detail=str(exc),
+            detail=_detail(exc),
         ) from exc
     return SentenceTransformer
 
