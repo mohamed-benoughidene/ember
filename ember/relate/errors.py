@@ -158,3 +158,8 @@ class ConfigMissing(RelateError):
 class AiResponseWriteFailed(RelateError):
     code = "RELATE-036"
     name = "AiResponseWriteFailed"
+
+
+class EmbeddingReadFailed(RelateError):
+    code = "RELATE-037"
+    name = "EmbeddingReadFailed"

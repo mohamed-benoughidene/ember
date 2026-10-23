@@ -25,6 +25,7 @@ from ember.relate.embedding_store import EmbeddingStorePort
 from ember.relate.errors import (
     DbMigrationFailed,
     DbOpenFailed,
+    EmbeddingReadFailed,
     EmbeddingWriteFailed,
     GraphReadFailed,
     ItemsReadFailed,
@@ -620,8 +621,8 @@ class SqliteEmbedderStore:
     `item_embeddings` rows only, and never touches `items`, `links`, or
     `change_log` (Constitution D2).
 
-    Read failures raise `ItemsReadFailed` (RELATE-016); write failures raise
-    `EmbeddingWriteFailed` (RELATE-019).
+    Read failures raise `EmbeddingReadFailed` (RELATE-037); write failures
+    raise `EmbeddingWriteFailed` (RELATE-019).
     """
 
     def __init__(
@@ -636,7 +637,7 @@ class SqliteEmbedderStore:
     def get(self, item_id: int) -> list[float] | None:
         """Return the cached vector for `item_id`, or None when it has no row.
 
-        Raise `ItemsReadFailed` (RELATE-016) on a read failure, including a
+        Raise `EmbeddingReadFailed` (RELATE-037) on a read failure, including a
         vector blob that cannot be decoded as float32.
         """
         try:
@@ -644,13 +645,13 @@ class SqliteEmbedderStore:
                 "SELECT vector FROM item_embeddings WHERE item_id = ?", (item_id,)
             ).fetchone()
         except sqlite3.Error as exc:
-            raise ItemsReadFailed("embedding read fail", item_id=item_id) from exc
+            raise EmbeddingReadFailed("embedding read fail", item_id=item_id) from exc
         if row is None:
             return None
         try:
             return _unpack_vector(row["vector"])
         except (TypeError, ValueError) as exc:
-            raise ItemsReadFailed("embedding decode fail", item_id=item_id) from exc
+            raise EmbeddingReadFailed("embedding decode fail", item_id=item_id) from exc
 
     def upsert(self, item_id: int, vector: list[float], model_name: str) -> None:
         """Store one vector row, replacing any existing row for `item_id`.
@@ -678,14 +679,14 @@ class SqliteEmbedderStore:
     def model_name_of(self, item_id: int) -> str | None:
         """Return the model name stored for `item_id`, or None when it is absent.
 
-        Raise `ItemsReadFailed` (RELATE-016) on a read failure.
+        Raise `EmbeddingReadFailed` (RELATE-037) on a read failure.
         """
         try:
             row = self._conn.execute(
                 "SELECT model_name FROM item_embeddings WHERE item_id = ?", (item_id,)
             ).fetchone()
         except sqlite3.Error as exc:
-            raise ItemsReadFailed("embedding read fail", item_id=item_id) from exc
+            raise EmbeddingReadFailed("embedding read fail", item_id=item_id) from exc
         return None if row is None else row["model_name"]
 
     def first_model_name(self) -> str | None:
@@ -694,14 +695,14 @@ class SqliteEmbedderStore:
         The pre-flight check (plan step 2 section 4 step 1) uses this to spot a
         cache written by an older model.
 
-        Raise `ItemsReadFailed` (RELATE-016) on a read failure.
+        Raise `EmbeddingReadFailed` (RELATE-037) on a read failure.
         """
         try:
             row = self._conn.execute(
                 "SELECT model_name FROM item_embeddings ORDER BY item_id LIMIT 1"
             ).fetchone()
         except sqlite3.Error as exc:
-            raise ItemsReadFailed("embedding read fail") from exc
+            raise EmbeddingReadFailed("embedding read fail") from exc
         return None if row is None else row["model_name"]
 
     def wipe(self) -> None:
@@ -717,7 +718,12 @@ class SqliteEmbedderStore:
 
 
 def build_embedding_store(conn: sqlite3.Connection) -> EmbeddingStorePort:
-    """Build the `item_embeddings` cache adapter for the relate engine."""
+    """Build the `item_embeddings` cache adapter for the relate engine.
+
+    Input: an open SQLite connection. Output: a store whose reads raise
+    `RELATE-037 EmbeddingReadFailed` and whose writes raise
+    `RELATE-019 EmbeddingWriteFailed`. Building it performs no I/O.
+    """
     return SqliteEmbedderStore(conn)
 
 

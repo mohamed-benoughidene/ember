@@ -1,7 +1,7 @@
 """Integration tests for `SqliteEmbedderStore` on a real SQLite DB.
 
 The adapter owns the packed vector format (little-endian float32) and the
-`item_embeddings` cache rows. Read failures surface as RELATE-016, write
+`item_embeddings` cache rows. Read failures surface as RELATE-037, write
 failures as RELATE-019 (plan step 2 section 5).
 """
 
@@ -19,7 +19,7 @@ from ember.adapters.sqlite import (
     build_embedding_store,
     open_database,
 )
-from ember.relate.errors import EmbeddingWriteFailed, ItemsReadFailed
+from ember.relate.errors import EmbeddingReadFailed, EmbeddingWriteFailed
 from tests.fakes import FIXED_TIME, insert_item, insert_source
 
 VECTOR_A = [0.5, -1.25, 3.0, 0.0]
@@ -229,10 +229,10 @@ def test_corrupt_vector_blob_is_a_read_failure(db_path) -> None:
         (b"\x00\x01\x02", FIXED_TIME),
     )
 
-    with pytest.raises(ItemsReadFailed) as exc:
+    with pytest.raises(EmbeddingReadFailed) as exc:
         SqliteEmbedderStore(conn).get(1)
 
-    assert exc.value.code == "RELATE-016"
+    assert exc.value.code == "RELATE-037"
 
 
 _READS: list[tuple[str, Callable[[SqliteEmbedderStore], object]]] = [
@@ -248,16 +248,16 @@ _WRITES: list[tuple[str, Callable[[SqliteEmbedderStore], object]]] = [
 
 
 @pytest.mark.parametrize("name, read", _READS, ids=[name for name, _ in _READS])
-def test_read_failure_raises_relate_016(
+def test_read_failure_raises_relate_037(
     name: str,
     read: Callable[[SqliteEmbedderStore], object],
 ) -> None:
     store = SqliteEmbedderStore(BrokenConnection())
 
-    with pytest.raises(ItemsReadFailed) as exc:
+    with pytest.raises(EmbeddingReadFailed) as exc:
         read(store)
 
-    assert exc.value.code == "RELATE-016", name
+    assert exc.value.code == "RELATE-037", name
 
 
 @pytest.mark.parametrize("name, write", _WRITES, ids=[name for name, _ in _WRITES])
@@ -276,7 +276,7 @@ def test_write_failure_raises_relate_019(
 def test_read_failure_on_one_item_names_that_item() -> None:
     store = SqliteEmbedderStore(BrokenConnection())
 
-    with pytest.raises(ItemsReadFailed) as exc:
+    with pytest.raises(EmbeddingReadFailed) as exc:
         store.get(7)
 
     assert exc.value.context["item_id"] == 7
