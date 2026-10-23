@@ -137,6 +137,7 @@ def test_relate_item_runs_phases_3_and_4(db_path, monkeypatch) -> None:
 def test_relate_prints_pool_warning_to_stderr(db_path, monkeypatch) -> None:
     _seed_six_items_two_links(db_path)
     _patch_phase2_ports(monkeypatch)
+    _patch_phase34_ports(monkeypatch)
     monkeypatch.setattr(
         "ember.cli.build_candidate_pool",
         lambda *args, **kwargs: Pool(
@@ -158,7 +159,8 @@ def test_relate_prints_pool_warning_to_stderr(db_path, monkeypatch) -> None:
     }
 
 
-def test_relate_missing_item_exits_1_with_code(db_path) -> None:
+def test_relate_missing_item_exits_1_with_code(db_path, monkeypatch) -> None:
+    _patch_phase34_ports(monkeypatch)
     conn = open_database(db_path)
     try:
         insert_source(conn)
@@ -174,7 +176,8 @@ def test_relate_missing_item_exits_1_with_code(db_path) -> None:
     assert db_path in _error_text(result)
 
 
-def test_relate_latest_soft_exit_when_nothing_eligible(db_path) -> None:
+def test_relate_latest_soft_exit_when_nothing_eligible(db_path, monkeypatch) -> None:
+    _patch_phase34_ports(monkeypatch)
     conn = open_database(db_path)
     try:
         source_id = insert_source(conn)
@@ -216,6 +219,7 @@ def test_relate_latest_runs_phases_3_and_4(db_path, monkeypatch) -> None:
 
 
 def test_relate_empty_universe_skips_the_model(db_path, monkeypatch) -> None:
+    _patch_phase34_ports(monkeypatch)
     conn = open_database(db_path)
     try:
         source_id = insert_source(conn)
@@ -243,6 +247,7 @@ def test_relate_embedder_load_failure_exits_1_with_relate_017(
     db_path, monkeypatch
 ) -> None:
     _seed_six_items_two_links(db_path)
+    _patch_phase34_ports(monkeypatch)
 
     def _fail():
         raise EmbedderLoadFailed("model missing", model="fake")

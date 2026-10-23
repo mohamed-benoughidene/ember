@@ -226,7 +226,7 @@ Steps 4.3.7 `y` and 4.3.7 `n` both write to `links` and `change_log`. Both are a
 
 ### Test result
 
-Full suite green: `349 passed, 2 deselected` (live tests excluded). Command: `./.venv/bin/python -m pytest -q`.
+Full suite green: `350 passed, 2 deselected` (live tests excluded). Command: `./.venv/bin/python -m pytest -q`.
 
 ### Implementation decisions / deviations
 
@@ -238,7 +238,8 @@ Full suite green: `349 passed, 2 deselected` (live tests excluded). Command: `./
 6. `RelateRequest.env` is carried but unread (the proposer is injected as a port).
 7. `run_relate` lives in the new `ember/relate/run_relate.py`.
 8. A raw-answer save failure maps to `RELATE-036` for the real adapter (its write error is a Capture `EmberError`, so only `RelateError` is re-raised).
-9. The missing AI key surfaces when candidates exist (lazy `build_link_proposer`), not at command startup, so an empty pool still soft-exits 0.
+9. The AI key is validated at CLI startup, right after the DB opens and before candidates load, so a missing key fails fast (Constitution I13). Because of this, `--item` on a missing id with no key reports RELATE-035, not RELATE-001.
+10. The raw AI answer is saved before the target/source check, so an answer that names a bad item is still stored verbatim (Constitution D8).
 
 ### Known gaps
 

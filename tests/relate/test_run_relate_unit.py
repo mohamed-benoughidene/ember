@@ -169,3 +169,22 @@ def test_abort_sets_aborted():
 
     assert result.aborted is True
     assert result.accepted == []
+
+
+def test_raw_response_saved_even_when_target_invalid():
+    ai_store = FakeAiResponseStore()
+    ports = _ports(
+        responses=[
+            LinkProposalResponse(
+                raw_response="raw",
+                proposals=[LinkProposal(target_item_id=99, link_type="depends_on")],
+            )
+        ],
+        ai_store=ai_store,
+    )
+    request = RelateRequest(new_item=_item(1), ranked=_ranked(2), env={})
+
+    with pytest.raises(TargetNotInCandidates):
+        run_relate(ports, request)
+
+    assert ai_store.saved == [(1, "raw")]

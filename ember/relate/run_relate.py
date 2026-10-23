@@ -75,10 +75,10 @@ def run_relate(ports: RelatePorts, request: RelateRequest) -> ConfirmResult:
     response = propose_links_with_retry(
         ports.link_proposer, new_item=request.new_item, candidates=candidates
     )
+    _save_raw_response(ports.ai_response_store, request.new_item, response.raw_response)
     validate_proposals(
         response.proposals, candidates=candidates, new_item=request.new_item
     )
-    _save_raw_response(ports.ai_response_store, request.new_item, response.raw_response)
     validated, gatekeeper_rejected = _gatekeep(
         response.proposals, request.new_item, ports.link_lookup
     )

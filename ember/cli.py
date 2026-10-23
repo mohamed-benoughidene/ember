@@ -247,6 +247,9 @@ def relate(item_id: int | None, latest: bool, db_path: str) -> None:
         validate_embedder_config()
         conn = open_relate_database(db_path)
         lookup = SqliteLinkContext(conn)
+        store = SqliteLinkStore(conn)
+        link_proposer = build_link_proposer(os.environ)
+        ai_response_store = build_ai_response_store(conn)
         if latest:
             result = load_latest_candidates(lookup)
         else:
@@ -274,9 +277,9 @@ def relate(item_id: int | None, latest: bool, db_path: str) -> None:
             return
         ports = RelatePorts(
             link_lookup=lookup,
-            link_store=SqliteLinkStore(conn),
-            link_proposer=build_link_proposer(os.environ),
-            ai_response_store=build_ai_response_store(conn),
+            link_store=store,
+            link_proposer=link_proposer,
+            ai_response_store=ai_response_store,
             confirm=RelateTerminalConfirm(),
         )
         request = RelateRequest(
