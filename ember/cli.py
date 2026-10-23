@@ -41,6 +41,7 @@ from ember.capture.item_proposal import (
 from ember.capture.source_storage import StoredSource, store_source
 from ember.errors import EmberError
 from ember.relate.candidate_pool import build_candidate_pool
+from ember.relate.errors import UserAbort as RelateUserAbort
 from ember.relate.load_filter import load_item_candidates, load_latest_candidates
 from ember.relate.rows import Pool
 from ember.relate.run_relate import RelatePorts, RelateRequest, run_relate
@@ -58,6 +59,26 @@ class TerminalConfirm:
         except EOFError as exc:
             click.echo()
             raise UserAbort("input ended") from exc
+        return answer
+
+    def write(self, text: str) -> None:
+        click.echo(text)
+
+
+class RelateTerminalConfirm:
+    """`ConfirmPort` on the terminal for the relate loop.
+
+    Like `TerminalConfirm`, but end of input raises the relate `UserAbort`
+    (RELATE-031) so the relate confirm loop maps it to `aborted=True`.
+    """
+
+    def ask(self, prompt: str) -> str:
+        click.echo(prompt, nl=False)
+        try:
+            answer = input()
+        except EOFError as exc:
+            click.echo()
+            raise RelateUserAbort("input ended") from exc
         return answer
 
     def write(self, text: str) -> None:
@@ -256,7 +277,7 @@ def relate(item_id: int | None, latest: bool, db_path: str) -> None:
             link_store=SqliteLinkStore(conn),
             link_proposer=build_link_proposer(os.environ),
             ai_response_store=build_ai_response_store(conn),
-            confirm=TerminalConfirm(),
+            confirm=RelateTerminalConfirm(),
         )
         request = RelateRequest(
             new_item=result.new_item, ranked=pool.ranked, env=os.environ
