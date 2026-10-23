@@ -170,7 +170,7 @@ Phase 4: User confirm + validate_add_link + change_log
 
 ### Phase 2: Build candidate pool (3 signals, merged)
 
-Inputs: `{new_item, candidate_universe}`. Output: `list[RankedCandidate]` (ranked, deduplicated). `RankedCandidate(item, cosine: float | None, source: enum)` is a transient dataclass for the merge step; not persisted.
+Inputs: `LoadedCandidates` (new item + filtered candidate universe). Output: `Pool(ranked, counts, warning)`. `ranked: list[RankedCandidate]` is ranked and deduplicated; `counts` holds the pre-merge signal sizes; `warning` carries the model-change text for the CLI. `RankedCandidate(item, cosine: float | None, source: enum)` is a transient Pydantic model for the merge step; not persisted. `Pool` is the named return object per Constitution I3/I4 (4 inputs, no out-parameter).
 
 3 signals, in order:
 
@@ -180,7 +180,7 @@ Inputs: `{new_item, candidate_universe}`. Output: `list[RankedCandidate]` (ranke
 
 Merge: union of the 3 sets, deduplicated by `item_id`, ranked by (cosine score if present, else 0.5; tie-breaker is L3's call per §9 #4). **No cap on post-union set** (only the dense top-10 is capped, per V1 spec 3.4 line 94 "Top 10 by cosine similarity form initial candidate pool" — interpreted as the dense-signal top-10, not the final union). Note: a heavy graph expansion (hub item) could produce 100+ candidates and inflate `LinkProposerPort` cost; L3 may add a post-union cap per §9 #7.
 
-If the union is empty: print "no candidates" to STDOUT, exit 0. No AI call.
+If the union is empty: `Pool.ranked` is empty. The CLI prints the Phase 2 JSON with `pool_size: 0` and exits 0. No AI call.
 
 If the union has 1+ items: pass to Phase 3.
 
@@ -266,21 +266,23 @@ Loop over `LinkProposal`s.
   - `save(item_id: int, raw_response: str) -> None` — persists the raw response. Adapter enforces "exactly one of `source_id`/`item_id`" internally.
   - Adapter: `SqliteAiResponseStore` in `ember/adapters/sqlite.py` (extended per §3.4). Protocol in `ember/relate/ai_response_store.py`.
 - **`EmbeddingStorePort`** — used by Phase 2 to read/write the `item_embeddings` cache. Separated from `LinkLookupPort` (which is read-only for gatekeeper queries) to avoid the read-port-does-writes smell.
-  - `get(item_id: int) -> list[float] | None` — returns the cached vector or `None`.
-  - `upsert(item_id: int, vector: list[float], model_name: str) -> None` — insert if absent, replace if `model_name` matches.
-  - `model_name_of(item_id: int) -> str | None` — returns the cached model name (for the pre-flight check).
-  - `wipe() -> None` — empties the table (used when `model_name` mismatch detected).
+  - `get(item_id: int) -> list[float] | None` — returns the cached vector or `None`. Read failure → `RELATE-037`.
+  - `upsert(item_id: int, vector: list[float], model_name: str) -> None` — insert or replace the row. Write failure → `RELATE-019`.
+  - `model_name_of(item_id: int) -> str | None` — returns the cached model name. Read failure → `RELATE-037`.
+  - `first_model_name() -> str | None` — returns the model name from any one cached row (deterministic `ORDER BY item_id LIMIT 1`), or `None`. Read failure → `RELATE-037`.
+  - `wipe() -> None` — empties the table (used when `model_name` mismatch detected). Write failure → `RELATE-019`.
   - Adapter: `SqliteEmbedderStore` in `ember/adapters/sqlite.py`. Protocol in `ember/relate/embedding_store.py`.
 
 ### 4.6 Phase 2 Signal Error Sources (which module raises which code)
 
-- `RELATE-017 EmbedderLoadFailed` — raised by `SentenceTransformerEmbedder.__init__` (adapter). Engine core wraps the constructor in try/except.
-- `RELATE-018 EmbedderEncodeFailed` — raised by `SentenceTransformerEmbedder.encode` (adapter). Engine core wraps the call in try/except.
-- `RELATE-019 EmbeddingWriteFailed` — raised by `SqliteEmbedderStore.upsert` (adapter). Engine core wraps the upsert in try/except.
-- `RELATE-020 EmbeddingModelMismatch` — **not raised**; the pre-flight check wipes the cache and prints a warning to STDERR (`embedding model changed: wiping cache`), then proceeds. Removed from the error table in v3.
-- `RELATE-021 GraphReadFailed` — raised by `SqliteLinkContext.neighbors_of` (adapter). Engine core wraps in try/except.
-- `RELATE-022 CosineComputeFailed` — raised by the cosine-math helper in `ember/relate/candidate_pool.py` (engine core) on NaN/Inf or zero-vector (denominator = 0). Cosine math uses **stdlib `math` only** — `numpy` is forbidden in engine core (architecture test §7.3).
-- `RELATE-023 MetadataReadFailed` — raised by `SqliteLinkContext` or the temporal-window helper (engine core) on `datetime` parse error. Engine core wraps in try/except.
+- `RELATE-017 EmbedderLoadFailed` — raised by `validate_embedder_config` at CLI boot when `sentence_transformers` / `torch` is missing, or by `SentenceTransformerEmbedder` when the model cannot load. The engine core re-raises it unchanged (no wrapping).
+- `RELATE-018 EmbedderEncodeFailed` — raised by `SentenceTransformerEmbedder.embed` (adapter) for an encode failure or a wrong vector count. The engine core re-raises it unchanged.
+- `RELATE-019 EmbeddingWriteFailed` — raised by `SqliteEmbedderStore.upsert` / `wipe` (adapter). The engine core re-raises it unchanged.
+- `RELATE-020 EmbeddingModelMismatch` — **not raised**; the pre-flight check wipes the cache and returns the warning in `Pool.warning` (`embedding model changed: wiping cache`). The CLI prints it to STDERR. Removed from the error table in v3.
+- `RELATE-021 GraphReadFailed` — raised by `SqliteLinkContext.neighbors_of` (adapter). The engine core re-raises it unchanged.
+- `RELATE-022 CosineComputeFailed` — raised by the cosine-math helper in `ember/relate/candidate_pool.py` (engine core) on a zero-vector (denominator = 0) or unequal-length vectors. NaN/Inf branches are dropped per M6. Cosine math uses **stdlib `math` only** — `numpy` is forbidden in engine core (architecture test §7.3).
+- `RELATE-023 MetadataReadFailed` — raised by the temporal-window helper (engine core) on a malformed or mixed-zone `datetime` parse.
+- `RELATE-037 EmbeddingReadFailed` — raised by `SqliteEmbedderStore.get` / `model_name_of` / `first_model_name` (adapter) on a cache read failure. The engine core re-raises it unchanged. `RELATE-016` stays for Phase 1 `items` / `links` reads.
 
 ## 5. CLI + Configuration
 
@@ -305,10 +307,13 @@ Loaded once at CLI startup via factory functions:
 - `EMBER_EMBEDDER_MODEL` — embedder model name. Default: `bge-base-en-v1.5`.
 - `EMBER_EMBEDDER_LOAD_TIMEOUT_SECONDS` — model load timeout. Default: 120. Enforced by the embedder adapter.
 
+At the start of `ember relate`, `validate_embedder_config()` parses the timeout and checks that `sentence_transformers` and `torch` are installed via `importlib.util.find_spec`. It imports nothing and loads no model. A missing package raises `RELATE-017` and a bad timeout raises `RELATE-035` before the DB is opened (I13).
+
 ### 5.3 Factories
 
 - `build_link_proposer(env=None) -> LinkProposerPort` — same pattern as `build_item_proposer` in Capture.
 - `build_embedder(env=None) -> EmbedderPort` — reads `EMBER_EMBEDDER_MODEL` + `EMBER_EMBEDDER_LOAD_TIMEOUT_SECONDS`, instantiates the embedder adapter.
+- `validate_embedder_config(env=None) -> float` — boot check; parses the timeout, checks the two optional packages, returns the timeout. Raises `RELATE-035` / `RELATE-017`; no model load.
 - **`build_link_lookup(conn) -> LinkLookupPort`** — wraps a `SqliteLinkContext(conn)` for injection into `validate_add_link`. Built once per Relate invocation (not per proposal).
 - **`build_link_store(conn) -> LinkStorePort`** — wraps a `SqliteLinkStore(conn)` for the Phase 4 atomic write.
 - **`build_ai_response_store(conn) -> AiResponseStorePort`** — wraps `SqliteAiResponseStore(conn)` for Phase 3.5.
@@ -317,11 +322,11 @@ Loaded once at CLI startup via factory functions:
 ### 5.4 Adapter Locations
 
 - `ember/adapters/llm.py` — extended with `OpenAiLinkProposer` (L2 pick: same file as Capture, no new module). Returns `LinkProposalResponse(raw_response, proposals)`.
-- `ember/adapters/embedder.py` — new file. `SentenceTransformerEmbedder(model_name, load_timeout)`. Implements `EmbedderPort`. This is where `sentence-transformers` is imported; engine core never sees it.
+- `ember/adapters/embedder.py` — new file. `SentenceTransformerEmbedder(model_name, load_timeout)` implements `EmbedderPort`; `build_embedder` and `validate_embedder_config` are the env-driven factories. This is where `sentence-transformers` is imported; engine core never sees it.
 - `ember/adapters/sqlite.py` — extended with:
   - `SqliteLinkContext(conn)` — implements `LinkLookupPort`. Step 1 ships 8 Phase 1 methods (`item_exists`, `item_type`, `item_statement`, `item_created_at`, `find_existing`, `existing_link_types`, `list_other_items`, `find_latest_unlinked_active`); `neighbors_of` lands with Step 2 and `item_status` + `supersedes_ancestors` with Step 3. After Step 3 lands, the full 11-method protocol is in place.
   - `SqliteLinkStore(conn)` — implements `LinkStorePort` (1 write method: `insert_link_with_log(link_row, change_log_row) -> int` — single `BEGIN` / `INSERT link` / capture `lastrowid` / `INSERT change_log` / `COMMIT`, atomic).
-  - `SqliteEmbedderStore(conn)` — implements `EmbeddingStorePort` (4 methods: `get`, `upsert`, `model_name_of`, `wipe`).
+  - `SqliteEmbedderStore(conn)` — implements `EmbeddingStorePort` (5 methods: `get`, `upsert`, `model_name_of`, `first_model_name`, `wipe`). Reads raise `RELATE-037`; writes raise `RELATE-019`.
   - `SqliteAiResponseStore.save` is extended per §3.4 to accept optional `item_id`. L3 must widen `source_id` from `int` to `int | None` in the type hint. The INSERT body SQL is also widened from `(source_id, response_text, timestamp)` to `(source_id, item_id, response_text, timestamp)`. The `save` call from Phase 3.5 goes through `build_ai_response_store` (engine core never imports the adapter directly).
 
 ### 5.5 Data Models (Pydantic per L1 §0 + Constitution I9 + D4)
@@ -335,7 +340,8 @@ Models:
 - `ValidatedLink(link_row: Link, change_log_row: ChangeLogEntry)` — gatekeeper success.
 - `RejectedLink(code: str)` — gatekeeper failure (e.g. premise rule). The CLI maps the `code` (RELATE-NNN string) to user-facing prose at print time; the engine core does not carry a `reason` field.
 - `ConfirmResult(accepted: list[link_id: int], rejected: int, skipped: int, aborted: bool)` — Phase 4 output.
-- `RankedCandidate(item: Item, cosine: float | None, source: SignalKind)` — transient Pydantic model for Phase 2 merge. `SignalKind` is a Pydantic `Enum` with values `dense`, `graph`, `metadata`.
+- `Pool(ranked: list[RankedCandidate], counts: dict[str, int], warning: str | None)` — Phase 2 return object; the CLI prints `warning` and the counts.
+- `RankedCandidate(item: NewItem, cosine: float | None, source: SignalKind)` — transient Pydantic model for Phase 2 merge. `SignalKind` is a Pydantic `Enum` with values `dense`, `graph`, `metadata`.
 - ~~`LinkRun(lookup: LinkLookupPort, store: LinkStorePort)`~~ — **dropped.** The orchestrator takes `lookup` and `store` as 2 separate args (a bundle was over-engineered per M8; the read/write asymmetry is clearer with explicit names). Per Step 3 v3 §10 amendment log.
 
 `Item`, `Link`, `ChangeLogEntry` are Pydantic models representing DB rows. Defined in `ember/relate/rows.py` (engine core) so the gatekeeper and adapter share a single source of truth.
@@ -344,7 +350,7 @@ Models:
 
 All errors inherit from `ember.relate.errors.RelateError(EmberError)` (Constitution I6: one base error per project). Each subclass has `code: str` and `name: str` class attributes (I17). All raise → exit 1 except `RELATE-031` (UserAbort) → exit 2.
 
-Codes in `ember/relate/errors.py` (30 codes total: 001 + 005-014 + 016-019 + 021-033 + 035 + 036. Gaps 002/003/004 + removed 015/020/034 = 6 slots, 30 raised):
+Codes in `ember/relate/errors.py` (31 codes total: 001 + 005-014 + 016-019 + 021-033 + 035-037. Gaps 002/003/004 + removed 015/020/034 = 6 slots, 31 raised):
 
 | Code | Name | Phase | Trigger | Exit |
 |---|---|---|---|---|
@@ -360,11 +366,11 @@ Codes in `ember/relate/errors.py` (30 codes total: 001 + 005-014 + 016-019 + 021
 | `RELATE-013` | `DbMigrationFailed` | 1 | Migration 006/007/008/009 crashed during apply. | 1 |
 | `RELATE-014` | `SchemaOutdated` | 1 | `schema_version` version < 9 (migrations 006-009 not applied). | 1 |
 | `RELATE-016` | `ItemsReadFailed` | 1 | Phase 1 read failed (items or links table: disk mid-read, lock). | 1 |
-| `RELATE-017` | `EmbedderLoadFailed` | 2 | `sentence-transformers` model load timed out or network/DNS failed. | 1 |
-| `RELATE-018` | `EmbedderEncodeFailed` | 2 | `EmbedderPort.encode(text)` raised. | 1 |
-| `RELATE-019` | `EmbeddingWriteFailed` | 2 | `item_embeddings` row insert failed. | 1 |
+| `RELATE-017` | `EmbedderLoadFailed` | 2 | Optional package missing at CLI boot, or the model load timed out / network / DNS failed. | 1 |
+| `RELATE-018` | `EmbedderEncodeFailed` | 2 | `EmbedderPort.embed(texts)` raised or returned the wrong vector count. | 1 |
+| `RELATE-019` | `EmbeddingWriteFailed` | 2 | `item_embeddings` insert, replace, or wipe failed. | 1 |
 | `RELATE-021` | `GraphReadFailed` | 2 | Graph signal DB read failed. | 1 |
-| `RELATE-022` | `CosineComputeFailed` | 2 | NaN/Inf or zero-vector (denominator = 0) in cosine math. | 1 |
+| `RELATE-022` | `CosineComputeFailed` | 2 | Zero vector (denominator = 0) or unequal-length vectors in cosine math. | 1 |
 | `RELATE-023` | `MetadataReadFailed` | 2 | Metadata signal DB read or `datetime` parse failed. | 1 |
 | `RELATE-024` | `TargetNotInCandidates` | 3 | AI returned `target_item_id` that was not in the `candidates` list. | 1 |
 | `RELATE-025` | `ProposalSourceMismatch` | 3 | AI returned a proposal whose `source_item_id` ≠ the new item id. | 1 |
@@ -378,11 +384,12 @@ Codes in `ember/relate/errors.py` (30 codes total: 001 + 005-014 + 016-019 + 021
 | `RELATE-033` | `AiResponseSchemaInvalid` | 3 | LLM response not JSON, or JSON not a list, or list missing `target_item_id` key per proposal shape. | 1 |
 | `RELATE-035` | `ConfigMissing` | boot | Required env var missing (e.g. no API key). Per Constitution I13. | 1 |
 | `RELATE-036` | `AiResponseWriteFailed` | 3 | Phase 3.5 raw-AI-response save to `ai_responses` failed (disk full, FK violation). | 1 |
+| `RELATE-037` | `EmbeddingReadFailed` | 2 | `item_embeddings` read failed (disk mid-read, lock, corrupt vector blob). `RELATE-016` stays for Phase 1 `items` / `links` reads. | 1 |
 
 Removed codes (v3 cleanup; were "soft" / "reserved" / unused per I17):
 - `RELATE-002` (was: "candidate universe empty"; v2 plan removed from the table; here for traceability).
 - `RELATE-015` (was: "no unrelated active item" — soft exit 0; not raised; would be dead code).
-- `RELATE-020` (was: "embedding model mismatch" — pre-flight wipes cache; not raised; would be dead code. Replaced with a STDERR warning at the embedder adapter: `embedding model changed: wiping cache`).
+- `RELATE-020` (was: "embedding model mismatch" — pre-flight wipes cache; not raised; would be dead code. Replaced with the warning returned in `Pool.warning`: `embedding model changed: wiping cache`; the CLI prints it to STDERR).
 - `RELATE-034` (was: "invalid confirm input" — current behavior is silent re-prompt; reserved = dead code per I17).
 
 **RELATE-014 is defensive:** `open_relate_database` applies migrations before it checks the version, so a normal run reaches version 9 first. The code fires only when migrations are skipped or the schema is otherwise stale. Step 1 tests the mapping directly and through a simulated old DB.
@@ -396,18 +403,18 @@ Test pyramid per L1 §7 + Constitution T1-T4 + T7 + T9.
 ### 7.1 Unit (pure core, no DB)
 
 - **Phase 1 (load + filter):** candidate universe construction; inlined compat table filter; "not yet related" check; `--item ID` fail-fast path.
-- **Phase 2 (candidate pool):** rank-by-cosine-or-0.5 merge; union dedup; empty union returns `[]` (no raise); embedding input = `items.statement` only; new-item embedding upsert.
+- **Phase 2 (candidate pool):** rank-by-cosine-or-0.5 merge; union dedup; empty union returns `Pool(ranked=[])` (no raise); embedding input = `items.statement` only; new-item embedding upsert; cosine behavior exercised through `build_candidate_pool` (no private `_cosine` tests); cache reuse asserted with `embedded_at`/stored vectors, not call counters.
 - **Phase 3 (AI propose):** `LinkProposerPort` parser (bad types, empty list, Markdown fences same as Capture); retry on `AiCallFailed` (1 retry, 0s backoff, raises after 2nd failure); raw response save shape (returns `LinkProposalResponse(raw_response, proposals)`).
 - **Phase 4 (confirm + write):** `y`/`n`/`s`/`q` paths; garbage input re-prompts silently; `contradicts` orientation flip (Finding↔Finding only; Finding→non-Finding fixed); EOF raises `UserAbort`; pending proposals on `q` are ignored.
 - **Gatekeeper (9 rules):** every check from §4 Phase 4 — items exist, no self, link_type in closed set, compat table, supersedes-Closed, premise rule, supersedes cycle, uniqueness. Each check tested in isolation. The `validate_add_link` rejection branch prints the reason and increments the rejected counter (no re-prompt).
-- **Error code stability:** every code in §6 that is raised (i.e. 001, 005-014, 016-019, 021-033, 035, 036 — 30 codes; the removed 002/003/004/015/020/034 are untestable) has a test that asserts the raised `code` (not message prose). Per Constitution E2 + I21.
+- **Error code stability:** every code in §6 that is raised (i.e. 001, 005-014, 016-019, 021-033, 035-037 — 31 codes; the removed 002/003/004/015/020/034 are untestable) has a test that asserts the raised `code` (not message prose). Per Constitution E2 + I21.
 
 ### 7.2 Integration (real temp DB, migrations 001-009 applied)
 
 - **Happy path:** new item, 5 candidates, 3 accepted + 2 rejected → 5 link rows (3 Confirmed + 2 Rejected) + 5 `change_log` rows. Each `change_log` row uses the templates from §4 Phase 4 (link_confirmed / link_rejected). Both rows have `item_id = new_item.id`. `new_value` follows the `<link_type>:<target_item_id>` convention.
 - **Re-run with same new item:** candidates with already-used `(source, target, link_type)` are dropped; different `link_type` for the same target is still suggested. (Plan v1 had this wrong — fixed.)
 - **Embedding cache hit:** re-running with same item does NOT re-compute (assert `embedded_at` unchanged). Phase 3 only runs when there are candidates — if the candidate universe is empty, no `ai_responses` row is written (D8 save is gated on Phase 3 firing).
-- **Embedding model swap:** pre-flight wipes cache when `item_embeddings.model_name` ≠ `EMBER_EMBEDDER_MODEL`. Assert cache empty after wipe; STDERR warning emitted.
+- **Embedding model swap:** pre-flight wipes cache when `item_embeddings.model_name` ≠ `EMBER_EMBEDDER_MODEL`. Assert the old rows are gone and re-encoded under the active model; `Pool.warning` carries the warning and the CLI prints it to STDERR.
 - **Raw AI save:** assert `ai_responses` row exists for the new item after every Phase 3 call (Constitution D8). Both `source_id` and `item_id` nullable post-009; Capture's writer sets `source_id`, Relate's sets `item_id`.
 - **Phase 4 atomic transaction:** link row inserted FIRST (lastrowid captured), then `change_log` row with `link_id = lastrowid`. Assert no FK violation. Assert both rows commit or both rollback (use a fault-injection test that raises mid-transaction and verifies zero rows).
 - **Closed-item handling:** `supersedes` to a `Closed` target → RELATE-007. `depends_on` to a `Closed` target → allowed.
@@ -484,12 +491,12 @@ L3 deliverable checklists:
 - (f) Architecture test extension: `test_relate_core_does_not_import_adapters` added to `tests/test_architecture.py` (per §7.3).
 - (g) `tests/relate/` directory with fakes: `FakeLinkContext` + the per-method test suites (`test_load_filter_unit.py`, `test_load_filter_integration.py`, `test_relate_cli.py`).
 
-**Step 2 (planned):**
-- (a) `ember/relate/embedding_store.py` — `EmbeddingStorePort` protocol + adapter; methods `get`, `upsert`, `model_name_of`, `wipe`.
-- (b) `ember/relate/candidate_pool.py` — public `build_candidate_pool(LoadedCandidates, ...)` + private `_cosine` helper.
+**Step 2 (landed on `feat/relate-engine`):**
+- (a) `ember/relate/embedding_store.py` — `EmbeddingStorePort` protocol; methods `get`, `upsert`, `model_name_of`, `first_model_name`, `wipe`; reads raise `RELATE-037`.
+- (b) `ember/relate/candidate_pool.py` — public `build_candidate_pool(LoadedCandidates, *, link_lookup, embedding_store, embedder) -> Pool` + private `_cosine` helper.
 - (c) `SqliteEmbedderStore` in `ember/adapters/sqlite.py`.
 - (d) `LinkLookupPort.neighbors_of` implementation in `SqliteLinkContext` (1-hop BFS via `Confirmed` links).
-- (e) `SentenceTransformerEmbedder` in new `ember/adapters/embedder.py` (where `sentence-transformers` is imported).
+- (e) `SentenceTransformerEmbedder` + `build_embedder` + `validate_embedder_config` in new `ember/adapters/embedder.py` (where `sentence-transformers` is imported).
 - (f) Step 2 fakes + tests.
 
 **Step 3 (planned):**

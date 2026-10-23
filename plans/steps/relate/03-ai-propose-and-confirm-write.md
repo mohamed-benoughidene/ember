@@ -26,11 +26,11 @@ Implements Phase 3 (AI proposes link types via `LinkProposerPort`), Phase 3.5 (r
 
 ## 1. Job
 
-Take the ranked candidate list from Step 2, send the candidates to the AI, save the raw response, validate each `LinkProposal` through the 9-rule gatekeeper, prompt the user to accept/reject/skip/abort, and on accept or reject write the link + change_log row atomically.
+Take `Pool.ranked` from Step 2, send the candidates to the AI, save the raw response, validate each `LinkProposal` through the 9-rule gatekeeper, prompt the user to accept/reject/skip/abort, and on accept or reject write the link + change_log row atomically.
 
 ## 2. Inputs
 
-From Step 2: `list[RankedCandidate]`.
+From Step 2: `Pool.ranked` (`list[RankedCandidate]`).
 From Step 1: `NewItem`.
 From ports (L2 §4.5):
 - `LinkProposerPort.propose_links(new_item, candidates) -> LinkProposalResponse`
