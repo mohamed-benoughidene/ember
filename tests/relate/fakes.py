@@ -11,11 +11,13 @@ class FakeLinkLookup:
         items: list[NewItem],
         links: list[Link] | None = None,
         latest: NewItem | None = None,
+        statuses: dict[int, str] | None = None,
     ) -> None:
         self._items = list(items)
         self._links = list(links or [])
         self._latest = latest
         self._by_id = {item.id: item for item in self._items}
+        self._statuses = dict(statuses or {})
 
     def item_exists(self, item_id: int) -> bool:
         return item_id in self._by_id
@@ -64,6 +66,26 @@ class FakeLinkLookup:
             elif link.target_item_id == item_id:
                 neighbors.add(link.source_item_id)
         return sorted(neighbors)
+
+    def item_status(self, item_id: int) -> str | None:
+        return self._statuses.get(item_id)
+
+    def supersedes_ancestors(self, item_id: int) -> set[int]:
+        ancestors: set[int] = set()
+        frontier: list[int] = [item_id]
+        while frontier:
+            current = frontier.pop()
+            for link in self._links:
+                if (
+                    link.source_item_id == current
+                    and link.link_type == "supersedes"
+                    and link.status == "Confirmed"
+                ):
+                    target = link.target_item_id
+                    if target not in ancestors:
+                        ancestors.add(target)
+                        frontier.append(target)
+        return ancestors
 
 
 class FakeEmbedder:
@@ -130,3 +152,50 @@ class FakeEmbeddingStore:
     def wipe(self) -> None:
         self.rows.clear()
         self.model_names.clear()
+
+
+class FakeLinkProposer:
+    """Canned relate AI. Each call returns the next outcome, or raises it."""
+
+    def __init__(self, outcomes: list) -> None:
+        self._outcomes = list(outcomes)
+        self.calls: list[tuple] = []
+
+    def propose_links(self, new_item, candidates):
+        self.calls.append((new_item, list(candidates)))
+        if not self._outcomes:
+            raise AssertionError("FakeLinkProposer ran out of outcomes")
+        outcome = self._outcomes.pop(0)
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
+
+
+class FakeAiResponseStore:
+    """Records every raw-answer save; optionally raises a canned error."""
+
+    def __init__(self, *, error: Exception | None = None) -> None:
+        self.saved: list[tuple[int, str]] = []
+        self._error = error
+
+    def save(self, *, item_id: int, raw_response: str) -> None:
+        if self._error is not None:
+            raise self._error
+        self.saved.append((item_id, raw_response))
+
+
+class FakeLinkStore:
+    """Records every atomic write; returns a fresh link id each call."""
+
+    def __init__(self, *, start_id: int = 1, error: Exception | None = None) -> None:
+        self.rows: list[tuple] = []
+        self._next = start_id
+        self._error = error
+
+    def insert_link_with_log(self, link_row, change_log_row) -> int:
+        if self._error is not None:
+            raise self._error
+        link_id = self._next
+        self._next += 1
+        self.rows.append((link_row, change_log_row, link_id))
+        return link_id
