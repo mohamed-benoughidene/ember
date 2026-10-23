@@ -10,7 +10,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Mapping
 
-from ember.errors import EmberError
 from ember.relate.ai_response_store import AiResponseStorePort
 from ember.relate.confirm_write import (
     ConfirmPort,
@@ -18,7 +17,11 @@ from ember.relate.confirm_write import (
     LinkStorePort,
     confirm_links,
 )
-from ember.relate.errors import AiResponseWriteFailed, SchemaValidationFailed
+from ember.relate.errors import (
+    AiResponseWriteFailed,
+    RelateError,
+    SchemaValidationFailed,
+)
 from ember.relate.link_gatekeeper import (
     LinkDraft,
     RejectedLink,
@@ -72,10 +75,10 @@ def run_relate(ports: RelatePorts, request: RelateRequest) -> ConfirmResult:
     response = propose_links_with_retry(
         ports.link_proposer, new_item=request.new_item, candidates=candidates
     )
-    _save_raw_response(ports.ai_response_store, request.new_item, response.raw_response)
     validate_proposals(
         response.proposals, candidates=candidates, new_item=request.new_item
     )
+    _save_raw_response(ports.ai_response_store, request.new_item, response.raw_response)
     validated, gatekeeper_rejected = _gatekeep(
         response.proposals, request.new_item, ports.link_lookup
     )
@@ -93,8 +96,9 @@ def _save_raw_response(
 ) -> None:
     """Phase 3.5: store the raw answer verbatim, mapping failures to codes.
 
-    `ValueError` (both/neither owner set) -> `RELATE-030`. Any other failure
-    (disk full, constraint) -> `RELATE-036`. A `RelateError` bug is re-raised
+    `ValueError` (both/neither owner set) -> `RELATE-030`. Any other failure,
+    including the adapter's own write-error class (e.g. CAPTURE-013
+    `ItemDbWriteError`), -> `RELATE-036`. A `RelateError` bug is re-raised
     unchanged so a code fault is never masked as a storage failure.
     """
     try:
@@ -103,7 +107,7 @@ def _save_raw_response(
         raise SchemaValidationFailed(
             "ai response owner invalid", item_id=new_item.id
         ) from exc
-    except EmberError:
+    except RelateError:
         raise
     except Exception as exc:  # noqa: BLE001 - boundary: any storage failure maps to 036
         raise AiResponseWriteFailed(
