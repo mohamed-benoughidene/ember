@@ -25,6 +25,8 @@ _READS = [
     ("existing_link_types", lambda ctx: ctx.existing_link_types(1)),
     ("list_other_items", lambda ctx: ctx.list_other_items(1)),
     ("find_latest_unlinked_active", lambda ctx: ctx.find_latest_unlinked_active()),
+    ("item_status", lambda ctx: ctx.item_status(1)),
+    ("supersedes_ancestors", lambda ctx: ctx.supersedes_ancestors(1)),
 ]
 
 
