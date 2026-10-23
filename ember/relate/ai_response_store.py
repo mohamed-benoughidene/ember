@@ -1,7 +1,7 @@
 """Write port for the raw AI answers (Phase 3.5, Constitution D8 + I16).
 
 The adapter owns the SQL. The engine core only knows this protocol, so it never
-imports `sqlite3` or an adapter module.
+imports a storage driver or an adapter module.
 """
 
 from __future__ import annotations
