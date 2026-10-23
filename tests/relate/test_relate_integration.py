@@ -19,9 +19,13 @@ from ember.adapters.sqlite import (
     open_database,
 )
 from ember.relate.ai_response_store import AiResponseStorePort
-from ember.relate.errors import AiResponseWriteFailed, ChangeLogWriteFailed
+from ember.relate.errors import (
+    AiResponseWriteFailed,
+    ChangeLogWriteFailed,
+    LinkWriteFailed,
+)
 from ember.relate.link_proposal import LinkProposal, LinkProposalResponse
-from ember.relate.rows import NewItem, RankedCandidate, SignalKind
+from ember.relate.rows import ChangeLogEntry, Link, NewItem, RankedCandidate, SignalKind
 from ember.relate.run_relate import RelatePorts, RelateRequest, run_relate
 from tests.fakes import FIXED_TIME, FakeConfirm, insert_item, insert_source
 from tests.relate.fakes import FakeAiResponseStore, FakeLinkProposer
@@ -219,6 +223,55 @@ def test_phase35_failure_rolls_back(db_path) -> None:
             run_relate(ports, _request(1, 2, 3))
 
         assert conn.execute("SELECT COUNT(*) FROM links").fetchone()[0] == 0
+    finally:
+        conn.close()
+
+
+def test_phase35_real_adapter_failure_maps_to_036(db_path) -> None:
+    conn, _ = _seed(db_path, [1, 2, 3])
+    try:
+        conn.execute("ALTER TABLE ai_responses RENAME TO ai_responses_bak")
+        conn.commit()
+        ports = _ports(conn, _proposer([2, 3]), FakeConfirm(["y", "y"]))
+
+        with pytest.raises(AiResponseWriteFailed) as excinfo:
+            run_relate(ports, _request(1, 2, 3))
+
+        assert excinfo.value.code == "RELATE-036"
+    finally:
+        conn.close()
+
+
+def test_link_store_fk_failure_maps_to_029(db_path) -> None:
+    conn, _ = _seed(db_path, [1])
+    try:
+        store = SqliteLinkStore(conn)
+        link = Link(id=None, source_item_id=1, target_item_id=999,
+                    link_type="depends_on", status="Confirmed", created_at=FIXED_TIME)
+        log = ChangeLogEntry(id=None, item_id=1, link_id=None,
+                             field_changed="link_confirmed", new_value="depends_on:999",
+                             timestamp=FIXED_TIME, trigger_cause="user_confirmed")
+
+        with pytest.raises(LinkWriteFailed) as excinfo:
+            store.insert_link_with_log(link, log)
+
+        assert excinfo.value.code == "RELATE-029"
+        assert conn.execute("SELECT COUNT(*) FROM links").fetchone()[0] == 0
+    finally:
+        conn.close()
+
+
+def test_rerun_does_not_recreate_or_duplicate(db_path) -> None:
+    conn, _ = _seed(db_path, [1, 2, 3, 4])
+    try:
+        first = run_relate(_ports(conn, _proposer([2, 3, 4]), FakeConfirm(["n", "n", "y"])), _request(1, 2, 3, 4))
+        assert first.rejected == 2 and len(first.accepted) == 1
+
+        second = run_relate(_ports(conn, _proposer([2, 3, 4]), FakeConfirm(["y", "y", "y"])), _request(1, 2, 3, 4))
+
+        assert second.accepted == []
+        assert second.rejected == 3
+        assert conn.execute("SELECT COUNT(*) FROM links").fetchone()[0] == 3
     finally:
         conn.close()
 

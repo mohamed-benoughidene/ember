@@ -338,6 +338,34 @@ def test_relate_migration_failure_exits_1_with_relate_013(db_path, monkeypatch) 
     assert "RELATE-013" in result.output
 
 
+def test_relate_quit_exits_2_with_summary(db_path, monkeypatch) -> None:
+    _seed_six_items_two_links(db_path)
+    _patch_phase2_ports(monkeypatch)
+    _patch_phase34_ports(monkeypatch)
+
+    result = CliRunner().invoke(
+        main, ["relate", "--item", "1", "--db", db_path], input="q\n"
+    )
+
+    assert result.exit_code == 2
+    assert "aborted: true" in result.output
+    assert result.output.count("- link_id:") == 0
+
+
+def test_relate_missing_api_key_exits_1_with_relate_035(db_path, monkeypatch) -> None:
+    _seed_six_items_two_links(db_path)
+    _patch_phase2_ports(monkeypatch)
+    monkeypatch.delenv("EMBER_AI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+
+    result = CliRunner().invoke(
+        main, ["relate", "--item", "1", "--db", db_path], input=""
+    )
+
+    assert result.exit_code == 1
+    assert "RELATE-035" in _error_text(result)
+
+
 def test_relate_old_schema_exits_1_with_relate_014(db_path, monkeypatch) -> None:
     conn = sqlite3.connect(db_path)
     conn.execute("CREATE TABLE schema_version (version INTEGER NOT NULL)")
