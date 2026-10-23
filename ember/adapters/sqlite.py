@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
+import sys
+from array import array
 from datetime import datetime, timezone
 from importlib import resources
 from typing import Callable
@@ -17,17 +20,82 @@ from ember.capture.errors import (
 from ember.capture.item_gatekeeper import ExistingItem, StoredItem, ValidatedItem
 from ember.capture.item_proposal import ContextItem
 from ember.capture.source_storage import SourceRecord
+from ember.errors import EmberError
+from ember.relate.embedding_store import EmbeddingStorePort
+from ember.relate.errors import (
+    ChangeLogWriteFailed,
+    DbMigrationFailed,
+    DbOpenFailed,
+    EmbeddingReadFailed,
+    EmbeddingWriteFailed,
+    GraphReadFailed,
+    ItemsReadFailed,
+    LinkWriteFailed,
+    SchemaOutdated,
+)
+from ember.relate.rows import ChangeLogEntry, Link, NewItem
 
 _MIGRATIONS_MODULE = "ember.adapters.migrations"
 
 
-def open_database(db_path: str) -> sqlite3.Connection:
-    """Open a SQLite connection, enforce foreign keys, apply migrations."""
+def _connect(db_path: str) -> sqlite3.Connection:
+    """Open a raw SQLite connection with row access by name and foreign keys on."""
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
+    return conn
+
+
+def open_database(db_path: str) -> sqlite3.Connection:
+    """Open a SQLite connection, enforce foreign keys, apply migrations."""
+    conn = _connect(db_path)
     _apply_migrations(conn)
     return conn
+
+
+def open_relate_database(db_path: str) -> sqlite3.Connection:
+    """Open an existing relate DB, apply migrations, check the schema.
+
+    Raise `DbOpenFailed` (RELATE-012) when the file is missing or is not a
+    readable SQLite database, and `DbMigrationFailed` (RELATE-013) when a
+    migration fails.
+    """
+    if not os.path.exists(db_path):
+        raise DbOpenFailed("db file missing", db_path=db_path)
+    conn: sqlite3.Connection | None = None
+    try:
+        conn = _connect(db_path)
+        conn.execute("SELECT COUNT(*) FROM sqlite_master").fetchone()
+    except sqlite3.Error as exc:
+        if conn is not None:
+            conn.close()
+        raise DbOpenFailed("db open fail", db_path=db_path) from exc
+    try:
+        _apply_migrations(conn)
+    except (sqlite3.Error, ValueError) as exc:
+        conn.close()
+        raise DbMigrationFailed("migration fail", db_path=db_path) from exc
+    try:
+        ensure_relate_schema(conn)
+    except EmberError:
+        conn.close()
+        raise
+    return conn
+
+
+def ensure_relate_schema(conn: sqlite3.Connection) -> None:
+    """Check the applied schema version is new enough for the relate engine.
+
+    Raise `DbOpenFailed` (RELATE-012) if the version cannot be read, and
+    `SchemaOutdated` (RELATE-014) if the version is below the required 9.
+    """
+    try:
+        row = conn.execute("SELECT version FROM schema_version").fetchone()
+        version = 0 if row is None else int(row["version"])
+    except (sqlite3.Error, ValueError, TypeError) as exc:
+        raise DbOpenFailed("schema version read fail") from exc
+    if version < 9:
+        raise SchemaOutdated("schema version too old", version=version, required=9)
 
 
 def _apply_migrations(conn: sqlite3.Connection) -> None:
@@ -36,12 +104,35 @@ def _apply_migrations(conn: sqlite3.Connection) -> None:
     )
     if conn.execute("SELECT COUNT(*) FROM schema_version").fetchone()[0] == 0:
         conn.execute("INSERT INTO schema_version (version) VALUES (0)")
+    conn.commit()
     current = conn.execute("SELECT version FROM schema_version").fetchone()[0]
-    for number, script in _migration_scripts():
-        if number > current:
-            conn.executescript(script)
-            conn.execute("UPDATE schema_version SET version = ?", (number,))
-            conn.commit()
+    conn.execute("PRAGMA foreign_keys = OFF")
+    try:
+        for number, script in _migration_scripts():
+            if number > current:
+                _apply_migration(conn, number, script)
+    finally:
+        conn.execute("PRAGMA foreign_keys = ON")
+
+
+def _apply_migration(conn: sqlite3.Connection, number: int, script: str) -> None:
+    """Apply one migration and its version bump in one transaction.
+
+    Scripts must contain plain statements only. The runner owns the
+    transaction and the foreign-key switch, so a script with its own
+    `BEGIN` / `COMMIT` would nest transactions.
+    """
+    wrapped = (
+        "BEGIN;\n"
+        f"{script}\n"
+        f"UPDATE schema_version SET version = {int(number)};\n"
+        "COMMIT;"
+    )
+    try:
+        conn.executescript(wrapped)
+    except sqlite3.Error:
+        conn.rollback()
+        raise
 
 
 def _migration_scripts() -> list[tuple[int, str]]:
@@ -144,6 +235,209 @@ class SqliteItemContext:
             ContextItem(id=row["id"], type=row["type"], statement=row["statement"])
             for row in rows
         ]
+
+
+class SqliteLinkContext:
+    """`LinkLookupPort` on SQLite. Read-only item and link lookups for relate.
+
+    Every item and link read raises `ItemsReadFailed` (RELATE-016) on a read
+    failure, except `neighbors_of`, which raises `GraphReadFailed` (RELATE-021).
+    """
+
+    def __init__(self, conn: sqlite3.Connection) -> None:
+        self._conn = conn
+
+    def item_exists(self, item_id: int) -> bool:
+        """Return whether an item with this id exists."""
+        try:
+            row = self._conn.execute(
+                "SELECT 1 FROM items WHERE id = ?", (item_id,)
+            ).fetchone()
+        except sqlite3.Error as exc:
+            raise ItemsReadFailed("item read fail", item_id=item_id) from exc
+        return row is not None
+
+    def item_type(self, item_id: int) -> str | None:
+        """Return the item's type, or None if the item is missing."""
+        try:
+            row = self._conn.execute(
+                "SELECT type FROM items WHERE id = ?", (item_id,)
+            ).fetchone()
+        except sqlite3.Error as exc:
+            raise ItemsReadFailed("item read fail", item_id=item_id) from exc
+        return None if row is None else row["type"]
+
+    def item_statement(self, item_id: int) -> str | None:
+        """Return the item's statement, or None if the item is missing."""
+        try:
+            row = self._conn.execute(
+                "SELECT statement FROM items WHERE id = ?", (item_id,)
+            ).fetchone()
+        except sqlite3.Error as exc:
+            raise ItemsReadFailed("item read fail", item_id=item_id) from exc
+        return None if row is None else row["statement"]
+
+    def item_created_at(self, item_id: int) -> str | None:
+        """Return the item's created_at text, or None if the item is missing."""
+        try:
+            row = self._conn.execute(
+                "SELECT created_at FROM items WHERE id = ?", (item_id,)
+            ).fetchone()
+        except sqlite3.Error as exc:
+            raise ItemsReadFailed("item read fail", item_id=item_id) from exc
+        return None if row is None else row["created_at"]
+
+    def find_existing(
+        self,
+        source_id: int,
+        target_id: int,
+        link_type: str,
+    ) -> Link | None:
+        """Return the link row for this triple of any status, or None."""
+        try:
+            row = self._conn.execute(
+                "SELECT id, source_item_id, target_item_id, link_type, status,"
+                " created_at FROM links"
+                " WHERE source_item_id = ? AND target_item_id = ? AND link_type = ?",
+                (source_id, target_id, link_type),
+            ).fetchone()
+        except sqlite3.Error as exc:
+            raise ItemsReadFailed(
+                "link read fail",
+                source_id=source_id,
+                target_id=target_id,
+                link_type=link_type,
+            ) from exc
+        if row is None:
+            return None
+        return Link(
+            id=row["id"],
+            source_item_id=row["source_item_id"],
+            target_item_id=row["target_item_id"],
+            link_type=row["link_type"],
+            status=row["status"],
+            created_at=row["created_at"],
+        )
+
+    def existing_link_types(self, source_item_id: int) -> dict[int, set[str]]:
+        """Return the link types already present from this source, by target id."""
+        try:
+            rows = self._conn.execute(
+                "SELECT target_item_id, link_type FROM links"
+                " WHERE source_item_id = ?",
+                (source_item_id,),
+            ).fetchall()
+        except sqlite3.Error as exc:
+            raise ItemsReadFailed("link read fail", source_id=source_item_id) from exc
+        existing: dict[int, set[str]] = {}
+        for row in rows:
+            existing.setdefault(int(row["target_item_id"]), set()).add(
+                str(row["link_type"])
+            )
+        return existing
+
+    def list_other_items(self, new_item_id: int) -> list[NewItem]:
+        """Return every item except `new_item_id`, ordered by id."""
+        try:
+            rows = self._conn.execute(
+                "SELECT id, type, statement, created_at FROM items"
+                " WHERE id != ? ORDER BY id",
+                (new_item_id,),
+            ).fetchall()
+        except sqlite3.Error as exc:
+            raise ItemsReadFailed("item read fail", item_id=new_item_id) from exc
+        return [
+            NewItem(
+                id=row["id"],
+                type=row["type"],
+                statement=row["statement"],
+                created_at=row["created_at"],
+            )
+            for row in rows
+        ]
+
+    def find_latest_unlinked_active(self) -> NewItem | None:
+        """Return the newest Active item with no link from it, or None."""
+        try:
+            row = self._conn.execute(
+                "SELECT id, type, statement, created_at FROM items"
+                " WHERE status = 'Active'"
+                " AND id NOT IN (SELECT source_item_id FROM links)"
+                " ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+        except sqlite3.Error as exc:
+            raise ItemsReadFailed("item read fail") from exc
+        if row is None:
+            return None
+        return NewItem(
+            id=row["id"],
+            type=row["type"],
+            statement=row["statement"],
+            created_at=row["created_at"],
+        )
+
+    def neighbors_of(self, item_id: int) -> list[int]:
+        """Return the 1-hop neighbors reached through Confirmed links.
+
+        Either side of a link counts, so a Confirmed row pointing at `item_id`
+        is a neighbor just like a row pointing away from it. The result is
+        sorted and deduplicated; `item_id` itself is never in it. Depth is 1:
+        this call does not recurse (plan step 2 section 4 step 4).
+
+        Raise `GraphReadFailed` (RELATE-021) on a read failure.
+        """
+        try:
+            rows = self._conn.execute(
+                "SELECT source_item_id, target_item_id FROM links"
+                " WHERE status = 'Confirmed'"
+                " AND (source_item_id = ? OR target_item_id = ?)",
+                (item_id, item_id),
+            ).fetchall()
+        except sqlite3.Error as exc:
+            raise GraphReadFailed("graph read fail", item_id=item_id) from exc
+        neighbors: set[int] = set()
+        for row in rows:
+            for other_id in (row["source_item_id"], row["target_item_id"]):
+                if other_id != item_id:
+                    neighbors.add(int(other_id))
+        return sorted(neighbors)
+
+    def item_status(self, item_id: int) -> str | None:
+        """Return the item's status, or None if the item is missing."""
+        try:
+            row = self._conn.execute(
+                "SELECT status FROM items WHERE id = ?", (item_id,)
+            ).fetchone()
+        except sqlite3.Error as exc:
+            raise ItemsReadFailed("item read fail", item_id=item_id) from exc
+        return None if row is None else row["status"]
+
+    def supersedes_ancestors(self, item_id: int) -> set[int]:
+        """Return every item reachable upstream via Confirmed supersedes links.
+
+        Breadth-first over `links` rows where `source_item_id` is the current
+        node and `link_type = 'supersedes'`. The seed is not included unless a
+        cycle walks back to it (cycles are forbidden at write time).
+        """
+        ancestors: set[int] = set()
+        frontier: list[int] = [item_id]
+        try:
+            while frontier:
+                current = frontier.pop()
+                rows = self._conn.execute(
+                    "SELECT target_item_id FROM links"
+                    " WHERE source_item_id = ? AND link_type = 'supersedes'"
+                    " AND status = 'Confirmed'",
+                    (current,),
+                ).fetchall()
+                for row in rows:
+                    target = int(row["target_item_id"])
+                    if target not in ancestors:
+                        ancestors.add(target)
+                        frontier.append(target)
+        except sqlite3.Error as exc:
+            raise ItemsReadFailed("link read fail", item_id=item_id) from exc
+        return ancestors
 
 
 class SqliteItemGatekeeper:
@@ -320,20 +614,98 @@ class SqliteAiResponseStore:
         self._conn = conn
         self._clock = clock or _utc_now
 
-    def save(self, *, source_id: int, raw_response: str) -> None:
-        """Store one raw provider answer verbatim.
+    def save(
+        self,
+        *,
+        source_id: int | None = None,
+        item_id: int | None = None,
+        raw_response: str,
+    ) -> None:
+        """Store one raw provider answer verbatim against exactly one owner.
 
-        Raise `ItemDbWriteError` (CAPTURE-013) on a write failure.
+        Raise `ValueError` when neither or both of `source_id` and `item_id`
+        are set, and `ItemDbWriteError` (CAPTURE-013) on a write failure.
         """
+        if (source_id is None) == (item_id is None):
+            raise ValueError("save requires exactly one of source_id, item_id")
         try:
             self._conn.execute(
-                "INSERT INTO ai_responses (source_id, response_text, timestamp)"
-                " VALUES (?, ?, ?)",
-                (source_id, raw_response, self._clock()),
+                "INSERT INTO ai_responses (source_id, item_id, response_text, timestamp)"
+                " VALUES (?, ?, ?, ?)",
+                (source_id, item_id, raw_response, self._clock()),
             )
             self._conn.commit()
         except sqlite3.Error as exc:
-            raise ItemDbWriteError("db write fail", source_id=source_id) from exc
+            raise ItemDbWriteError(
+                "db write fail", source_id=source_id, item_id=item_id
+            ) from exc
+
+
+class SqliteLinkStore:
+    """`LinkStorePort` on SQLite: one atomic `links` + `change_log` write.
+
+    Order matters: the link row is inserted first so `change_log.link_id` (a
+    foreign key after migration 008) can reference it. A failure on either
+    insert rolls the whole transaction back.
+    """
+
+    def __init__(self, conn: sqlite3.Connection) -> None:
+        self._conn = conn
+
+    def insert_link_with_log(
+        self, link_row: Link, change_log_row: ChangeLogEntry
+    ) -> int:
+        """Insert the link and its change_log row in one transaction.
+
+        Return the new link id. Raise `LinkWriteFailed` (RELATE-029) when the
+        link insert fails, and `ChangeLogWriteFailed` (RELATE-011) when the
+        change_log insert fails (the link insert is rolled back).
+        """
+        try:
+            cursor = self._conn.execute(
+                "INSERT INTO links"
+                " (source_item_id, target_item_id, link_type, status, created_at)"
+                " VALUES (?, ?, ?, ?, ?)",
+                (
+                    link_row.source_item_id,
+                    link_row.target_item_id,
+                    link_row.link_type,
+                    link_row.status,
+                    link_row.created_at,
+                ),
+            )
+        except sqlite3.Error as exc:
+            self._conn.rollback()
+            raise LinkWriteFailed(
+                "link insert fail",
+                source_item_id=link_row.source_item_id,
+                target_item_id=link_row.target_item_id,
+                link_type=link_row.link_type,
+            ) from exc
+        link_id = int(cursor.lastrowid)
+        stamped = change_log_row.model_copy(update={"link_id": link_id})
+        try:
+            self._conn.execute(
+                "INSERT INTO change_log"
+                " (item_id, link_id, field_changed, old_value, new_value,"
+                " timestamp, trigger_cause) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (
+                    stamped.item_id,
+                    stamped.link_id,
+                    stamped.field_changed,
+                    stamped.old_value,
+                    stamped.new_value,
+                    stamped.timestamp,
+                    stamped.trigger_cause,
+                ),
+            )
+        except sqlite3.Error as exc:
+            self._conn.rollback()
+            raise ChangeLogWriteFailed(
+                "change_log insert fail", item_id=stamped.item_id, link_id=link_id
+            ) from exc
+        self._conn.commit()
+        return link_id
 
 
 def _proposal_text(item: ValidatedItem) -> str:
@@ -346,3 +718,138 @@ def _proposal_text(item: ValidatedItem) -> str:
         },
         ensure_ascii=False,
     )
+
+
+class SqliteEmbedderStore:
+    """`EmbeddingStorePort` on SQLite. Owns the packed vector format.
+
+    The cache is derived data: every method here reads or rewrites
+    `item_embeddings` rows only, and never touches `items`, `links`, or
+    `change_log` (Constitution D2).
+
+    Read failures raise `EmbeddingReadFailed` (RELATE-037); write failures
+    raise `EmbeddingWriteFailed` (RELATE-019).
+    """
+
+    def __init__(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        clock: Callable[[], str] | None = None,
+    ) -> None:
+        self._conn = conn
+        self._clock = clock or _utc_now
+
+    def get(self, item_id: int) -> list[float] | None:
+        """Return the cached vector for `item_id`, or None when it has no row.
+
+        Raise `EmbeddingReadFailed` (RELATE-037) on a read failure, including a
+        vector blob that cannot be decoded as float32.
+        """
+        try:
+            row = self._conn.execute(
+                "SELECT vector FROM item_embeddings WHERE item_id = ?", (item_id,)
+            ).fetchone()
+        except sqlite3.Error as exc:
+            raise EmbeddingReadFailed("embedding read fail", item_id=item_id) from exc
+        if row is None:
+            return None
+        try:
+            return _unpack_vector(row["vector"])
+        except (TypeError, ValueError) as exc:
+            raise EmbeddingReadFailed("embedding decode fail", item_id=item_id) from exc
+
+    def upsert(self, item_id: int, vector: list[float], model_name: str) -> None:
+        """Store one vector row, replacing any existing row for `item_id`.
+
+        `embedded_at` comes from the clock (UTC now by default). The row is
+        replaced unconditionally, so a stale vector from an older model never
+        survives a re-encode.
+
+        Raise `EmbeddingWriteFailed` (RELATE-019) on a write failure.
+        """
+        blob = _pack_vector(vector)
+        timestamp = self._clock()
+        try:
+            self._conn.execute(
+                "INSERT OR REPLACE INTO item_embeddings"
+                " (item_id, vector, model_name, embedded_at) VALUES (?, ?, ?, ?)",
+                (item_id, blob, model_name, timestamp),
+            )
+            self._conn.commit()
+        except sqlite3.Error as exc:
+            raise EmbeddingWriteFailed(
+                "embedding write fail", item_id=item_id
+            ) from exc
+
+    def model_name_of(self, item_id: int) -> str | None:
+        """Return the model name stored for `item_id`, or None when it is absent.
+
+        Raise `EmbeddingReadFailed` (RELATE-037) on a read failure.
+        """
+        try:
+            row = self._conn.execute(
+                "SELECT model_name FROM item_embeddings WHERE item_id = ?", (item_id,)
+            ).fetchone()
+        except sqlite3.Error as exc:
+            raise EmbeddingReadFailed("embedding read fail", item_id=item_id) from exc
+        return None if row is None else row["model_name"]
+
+    def first_model_name(self) -> str | None:
+        """Return the model name of any one cached row, or None when empty.
+
+        The pre-flight check (plan step 2 section 4 step 1) uses this to spot a
+        cache written by an older model.
+
+        Raise `EmbeddingReadFailed` (RELATE-037) on a read failure.
+        """
+        try:
+            row = self._conn.execute(
+                "SELECT model_name FROM item_embeddings ORDER BY item_id LIMIT 1"
+            ).fetchone()
+        except sqlite3.Error as exc:
+            raise EmbeddingReadFailed("embedding read fail") from exc
+        return None if row is None else row["model_name"]
+
+    def wipe(self) -> None:
+        """Delete every cached vector. The next run re-encodes from items.
+
+        Raise `EmbeddingWriteFailed` (RELATE-019) on a write failure.
+        """
+        try:
+            self._conn.execute("DELETE FROM item_embeddings")
+            self._conn.commit()
+        except sqlite3.Error as exc:
+            raise EmbeddingWriteFailed("embedding wipe fail") from exc
+
+
+def build_embedding_store(conn: sqlite3.Connection) -> EmbeddingStorePort:
+    """Build the `item_embeddings` cache adapter for the relate engine.
+
+    Input: an open SQLite connection. Output: a store whose reads raise
+    `RELATE-037 EmbeddingReadFailed` and whose writes raise
+    `RELATE-019 EmbeddingWriteFailed`. Building it performs no I/O.
+    """
+    return SqliteEmbedderStore(conn)
+
+
+def build_ai_response_store(conn: sqlite3.Connection) -> SqliteAiResponseStore:
+    """Build the raw-AI-answer store adapter for the relate Phase 3.5 save."""
+    return SqliteAiResponseStore(conn)
+
+
+def _pack_vector(vector: list[float]) -> bytes:
+    """Pack a float vector as little-endian float32, the on-disk format."""
+    values = array("f", vector)
+    if sys.byteorder != "little":
+        values.byteswap()
+    return values.tobytes()
+
+
+def _unpack_vector(blob: bytes) -> list[float]:
+    """Decode a little-endian float32 blob back into floats."""
+    values = array("f")
+    values.frombytes(blob)
+    if sys.byteorder != "little":
+        values.byteswap()
+    return values.tolist()

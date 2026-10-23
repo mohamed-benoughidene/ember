@@ -19,6 +19,13 @@ from ember.capture.item_proposal import (
     ProposalResponse,
     parse_proposals,
 )
+from ember.relate.errors import AiCallFailed, AiResponseSchemaInvalid, ConfigMissing
+from ember.relate.link_proposal import (
+    SYSTEM_PROMPT as LINK_SYSTEM_PROMPT,
+    LinkProposalResponse,
+    parse_proposals as parse_link_proposals,
+)
+from ember.relate.rows import NewItem
 
 DEFAULT_MODEL = "anthropic/claude-haiku-5.5"
 DEFAULT_BASE_URL = "https://openrouter.ai/api/v1"
@@ -85,6 +92,66 @@ def build_item_proposer(
     return OpenAiItemProposer(client, values.get("EMBER_AI_MODEL", DEFAULT_MODEL))
 
 
+class OpenAiLinkProposer:
+    """`LinkProposerPort` on the OpenAI SDK, OpenRouter base URL by default."""
+
+    def __init__(self, client: OpenAI, model: str) -> None:
+        self._client = client
+        self._model = model
+
+    def propose_links(
+        self, new_item: NewItem, candidates: list[NewItem]
+    ) -> LinkProposalResponse:
+        """Return the raw provider answer and the proposals checked from it.
+
+        Raise `AiCallFailed` (RELATE-032) when the call fails, and
+        `AiResponseSchemaInvalid` (RELATE-033) when the answer cannot be read.
+        Temperature is 0.0.
+        """
+        try:
+            response = self._client.chat.completions.create(
+                model=self._model,
+                messages=_link_messages(new_item, candidates),
+                temperature=0.0,
+            )
+        except OpenAIError as exc:
+            raise AiCallFailed(
+                "ai call fail",
+                reason=type(exc).__name__,
+                status=getattr(exc, "status_code", "?"),
+                detail=_without_secret(str(exc), self._client.api_key),
+            ) from exc
+        content = _link_content(response)
+        return LinkProposalResponse(
+            raw_response=content,
+            proposals=parse_link_proposals(content),
+        )
+
+
+def build_link_proposer(env: Mapping[str, str] | None = None) -> OpenAiLinkProposer:
+    """Build the relate link proposer from env config. Fail fast on a missing key.
+
+    Keys: `EMBER_AI_API_KEY` (or `OPENROUTER_API_KEY`), `EMBER_AI_MODEL`,
+    `EMBER_AI_BASE_URL`. Raise `ConfigMissing` (RELATE-035) when no API key is
+    configured. The client is built with an explicit timeout and
+    `max_retries=0`, so the only retry is the one `propose_links_with_retry`
+    owns.
+    """
+    values = os.environ if env is None else env
+    api_key = _first_present(values, _API_KEY_VARS)
+    if not api_key:
+        raise ConfigMissing("ai api key missing")
+    client = OpenAI(
+        api_key=api_key,
+        base_url=values.get("EMBER_AI_BASE_URL", DEFAULT_BASE_URL),
+        timeout=REQUEST_TIMEOUT_SECONDS,
+        max_retries=0,
+    )
+    return OpenAiLinkProposer(
+        client, values.get("EMBER_AI_MODEL", DEFAULT_MODEL)
+    )
+
+
 def _first_present(values: Mapping[str, str], keys: Sequence[str]) -> str | None:
     for key in keys:
         found = values.get(key)
@@ -122,4 +189,36 @@ def _user_content(raw_text: str, context: list[ContextItem]) -> str:
 def _content(response: Any) -> str:
     if not response.choices:
         raise AiSchemaError("ai response has no choices")
+    return response.choices[0].message.content or ""
+
+
+def _link_messages(
+    new_item: NewItem, candidates: list[NewItem]
+) -> list[dict[str, str]]:
+    return [
+        {"role": "system", "content": LINK_SYSTEM_PROMPT},
+        {"role": "user", "content": _link_user_content(new_item, candidates)},
+    ]
+
+
+def _link_user_content(new_item: NewItem, candidates: list[NewItem]) -> str:
+    lines = [
+        f"New item [{new_item.id}] {new_item.type}: {new_item.statement}",
+        "",
+        "Candidates:",
+    ]
+    if candidates:
+        lines.extend(
+            f"- [{item.id}] {item.type}: {item.statement}" for item in candidates
+        )
+    else:
+        lines.append("- (none)")
+    lines.extend(["", "Return the proposals as strict JSON."])
+    return "\n".join(lines)
+
+
+def _link_content(response: Any) -> str:
+    """Return the assistant text, or raise RELATE-033 when there is no choice."""
+    if not response.choices:
+        raise AiResponseSchemaInvalid("ai response has no choices")
     return response.choices[0].message.content or ""

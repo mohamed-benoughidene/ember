@@ -17,6 +17,7 @@ dependencies = [
 dev = [
     "pytest>=8.0",
 ]
+relate = ["sentence-transformers>=3"]
 
 [project.scripts]
 ember = "ember.cli:main"

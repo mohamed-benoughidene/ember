@@ -59,15 +59,18 @@ class FakeSourceStore:
 class FakeConfirm:
     """Scripted user. Answers in order; runs out -> UserAbort (STDIN closed)."""
 
-    def __init__(self, answers: list[str]) -> None:
+    def __init__(
+        self, answers: list[str], *, abort_error: type[Exception] | None = None
+    ) -> None:
         self._answers = list(answers)
+        self._abort_error = abort_error or UserAbort
         self.prompts: list[str] = []
         self.written: list[str] = []
 
     def ask(self, prompt: str) -> str:
         self.prompts.append(prompt)
         if not self._answers:
-            raise UserAbort("input ended")
+            raise self._abort_error("input ended")
         return self._answers.pop(0)
 
     def write(self, text: str) -> None:

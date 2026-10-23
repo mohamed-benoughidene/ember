@@ -101,10 +101,19 @@ ember set-validated --item 2
 ember clear-validated --item 2
 ```
 
+**4. Relate an item to typed link candidates (Phase 1):**
+
+```bash
+ember relate --item <id> [--db PATH]
+ember relate --latest [--db PATH]
+```
+
+Phase 1 loads the item, drops pairs that already have a link (any status), and prints `{"phase": 1, "new_item_id": <id>, "candidates": <count>}` (or `no unrelated items`). `--db` must point to an existing database.
+
 ### Running Tests
 
 ```bash
-# Run all offline tests (129 tests)
+# Run all offline tests (183 tests)
 pytest
 
 # Run the live AI round-trip test (requires EMBER_AI_API_KEY)
