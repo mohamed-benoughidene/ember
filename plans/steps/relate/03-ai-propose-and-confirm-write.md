@@ -243,6 +243,6 @@ Full suite green: `350 passed, 2 deselected` (live tests excluded). Command: `./
 
 ### Known gaps
 
-- No live AI round-trip test (out of scope, §8).
+- The live AI round-trip test now exists at `tests/test_relate_live.py` (`@pytest.mark.live`, opt-in); it is not run in the default suite.
 - The CLI happy path requires the optional `.[relate]` extra + an API key, so it is verified through tests, not a live run.
 - Embedder re-validation at scale is deferred to GitHub issue #12 (`deferred`).

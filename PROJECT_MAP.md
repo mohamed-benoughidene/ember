@@ -127,6 +127,7 @@ Earlier logo and character images, kept for history.
 - `tests/test_cli_capture.py`: CLI checks for the `capture` command with a fake AI.
 - `tests/test_cli_validated.py`: CLI checks for `set-validated` / `clear-validated` and the Assumption-only rule.
 - `tests/test_capture_live.py`: Live AI round trip. Marked `live`, so a plain pytest run never calls the API; run it with `./.venv/bin/python -m pytest -m live`.
+- `tests/test_relate_live.py`: Live AI round trip for the relate link proposer. Marked `live`, so a plain pytest run never calls the API; run it with `./.venv/bin/python -m pytest -m live`.
 - `tests/test_architecture.py`: Asserts the capture and relate engine cores never import an adapter.
 - `tests/test_relate_db_open.py`: Relate DB open checks: missing/corrupt file, migration fail, schema version 5/8/9 gate, and all migrations applied.
 - `tests/test_relate_read_failures.py`: Every `SqliteLinkContext` read maps a `sqlite3` failure to `RELATE-016`; also covers `item_status` and `supersedes_ancestors`.
