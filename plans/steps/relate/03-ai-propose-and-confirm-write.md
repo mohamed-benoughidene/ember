@@ -185,7 +185,7 @@ Architecture (T9):
 - Phases 1 and 2 (Step 1 + Step 2).
 - Live AI round-trip test (separate `tests/test_relate_live.py`, opt-in via `@pytest.mark.live`, mirrors Capture's pattern).
 - `change_log.link_id` FK constraint (set by migration 008; the integration test must run with it).
-- Embedder revalidation at scale (L2 §0 deferral; scale test is a `deferred` GitHub issue).
+- Embedder revalidation at scale (L2 §0 deferral; scale test is GitHub issue #12, labeled `deferred`).
 
 ## 9. Next
 
@@ -245,3 +245,4 @@ Full suite green: `350 passed, 2 deselected` (live tests excluded). Command: `./
 
 - No live AI round-trip test (out of scope, §8).
 - The CLI happy path requires the optional `.[relate]` extra + an API key, so it is verified through tests, not a live run.
+- Embedder re-validation at scale is deferred to GitHub issue #12 (`deferred`).

@@ -12,7 +12,7 @@ Given one new item id, find candidate typed links to other items. User confirms 
 
 L1 §9 deferred 3 items to "Engine B L2 planning start". Decisions made here:
 
-- **Embedder model:** keep `bge-base-en-v1.5` (384d) per L1 §0 + V1 spec 3.4. Reevaluate after V1 spec 3.9 #3 candidate-recall scale test (deferred to a GitHub issue labeled `deferred`).
+- **Embedder model:** keep `bge-base-en-v1.5` (384d) per L1 §0 + V1 spec 3.4. Reevaluate after V1 spec 3.9 #3 candidate-recall scale test (deferred to GitHub issue #12, labeled `deferred`).
 - **Embedding table name:** `item_embeddings`. See §3 schema.
 - **Metadata table name:** not needed in V1. The 3 signals (dense, graph, metadata) are flat phases that produce a single candidate list; no wrapper table required. L1 §9 deferred the `Signals` object wrapper until signal count grows beyond 3 — V1 has exactly 3, so no wrapper. Re-open trigger: if a 4th signal is added in a future V1.x, introduce a `Signals` wrapper class.
 
@@ -457,7 +457,7 @@ Test pyramid per L1 §7 + Constitution T1-T4 + T7 + T9.
 - Engine D (Query) BM25 — out of scope. BM25 is Engine D's `topic_search` only.
 - `items.metadata` field — V1 spec 3.x deferred. Relate uses `created_at` proximity as a proxy.
 - A `Signals` object wrapper — L1 §9 deferred until signal count > 3.
-- Embedder model swap — kept `bge-base-en-v1.5` per L1 §0. Scale test is a deferred GitHub issue (note: consider External vector DB at scale also tracked as a `note` GitHub issue).
+- Embedder model swap — kept `bge-base-en-v1.5` per L1 §0. Scale test is GitHub issue #12 (note: consider External vector DB at scale, tracked as GitHub issue #4, `note`).
 - Multi-item batch runs — one item per run (L2 decision for testability, not Rule S1 which is about standalone CLI).
 - Status cascade propagation — Engine C territory.
 
