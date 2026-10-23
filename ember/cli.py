@@ -8,7 +8,7 @@ import sys
 
 import click
 
-from ember.adapters.embedder import build_embedder
+from ember.adapters.embedder import build_embedder, validate_embedder_config
 from ember.adapters.llm import build_item_proposer
 from ember.adapters.sqlite import (
     SqliteAiResponseStore,
@@ -40,6 +40,7 @@ from ember.capture.source_storage import StoredSource, store_source
 from ember.errors import EmberError
 from ember.relate.candidate_pool import build_candidate_pool
 from ember.relate.load_filter import load_item_candidates, load_latest_candidates
+from ember.relate.rows import Pool
 
 DEFAULT_DB_PATH = "ember.db"
 
@@ -217,6 +218,7 @@ def relate(item_id: int | None, latest: bool, db_path: str) -> None:
     if item_id is None and not latest:
         raise click.UsageError("one of --item or --latest is required")
     try:
+        validate_embedder_config()
         conn = open_relate_database(db_path)
         lookup = SqliteLinkContext(conn)
         if latest:
@@ -227,23 +229,30 @@ def relate(item_id: int | None, latest: bool, db_path: str) -> None:
             click.echo("no unrelated items")
             return
         if result.universe.items:
-            counts: dict[str, int] = {}
             pool = build_candidate_pool(
                 result,
                 link_lookup=lookup,
                 embedding_store=build_embedding_store(conn),
                 embedder=build_embedder(),
-                stderr=sys.stderr,
-                counts_out=counts,
             )
         else:
-            counts = {"dense": 0, "graph": 0, "metadata": 0}
-            pool = []
+            pool = Pool(
+                ranked=[],
+                counts={"dense": 0, "graph": 0, "metadata": 0},
+            )
     except EmberError as exc:
         click.echo(f"error: {exc.log_line()}", err=True)
         sys.exit(1)
+    if pool.warning:
+        click.echo(pool.warning, err=True)
     click.echo(
-        json.dumps({"phase": 2, "pool_size": len(pool), "signals": counts})
+        json.dumps(
+            {
+                "phase": 2,
+                "pool_size": len(pool.ranked),
+                "signals": pool.counts,
+            }
+        )
     )
 
 

@@ -9,24 +9,15 @@ through a port, so this module reads no database driver and knows no model.
 
 from __future__ import annotations
 
-import sys
 from datetime import datetime, timedelta
 from math import sqrt
-from typing import TextIO
 
 from ember.relate.embedder import EmbedderPort
 from ember.relate.embedding_store import EmbeddingStorePort
-from ember.relate.errors import (
-    CosineComputeFailed,
-    EmbedderEncodeFailed,
-    EmbeddingWriteFailed,
-    GraphReadFailed,
-    MetadataReadFailed,
-    RelateError,
-)
+from ember.relate.errors import CosineComputeFailed, MetadataReadFailed
 from ember.relate.link_lookup import LinkLookupPort
 from ember.relate.load_filter import LoadedCandidates
-from ember.relate.rows import NewItem, RankedCandidate, SignalKind
+from ember.relate.rows import NewItem, Pool, RankedCandidate, SignalKind
 
 MODEL_CHANGED_LINE = (
     "embedding model changed: wiping cache (this is a one-time minutes-long cost on large DBs)"
@@ -42,42 +33,63 @@ def build_candidate_pool(
     link_lookup: LinkLookupPort,
     embedding_store: EmbeddingStorePort,
     embedder: EmbedderPort,
-    stderr: TextIO = sys.stderr,
-    counts_out: dict[str, int] | None = None,
-) -> list[RankedCandidate]:
+) -> Pool:
     """Run the three Phase 2 signals and return the merged, ranked pool.
 
-    Pre-flight wipes a vector cache written by a different embedding model,
-    with one STDERR warning and no error code. An empty universe returns `[]`
-    before any encode. `counts_out`, when given, receives the raw pre-merge
-    signal sizes under `dense`, `graph`, and `metadata`.
+    Inputs: the Phase 1 `LoadedCandidates` plus the three ports. `link_lookup`
+    reads 1-hop neighbors, `embedding_store` reads and writes the vector cache,
+    and `embedder` turns statements into vectors.
+
+    Output: `Pool(ranked, counts, warning)`. `ranked` is sorted by cosine
+    descending, then item id ascending. `counts` holds the pre-merge signal
+    sizes under `dense`, `graph`, and `metadata`. `warning` is the model-change
+    text, or None.
+
+    Raises (propagated from the ports and the two core helpers):
+    - `RELATE-037 EmbeddingReadFailed` when a cache read fails.
+    - `RELATE-018 EmbedderEncodeFailed` when the model cannot encode.
+    - `RELATE-019 EmbeddingWriteFailed` when a cache write or wipe fails.
+    - `RELATE-021 GraphReadFailed` when the neighbor read fails.
+    - `RELATE-022 CosineComputeFailed` on a zero or unequal-length vector.
+    - `RELATE-023 MetadataReadFailed` on a malformed or mixed-zone timestamp.
+    - `RELATE-017 EmbedderLoadFailed` if the model failed to load.
+
+    Side effects: may upsert vectors into `item_embeddings`, and may wipe the
+    cache (returning `warning`) when the cached model differs from the active
+    model. The caller prints `warning`; this module writes no output itself.
     """
     model = embedder.model_name()
-    _check_model_change(embedding_store, model=model, stderr=stderr)
+    warning = _model_change_warning(embedding_store, model=model)
     items = loaded.universe.items
     if not items:
-        _write_counts(counts_out, dense=0, graph=0, metadata=0)
-        return []
+        return Pool(
+            ranked=[],
+            counts={"dense": 0, "graph": 0, "metadata": 0},
+            warning=warning,
+        )
     new_item = loaded.new_item
     new_vector = _resolve_vector(new_item, embedder, embedding_store, model=model)
     content = _content_signal(items, new_vector, embedder, embedding_store, model=model)
     graph = _graph_signal(link_lookup, items, new_item_id=new_item.id)
     metadata = _metadata_signal(items, new_item)
-    _write_counts(
-        counts_out, dense=len(content), graph=len(graph), metadata=len(metadata)
+    return Pool(
+        ranked=_merge(items, content=content, graph=graph, metadata=metadata),
+        counts={
+            "dense": len(content),
+            "graph": len(graph),
+            "metadata": len(metadata),
+        },
+        warning=warning,
     )
-    return _merge(items, content=content, graph=graph, metadata=metadata)
 
 
-def _check_model_change(
-    store: EmbeddingStorePort, *, model: str, stderr: TextIO
-) -> None:
-    """Wipe a cache written by another embedder, warning once on STDERR."""
+def _model_change_warning(store: EmbeddingStorePort, *, model: str) -> str | None:
+    """Wipe a cache written by another embedder and return the warning text."""
     cached = store.first_model_name()
     if cached is None or cached == model:
-        return
-    print(MODEL_CHANGED_LINE, file=stderr)
+        return None
     store.wipe()
+    return MODEL_CHANGED_LINE
 
 
 def _resolve_vector(
@@ -91,8 +103,8 @@ def _resolve_vector(
     cached = store.get(item.id)
     if cached is not None and store.model_name_of(item.id) == model:
         return cached
-    vector = _encode(embedder, item, model=model)
-    _write_vector(store, item.id, vector, model=model)
+    vector = list(embedder.embed([item.statement])[0])
+    store.upsert(item.id, vector, model)
     return vector
 
 
@@ -120,12 +132,7 @@ def _graph_signal(
     new_item_id: int,
 ) -> set[int]:
     """Return the 1-hop neighbors that survived the Phase 1 filter."""
-    try:
-        neighbors = link_lookup.neighbors_of(new_item_id)
-    except RelateError:
-        raise
-    except Exception as error:  # noqa: BLE001 - a failed read is a graph read failure
-        raise GraphReadFailed("neighbor read failed", item_id=new_item_id) from error
+    neighbors = link_lookup.neighbors_of(new_item_id)
     universe = {item.id for item in items}
     return {neighbor_id for neighbor_id in neighbors if neighbor_id in universe}
 
@@ -142,7 +149,7 @@ def _metadata_signal(items: list[NewItem], new_item: NewItem) -> set[int]:
 
 
 def _parse_created_at(value: str, *, item_id: int) -> datetime:
-    """Parse an ISO TEXT timestamp; a malformed value becomes RELATE-023."""
+    """Parse an ISO TEXT timestamp; a malformed value raises RELATE-023."""
     try:
         return datetime.fromisoformat(value)
     except (TypeError, ValueError) as error:
@@ -156,7 +163,7 @@ def _within_window(
 ) -> bool:
     """Report whether two timestamps sit inside the metadata window.
 
-    A naive/aware mix cannot be subtracted; that type failure becomes RELATE-023
+    A naive/aware mix cannot be subtracted; that type failure raises RELATE-023
     like a malformed value does.
     """
     try:
@@ -199,70 +206,11 @@ def _merge(
     ]
 
 
-def _encode(embedder: EmbedderPort, item: NewItem, *, model: str) -> list[float]:
-    """Encode one statement; any embedder failure becomes RELATE-018.
-
-    An `EmbedderLoadFailed` (RELATE-017) or any other `RelateError` is already
-    named and is re-raised unchanged.
-    """
-    try:
-        vectors = embedder.embed([item.statement])
-    except RelateError:
-        raise
-    except Exception as error:  # noqa: BLE001 - every model failure is an encode fail
-        raise EmbedderEncodeFailed(
-            "embedder encode failed", item_id=item.id, model=model
-        ) from error
-    if len(vectors) != 1:
-        raise EmbedderEncodeFailed(
-            "embedder returned the wrong vector count",
-            item_id=item.id,
-            count=len(vectors),
-        )
-    return list(vectors[0])
-
-
-def _write_vector(
-    store: EmbeddingStorePort,
-    item_id: int,
-    vector: list[float],
-    *,
-    model: str,
-) -> None:
-    """Cache one vector; any store failure becomes RELATE-019.
-
-    An already-named `RelateError` from the port is re-raised unchanged.
-    """
-    try:
-        store.upsert(item_id, vector, model)
-    except RelateError:
-        raise
-    except Exception as error:  # noqa: BLE001 - every store failure is a write fail
-        raise EmbeddingWriteFailed(
-            "embedding cache write failed", item_id=item_id, model=model
-        ) from error
-
-
-def _write_counts(
-    counts_out: dict[str, int] | None,
-    *,
-    dense: int,
-    graph: int,
-    metadata: int,
-) -> None:
-    """Record the raw pre-merge signal sizes for the CLI's debug line."""
-    if counts_out is None:
-        return
-    counts_out["dense"] = dense
-    counts_out["graph"] = graph
-    counts_out["metadata"] = metadata
-
-
 def _cosine(left: list[float], right: list[float]) -> float:
     """Return the cosine similarity of two vectors, clamped to `[-1.0, 1.0]`.
 
     Stdlib `math` only. Unequal lengths and a zero denominator (a zero or
-    corrupted cache vector) both raise RELATE-022.
+    corrupted cache vector) both raise `RELATE-022`.
     """
     if len(left) != len(right):
         raise CosineComputeFailed(

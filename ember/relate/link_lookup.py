@@ -28,7 +28,10 @@ class LinkLookupPort(Protocol):
         ...
 
     def neighbors_of(self, item_id: int) -> list[int]:
-        """Return 1-hop neighbors via Confirmed links (either side). Step 2."""
+        """Return 1-hop neighbors via Confirmed links (either side). Step 2.
+
+        Raise `RELATE-021 GraphReadFailed` on a read failure.
+        """
         ...
 
     def item_status(self, item_id: int) -> str | None:

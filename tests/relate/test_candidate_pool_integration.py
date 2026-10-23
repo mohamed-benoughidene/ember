@@ -7,6 +7,13 @@ against a migrated temp database; only the model is faked, with fixed 384-dim
 vectors so the cosine order is known (plan section 12.2 records the 384-dim
 fake; the real bge-base model is 768).
 
+`build_candidate_pool` returns a `Pool(ranked, counts, warning)` and writes no
+output itself: the pre-flight model-change warning comes back in
+`Pool.warning` for the CLI to print, so these tests assert on the returned
+value instead of capturing STDERR. The cache assertions read the observable
+`item_embeddings` rows (`embedded_at` and the packed vector blob), not fake
+call counts.
+
 Every candidate is type-compatible with the new item, and the universe holds
 at most ten items, so the content signal keeps all of them: `dense` always
 equals the universe size. The graph and metadata signals still contribute
@@ -22,7 +29,6 @@ from __future__ import annotations
 
 import sqlite3
 from datetime import datetime, timedelta
-from io import StringIO
 from math import sqrt
 
 import pytest
@@ -80,6 +86,34 @@ def _insert_link(
         " created_at) VALUES (?, ?, ?, ?, ?)",
         (source_id, target_id, link_type, status, FIXED_TIME),
     )
+
+
+class _AdvancingClock:
+    """A store clock that returns a distinct timestamp per write.
+
+    Any cache write rewrites `embedded_at`, so a distinct value per write keeps
+    "the second run changed nothing" observable from the rows alone.
+    """
+
+    def __init__(self) -> None:
+        self._writes = 0
+
+    def __call__(self) -> str:
+        self._writes += 1
+        written_at = datetime.fromisoformat(NEW_TIME) + timedelta(seconds=self._writes)
+        return written_at.isoformat()
+
+
+def _embedded_at_by_item(conn: sqlite3.Connection) -> dict[int, str]:
+    """Read the `embedded_at` timestamp of every cache row."""
+    rows = conn.execute("SELECT item_id, embedded_at FROM item_embeddings").fetchall()
+    return {row["item_id"]: row["embedded_at"] for row in rows}
+
+
+def _vector_blob_by_item(conn: sqlite3.Connection) -> dict[int, bytes]:
+    """Read the raw packed vector blob of every cache row."""
+    rows = conn.execute("SELECT item_id, vector FROM item_embeddings").fetchall()
+    return {row["item_id"]: row["vector"] for row in rows}
 
 
 def test_seeded_pool_ranks_by_cosine_then_id_and_counts_all_three_signals(
@@ -140,8 +174,6 @@ def test_seeded_pool_ranks_by_cosine_then_id_and_counts_all_three_signals(
     embedder = FakeEmbedder(vectors, model_name=MODEL, dim=DIM)
     store = SqliteEmbedderStore(conn)
     lookup = SqliteLinkContext(conn)
-    counts: dict[str, int] = {}
-    stderr = StringIO()
 
     loaded = load_item_candidates(lookup, item_id=1, db_path=db_path)
     pool = build_candidate_pool(
@@ -149,16 +181,15 @@ def test_seeded_pool_ranks_by_cosine_then_id_and_counts_all_three_signals(
         link_lookup=lookup,
         embedding_store=store,
         embedder=embedder,
-        stderr=stderr,
-        counts_out=counts,
     )
 
     assert len(loaded.universe.items) == 10
-    assert stderr.getvalue() == ""
-    assert counts == {"dense": 10, "graph": 3, "metadata": 2}
-    assert len(pool) == 10
+    # A fresh cache is warm from this model only: nothing to warn the user about.
+    assert pool.warning is None
+    assert pool.counts == {"dense": 10, "graph": 3, "metadata": 2}
+    assert len(pool.ranked) == 10
     # Descending cosine; ids 3, 4 and 6 tie at the flat 0.5 and break id ASC.
-    assert [candidate.item.id for candidate in pool] == [
+    assert [candidate.item.id for candidate in pool.ranked] == [
         2,
         5,
         3,
@@ -171,8 +202,8 @@ def test_seeded_pool_ranks_by_cosine_then_id_and_counts_all_three_signals(
         11,
     ]
     # Every member is in the content signal, so the strongest source is dense.
-    assert {candidate.source for candidate in pool} == {SignalKind.dense}
-    scores = {candidate.item.id: candidate.cosine for candidate in pool}
+    assert {candidate.source for candidate in pool.ranked} == {SignalKind.dense}
+    scores = {candidate.item.id: candidate.cosine for candidate in pool.ranked}
     assert scores == pytest.approx(
         {
             2: 0.9,
@@ -190,7 +221,7 @@ def test_seeded_pool_ranks_by_cosine_then_id_and_counts_all_three_signals(
 
 
 def test_prewarmed_cache_is_reused_on_the_second_run(db_path) -> None:
-    """A cache written by the active model means the run never calls `embed`."""
+    """A cache written by the active model is left byte-for-byte untouched."""
     conn = open_database(db_path)
     source_id = insert_source(conn)
     insert_item(
@@ -220,12 +251,19 @@ def test_prewarmed_cache_is_reused_on_the_second_run(db_path) -> None:
         5: _unit(-0.25),
         6: _unit(0.0),
     }
-    store = SqliteEmbedderStore(conn)
+    store = SqliteEmbedderStore(conn, clock=_AdvancingClock())
     for item_id, vector in cached.items():
         store.upsert(item_id, vector, MODEL)
 
+    embedded_at_before = _embedded_at_by_item(conn)
+    blobs_before = _vector_blob_by_item(conn)
+    assert sorted(embedded_at_before) == sorted(cached)
+    assert sorted(blobs_before) == sorted(cached)
+    # The clock is distinct per write, so "unchanged" below cannot pass vacuously.
+    assert len(set(embedded_at_before.values())) == len(cached)
+
     # A very different vector per statement: if the pool re-encoded, the cached
-    # rows would change and `embed` would record the call.
+    # rows would change and the blob comparison below would catch it.
     statements = [NEW_STATEMENT, *(_candidate_statement(i) for i in range(2, 7))]
     embedder = FakeEmbedder(
         {statement: _unit(-1.0) for statement in statements},
@@ -235,25 +273,20 @@ def test_prewarmed_cache_is_reused_on_the_second_run(db_path) -> None:
     lookup = SqliteLinkContext(conn)
     loaded = load_item_candidates(lookup, item_id=1, db_path=db_path)
 
-    build_candidate_pool(
-        loaded,
-        link_lookup=lookup,
-        embedding_store=store,
-        embedder=embedder,
-        stderr=StringIO(),
-    )
-    assert embedder.calls == []
+    for _run in range(2):
+        pool = build_candidate_pool(
+            loaded,
+            link_lookup=lookup,
+            embedding_store=store,
+            embedder=embedder,
+        )
+        assert pool.warning is None
+        assert len(pool.ranked) == 5
+        assert pool.counts == {"dense": 5, "graph": 0, "metadata": 5}
 
-    embedder.calls.clear()
-    build_candidate_pool(
-        loaded,
-        link_lookup=lookup,
-        embedding_store=store,
-        embedder=embedder,
-        stderr=StringIO(),
-    )
-
-    assert embedder.calls == []
+    # Plan section 7: a cache hit does not re-compute, so no row was rewritten.
+    assert _embedded_at_by_item(conn) == embedded_at_before
+    assert _vector_blob_by_item(conn) == blobs_before
     assert conn.execute("SELECT COUNT(*) FROM item_embeddings").fetchone()[0] == 6
     for item_id, vector in cached.items():
         assert store.get(item_id) == pytest.approx(vector)
@@ -261,7 +294,7 @@ def test_prewarmed_cache_is_reused_on_the_second_run(db_path) -> None:
 
 
 def test_preflight_model_mismatch_wipes_and_reencodes_every_item(db_path) -> None:
-    """An old-model cache is wiped with one STDERR line, then fully rebuilt."""
+    """An old-model cache is wiped (warning returned), then fully rebuilt."""
     conn = open_database(db_path)
     source_id = insert_source(conn)
     # New item and universe are all Question: ("Question", "Question") allows
@@ -310,20 +343,19 @@ def test_preflight_model_mismatch_wipes_and_reencodes_every_item(db_path) -> Non
     embedder = FakeEmbedder(fresh, model_name=MODEL, dim=DIM)
     lookup = SqliteLinkContext(conn)
     loaded = load_item_candidates(lookup, item_id=1, db_path=db_path)
-    stderr = StringIO()
 
-    build_candidate_pool(
+    pool = build_candidate_pool(
         loaded,
         link_lookup=lookup,
         embedding_store=store,
         embedder=embedder,
-        stderr=stderr,
     )
 
-    assert stderr.getvalue() == MODEL_CHANGED_LINE + "\n"
+    # The core no longer prints; the CLI prints this returned line.
+    assert pool.warning == MODEL_CHANGED_LINE
     assert [item.id for item in loaded.universe.items] == [2, 3, 4]
-    # The loop re-encoded the new item and every universe item, exactly once.
-    assert sorted(text for call in embedder.calls for text in call) == sorted(fresh)
+    # The rebuilt pool ranks the three surviving candidates by fresh cosine.
+    assert [candidate.item.id for candidate in pool.ranked] == [2, 3, 4]
     # The cache holds one fresh row per encoded item, and no old-model row.
     assert conn.execute("SELECT COUNT(*) FROM item_embeddings").fetchone()[0] == 4
     assert (
@@ -387,7 +419,6 @@ def test_graph_read_failure_surfaces_as_relate_021(db_path) -> None:
             link_lookup=lookup,
             embedding_store=store,
             embedder=embedder,
-            stderr=StringIO(),
         )
 
     assert excinfo.value.code == "RELATE-021"

@@ -6,18 +6,36 @@ import json
 import sqlite3
 from pathlib import Path
 
+import pytest
 from click.testing import CliRunner
 
 import ember.adapters.sqlite as sqlite_adapter
 from ember.adapters.sqlite import SqliteEmbedderStore, open_database
 from ember.cli import main
 from ember.relate.errors import EmbedderLoadFailed
+from ember.relate.rows import Pool
 from tests.fakes import FIXED_TIME, insert_item, insert_source
 from tests.relate.fakes import FakeEmbedder
 
 
+@pytest.fixture(autouse=True)
+def _stub_boot_validation(monkeypatch) -> None:
+    """Skip the boot-time embedder validation for every CLI test.
+
+    `sentence-transformers` and `torch` live in the optional `.[relate]` extra
+    and may be absent in CI, so the real probe would make these tests depend on
+    an optional install. A test that exercises the failure path patches
+    `ember.cli.validate_embedder_config` again with its own stub.
+    """
+    monkeypatch.setattr("ember.cli.validate_embedder_config", lambda: 120.0)
+
+
 def _patch_phase2_ports(monkeypatch, *, embedder=None) -> FakeEmbedder:
-    """Replace the real model and cache with fakes for CLI tests."""
+    """Replace the real model and cache with fakes for CLI tests.
+
+    Boot validation is stubbed by `_stub_boot_validation`, so only the two
+    phase-2 ports are replaced here.
+    """
     fake_embedder = embedder or FakeEmbedder()
     monkeypatch.setattr("ember.cli.build_embedder", lambda: fake_embedder)
     monkeypatch.setattr(
@@ -85,6 +103,30 @@ def test_relate_item_prints_phase2_json(db_path, monkeypatch) -> None:
         "phase": 2,
         "pool_size": 3,
         "signals": {"dense": 3, "graph": 0, "metadata": 3},
+    }
+
+
+def test_relate_prints_pool_warning_to_stderr(db_path, monkeypatch) -> None:
+    _seed_six_items_two_links(db_path)
+    _patch_phase2_ports(monkeypatch)
+    monkeypatch.setattr(
+        "ember.cli.build_candidate_pool",
+        lambda *args, **kwargs: Pool(
+            ranked=[],
+            counts={"dense": 0, "graph": 0, "metadata": 0},
+            warning="cache wiped",
+        ),
+    )
+
+    result = CliRunner().invoke(main, ["relate", "--item", "1", "--db", db_path])
+
+    assert result.exit_code == 0
+    assert "cache wiped" in result.stderr
+    # The warning rides stderr only, so stdout stays pure JSON.
+    assert json.loads(result.stdout) == {
+        "phase": 2,
+        "pool_size": 0,
+        "signals": {"dense": 0, "graph": 0, "metadata": 0},
     }
 
 
@@ -181,6 +223,24 @@ def test_relate_embedder_load_failure_exits_1_with_relate_017(
 
     assert result.exit_code == 1
     assert "RELATE-017" in _error_text(result)
+
+
+def test_relate_boot_validation_failure_exits_1_with_relate_017(
+    db_path, monkeypatch
+) -> None:
+    _seed_six_items_two_links(db_path)
+
+    def _fail() -> float:
+        raise EmbedderLoadFailed("torch is not installed", package="torch")
+
+    # Override the suite-wide no-op: boot validation itself must surface.
+    monkeypatch.setattr("ember.cli.validate_embedder_config", _fail)
+
+    result = CliRunner().invoke(main, ["relate", "--item", "1", "--db", db_path])
+
+    assert result.exit_code == 1
+    assert "RELATE-017" in _error_text(result)
+    assert "torch is not installed" in _error_text(result)
 
 
 def test_relate_requires_exactly_one_selector(db_path) -> None:

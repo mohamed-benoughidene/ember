@@ -37,3 +37,9 @@ class RankedCandidate(BaseModel):
     item: NewItem
     cosine: float | None
     source: SignalKind
+
+
+class Pool(BaseModel):
+    ranked: list[RankedCandidate]
+    counts: dict[str, int]
+    warning: str | None = None

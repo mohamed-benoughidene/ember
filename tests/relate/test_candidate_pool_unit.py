@@ -1,27 +1,40 @@
-"""Unit tests for relate phase 2 (candidate pool), no DB and no model."""
+"""Unit tests for relate phase 2 (candidate pool), no DB and no model.
+
+Every test drives the core through `build_candidate_pool` and reads the `Pool`
+it returns (`ranked`, `counts`, `warning`). Nothing here imports a private
+helper and nothing asserts a call count: the observable contract is the pool
+plus the cache state the run leaves behind (Constitution T6).
+
+The three ports are the only seam. They either serve canned data or raise:
+the expected-failure tests prove the core re-raises the port's named error
+unchanged, and the generic-failure tests prove a code bug is never wrapped
+(Constitution I5).
+"""
 
 from __future__ import annotations
 
 from datetime import datetime, timedelta
-from io import StringIO
 
 import pytest
 
-from ember.relate.candidate_pool import _cosine, build_candidate_pool
+from ember.relate.candidate_pool import build_candidate_pool
 from ember.relate.errors import (
     CosineComputeFailed,
     EmbedderEncodeFailed,
     EmbedderLoadFailed,
+    EmbeddingReadFailed,
     EmbeddingWriteFailed,
     GraphReadFailed,
     ItemsReadFailed,
     MetadataReadFailed,
+    RelateError,
 )
 from ember.relate.load_filter import LoadedCandidates
 from ember.relate.rows import (
     CandidateUniverse,
     Link,
     NewItem,
+    Pool,
     RankedCandidate,
     SignalKind,
 )
@@ -30,6 +43,8 @@ from tests.relate.fakes import FakeEmbedder, FakeEmbeddingStore, FakeLinkLookup
 MODEL = "fake-model"
 NEW_TIME = "2026-06-15T00:00:00+00:00"
 FAR_DAYS = 200
+# Id 90 is never in a universe, so its cached row proves a wipe really ran.
+DROPPED_ID = 90
 WARNING_LINE = (
     "embedding model changed: wiping cache (this is a one-time minutes-long cost on large DBs)"
 )
@@ -69,31 +84,55 @@ def _loaded(new_item: NewItem, items: list[NewItem]) -> LoadedCandidates:
     return LoadedCandidates(new_item=new_item, universe=CandidateUniverse(items=items))
 
 
+def _candidate() -> LoadedCandidates:
+    """A one-item universe far outside the metadata window."""
+    return _loaded(_item(1), [_item(2, days=FAR_DAYS)])
+
+
 def _build(
     loaded: LoadedCandidates,
     *,
     embedder: FakeEmbedder,
     store: FakeEmbeddingStore,
     lookup: FakeLinkLookup | None = None,
-    stderr: StringIO | None = None,
-    counts_out: dict[str, int] | None = None,
-) -> list[RankedCandidate]:
+) -> Pool:
     return build_candidate_pool(
         loaded,
         link_lookup=FakeLinkLookup(items=[]) if lookup is None else lookup,
         embedding_store=store,
         embedder=embedder,
-        stderr=StringIO() if stderr is None else stderr,
-        counts_out=counts_out,
     )
 
 
-def _scored(pool: list[RankedCandidate]) -> list[tuple[int, float | None]]:
-    return [(candidate.item.id, candidate.cosine) for candidate in pool]
+def _scored(ranked: list[RankedCandidate]) -> list[tuple[int, float | None]]:
+    return [(candidate.item.id, candidate.cosine) for candidate in ranked]
 
 
-def _ids_with_source(pool: list[RankedCandidate], kind: SignalKind) -> list[int]:
-    return sorted(c.item.id for c in pool if c.source is kind)
+def _ids_with_source(ranked: list[RankedCandidate], kind: SignalKind) -> list[int]:
+    return sorted(c.item.id for c in ranked if c.source is kind)
+
+
+def _upsert_ids(store: FakeEmbeddingStore) -> list[int]:
+    return [item_id for item_id, _, _ in store.upserts]
+
+
+def _low_cosine_vectors(*item_ids: int) -> dict[str, list[float]]:
+    """Vectors orthogonal to the new item, so those ids fall out of the top 10."""
+    return {f"statement {item_id}": [0.0, 1.0, 0.0] for item_id in item_ids}
+
+
+class _NoEncodeEmbedder(FakeEmbedder):
+    """Fails the test when the core asks the model for a vector."""
+
+    def embed(self, texts: list[str]) -> list[list[float]]:
+        raise AssertionError(f"embed must not be called, got {texts}")
+
+
+class _EmptyEmbedder(FakeEmbedder):
+    """Returns no vectors, which the port contract forbids: a code bug."""
+
+    def embed(self, texts: list[str]) -> list[list[float]]:
+        return []
 
 
 class _NoNeighborLookup(FakeLinkLookup):
@@ -125,89 +164,157 @@ class _RepeatingNeighborLookup(FakeLinkLookup):
         return list(self._neighbors)
 
 
-class _FailingUpsertStore(FakeEmbeddingStore):
-    """Fails upserts for `fail_ids`, or for every id when it is None."""
+class _UntouchedStore(FakeEmbeddingStore):
+    """Fails the test on any per-item cache read or write."""
+
+    def get(self, item_id: int) -> list[float] | None:
+        raise AssertionError(f"get must not be called (item {item_id})")
+
+    def upsert(self, item_id: int, vector: list[float], model_name: str) -> None:
+        raise AssertionError(f"upsert must not be called (item {item_id})")
+
+
+class _FailingStore(FakeEmbeddingStore):
+    """Raises a canned error from whichever cache-port methods are set."""
 
     def __init__(
         self,
-        error: Exception,
         *,
-        fail_ids: set[int] | None = None,
+        get_error: Exception | None = None,
+        upsert_error: Exception | None = None,
+        wipe_error: Exception | None = None,
+        model_name_of_error: Exception | None = None,
+        first_model_name_error: Exception | None = None,
         rows: dict[int, list[float]] | None = None,
         model_name: str = MODEL,
     ) -> None:
         super().__init__(rows, model_name=model_name)
-        self._error = error
-        self._fail_ids = fail_ids
-
-    def upsert(self, item_id: int, vector: list[float], model_name: str) -> None:
-        if self._fail_ids is None or item_id in self._fail_ids:
-            raise self._error
-        super().upsert(item_id, vector, model_name)
-
-
-class _GuardedStore(FakeEmbeddingStore):
-    """Records reads and writes so a test can prove none happened."""
-
-    def __init__(self) -> None:
-        super().__init__()
-        self.gets: list[int] = []
-        self.upsert_ids: list[int] = []
-        self.first_model_calls = 0
+        self._get_error = get_error
+        self._upsert_error = upsert_error
+        self._wipe_error = wipe_error
+        self._model_name_of_error = model_name_of_error
+        self._first_model_name_error = first_model_name_error
 
     def get(self, item_id: int) -> list[float] | None:
-        self.gets.append(item_id)
+        if self._get_error is not None:
+            raise self._get_error
         return super().get(item_id)
 
     def upsert(self, item_id: int, vector: list[float], model_name: str) -> None:
-        self.upsert_ids.append(item_id)
+        if self._upsert_error is not None:
+            raise self._upsert_error
         super().upsert(item_id, vector, model_name)
 
+    def wipe(self) -> None:
+        if self._wipe_error is not None:
+            raise self._wipe_error
+        super().wipe()
+
+    def model_name_of(self, item_id: int) -> str | None:
+        if self._model_name_of_error is not None:
+            raise self._model_name_of_error
+        return super().model_name_of(item_id)
+
     def first_model_name(self) -> str | None:
-        self.first_model_calls += 1
+        if self._first_model_name_error is not None:
+            raise self._first_model_name_error
         return super().first_model_name()
 
 
-def _low_cosine_vectors(*item_ids: int) -> dict[str, list[float]]:
-    """Vectors orthogonal to the new item, so those ids fall out of the top 10."""
-    return {f"statement {item_id}": [0.0, 1.0, 0.0] for item_id in item_ids}
+def _ports_with_failure(
+    method: str, error: Exception
+) -> tuple[FakeEmbedder, FakeEmbeddingStore, FakeLinkLookup]:
+    """Build the three ports so `method` raises `error` and every other call works."""
+    new_item = _item(1)
+    items = [_item(2, days=FAR_DAYS)]
+    lookup = FakeLinkLookup([new_item, *items])
+    cached_new_item = {1: [1.0, 0.0, 0.0]}
+    if method == "embed":
+        # No cached row, so the new item must be encoded.
+        return FakeEmbedder(error=error, model_name=MODEL), FakeEmbeddingStore(
+            model_name=MODEL
+        ), lookup
+    if method == "get":
+        return FakeEmbedder(model_name=MODEL), _FailingStore(get_error=error), lookup
+    if method == "upsert":
+        return FakeEmbedder(model_name=MODEL), _FailingStore(upsert_error=error), lookup
+    if method == "wipe":
+        return (
+            FakeEmbedder(model_name=MODEL),
+            _FailingStore(
+                wipe_error=error,
+                rows={DROPPED_ID: [9.0, 9.0, 9.0]},
+                model_name="old-model",
+            ),
+            lookup,
+        )
+    if method == "first_model_name":
+        return (
+            FakeEmbedder(model_name=MODEL),
+            _FailingStore(first_model_name_error=error),
+            lookup,
+        )
+    if method == "model_name_of":
+        return (
+            FakeEmbedder(model_name=MODEL),
+            _FailingStore(
+                model_name_of_error=error, rows=cached_new_item, model_name=MODEL
+            ),
+            lookup,
+        )
+    if method == "neighbors_of":
+        return (
+            FakeEmbedder(model_name=MODEL),
+            FakeEmbeddingStore(cached_new_item, model_name=MODEL),
+            _FailingNeighborLookup([new_item, *items], error=error),
+        )
+    raise AssertionError(f"unknown port method {method}")
 
 
-def test_empty_universe_returns_empty_without_running_signals() -> None:
-    store = _GuardedStore()
-    embedder = FakeEmbedder(model_name=MODEL)
-    counts: dict[str, int] = {}
+# --- pool shape, counts, and the pre-flight warning -------------------------
+
+
+def test_empty_universe_returns_an_empty_pool_without_running_signals() -> None:
+    store = _UntouchedStore(model_name=MODEL)
 
     pool = _build(
         _loaded(_item(1), []),
-        embedder=embedder,
+        embedder=_NoEncodeEmbedder(model_name=MODEL),
         store=store,
         lookup=_NoNeighborLookup(items=[]),
-        counts_out=counts,
     )
 
-    assert pool == []
-    assert counts == {"dense": 0, "graph": 0, "metadata": 0}
-    assert embedder.calls == []
-    assert store.gets == []
-    assert store.upsert_ids == []
-    assert store.wipes == 0
-    assert store.first_model_calls == 1
+    assert pool.ranked == []
+    assert pool.counts == {"dense": 0, "graph": 0, "metadata": 0}
+    assert pool.warning is None
+    assert store.rows == {}
+    assert store.model_names == {}
+    assert store.upserts == []
 
 
-def test_empty_universe_without_counts_sink_returns_empty() -> None:
-    loaded = _loaded(_item(1), [])
+def test_empty_universe_still_reports_a_model_change_warning() -> None:
+    store = _UntouchedStore({DROPPED_ID: [9.0, 9.0, 9.0]}, model_name="old-model")
 
     pool = _build(
-        loaded,
-        embedder=FakeEmbedder(model_name=MODEL),
-        store=FakeEmbeddingStore(model_name=MODEL),
+        _loaded(_item(1), []),
+        embedder=_NoEncodeEmbedder(model_name=MODEL),
+        store=store,
+        lookup=_NoNeighborLookup(items=[]),
     )
 
-    assert pool == []
+    assert pool.ranked == []
+    assert pool.counts == {"dense": 0, "graph": 0, "metadata": 0}
+    assert pool.warning == WARNING_LINE
+    # The dropped id's row is gone, so the pre-flight wipe really ran.
+    assert store.rows == {}
+    assert store.model_names == {}
+    assert store.upserts == []
 
 
-def test_content_only_scores_one_cached_and_four_encoded_vectors() -> None:
+# --- content signal --------------------------------------------------------
+
+
+def test_content_only_scores_the_cache_and_caches_every_encoded_vector() -> None:
     items = [_item(item_id, days=FAR_DAYS) for item_id in range(2, 7)]
     vectors = {
         "statement 3": [1.0, 1.0, 0.0],
@@ -220,50 +327,43 @@ def test_content_only_scores_one_cached_and_four_encoded_vectors() -> None:
         {1: [1.0, 0.0, 0.0], 2: [1.0, 0.0, 0.0]},
         model_name=MODEL,
     )
-    counts: dict[str, int] = {}
 
-    pool = _build(
-        _loaded(_item(1), items),
-        embedder=embedder,
-        store=store,
-        counts_out=counts,
-    )
+    pool = _build(_loaded(_item(1), items), embedder=embedder, store=store)
 
-    assert [(candidate.item.id, round(candidate.cosine, 6)) for candidate in pool] == [
+    assert [
+        (item_id, round(cosine, 6)) for item_id, cosine in _scored(pool.ranked)
+    ] == [
         (2, 1.0),
         (6, 1.0),
         (3, 0.707107),
         (4, 0.0),
         (5, -1.0),
     ]
-    assert [candidate.source for candidate in pool] == [SignalKind.dense] * 5
-    assert len(embedder.calls) == 4
-    assert sorted(text for call in embedder.calls for text in call) == [
-        "statement 3",
-        "statement 4",
-        "statement 5",
-        "statement 6",
-    ]
-    assert [item_id for item_id, _, _ in store.upserts] == [3, 4, 5, 6]
-    assert sorted(store.rows) == [1, 2, 3, 4, 5, 6]
-    assert counts == {"dense": 5, "graph": 0, "metadata": 0}
+    assert [candidate.source for candidate in pool.ranked] == [SignalKind.dense] * 5
+    assert pool.counts == {"dense": 5, "graph": 0, "metadata": 0}
+    assert pool.warning is None
+    # Item 2 was served by the cache; 3-6 were encoded and cached under MODEL.
+    assert store.rows == {
+        1: [1.0, 0.0, 0.0],
+        2: [1.0, 0.0, 0.0],
+        3: [1.0, 1.0, 0.0],
+        4: [0.0, 1.0, 0.0],
+        5: [-1.0, 0.0, 0.0],
+        6: [2.0, 0.0, 0.0],
+    }
+    assert store.model_names == {item_id: MODEL for item_id in range(1, 7)}
+    assert _upsert_ids(store) == [3, 4, 5, 6]
 
 
 def test_content_signal_keeps_only_the_top_ten_by_cosine() -> None:
     items = [_item(item_id, days=FAR_DAYS) for item_id in range(2, 15)]
     embedder = FakeEmbedder(_low_cosine_vectors(12, 13, 14), model_name=MODEL)
     store = FakeEmbeddingStore({1: [1.0, 0.0, 0.0]}, model_name=MODEL)
-    counts: dict[str, int] = {}
 
-    pool = _build(
-        _loaded(_item(1), items),
-        embedder=embedder,
-        store=store,
-        counts_out=counts,
-    )
+    pool = _build(_loaded(_item(1), items), embedder=embedder, store=store)
 
-    assert [candidate.item.id for candidate in pool] == list(range(2, 12))
-    assert counts == {"dense": 10, "graph": 0, "metadata": 0}
+    assert [candidate.item.id for candidate in pool.ranked] == list(range(2, 12))
+    assert pool.counts == {"dense": 10, "graph": 0, "metadata": 0}
 
 
 def test_content_ties_break_by_item_id_ascending() -> None:
@@ -273,8 +373,12 @@ def test_content_ties_break_by_item_id_ascending() -> None:
 
     pool = _build(_loaded(_item(1), items), embedder=embedder, store=store)
 
-    assert [candidate.item.id for candidate in pool] == [2, 3, 5, 7, 9]
-    assert {candidate.cosine for candidate in pool} == {1.0}
+    assert [candidate.item.id for candidate in pool.ranked] == [2, 3, 5, 7, 9]
+    assert {candidate.cosine for candidate in pool.ranked} == {1.0}
+    assert pool.counts == {"dense": 5, "graph": 0, "metadata": 0}
+
+
+# --- graph signal ----------------------------------------------------------
 
 
 def test_graph_only_keeps_universe_neighbors_with_flat_cosine() -> None:
@@ -286,19 +390,17 @@ def test_graph_only_keeps_universe_neighbors_with_flat_cosine() -> None:
         [new_item, *items],
         [_link(101, 1, 12), _link(102, 1, 13), _link(103, 1, 14)],
     )
-    counts: dict[str, int] = {}
 
     pool = _build(
         _loaded(new_item, items),
         embedder=embedder,
         store=store,
         lookup=lookup,
-        counts_out=counts,
     )
-    by_id = {candidate.item.id: candidate for candidate in pool}
+    by_id = {candidate.item.id: candidate for candidate in pool.ranked}
 
-    assert counts == {"dense": 10, "graph": 3, "metadata": 0}
-    assert [candidate.item.id for candidate in pool] == list(range(2, 15))
+    assert pool.counts == {"dense": 10, "graph": 3, "metadata": 0}
+    assert [candidate.item.id for candidate in pool.ranked] == list(range(2, 15))
     for item_id in (12, 13, 14):
         assert by_id[item_id].source is SignalKind.graph
         assert by_id[item_id].cosine == 0.5
@@ -314,20 +416,20 @@ def test_graph_signal_dedupes_and_drops_ids_outside_the_universe() -> None:
         [new_item, *items],
         neighbors=[13, 13, 999, 12, 12],
     )
-    counts: dict[str, int] = {}
 
     pool = _build(
         _loaded(new_item, items),
         embedder=embedder,
         store=store,
         lookup=lookup,
-        counts_out=counts,
     )
-    graph_ids = _ids_with_source(pool, SignalKind.graph)
 
-    assert counts == {"dense": 10, "graph": 2, "metadata": 0}
-    assert graph_ids == [12, 13]
-    assert 999 not in {candidate.item.id for candidate in pool}
+    assert pool.counts == {"dense": 10, "graph": 2, "metadata": 0}
+    assert _ids_with_source(pool.ranked, SignalKind.graph) == [12, 13]
+    assert 999 not in {candidate.item.id for candidate in pool.ranked}
+
+
+# --- metadata signal -------------------------------------------------------
 
 
 def test_metadata_only_keeps_items_inside_the_thirty_day_window() -> None:
@@ -336,17 +438,11 @@ def test_metadata_only_keeps_items_inside_the_thirty_day_window() -> None:
     items += [_item(12, days=10), _item(13, days=-20), _item(14, days=-90)]
     embedder = FakeEmbedder(_low_cosine_vectors(12, 13, 14), model_name=MODEL)
     store = FakeEmbeddingStore({1: [1.0, 0.0, 0.0]}, model_name=MODEL)
-    counts: dict[str, int] = {}
 
-    pool = _build(
-        _loaded(new_item, items),
-        embedder=embedder,
-        store=store,
-        counts_out=counts,
-    )
-    by_id = {candidate.item.id: candidate for candidate in pool}
+    pool = _build(_loaded(new_item, items), embedder=embedder, store=store)
+    by_id = {candidate.item.id: candidate for candidate in pool.ranked}
 
-    assert counts == {"dense": 10, "graph": 0, "metadata": 2}
+    assert pool.counts == {"dense": 10, "graph": 0, "metadata": 2}
     assert by_id[12].source is SignalKind.metadata
     assert by_id[12].cosine == 0.5
     assert by_id[13].source is SignalKind.metadata
@@ -360,19 +456,15 @@ def test_metadata_window_is_inclusive_at_thirty_days() -> None:
     items += [_item(12, days=30), _item(13, days=-31), _item(14, days=-30)]
     embedder = FakeEmbedder(_low_cosine_vectors(12, 13, 14), model_name=MODEL)
     store = FakeEmbeddingStore({1: [1.0, 0.0, 0.0]}, model_name=MODEL)
-    counts: dict[str, int] = {}
 
-    pool = _build(
-        _loaded(new_item, items),
-        embedder=embedder,
-        store=store,
-        counts_out=counts,
-    )
-    metadata_ids = _ids_with_source(pool, SignalKind.metadata)
+    pool = _build(_loaded(new_item, items), embedder=embedder, store=store)
 
-    assert counts == {"dense": 10, "graph": 0, "metadata": 2}
-    assert metadata_ids == [12, 14]
-    assert 13 not in {candidate.item.id for candidate in pool}
+    assert pool.counts == {"dense": 10, "graph": 0, "metadata": 2}
+    assert _ids_with_source(pool.ranked, SignalKind.metadata) == [12, 14]
+    assert 13 not in {candidate.item.id for candidate in pool.ranked}
+
+
+# --- merge and source priority --------------------------------------------
 
 
 def test_union_of_content_and_graph_keeps_one_dense_entry() -> None:
@@ -383,19 +475,17 @@ def test_union_of_content_and_graph_keeps_one_dense_entry() -> None:
     embedder = FakeEmbedder(vectors, model_name=MODEL)
     store = FakeEmbeddingStore({1: [1.0, 0.0, 0.0]}, model_name=MODEL)
     lookup = FakeLinkLookup([new_item, *items], [_link(101, 1, 11)])
-    counts: dict[str, int] = {}
 
     pool = _build(
         _loaded(new_item, items),
         embedder=embedder,
         store=store,
         lookup=lookup,
-        counts_out=counts,
     )
-    shared = [candidate for candidate in pool if candidate.item.id == 11]
+    shared = [candidate for candidate in pool.ranked if candidate.item.id == 11]
 
-    assert counts == {"dense": 10, "graph": 1, "metadata": 0}
-    assert [candidate.item.id for candidate in pool] == list(range(2, 12))
+    assert pool.counts == {"dense": 10, "graph": 1, "metadata": 0}
+    assert [candidate.item.id for candidate in pool.ranked] == list(range(2, 12))
     assert len(shared) == 1
     assert shared[0].cosine == pytest.approx(0.6)
     assert shared[0].source is SignalKind.dense
@@ -410,18 +500,16 @@ def test_merge_takes_the_higher_graph_cosine_but_keeps_the_dense_source() -> Non
     embedder = FakeEmbedder(vectors, model_name=MODEL)
     store = FakeEmbeddingStore({1: [1.0, 0.0, 0.0]}, model_name=MODEL)
     lookup = FakeLinkLookup([new_item, *items], [_link(101, 1, 11)])
-    counts: dict[str, int] = {}
 
     pool = _build(
         _loaded(new_item, items),
         embedder=embedder,
         store=store,
         lookup=lookup,
-        counts_out=counts,
     )
-    shared = [candidate for candidate in pool if candidate.item.id == 11]
+    shared = [candidate for candidate in pool.ranked if candidate.item.id == 11]
 
-    assert counts == {"dense": 10, "graph": 1, "metadata": 0}
+    assert pool.counts == {"dense": 10, "graph": 1, "metadata": 0}
     assert len(shared) == 1
     assert shared[0].cosine == 0.5
     assert shared[0].source is SignalKind.dense
@@ -435,21 +523,48 @@ def test_merge_prefers_graph_source_over_metadata_when_both_match() -> None:
     embedder = FakeEmbedder(_low_cosine_vectors(13), model_name=MODEL)
     store = FakeEmbeddingStore({1: [1.0, 0.0, 0.0]}, model_name=MODEL)
     lookup = FakeLinkLookup([new_item, *items], [_link(101, 1, 13)])
-    counts: dict[str, int] = {}
 
     pool = _build(
         _loaded(new_item, items),
         embedder=embedder,
         store=store,
         lookup=lookup,
-        counts_out=counts,
     )
-    shared = [candidate for candidate in pool if candidate.item.id == 13]
+    shared = [candidate for candidate in pool.ranked if candidate.item.id == 13]
 
-    assert counts == {"dense": 10, "graph": 1, "metadata": 1}
+    assert pool.counts == {"dense": 10, "graph": 1, "metadata": 1}
     assert len(shared) == 1
     assert shared[0].cosine == 0.5
     assert shared[0].source is SignalKind.graph
+
+
+def test_merge_prefers_dense_source_when_all_three_signals_match() -> None:
+    """An item in content, graph, and metadata keeps the content cosine and source."""
+    new_item = _item(1)
+    items = [_item(item_id, days=FAR_DAYS) for item_id in range(2, 12)]
+    items.append(_item(12, days=5))
+    vectors = {"statement 12": [0.6, 0.8, 0.0]}
+    vectors.update(_low_cosine_vectors(*range(2, 12)))
+    embedder = FakeEmbedder(vectors, model_name=MODEL)
+    store = FakeEmbeddingStore({1: [1.0, 0.0, 0.0]}, model_name=MODEL)
+    lookup = FakeLinkLookup([new_item, *items], [_link(101, 1, 12)])
+
+    pool = _build(
+        _loaded(new_item, items),
+        embedder=embedder,
+        store=store,
+        lookup=lookup,
+    )
+    shared = [candidate for candidate in pool.ranked if candidate.item.id == 12]
+
+    assert pool.counts == {"dense": 10, "graph": 1, "metadata": 1}
+    assert len(shared) == 1
+    # The 0.6 content cosine outranks the flat 0.5 bump from graph and metadata.
+    assert shared[0].cosine == pytest.approx(0.6)
+    assert shared[0].source is SignalKind.dense
+
+
+# --- pre-flight model check and the cache contract -------------------------
 
 
 def test_preflight_model_change_wipes_the_cache_and_reencodes() -> None:
@@ -461,52 +576,44 @@ def test_preflight_model_change_wipes_the_cache_and_reencodes() -> None:
     }
     embedder = FakeEmbedder(vectors, model_name=MODEL)
     store = FakeEmbeddingStore(
-        {2: [0.5, 0.5, 0.5], 3: [0.5, 0.5, 0.5]},
+        {2: [0.5, 0.5, 0.5], 3: [0.5, 0.5, 0.5], DROPPED_ID: [0.5, 0.5, 0.5]},
         model_name="old-model",
     )
-    stderr = StringIO()
-    counts: dict[str, int] = {}
 
-    pool = _build(
-        _loaded(_item(1), items),
-        embedder=embedder,
-        store=store,
-        stderr=stderr,
-        counts_out=counts,
-    )
+    pool = _build(_loaded(_item(1), items), embedder=embedder, store=store)
 
-    assert store.wipes == 1
-    assert stderr.getvalue() == WARNING_LINE + "\n"
-    assert sorted(text for call in embedder.calls for text in call) == [
-        "statement 1",
-        "statement 2",
-        "statement 3",
-    ]
+    assert pool.warning == WARNING_LINE
+    # The row for an id outside the universe is gone: the wipe really ran.
+    assert store.rows == {
+        1: [1.0, 0.0, 0.0],
+        2: [1.0, 0.0, 0.0],
+        3: [0.0, 1.0, 0.0],
+    }
     assert store.model_names == {1: MODEL, 2: MODEL, 3: MODEL}
-    assert counts == {"dense": 2, "graph": 0, "metadata": 0}
-    assert _scored(pool) == [(2, 1.0), (3, 0.0)]
+    assert _upsert_ids(store) == [1, 2, 3]
+    assert pool.counts == {"dense": 2, "graph": 0, "metadata": 0}
+    assert _scored(pool.ranked) == [(2, 1.0), (3, 0.0)]
 
 
 def test_preflight_with_matching_model_name_uses_the_cache() -> None:
-    store = FakeEmbeddingStore(
-        {1: [1.0, 0.0, 0.0], 2: [1.0, 0.0, 0.0], 3: [0.0, 1.0, 0.0]},
-        model_name=MODEL,
-    )
-    embedder = FakeEmbedder(model_name=MODEL)
-    stderr = StringIO()
+    cached = {
+        1: [1.0, 0.0, 0.0],
+        2: [1.0, 0.0, 0.0],
+        3: [0.0, 1.0, 0.0],
+    }
+    store = FakeEmbeddingStore(cached, model_name=MODEL)
 
     pool = _build(
         _loaded(_item(1), [_item(2, days=FAR_DAYS), _item(3, days=FAR_DAYS)]),
-        embedder=embedder,
+        embedder=_NoEncodeEmbedder(model_name=MODEL),
         store=store,
-        stderr=stderr,
     )
 
-    assert stderr.getvalue() == ""
-    assert store.wipes == 0
-    assert embedder.calls == []
+    assert pool.warning is None
+    assert store.rows == cached
+    assert store.model_names == {item_id: MODEL for item_id in cached}
     assert store.upserts == []
-    assert _scored(pool) == [(2, 1.0), (3, 0.0)]
+    assert _scored(pool.ranked) == [(2, 1.0), (3, 0.0)]
 
 
 def test_stale_per_item_model_name_reencodes_only_that_item() -> None:
@@ -523,85 +630,123 @@ def test_stale_per_item_model_name_reencodes_only_that_item() -> None:
         store=store,
     )
 
-    assert store.wipes == 0
-    assert embedder.calls == [["statement 3"]]
-    assert [item_id for item_id, _, _ in store.upserts] == [3]
-    assert _scored(pool) == [(2, 1.0), (3, 1.0)]
+    assert pool.warning is None
+    assert store.rows == {
+        1: [1.0, 0.0, 0.0],
+        2: [1.0, 0.0, 0.0],
+        3: [1.0, 0.0, 0.0],
+    }
+    assert store.model_names == {1: MODEL, 2: MODEL, 3: MODEL}
+    assert store.upserts == [(3, [1.0, 0.0, 0.0], MODEL)]
+    assert _scored(pool.ranked) == [(2, 1.0), (3, 1.0)]
 
 
-def test_cosine_zero_vector_raises_relate_022() -> None:
-    with pytest.raises(CosineComputeFailed) as excinfo:
-        _cosine([0.0, 0.0, 0.0], [1.0, 0.0, 0.0])
-
-    assert excinfo.value.code == "RELATE-022"
+# --- cosine contract, exercised through the pool ---------------------------
 
 
-def test_cached_zero_vector_raises_relate_022() -> None:
-    store = FakeEmbeddingStore({1: [0.0, 0.0, 0.0]}, model_name=MODEL)
-    embedder = FakeEmbedder(model_name=MODEL)
+@pytest.mark.parametrize(
+    ("new_vector", "candidate_vector"),
+    [
+        ([0.0, 0.0, 0.0], [1.0, 0.0, 0.0]),
+        ([1.0, 0.0, 0.0], [0.0, 0.0, 0.0]),
+    ],
+    ids=["new-item-zero", "cached-candidate-zero"],
+)
+def test_zero_vector_embedding_raises_relate_022(
+    new_vector: list[float], candidate_vector: list[float]
+) -> None:
+    store = FakeEmbeddingStore(
+        {1: new_vector, 2: candidate_vector},
+        model_name=MODEL,
+    )
 
     with pytest.raises(CosineComputeFailed) as excinfo:
         _build(
-            _loaded(_item(1), [_item(2, days=FAR_DAYS)]),
-            embedder=embedder,
+            _candidate(),
+            embedder=_NoEncodeEmbedder(model_name=MODEL),
             store=store,
         )
 
     assert excinfo.value.code == "RELATE-022"
+    assert excinfo.value.context == {"length": 3}
 
 
-def test_cosine_unequal_lengths_raises_relate_022() -> None:
+def test_unequal_length_embedding_raises_relate_022() -> None:
+    store = FakeEmbeddingStore({1: [1.0, 0.0, 0.0], 2: [1.0, 0.0]}, model_name=MODEL)
+
     with pytest.raises(CosineComputeFailed) as excinfo:
-        _cosine([1.0, 0.0], [1.0, 0.0, 0.0])
+        _build(
+            _candidate(),
+            embedder=_NoEncodeEmbedder(model_name=MODEL),
+            store=store,
+        )
 
     assert excinfo.value.code == "RELATE-022"
+    assert excinfo.value.context == {"left": 3, "right": 2}
 
 
 @pytest.mark.parametrize(
-    ("left", "right", "expected"),
+    ("new_vector", "candidate_vector", "expected"),
     [
-        ([1.0, 0.0, 0.0], [1.0, 0.0, 0.0], 1.0),
-        ([1.0, 0.0, 0.0], [-1.0, 0.0, 0.0], -1.0),
-        ([3.0, 4.0, 0.0], [3.0, 4.0, 0.0], 1.0),
-        ([1.0, 2.0, 3.0], [3.0, -1.0, 2.0], 0.5),
-        ([0.5, 0.5], [0.5, -0.5], 0.0),
+        pytest.param([1.0, 0.0, 0.0], [1.0, 0.0, 0.0], 1.0, id="parallel"),
+        pytest.param([1.0, 0.0, 0.0], [-1.0, 0.0, 0.0], -1.0, id="antiparallel"),
+        pytest.param([3.0, 4.0, 0.0], [3.0, 4.0, 0.0], 1.0, id="diagonal"),
+        pytest.param([1.0, 0.0, 0.0], [5.0, 0.0, 0.0], 1.0, id="scale-free"),
+        pytest.param([1.0, 2.0, 3.0], [3.0, -1.0, 2.0], 0.5, id="half"),
+        pytest.param([0.5, 0.5], [0.5, -0.5], 0.0, id="orthogonal"),
+        pytest.param([0.149, 0.05], [0.149, 0.05], 1.0, id="float-noise-clamped"),
     ],
 )
-def test_cosine_of_normal_vectors_stays_in_range(
-    left: list[float], right: list[float], expected: float
+def test_pool_cosines_stay_in_the_closed_unit_range(
+    new_vector: list[float], candidate_vector: list[float], expected: float
 ) -> None:
-    score = _cosine(left, right)
+    store = FakeEmbeddingStore(
+        {1: new_vector, 2: candidate_vector},
+        model_name=MODEL,
+    )
 
-    assert score == pytest.approx(expected)
-    assert -1.0 <= score <= 1.0
+    pool = _build(
+        _candidate(),
+        embedder=_NoEncodeEmbedder(model_name=MODEL),
+        store=store,
+    )
+
+    assert pool.counts == {"dense": 1, "graph": 0, "metadata": 0}
+    (candidate,) = pool.ranked
+    assert candidate.cosine == pytest.approx(expected)
+    # The raw ratio for the noise case is 1.0000000000000002: clamping is required.
+    assert -1.0 <= candidate.cosine <= 1.0
+    assert candidate.source is SignalKind.dense
 
 
-def test_embed_failure_for_the_new_item_maps_to_relate_018() -> None:
-    embedder = FakeEmbedder(error=RuntimeError("model exploded"), model_name=MODEL)
+# --- expected port failures propagate as the port's named error ------------
+
+
+def test_embedder_encode_failure_for_the_new_item_propagates_relate_018() -> None:
+    error = EmbedderEncodeFailed("model exploded", model=MODEL)
+    embedder = FakeEmbedder(error=error, model_name=MODEL)
 
     with pytest.raises(EmbedderEncodeFailed) as excinfo:
         _build(
-            _loaded(_item(1), [_item(2, days=FAR_DAYS)]),
+            _candidate(),
             embedder=embedder,
             store=FakeEmbeddingStore(model_name=MODEL),
         )
 
     assert excinfo.value.code == "RELATE-018"
-    assert isinstance(excinfo.value.__cause__, RuntimeError)
+    assert excinfo.value is error
 
 
-def test_embed_failure_in_the_content_loop_maps_to_relate_018() -> None:
+def test_embedder_encode_failure_in_the_content_loop_propagates_relate_018() -> None:
+    error = EmbedderEncodeFailed("model exploded", model=MODEL)
+    embedder = FakeEmbedder(error=error, model_name=MODEL)
     store = FakeEmbeddingStore({1: [1.0, 0.0, 0.0]}, model_name=MODEL)
-    embedder = FakeEmbedder(error=RuntimeError("model exploded"), model_name=MODEL)
 
     with pytest.raises(EmbedderEncodeFailed) as excinfo:
-        _build(
-            _loaded(_item(1), [_item(2, days=FAR_DAYS)]),
-            embedder=embedder,
-            store=store,
-        )
+        _build(_candidate(), embedder=embedder, store=store)
 
     assert excinfo.value.code == "RELATE-018"
+    assert excinfo.value is error
 
 
 def test_embedder_load_failure_is_reraised_unchanged() -> None:
@@ -610,7 +755,7 @@ def test_embedder_load_failure_is_reraised_unchanged() -> None:
 
     with pytest.raises(EmbedderLoadFailed) as excinfo:
         _build(
-            _loaded(_item(1), [_item(2, days=FAR_DAYS)]),
+            _candidate(),
             embedder=embedder,
             store=FakeEmbeddingStore(model_name=MODEL),
         )
@@ -619,87 +764,120 @@ def test_embedder_load_failure_is_reraised_unchanged() -> None:
     assert excinfo.value is error
 
 
-def test_upsert_failure_for_the_new_item_maps_to_relate_019() -> None:
-    store = _FailingUpsertStore(RuntimeError("disk full"))
-    embedder = FakeEmbedder({"statement 1": [1.0, 0.0, 0.0]}, model_name=MODEL)
+@pytest.mark.parametrize("method", ["get", "first_model_name"])
+def test_store_read_failure_propagates_relate_037(method: str) -> None:
+    error = EmbeddingReadFailed("cache row unreadable", item_id=1)
+    embedder, store, lookup = _ports_with_failure(method, error)
 
-    with pytest.raises(EmbeddingWriteFailed) as excinfo:
-        _build(
-            _loaded(_item(1), [_item(2, days=FAR_DAYS)]),
-            embedder=embedder,
-            store=store,
-        )
+    with pytest.raises(EmbeddingReadFailed) as excinfo:
+        _build(_candidate(), embedder=embedder, store=store, lookup=lookup)
 
-    assert excinfo.value.code == "RELATE-019"
-
-
-def test_upsert_failure_in_the_content_loop_maps_to_relate_019() -> None:
-    store = _FailingUpsertStore(
-        RuntimeError("disk full"),
-        fail_ids={2},
-        rows={1: [1.0, 0.0, 0.0]},
-    )
-    embedder = FakeEmbedder({"statement 2": [1.0, 0.0, 0.0]}, model_name=MODEL)
-
-    with pytest.raises(EmbeddingWriteFailed) as excinfo:
-        _build(
-            _loaded(_item(1), [_item(2, days=FAR_DAYS)]),
-            embedder=embedder,
-            store=store,
-        )
-
-    assert excinfo.value.code == "RELATE-019"
-
-
-def test_named_store_error_is_reraised_unchanged() -> None:
-    error = ItemsReadFailed("cache row unreadable", item_id=1)
-    store = _FailingUpsertStore(error)
-    embedder = FakeEmbedder({"statement 1": [1.0, 0.0, 0.0]}, model_name=MODEL)
-
-    with pytest.raises(ItemsReadFailed) as excinfo:
-        _build(
-            _loaded(_item(1), [_item(2, days=FAR_DAYS)]),
-            embedder=embedder,
-            store=store,
-        )
-
-    assert excinfo.value.code == "RELATE-016"
+    assert excinfo.value.code == "RELATE-037"
     assert excinfo.value is error
 
 
-def test_neighbor_read_failure_maps_to_relate_021() -> None:
-    new_item = _item(1)
-    items = [_item(2, days=FAR_DAYS)]
-    lookup = _FailingNeighborLookup([new_item, *items], error=RuntimeError("db closed"))
+def test_store_write_failure_for_the_new_item_propagates_relate_019() -> None:
+    error = EmbeddingWriteFailed("disk full")
+    embedder, store, lookup = _ports_with_failure("upsert", error)
+
+    with pytest.raises(EmbeddingWriteFailed) as excinfo:
+        _build(_candidate(), embedder=embedder, store=store, lookup=lookup)
+
+    assert excinfo.value.code == "RELATE-019"
+    assert excinfo.value is error
+
+
+def test_store_write_failure_in_the_content_loop_propagates_relate_019() -> None:
+    error = EmbeddingWriteFailed("disk full")
+    store = _FailingStore(upsert_error=error, rows={1: [1.0, 0.0, 0.0]})
+    embedder = FakeEmbedder(model_name=MODEL)
+
+    with pytest.raises(EmbeddingWriteFailed) as excinfo:
+        _build(_candidate(), embedder=embedder, store=store)
+
+    assert excinfo.value.code == "RELATE-019"
+    assert excinfo.value is error
+
+
+def test_store_wipe_failure_propagates_relate_019() -> None:
+    error = EmbeddingWriteFailed("cache is read-only")
+    embedder, store, lookup = _ports_with_failure("wipe", error)
+
+    with pytest.raises(EmbeddingWriteFailed) as excinfo:
+        _build(_candidate(), embedder=embedder, store=store, lookup=lookup)
+
+    assert excinfo.value.code == "RELATE-019"
+    assert excinfo.value is error
+
+
+def test_graph_read_failure_propagates_relate_021() -> None:
+    error = GraphReadFailed("links table is gone", item_id=1)
+    embedder, store, lookup = _ports_with_failure("neighbors_of", error)
 
     with pytest.raises(GraphReadFailed) as excinfo:
-        _build(
-            _loaded(new_item, items),
-            embedder=FakeEmbedder(model_name=MODEL),
-            store=FakeEmbeddingStore(model_name=MODEL),
-            lookup=lookup,
-        )
+        _build(_candidate(), embedder=embedder, store=store, lookup=lookup)
 
     assert excinfo.value.code == "RELATE-021"
-    assert isinstance(excinfo.value.__cause__, RuntimeError)
+    assert excinfo.value is error
 
 
-def test_named_graph_error_is_reraised_unchanged() -> None:
-    new_item = _item(1)
-    items = [_item(2, days=FAR_DAYS)]
-    error = ItemsReadFailed("link read fail", item_id=1)
-    lookup = _FailingNeighborLookup([new_item, *items], error=error)
+def test_unexpected_named_store_error_is_reraised_unchanged() -> None:
+    error = ItemsReadFailed("cache row unreadable", item_id=1)
+    embedder, store, lookup = _ports_with_failure("upsert", error)
 
     with pytest.raises(ItemsReadFailed) as excinfo:
-        _build(
-            _loaded(new_item, items),
-            embedder=FakeEmbedder(model_name=MODEL),
-            store=FakeEmbeddingStore(model_name=MODEL),
-            lookup=lookup,
-        )
+        _build(_candidate(), embedder=embedder, store=store, lookup=lookup)
 
     assert excinfo.value.code == "RELATE-016"
     assert excinfo.value is error
+
+
+def test_unexpected_named_graph_error_is_reraised_unchanged() -> None:
+    error = ItemsReadFailed("link read fail", item_id=1)
+    embedder, store, lookup = _ports_with_failure("neighbors_of", error)
+
+    with pytest.raises(ItemsReadFailed) as excinfo:
+        _build(_candidate(), embedder=embedder, store=store, lookup=lookup)
+
+    assert excinfo.value.code == "RELATE-016"
+    assert excinfo.value is error
+
+
+def test_embedder_returning_no_vectors_crashes_loudly() -> None:
+    """The vector-count check lives in the adapter, so a short reply is a bug."""
+    with pytest.raises(IndexError):
+        _build(
+            _candidate(),
+            embedder=_EmptyEmbedder(model_name=MODEL),
+            store=FakeEmbeddingStore(model_name=MODEL),
+        )
+
+
+@pytest.mark.parametrize(
+    "method",
+    [
+        "embed",
+        "get",
+        "upsert",
+        "wipe",
+        "first_model_name",
+        "model_name_of",
+        "neighbors_of",
+    ],
+)
+def test_generic_port_bug_propagates_unchanged(method: str) -> None:
+    """A code bug is never wrapped into a RELATE-xxx code (Constitution I5)."""
+    error = RuntimeError(f"{method} is buggy")
+    embedder, store, lookup = _ports_with_failure(method, error)
+
+    with pytest.raises(RuntimeError) as excinfo:
+        _build(_candidate(), embedder=embedder, store=store, lookup=lookup)
+
+    assert excinfo.value is error
+    assert not isinstance(excinfo.value, RelateError)
+
+
+# --- metadata failures stay in the core -----------------------------------
 
 
 def test_malformed_candidate_created_at_maps_to_relate_023() -> None:
