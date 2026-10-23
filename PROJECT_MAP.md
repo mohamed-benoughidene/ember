@@ -70,7 +70,7 @@ Earlier logo and character images, kept for history.
 - `pyproject.toml`: Package metadata, locked stack deps (click, openai, pydantic; pytest is a dev dep), the optional `relate` extra (`sentence-transformers`), pytest config.
 - `ember/__init__.py`: Package version.
 - `ember/__main__.py`: Runs the CLI via `python -m ember`.
-- `ember/cli.py`: Click CLI. `capture` runs the full 4-phase pipeline; `capture-source` is the Phase 1 standalone command; `relate` is the Relate Phases 1+2 stub (validates embedder config at boot, loads candidates, prints pool size); `set-validated` / `clear-validated` write the Assumption flag.
+- `ember/cli.py`: Click CLI. `capture` runs the full 4-phase pipeline; `capture-source` is the Phase 1 standalone command; `relate` runs all 4 Relate phases (Phase 3 AI propose, Phase 3.5 raw-answer save, Phase 4 gatekeeper + confirm + atomic write) and defines `RelateTerminalConfirm` (raises the relate `UserAbort` on end of input); `set-validated` / `clear-validated` write the Assumption flag.
 - `ember/errors.py`: Base `EmberError`. Carries a stable code and the raising module.function, no secrets.
 - `ember/capture/__init__.py`: Marks the capture engine folder as a package.
 - `ember/capture/errors.py`: Capture error codes `CAPTURE-001` to `CAPTURE-016`.
@@ -81,16 +81,21 @@ Earlier logo and character images, kept for history.
 - `ember/capture/confirm_write.py`: Phase 4 core. The `y/n/e/q` confirm loop and the confirm/commit ports.
 - `ember/relate/__init__.py`: Marks the relate engine folder as a package.
 - `ember/relate/errors.py`: Relate error codes `RELATE-001` to `RELATE-037` (with the documented gaps).
-- `ember/relate/rows.py`: Pydantic row models `NewItem`, `CandidateUniverse`, `Link`, `SignalKind`, `RankedCandidate`, and `Pool`.
+- `ember/relate/rows.py`: Pydantic row models `NewItem`, `CandidateUniverse`, `Link`, `SignalKind`, `RankedCandidate`, `ChangeLogEntry`, and `Pool`.
 - `ember/relate/link_lookup.py`: The `LinkLookupPort` protocol (item reads, per-triple and batch link reads, 1-hop neighbors, and Step 3 status/cycle reads).
 - `ember/relate/compat.py`: The 5 link types and the V1 spec 3.3 type-compatibility table.
 - `ember/relate/load_filter.py`: Relate Phase 1 core. Loads by id (`load_item_candidates`) or latest (`load_latest_candidates`) and builds the candidate universe.
 - `ember/relate/embedder.py`: The `EmbedderPort` protocol (embed, dim, model name).
 - `ember/relate/embedding_store.py`: The `EmbeddingStorePort` protocol for the `item_embeddings` cache (read, upsert, model name, wipe); reads raise `RELATE-037`, writes `RELATE-019`.
 - `ember/relate/candidate_pool.py`: Relate Phase 2 core. Runs the content, graph, and metadata signals, merges them by highest cosine, and returns a ranked `Pool` with counts and the model-change warning.
+- `ember/relate/ai_response_store.py`: The `AiResponseStorePort` protocol for the Phase 3.5 raw-answer save.
+- `ember/relate/link_proposal.py`: Relate Phase 3 core. The AI port, the strict-JSON boundary parser, the transport-only retry, and the target/source checks.
+- `ember/relate/link_gatekeeper.py`: Relate Phase 4 pure gatekeeper. `validate_add_link` runs the 9 rules and returns `ValidatedLink` or `RejectedLink`.
+- `ember/relate/confirm_write.py`: Relate Phase 4 core. The `y/n/s/q` confirm loop, `format_link_block`, and `ConfirmResult`.
+- `ember/relate/run_relate.py`: Relate engine-core entry point. `RelatePorts`, `RelateRequest`, `run_relate` tie Phases 3 + 3.5 + 4 together behind ports.
 - `ember/adapters/__init__.py`: Marks the adapters layer folder as a package.
-- `ember/adapters/sqlite.py`: SQLite connection, numbered migrations, `SqliteSourceStore` and `SqliteItemGatekeeper` (writes are the gatekeeper boundary), `SqliteItemContext` (item reads), `SqliteAiResponseStore` (raw AI answers), `SqliteLinkContext` (relate item/link reads plus 1-hop neighbors), `SqliteEmbedderStore` (packed-vector cache; reads `RELATE-037`, writes `RELATE-019`), `build_embedding_store`, `open_relate_database` / `ensure_relate_schema` (relate boot checks).
-- `ember/adapters/llm.py`: `OpenAiItemProposer` (`ItemProposerPort` on the OpenAI SDK, OpenRouter base URL) and the env-driven factory.
+- `ember/adapters/sqlite.py`: SQLite connection, numbered migrations, `SqliteSourceStore` and `SqliteItemGatekeeper` (writes are the gatekeeper boundary), `SqliteItemContext` (item reads), `SqliteAiResponseStore` (raw AI answers) and `build_ai_response_store`, `SqliteLinkContext` (relate item/link reads plus 1-hop neighbors, and the `item_status` / `supersedes_ancestors` reads), `SqliteLinkStore` (atomic `insert_link_with_log`), `SqliteEmbedderStore` (packed-vector cache; reads `RELATE-037`, writes `RELATE-019`), `build_embedding_store`, `open_relate_database` / `ensure_relate_schema` (relate boot checks).
+- `ember/adapters/llm.py`: `OpenAiItemProposer` (`ItemProposerPort` on the OpenAI SDK, OpenRouter base URL) and the env-driven factory; `OpenAiLinkProposer` (`LinkProposerPort`) and the `build_link_proposer` factory.
 - `ember/adapters/embedder.py`: `SentenceTransformerEmbedder` (`EmbedderPort` on the optional `sentence-transformers` extra), the env-driven `build_embedder` factory, and `validate_embedder_config` (boot check for the timeout and optional packages).
 - `ember/adapters/migrations/__init__.py`: Marks the migrations folder as a package.
 - `ember/adapters/migrations/001_create_sources.sql`: Creates the `sources` table.
@@ -124,7 +129,7 @@ Earlier logo and character images, kept for history.
 - `tests/test_capture_live.py`: Live AI round trip. Marked `live`, so a plain pytest run never calls the API; run it with `./.venv/bin/python -m pytest -m live`.
 - `tests/test_architecture.py`: Asserts the capture and relate engine cores never import an adapter.
 - `tests/test_relate_db_open.py`: Relate DB open checks: missing/corrupt file, migration fail, schema version 5/8/9 gate, and all migrations applied.
-- `tests/test_relate_read_failures.py`: Every `SqliteLinkContext` read maps a `sqlite3` failure to `RELATE-016`.
+- `tests/test_relate_read_failures.py`: Every `SqliteLinkContext` read maps a `sqlite3` failure to `RELATE-016`; also covers `item_status` and `supersedes_ancestors`.
 - `tests/test_migration_runner.py`: Each migration and its version bump are one transaction; failures roll back.
 
 ### Relate Tests (`tests/relate/`)
@@ -138,6 +143,12 @@ Earlier logo and character images, kept for history.
 - `tests/relate/test_neighbors_integration.py`: `SqliteLinkContext.neighbors_of` tests: Confirmed both directions, Rejected excluded, 1-hop, failure code.
 - `tests/relate/test_embedder_adapter_unit.py`: `SentenceTransformerEmbedder` and `validate_embedder_config` tests with a fake model module; no network, no real model.
 - `tests/relate/test_relate_cli.py`: `ember relate` CLI checks (boot validation, Phase 2 output, warning to stderr) and exit codes.
+- `tests/relate/test_link_gatekeeper_unit.py`: Phase 4 unit tests for the 9 gatekeeper rules.
+- `tests/relate/test_link_proposal_unit.py`: Phase 3 unit tests for parse, retry and the target/source checks.
+- `tests/relate/test_run_relate_unit.py`: `run_relate` unit tests on fake ports.
+- `tests/relate/test_confirm_write_unit.py`: Phase 4 confirm-loop unit tests.
+- `tests/relate/test_relate_integration.py`: Phases 3 + 3.5 + 4 end-to-end on a real SQLite temp DB.
+- `tests/relate/test_link_proposer_adapter_unit.py`: `OpenAiLinkProposer` adapter tests on a fake client, no network.
 
 ### AI Answer Fixtures (`tests/fixtures/ai_responses/`)
 Saved AI answers for parser tests. Each pair is `case_NN.raw_text.txt` (the source text) + `case_NN.response.json` (the AI's answer).

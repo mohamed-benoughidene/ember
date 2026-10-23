@@ -217,4 +217,30 @@ Steps 4.3.7 `y` and 4.3.7 `n` both write to `links` and `change_log`. Both are a
 
 ## 12. Build Notes (post-implementation)
 
-TBD after code lands.
+### What landed
+
+- 5 new/changed relate core files: `ember/relate/link_proposal.py` (Phase 3), `ember/relate/ai_response_store.py` (Phase 3.5 port), `ember/relate/link_gatekeeper.py` (Phase 4 pure gatekeeper), `ember/relate/confirm_write.py` (Phase 4 confirm loop), `ember/relate/run_relate.py` (engine-core entry point).
+- `SqliteLinkStore` (atomic `insert_link_with_log`); `SqliteLinkContext.item_status` / `supersedes_ancestors`; `build_ai_response_store`.
+- `OpenAiLinkProposer` + `build_link_proposer` in `ember/adapters/llm.py`.
+- The `relate` CLI wiring in `ember/cli.py`; `RelateTerminalConfirm` (raises the relate `UserAbort` on end of input).
+
+### Test result
+
+Full suite green: `349 passed, 2 deselected` (live tests excluded). Command: `./.venv/bin/python -m pytest -q`.
+
+### Implementation decisions / deviations
+
+1. Gatekeeper rule 5 (premise) runs BEFORE rule 6 (compat) so `(Assumption, supports) -> RELATE-008` is reachable (the compat table has no Assumption-source `supports`); `(Assumption, Finding, supports)` returns 008 not 006.
+2. `ValidatedLink` carries a third field `rationale` (the links table has no rationale column) so `format_link_block` can print it.
+3. `confirm_links` prints a non-YAML preview line before the prompt and the §3 YAML block only after an accepted write, so the §7 counts (3 accepted -> 3 blocks; 1 accept then `q` -> 1 block) hold; the §4.3 step-7 "print the block then prompt" wording is superseded.
+4. `q`/end-of-input returns `ConfirmResult(aborted=True)` (mirrors Capture) instead of raising `RELATE-031`; the CLI prints the summary and exits 2.
+5. `RelatePorts` gains a fifth port `confirm` (the loop needs the user-I/O boundary; the plan's four-tuple omitted it).
+6. `RelateRequest.env` is carried but unread (the proposer is injected as a port).
+7. `run_relate` lives in the new `ember/relate/run_relate.py`.
+8. A raw-answer save failure maps to `RELATE-036` for the real adapter (its write error is a Capture `EmberError`, so only `RelateError` is re-raised).
+9. The missing AI key surfaces when candidates exist (lazy `build_link_proposer`), not at command startup, so an empty pool still soft-exits 0.
+
+### Known gaps
+
+- No live AI round-trip test (out of scope, §8).
+- The CLI happy path requires the optional `.[relate]` extra + an API key, so it is verified through tests, not a live run.
