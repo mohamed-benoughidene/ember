@@ -23,15 +23,17 @@ from ember.capture.source_storage import SourceRecord
 from ember.errors import EmberError
 from ember.relate.embedding_store import EmbeddingStorePort
 from ember.relate.errors import (
+    ChangeLogWriteFailed,
     DbMigrationFailed,
     DbOpenFailed,
     EmbeddingReadFailed,
     EmbeddingWriteFailed,
     GraphReadFailed,
     ItemsReadFailed,
+    LinkWriteFailed,
     SchemaOutdated,
 )
-from ember.relate.rows import Link, NewItem
+from ember.relate.rows import ChangeLogEntry, Link, NewItem
 
 _MIGRATIONS_MODULE = "ember.adapters.migrations"
 
@@ -400,6 +402,43 @@ class SqliteLinkContext:
                     neighbors.add(int(other_id))
         return sorted(neighbors)
 
+    def item_status(self, item_id: int) -> str | None:
+        """Return the item's status, or None if the item is missing."""
+        try:
+            row = self._conn.execute(
+                "SELECT status FROM items WHERE id = ?", (item_id,)
+            ).fetchone()
+        except sqlite3.Error as exc:
+            raise ItemsReadFailed("item read fail", item_id=item_id) from exc
+        return None if row is None else row["status"]
+
+    def supersedes_ancestors(self, item_id: int) -> set[int]:
+        """Return every item reachable upstream via Confirmed supersedes links.
+
+        Breadth-first over `links` rows where `source_item_id` is the current
+        node and `link_type = 'supersedes'`. The seed is not included unless a
+        cycle walks back to it (cycles are forbidden at write time).
+        """
+        ancestors: set[int] = set()
+        frontier: list[int] = [item_id]
+        try:
+            while frontier:
+                current = frontier.pop()
+                rows = self._conn.execute(
+                    "SELECT target_item_id FROM links"
+                    " WHERE source_item_id = ? AND link_type = 'supersedes'"
+                    " AND status = 'Confirmed'",
+                    (current,),
+                ).fetchall()
+                for row in rows:
+                    target = int(row["target_item_id"])
+                    if target not in ancestors:
+                        ancestors.add(target)
+                        frontier.append(target)
+        except sqlite3.Error as exc:
+            raise ItemsReadFailed("link read fail", item_id=item_id) from exc
+        return ancestors
+
 
 class SqliteItemGatekeeper:
     """Gatekeeper boundary for `items` and `change_log`, plus item reads.
@@ -602,6 +641,73 @@ class SqliteAiResponseStore:
             ) from exc
 
 
+class SqliteLinkStore:
+    """`LinkStorePort` on SQLite: one atomic `links` + `change_log` write.
+
+    Order matters: the link row is inserted first so `change_log.link_id` (a
+    foreign key after migration 008) can reference it. A failure on either
+    insert rolls the whole transaction back.
+    """
+
+    def __init__(self, conn: sqlite3.Connection) -> None:
+        self._conn = conn
+
+    def insert_link_with_log(
+        self, link_row: Link, change_log_row: ChangeLogEntry
+    ) -> int:
+        """Insert the link and its change_log row in one transaction.
+
+        Return the new link id. Raise `LinkWriteFailed` (RELATE-029) when the
+        link insert fails, and `ChangeLogWriteFailed` (RELATE-011) when the
+        change_log insert fails (the link insert is rolled back).
+        """
+        try:
+            cursor = self._conn.execute(
+                "INSERT INTO links"
+                " (source_item_id, target_item_id, link_type, status, created_at)"
+                " VALUES (?, ?, ?, ?, ?)",
+                (
+                    link_row.source_item_id,
+                    link_row.target_item_id,
+                    link_row.link_type,
+                    link_row.status,
+                    link_row.created_at,
+                ),
+            )
+        except sqlite3.Error as exc:
+            self._conn.rollback()
+            raise LinkWriteFailed(
+                "link insert fail",
+                source_item_id=link_row.source_item_id,
+                target_item_id=link_row.target_item_id,
+                link_type=link_row.link_type,
+            ) from exc
+        link_id = int(cursor.lastrowid)
+        stamped = change_log_row.model_copy(update={"link_id": link_id})
+        try:
+            self._conn.execute(
+                "INSERT INTO change_log"
+                " (item_id, link_id, field_changed, old_value, new_value,"
+                " timestamp, trigger_cause) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (
+                    stamped.item_id,
+                    stamped.link_id,
+                    stamped.field_changed,
+                    stamped.old_value,
+                    stamped.new_value,
+                    stamped.timestamp,
+                    stamped.trigger_cause,
+                ),
+            )
+        except sqlite3.Error as exc:
+            self._conn.rollback()
+            raise ChangeLogWriteFailed(
+                "change_log insert fail", item_id=stamped.item_id, link_id=link_id
+            ) from exc
+        self._conn.commit()
+        return link_id
+
+
 def _proposal_text(item: ValidatedItem) -> str:
     return json.dumps(
         {
@@ -725,6 +831,11 @@ def build_embedding_store(conn: sqlite3.Connection) -> EmbeddingStorePort:
     `RELATE-019 EmbeddingWriteFailed`. Building it performs no I/O.
     """
     return SqliteEmbedderStore(conn)
+
+
+def build_ai_response_store(conn: sqlite3.Connection) -> SqliteAiResponseStore:
+    """Build the raw-AI-answer store adapter for the relate Phase 3.5 save."""
+    return SqliteAiResponseStore(conn)
 
 
 def _pack_vector(vector: list[float]) -> bytes:
