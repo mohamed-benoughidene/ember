@@ -210,6 +210,12 @@ All three print **the same format** as `ember maintain` — step 1's shared `for
 
 The Maintain engine is complete. Next: the L2 amendments (L1, Relate, README, PROJECT_MAP), the GitHub issues, and the L3 plan for Engine D (Query).
 
+**Closing the deferred issues — this step's deliverable.** When the Maintain engine merges, close **#6** (status cascade propagation) and **#9** (`supersedes` reversal) with a comment each. The comments are written in L2 §0 and record the mechanism:
+- **#6**: the cascade is expressed on `items.status`, not on `links`; link statuses stay `Confirmed`/`Rejected` by design (spec 3.3, migration 006's CHECK forbids a third value).
+- **#9**: the reversal is an item-status event — it writes **no** `links` row and does not change `links.status`; the marker is `field_changed='link_reversed'`; the engine **sweeps** `links`, it does not listen for events; dependents stay `Challenged` (spec 3.5:111); the rule-2 vocabulary is `dependency_closed`.
+
+Do **not** close them before the code is merged — the issues stay open until the behaviour that satisfies them ships.
+
 ## 10. Deferred Settings (from L2 §9)
 
 - (L2 §9 #3) Whether `close-item` should prompt for confirmation or stay flag-driven. **L2 picks flag-driven; this step keeps it.** If it is ever changed to a prompt, the step needs a `UserAbort` + exit 2 + an L2 §Z I12 update.
@@ -217,6 +223,7 @@ The Maintain engine is complete. Next: the L2 amendments (L1, Relate, README, PR
 
 **L2 amendment log entries recorded by this step** (folded into `plans/engine-maintain-plan.md` when the L2 is amended):
 - **L2 §4.5 gains a third store method**: `apply_reversal(change: StatusChange, marker: ChangeLogEntry) -> int`. `apply_status_changes` derives `field_changed='status'` for every row and `StatusChange` has no `field_changed` field, so no existing call can produce the `link_reversed` marker; and a second port method would mean two commits, breaking the reversal's one-transaction guarantee. `ChangeLogEntry` is imported from `ember.relate.rows`.
+- **L2 §0 records that #6 and #9 close on merge, not at plan approval.** The L2 previously said #9 closed "at plan approval" (its Done-when asks for the L2 to name the dispatch vocabulary), but the issue should stay open until the behaviour ships. L2 §0 now says both close on merge, and this step owns the closing.
 
 ## 11. Rollback
 

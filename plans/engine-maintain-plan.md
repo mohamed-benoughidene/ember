@@ -8,8 +8,8 @@ Terse caveman style. Source: L1 (`plans/master-plan.md`) + V1 spec 3.2/3.3/3.5/3
 
 | Issue | Subject | Owner | Action |
 |---|---|---|---|
-| **#6** | status cascade propagation | **Engine C** | **this engine's core job.** Close on merge, **with a comment**: the cascade is expressed on `items.status`, not on `links`; link statuses stay `Confirmed`/`Rejected` by design (spec 3.3, migration 006's CHECK forbids a third value). |
-| **#9** | `supersedes` reversal | **Engine C** | **the reversal.** Close **at plan approval** (its Done-when asks for the L2 dispatch vocabulary), **with a comment** recording that the reversal is an item-status event: it writes **no** `links` row and does not change `links.status`; the marker is `field_changed='link_reversed'`; Engine C **sweeps** `links`, it does not listen for events; dependents stay `Challenged` (spec 3.5:111); the rule-2 vocabulary is `dependency_closed`. |
+| **#6** | status cascade propagation | **Engine C** | **this engine's core job.** The L2 names the cascade rules (§4). Close **when the Maintain engine merges**, with a comment: the cascade is expressed on `items.status`, not on `links`; link statuses stay `Confirmed`/`Rejected` by design (spec 3.3, migration 006's CHECK forbids a third value). |
+| **#9** | `supersedes` reversal | **Engine C** | **the reversal.** The L2 names the dispatch vocabulary (§4.6). Close **when the Maintain engine merges**, with a comment recording: the reversal is an item-status event — it writes **no** `links` row and does not change `links.status`; the marker is `field_changed='link_reversed'`; Engine C **sweeps** `links`, it does not listen for events; dependents stay `Challenged` (spec 3.5:111); the rule-2 vocabulary is `dependency_closed`. |
 | #1 | `items.rationale` / `items.source` | Capture | not ours (Engine D's `why` mode needs it). Its Done-when implies an `edit_item` writer — §8. |
 | #5 | `items.metadata` | Relate | not ours. |
 | #4 | external vector DB | Relate | not ours. |
@@ -17,7 +17,7 @@ Terse caveman style. Source: L1 (`plans/master-plan.md`) + V1 spec 3.2/3.3/3.5/3
 | #8 | `Signals` wrapper | Relate | not ours. |
 | #12 | embedder re-validation at scale | Relate | not ours. |
 
-**Closed when:** the Maintain engine ships — #6 and #9 close on merge, with the comments above.
+**Closed when:** the Maintain engine ships — **#6 and #9 close on merge**, with the comments above. Closing them is **step 03's deliverable** (§10), not a planning task: the issue stays open until the code that satisfies it is merged.
 
 **New `deferred` issues filed by this plan:** (1) re-challenge an item after a human clears it manually (§2 Gap B/B4); (2) re-supersede the same `(source, target)` pair after a reversal; (3) AI-proposed `close_item`; (4) enforce the link compatibility table at the database level (spec 3.6:115); (5) plain-text export command (spec 3.6:118) — **no engine owns it**; (6) `edit_item` + `remove_link` (spec 3.7:130, :133) — **no plan owns them** (`remove_link` is also the only way to delete a link; `edit_item` is the likely writer for issue #1's `items.rationale`/`source`).
 
