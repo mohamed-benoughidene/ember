@@ -1,6 +1,6 @@
 # L3 Maintain Step 3: Human Actions (close-item + set-status + reverse-supersedes)
 
-Implements the three human commands of the L2 Maintain plan. Each one loads the snapshot, runs a pure validator, writes through the same atomic store, and prints its own one-liner. Ships the `status_origin` shield row and the `link_reversed` reversal marker.
+Implements the three human commands of the L2 Maintain plan. Each one loads the snapshot, runs a pure validator, writes through the same atomic store, and prints through the same shared formatter the sweep uses. Ships the `status_origin` shield row and the `link_reversed` reversal marker.
 
 ## 0. Constitution rules this step enforces
 
@@ -15,13 +15,16 @@ Implements the three human commands of the L2 Maintain plan. Each one loads the 
 - **I1** — named by job (`validate_close_item`, `validate_set_status`, `validate_reverse_supersedes`).
 - **I2** — no boolean behaviour flags. `--to Active` and `--to Challenged` are values, not switches; the only boolean is `dry_run`, which never crosses into a function.
 - **I3** — every validator takes at most 3 inputs.
-- **I4** — every validator returns a named `list[StatusChange]`, never a tuple.
+- **I4** — every validator returns a `list[StatusChange]` — an empty list rather than `None` (Constitution.md:39: "Empty list instead of `None`. Named object instead of tuple").
 - **I5** — each failure mode has its own code (L2 §6).
 - **I6** — all MAINTAIN-NNN codes subclass `EmberError`.
 - **I7** — fail fast; the validator raises before any write.
 - **I11** — the validator docstrings list the codes they raise.
-- **I12** — one-liners to stdout; errors to stderr with `error: {exc.log_line()}`.
+- **I12** — the shared report goes to stdout; errors to stderr with `error: {exc.log_line()}`.
+- **I13** — `--db` and the schema check happen once at boot, in `open_maintain_database` (step 1). This step does not re-read them.
 - **I17 / I21** — error codes are stable; tests assert the code, not the message.
+- **I19** — the codes raised here carry the entity ids: `MAINTAIN-001` carries `item_id`; `MAINTAIN-005` carries `item_id` and `link_id`.
+- **I20** — errors print as one line: `error: {exc.log_line()}` to stderr.
 - **P3 / P4** — the same Phase 1-4 pipeline as the sweep; DB access is a port.
 - **T1** — the validators are pure.
 - **T2** — side effects are pushed to the store port.
@@ -52,12 +55,19 @@ From the port (`MaintainLookupPort`, L2 §4.5): the same 3 methods as step 1.
 From the port (`MaintainStorePort`, L2 §4.5):
 - `apply_status_changes(changes: list[StatusChange]) -> int` — from step 2.
 - `apply_status_origin(item_id: int, origin: str) -> None` — writes `items.status_origin` **and** its `change_log` row (`field_changed='status_origin'`) in one transaction. Raises `MAINTAIN-011` / `MAINTAIN-012`.
+- **`apply_reversal(change: StatusChange, marker: ChangeLogEntry) -> int`** — **new in this step.** Writes the item restore (`status='Active'`, `close_reason=NULL`), the `status` log row (derived from `change`), **and** the `link_reversed` marker row (from `marker`) in **one transaction**. Raises `MAINTAIN-011` / `MAINTAIN-012`.
+
+**Why a third method is needed:** `apply_status_changes` derives `field_changed='status'` for every row it writes, and `StatusChange` has no `field_changed` field — so it **cannot** produce the `link_reversed` marker. `apply_status_origin` is hardcoded to `field_changed='status_origin'`. Without `apply_reversal` there is no call that produces the marker, and the reversal's "one transaction" claim is false (two port methods means two commits).
+
+**`ChangeLogEntry`** is imported from `ember.relate.rows` — the same public model Relate uses. It carries `item_id`, `link_id`, `field_changed`, `old_value`, `new_value`, `timestamp`, `trigger_cause`. The marker is built with `field_changed='link_reversed'`, `old_value='Confirmed'`, `new_value='Reversed'`, `trigger_cause='reversal'`, `link_id=<the supersedes link id>`, `item_id=<the restored item>`.
+
+**This is an L2 §4.5 amendment** — recorded in §10 below and folded into `plans/engine-maintain-plan.md`.
 
 ## 3. Outputs
 
 - `list[StatusChange]` — the validated changes, ready for the store.
 - `MaintainResult` — from step 2's orchestration.
-- STDOUT one-liners: `item 5 closed: invalidated`, `item 5 challenged`, `item 5 active`, `item 7 reopened`.
+- STDOUT: **the same lines the sweep prints**, via step 1's shared `format_report(changes, total_items)` — `item <id>: <old_status> -> <new_status>` per change, then the summary `closed: N, challenged: N, reopened: N, unchanged: N`. All four commands render through the one formatter; there is no separate one-liner format.
 
 ## 4. Steps
 
@@ -87,9 +97,9 @@ From the port (`MaintainStorePort`, L2 §4.5):
    - **No-op:** `--to` equal to the item's current status → return an **empty** change list. Exit 0, write nothing. **Do not set the shield.**
    - One `StatusChange(item_id=N, old_status=<observed>, new_status=S, close_reason=None, old_close_reason=<observed>, trigger_cause='user_set_status', link_id=None)`.
 3. **Apply** — `store.apply_status_changes(changes)`.
-4. **The shield** — only when the command is `--to Active` on a **`Challenged`** item (the human cleared the flag): also call `store.apply_status_origin(N, 'manual')`, which writes `items.status_origin` **and** a `change_log` row with `field_changed='status_origin'`, `old_value='derived'`, `new_value='manual'`, `trigger_cause='user_set_status'`, in one transaction.
+4. **The shield** — only when the command is `--to Active` on a **`Challenged`** item (the human cleared the flag): also call `store.apply_status_origin(N, 'manual')`, which writes `items.status_origin` **and** a `change_log` row with `field_changed='status_origin'`, `old_value='derived'`, `new_value='manual'`, `trigger_cause='user_set_status'`, in one transaction. **The shield write is a second transaction** (after `apply_status_changes`). If it fails, the command exits 1 and the item is left `Active` with `status_origin='derived'` — the human re-runs the command. The item is never left `manual`-shielded without its status change. Gate the shield call on the **applied** change count, not on the requested change, so a no-op does not shield.
    - `--to Challenged` does **not** set the shield. Challenging is not a resolution (spec 3.2:70 lists human-Challenged as a first-class state).
-5. **Report** — `item 5 active` or `item 5 challenged`.
+5. **Report** — `format_report(changes, total_items)`, the same formatter the sweep uses.
 
 The shield is a **state lookup in the sweep's Phase 2 merge**: an item with `status_origin='manual'` is skipped. It suppresses re-deriving that item's status — that is its one job. It is **not** set by `close-item` and **not** set by `reverse-supersedes`.
 
@@ -102,10 +112,12 @@ The shield is a **state lookup in the sweep's Phase 2 merge**: an item with `sta
    - The item's `close_reason` must be `superseded` → else `MAINTAIN-005`.
    - The Confirmed `supersedes` link `L` must point **at** the item → else `MAINTAIN-005`.
      - **`--link` is required.** Two `X→supersedes→B` links can both be Confirmed (gatekeeper rule 8 rejects cycles, not fan-in), so the target alone does not identify the link to reverse.
-3. **Apply** — the reversal writes **two** `change_log` rows and one item restore, in one transaction:
-   - `StatusChange(item_id=N, old_status='Closed', new_status='Active', close_reason=None, old_close_reason='superseded', trigger_cause='reversal', link_id=L)` → the item UPDATE (`status='Active'`, `close_reason=NULL`) plus a `status` log row (`old_value='Closed:superseded'`, `new_value='Active'`).
-   - **The marker:** a second `change_log` row with `field_changed='link_reversed'`, `old_value='Confirmed'`, `new_value='Reversed'`, `trigger_cause='reversal'`, `link_id=L`.
-4. **Report** — `item 7 reopened`.
+3. **Apply** — `store.apply_reversal(change, marker)`. One transaction, three writes:
+   - The item UPDATE (`status='Active'`, `close_reason=NULL`).
+   - The `status` log row, derived from the `StatusChange`: `old_value='Closed:superseded'`, `new_value='Active'`, `trigger_cause='reversal'`, `link_id=L`.
+   - The **marker** log row, from the `ChangeLogEntry`: `field_changed='link_reversed'`, `old_value='Confirmed'`, `new_value='Reversed'`, `trigger_cause='reversal'`, `link_id=L`, `item_id=N`.
+   - The `StatusChange` is `StatusChange(item_id=N, old_status='Closed', new_status='Active', close_reason=None, old_close_reason='superseded', trigger_cause='reversal', link_id=L)`. `old_status` is the **observed** status from the snapshot, not a hardcoded literal.
+4. **Report** — `format_report(changes, total_items)`, the same formatter the sweep uses.
 
 **The `links` row is NOT touched.** It stays `status='Confirmed'`. The `link_reversed` marker in `change_log` is what makes the reversal visible — to the sweep (rule 1 skips a reversed link) and to a reader of Engine D's `history` mode (join on `link_id`). It satisfies human spec 3.6:113 ("every change to a note **or link** adds a row to an audit ledger") — the link's change **is** logged.
 
@@ -125,7 +137,7 @@ def run_reverse_supersedes(ports, request) -> MaintainResult
 
 All three share step 2's private `_load(ports)` and `_apply_and_report(ports, changes, request)`.
 
-**The validators are authoritative and bypass the manual-shield skip** — `close-item` on a `manual` item must still work (a human close is not re-derived). Their output **does** pass through `merge_and_filter`'s escalation-only and one-per-item rules.
+**The validators are authoritative.** Their **primary** `StatusChange` is **exempt from the escalation-only ladder check** — a human may move an item down (`Challenged → Active`, `Closed → Active`) or sideways (`Challenged → Closed`). Escalation-only still governs the rule-2 **fan-out** (a dependent that is already `Challenged` or `Closed` is not re-challenged) and the sweep. The primary change is also exempt from the manual-shield skip — a human command may act on a shielded item. The **one-per-item** rule still applies to every change the command produces.
 
 ## 5. Errors (codes only, per L2 §6)
 
@@ -156,6 +168,7 @@ Unit (in-memory `FakeMaintainLookup` — pure validators, no DB):
 - `validate_set_status`: no-op (same status) → an **empty** change list, no raise.
 - `validate_set_status`: a missing item → `MAINTAIN-001`.
 - `validate_reverse_supersedes`: a missing item → `MAINTAIN-001`. An `Active` item → `MAINTAIN-005`. A `Closed` item with the wrong reason → `MAINTAIN-005`. A wrong `--link` → `MAINTAIN-005`.
+- **Ladder regression (the human commands move an item DOWN):** `validate_set_status --to Active` on a `Challenged` item returns a `Challenged → Active` change — it is **not** dropped by the escalation-only rule. Same for `validate_reverse_supersedes` (`Closed → Active`) and `validate_close_item` on a `Challenged` item (`Challenged → Closed`). These are the three cases that break if the ladder check is applied to the primary change.
 
 Integration (real SQLite temp DB, migrations 001-010 applied):
 - `close-item` on an item with dependents → the close + the dependents' `Challenged` in one transaction, both logged.
@@ -163,8 +176,9 @@ Integration (real SQLite temp DB, migrations 001-010 applied):
 - `set-status --to Active` on a `Challenged` item → the item is `Active`, `status_origin='manual'`, a `status_origin` change_log row exists, and the **next sweep does not re-challenge it**.
 - `set-status --to Challenged` on an `Active` item → the item is `Challenged`, `status_origin` stays `'derived'`, no shield row.
 - `set-status` no-op → writes nothing, no `change_log` row.
+- `close-item` on a `Challenged` item → the item becomes `Closed`. **This is the ladder regression at the DB level.**
 - Reversal: Confirmed `supersedes` → sweep closes the old item → reverse → the old item is `Active` with `close_reason=NULL`, **two** `change_log` rows exist (`status` + `link_reversed`), the dependents **stay** `Challenged`, and the `links` row is unchanged (`status` still `Confirmed`).
-- **The reversal does not veto future closes:** after a reversal, a NEW supersedes from a different source onto the restored item → the next sweep **closes** it.
+- **The reversal does not veto future closes:** after a reversal, a NEW supersedes from a different source onto the restored item → the next sweep **closes** it. **The fixture needs raw SQL**: the new source must be a **different item of a type-compatible type** (a `Decision` target needs a `Decision` source — `ember/relate/compat.py:16`), because `UNIQUE (source_item_id, target_item_id, link_type)` (`006_create_links.sql:9`) blocks reusing the original source. There is **no non-AI path that creates a link** (`ember relate` needs an API key and a confirm loop), so the test inserts the link directly.
 
 CLI:
 - `ember close-item --item 1 --reason invalidated` exits 0.
@@ -172,6 +186,7 @@ CLI:
 - `ember close-item --item 1 --reason superseded` exits 1 with `MAINTAIN-003`.
 - `ember close-item --item 1 --reason reversed` exits 1 with `MAINTAIN-003`.
 - `ember close-item --item 1 --reason invalidated` twice exits 1 with `MAINTAIN-004` on the second.
+- `ember close-item --item 1 --reason invalidated --dry-run` exits 0, prints the close **and the dependents it would challenge**, and writes no `items` or `change_log` rows.
 - `ember set-status --item 1 --to Closed` exits 1 with `MAINTAIN-006`.
 - `ember set-status --item 1 --to Bogus` exits 1 with `MAINTAIN-006`.
 - `ember set-status --item 1 --to Active` on an Active item exits 0 and writes nothing.
@@ -179,9 +194,11 @@ CLI:
 
 ## 7. CLI check (Rule S1)
 
-- `ember close-item --item 1 --reason invalidated --db <fixture>` → `item 1 closed: invalidated` + the summary; exit 0.
-- `ember set-status --item 2 --to Challenged --db <fixture>` → `item 2 challenged`; exit 0.
-- `ember reverse-supersedes --item 3 --link 1 --db <fixture>` → `item 3 reopened`; exit 0.
+- `ember close-item --item 1 --reason invalidated --db <fixture>` → `item 1: Active -> Closed (invalidated)` + the summary; exit 0.
+- `ember set-status --item 2 --to Challenged --db <fixture>` → `item 2: Active -> Challenged` + the summary; exit 0.
+- `ember reverse-supersedes --item 3 --link 1 --db <fixture>` → `item 3: Closed -> Active` + the summary; exit 0.
+
+All three print **the same format** as `ember maintain` — step 1's shared `format_report`.
 
 ## 8. Out of Scope (this step)
 
@@ -196,9 +213,10 @@ The Maintain engine is complete. Next: the L2 amendments (L1, Relate, README, PR
 ## 10. Deferred Settings (from L2 §9)
 
 - (L2 §9 #3) Whether `close-item` should prompt for confirmation or stay flag-driven. **L2 picks flag-driven; this step keeps it.** If it is ever changed to a prompt, the step needs a `UserAbort` + exit 2 + an L2 §Z I12 update.
+- **Error precedence** (not deferred by L2): existence first (`MAINTAIN-001`), then the reason enum (`MAINTAIN-002`), then human-settability (`MAINTAIN-003`), then the already-`Closed` check (`MAINTAIN-004`). This step records it because L2 §5 only ordered `001` before `004`/`005`/`006`.
 
 **L2 amendment log entries recorded by this step** (folded into `plans/engine-maintain-plan.md` when the L2 is amended):
-- None yet. If step 3 changes any port method, error trigger text, the `StatusChange` shape, or the `change_log` encoding, record it here and amend the L2 in the same commit.
+- **L2 §4.5 gains a third store method**: `apply_reversal(change: StatusChange, marker: ChangeLogEntry) -> int`. `apply_status_changes` derives `field_changed='status'` for every row and `StatusChange` has no `field_changed` field, so no existing call can produce the `link_reversed` marker; and a second port method would mean two commits, breaking the reversal's one-transaction guarantee. `ChangeLogEntry` is imported from `ember.relate.rows`.
 
 ## 11. Rollback
 
@@ -206,8 +224,8 @@ Writes are append-only: `items.status`/`items.close_reason`/`items.status_origin
 
 Undo before the first Maintain run on an existing DB: `cp ember.db ember.db.bak`.
 
-No data rollback per L1 §4 rule 7. A `change_log` row is never edited or deleted — a mistaken status change is corrected by a new row, not by editing history.
+No data rollback. L1 §4 rule 7 ("Raw input immutable. Historical items immutable") protects item **content**; `items.status` / `close_reason` / `status_origin` are derived state whose mutation this engine exists to perform (L2 §1). The append-only guarantee that applies here is `change_log`'s: a log row is never edited or deleted — a mistaken status change is corrected by a new row, not by rewriting history.
 
 ## 12. Build Notes (post-implementation)
 
-_Landed on `feat/maintain-engine`._
+_Not started. This step is planned only; the notes are filled in after the code lands on `feat/maintain-engine`._

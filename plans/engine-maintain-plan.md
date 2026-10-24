@@ -176,7 +176,8 @@ Zero `CREATE INDEX` exists in migrations 001-009 besides the implicit UNIQUE and
 2. **Challenges** — every target of a Confirmed `contradicts` link; plus every **source** of a Confirmed `depends_on` link whose target is a *flagging-closed* item. "Flagging-closed" = currently `Closed` with reason `invalidated`/`superseded`/`reversed`, **or** being closed in this same sweep with one of those reasons. (`answered` and `expired` do **not** flag dependents — AI spec 3.5:103.) **Single step only**: no recursion.
 3. **`merge_and_filter(candidates, snapshot) -> list[StatusChange]`** — the shared Phase-2 boundary. **All four commands run it.**
    - **ONE CHANGE PER ITEM.** The candidate list may contain several changes for one `item_id` (e.g. a `Decision` that is both superseded and contradicted — `compat.py:16` + `:21`). The merge keeps **exactly one** per item: precedence **`Closed > Challenged`** (a close outranks a challenge; a challenge outranks no-change). Without this, Phase 3 would write two UPDATEs (last wins) and two `change_log` rows, one of which is false.
-   - Escalation-only: an item already `Challenged` is not re-written; an item already `Closed` is not re-closed. (This is also why a human's `close_reason` is never overwritten by a machine close — v2's B6 is subsumed.)
+   - **Escalation-only, stated positively:** a *derived* change is dropped unless it moves the item **strictly up** the ladder `Active < Challenged < Closed`. A change whose `new_status` equals `old_status` is dropped, and a change that moves **down** the ladder is dropped. So an item already `Challenged` is not re-written, and an item already `Closed` is not re-closed. (This is also why a human's `close_reason` is never overwritten by a machine close — v2's B6 is subsumed.)
+   - **Scope: escalation-only applies to DERIVED changes.** The three human validators' *primary* `StatusChange` is **authoritative and exempt from the ladder check** — a human may move an item down (`Challenged → Active`, `Closed → Active`) or sideways (`Challenged → Closed`). Escalation-only still governs the rule-2 **fan-out** (a dependent that is already `Challenged` or `Closed` is not re-challenged) and the sweep.
    - An item with `status_origin='manual'` is skipped (the shield, B2).
    - Result: `list[StatusChange]`, ≤1 per `item_id`.
 
@@ -193,13 +194,18 @@ The batch is: for each `StatusChange`, `UPDATE items SET status=?, close_reason=
 - **No `status_origin` in the UPDATE.** The sweep only writes items whose `status_origin` is `'derived'`, so writing it is a no-op that invites "can the sweep un-manual an item?" (it must not). The shield is written by the **`set-status` command only**, in its own write path, and **logged as its own `change_log` row** (`field_changed='status_origin'`).
 - **`change_log.timestamp` is `NOT NULL`** and `StatusChange` does not carry it. **The adapter stamps it from an injected clock:** `SqliteMaintainStore(conn, *, clock: Callable[[], str] | None = None)`, defaulting to `_utc_now`. This is the house pattern (`SqliteItemGatekeeper`, `SqliteSourceStore`, `SqliteEmbedderStore` all take `clock=`). The pure Phase 2 stays clock-free (T1).
 - **All four commands use the same Phase 1-3 pipeline.** They differ only in Phase 2: `derive_status_changes(snapshot)` (the sweep), `validate_close_item(snapshot, item_id, reason) -> list[StatusChange]`, `validate_set_status(snapshot, item_id, to) -> list[StatusChange]`, `validate_reverse_supersedes(snapshot, item_id, link_id) -> list[StatusChange]`.
-- **The three validators are authoritative and BYPASS `merge_and_filter` for the shield check** — `close-item` on a `manual` item must still work (a human close is not re-derived). But the validators' output **does** pass through `merge_and_filter`'s escalation-only + one-per-item rules, so `close-item` on an item whose dependent is already `Challenged` does **not** re-challenge it.
+- **The three validators are authoritative.** Their **primary** `StatusChange` is **exempt from the escalation-only ladder check** and from the manual-shield skip — a human may move an item down, and a human command may act on a shielded item. Their output **does** pass through `merge_and_filter`'s one-per-item rule, so `close-item` on an item whose dependent is already `Challenged` does **not** re-challenge it.
 
 ### Phase 4 — Report
 
 One line per change (`item 3: Active -> Closed (superseded)`) + a summary. **The buckets must cover every row of §4.6**, including a reopen: `closed: 1, challenged: 2, reopened: 1, unchanged: 38`. (`unchanged` = total items − changed items. A `reopened` bucket exists because `reverse-supersedes` and `set-status --to Active` move `Closed → Active` / `Challenged → Active`, which v2's buckets had no place for.)
 
-**One `format_report(changes, total_items) -> list[str]` is used by BOTH the dry-run and the real run.** Otherwise the dry run and the real run describe the same batch differently, and the flag is worse than useless.
+**One `format_report(changes, total_items) -> list[str]` is used by BOTH the dry-run and the real run.** Otherwise the dry run and the real run describe the same batch differently, and the flag is worse than useless. It lives in `ember/maintain/report.py` and **ships in step 01**, so step 01 can offer a runnable CLI; step 02 reuses it for the real run.
+
+**Report format** (fixed, so the dry run and the real run agree):
+- Line: `item <id>: <old_status> -> <new_status>`, plus ` (<close_reason>)` when the item is closed.
+- Ordering: by `item_id` ascending; the summary is always last.
+- Summary: `closed: N, challenged: N, reopened: N, unchanged: N` — the four buckets are fixed and not extended. Items skipped because they were `manual` are **not** reported.
 
 ### 4.5 Ports + Data Models
 
@@ -216,6 +222,7 @@ One line per change (`item 3: Active -> Closed (superseded)`) + a summary. **The
 - `apply_status_changes(changes: list[StatusChange]) -> int` — one transaction, all-or-nothing; returns the number applied. Raises `MAINTAIN-011` on the items UPDATE, `MAINTAIN-012` on the change_log INSERT (both roll the batch back).
 - **The int is `len(changes)` or it raises.** It cannot differ (all-or-nothing). It exists because I4 prefers a value over `None`.
 - `apply_status_origin(item_id: int, origin: str) -> None` — the `set-status` command needs one more write, because the shield is its own `change_log` row. Writes `items.status_origin` **and** its `field_changed='status_origin'` row in one transaction. Raises `MAINTAIN-011` / `MAINTAIN-012`.
+- `apply_reversal(change: StatusChange, marker: ChangeLogEntry) -> int` — the reversal writes the item restore, the `status` log row, **and** the `link_reversed` marker row in **one transaction**. `apply_status_changes` derives `field_changed='status'` for every row and `StatusChange` has no `field_changed` field, so no other call can produce the marker; and a second port method would mean two commits, breaking the one-transaction guarantee. `ChangeLogEntry` is imported from `ember.relate.rows`. Raises `MAINTAIN-011` / `MAINTAIN-012`.
 
 **Adapters:** `SqliteMaintainContext(conn)` implements `MaintainLookupPort`; `SqliteMaintainStore(conn, *, clock=None)` implements `MaintainStorePort`. Both in `ember/adapters/sqlite.py` — all `sqlite3` lives there (Rule T9).
 
@@ -265,19 +272,17 @@ class MaintainPorts:
 
 @dataclass(frozen=True)
 class MaintainRequest:
-    command: str            # "sweep" | "close_item" | "set_status" | "reverse_supersedes"
     item_id: int | None = None
     reason: str | None = None
     to_status: str | None = None
     link_id: int | None = None
-    dry_run: bool = False
 ```
 
-- **The `command` field is a discriminated request, not a boolean behaviour flag (I2).** The four commands are genuinely different operations, not one operation with a mode switch — and I2's precedent is the `RelateRequest` dataclass, which carries `env` and other data. **`dry_run` is the only boolean, and it never crosses into a function** — the CLI omits the `apply_*` call when it is set.
+- **No `command` field and no `dry_run` field.** The four commands are separate entry points, so a `command` discriminator would be a mode switch nothing reads. `--dry-run` is a **CLI** concern: the command omits the `apply_*` call entirely, so **no boolean ever crosses into a function** (I2).
 - **Entry points** — 4 thin functions, so there is no `if command ==` ladder: `run_sweep(ports, request)`, `run_close_item(ports, request)`, `run_set_status(ports, request)`, `run_reverse_supersedes(ports, request)`, each `-> MaintainResult`.
-- All four share a private `_load(ports) -> MaintainSnapshot` and `_apply_and_report(ports, changes, request) -> MaintainResult`. **The shared pipeline is a helper, not a phase engine** — so I2 holds (no mode switch in a single function) and each command keeps its own named entry point.
-- **`MaintainResult(changed: list[StatusChange], applied: int, reopened: int)`** — the named object Phase 4 reports from (I4: named object, not a tuple).
-- **The file lives in step 02**, which owns both ports (the store port arrives with the write path). Step 01 owns the pure core + the lookup port + the adapter; step 02 owns the store port + the orchestrator + `ember maintain`; step 03 owns the three human entry points.
+- All four share a private `_load(ports) -> MaintainSnapshot` and `_apply_and_report(ports, changes) -> MaintainResult`. **The shared pipeline is a helper, not a phase engine** — so I2 holds (no mode switch in a single function) and each command keeps its own named entry point.
+- **`MaintainResult(changed: list[StatusChange], applied: int, reopened: int)`** — the named object Phase 4 reports from (I4: named object, not a tuple). `reopened` counts the **applied** changes whose `old_status` is not `'Active'` and whose `new_status` is `'Active'`.
+- **The file lives in step 02**, which owns both ports (the store port arrives with the write path). Step 01 owns the pure core + the lookup port + the adapter + `_load` + `format_report` + the `ember maintain --dry-run` command; step 02 owns the store port + the orchestrator + the real-run branch; step 03 owns the three human entry points.
 
 ## 5. CLI + Configuration
 
@@ -296,10 +301,10 @@ ember reverse-supersedes --item <id> --link <id> [--db <path>]
 - **No environment variables.** Maintain needs no API key, no embedder, no model.
 - **Boot sequence** (I13, fail fast): `open_maintain_database(db_path)` (§3 — refuses a missing file, probes corruption, applies migrations, checks `schema_version >= 10`) → validate the command's flags → Phase 1.
 - `ember maintain` is **idempotent** — running it twice changes nothing the second time and exits 0.
-- `--dry-run` runs Phase 1 + Phase 2, prints the planned changes, writes **no `items` or `change_log` rows**. It is **not** "writes nothing" at the file level: `open_maintain_database` applies migrations, so a `--dry-run` against a fresh path creates the file and schema. **The guarantee is "writes no `items` or `change_log` rows."** The §7.4 test must assert that, not "touches no file."
-- `--dry-run` **still fails on Phase-2 domain errors** (`--reason bogus` → `MAINTAIN-002`; `--reason superseded` with no link → `MAINTAIN-003`; already-`Closed` → `MAINTAIN-004`). The flag check happens **after** the validators, not before.
+- `--dry-run` runs Phase 1 + Phase 2, prints the planned changes, writes **no `items` or `change_log` rows**. **The DB must already exist** — `open_maintain_database` refuses a missing file with `MAINTAIN-007`, so a dry run against a fresh path **fails**; there is no create path. The only writes a dry run can make are the migrations, when the DB is at version 9. The §7.4 test must assert "writes no `items` or `change_log` rows", not "touches no file".
+- `--dry-run` **still fails on Phase-2 domain errors** — but only for the commands that take such flags (`close-item`, `set-status`, `reverse-supersedes`). `ember maintain` takes no `--reason` / `--to` / `--link` and raises **no** domain code. The flag check happens **after** the validators, not before.
 - **Exit codes:** 0 success (including "nothing to change" and a no-op `set-status`); 1 phase error (a `MAINTAIN-*` code); **2 for Click usage errors** (missing `--item`, non-integer `--item`, unknown option). Maintain has **no user-abort exit 2** — there is no confirm loop, so no `aborted` flag to exit on. (The codebase's exit-2 comes from `aborted`, not from `UserAbort` reaching the CLI: `capture/confirm_write.py:158-159` and `relate/confirm_write.py:151-152` swallow `UserAbort` internally.)
-- `close-item --reason`: **human-settable reasons are `invalidated`, `expired`, `reversed`** — except `reversed`, see below. `superseded` and `answered` are **machine reasons** (produced by rules 1 and 4). A human passing `--reason superseded` → `MAINTAIN-003` (machine reason, no matching Confirmed link). A human passing `--reason answered` → `MAINTAIN-003`.
+- `close-item --reason`: **human-settable reasons are `invalidated` and `expired`.** `superseded` and `answered` are **machine reasons** (produced by rules 1 and 4), and `reversed` is produced by the spec's reversal semantics, which *restore* an item rather than close it — so no v3 path produces a `Closed/reversed` item. A human passing any of those three → `MAINTAIN-003`.
 - **`reversed` has a defined meaning:** "closed because a supersedes link pointing at it was reversed." Under this plan a reversal *restores* the item to `Active` rather than closing it — so `reversed` is **not produced by any path here**. **Decision: a valid enum value (the spec requires it) but not settable by `close-item` in V1** → `MAINTAIN-003`. Settable only by the spec's own reversal semantics, which this plan implements as "restore to `Active`". Recorded in §8.
 - `set-status --to` accepts only `Active` or `Challenged` (L1:119). `--to` on a `Closed` item → `MAINTAIN-006`. `--to` equal to the current status → **no-op, exit 0, writes nothing**. **`--to Challenged` on an `Active` item does NOT set the shield** (B2) — only `--to Active` on a `Challenged` item does.
 - `reverse-supersedes --item N --link L` requires: N exists (`001`); N is `Closed` (`005`); N's `close_reason` is `superseded` (`005`); the Confirmed `supersedes` link `L` points **at** N (`005`). It restores N to `Active`, clears `close_reason`, and writes the two rows (§4.6). It does **not** un-challenge the dependents (AI spec 3.5:111). **`--link <id>` is REQUIRED, not optional** — two `X→supersedes→B` links can both be Confirmed (gatekeeper rule 8 rejects cycles, not fan-in), so the target alone does not identify the link to reverse.
@@ -352,8 +357,11 @@ Against `FakeMaintainLookup`:
 - `validate_close_item`: a dependent that is already `Challenged` is **not** re-challenged.
 - `validate_set_status`: no-op (same status) → returns an empty change list.
 - `validate_reverse_supersedes`: item not `Closed` / wrong reason / wrong link → raises `MAINTAIN-005`.
+- **Ladder regression (the human commands move an item DOWN):** `validate_set_status --to Active` on a `Challenged` item returns a `Challenged → Active` change — it is **not** dropped by the escalation-only rule. Same for `validate_reverse_supersedes` (`Closed → Active`) and `validate_close_item` on a `Challenged` item (`Challenged → Closed`). These are the three cases that break if the ladder check is applied to a human command's primary change.
 
 ### 7.2 Integration (real temp DB, migrations 001-010)
+
+**All link fixtures must be `compat.py`-legal.** The DB does not enforce the compatibility table (deferred issue, §8), so an illegal fixture yields a test that verifies a graph state Relate's gatekeeper would never write. A `Decision` target needs a `Decision` source for `supersedes` (`compat.py:16`) and a `Finding` source for `contradicts` (`compat.py:21`) — `Decision --contradicts--> Decision` is **not** a legal pair, so the "one change per item" fixture needs **3 items and 2 types**.
 
 - Full sweep on a seeded DB → exact `items.status` + `close_reason` values, exact `change_log` rows (correct `trigger_cause`/`old_value`/`new_value`/`link_id`/`timestamp`).
 - Idempotence: run the sweep twice → the second run writes **zero** rows.
@@ -419,7 +427,7 @@ Pyramid (T4): ~18 unit, ~14 integration, 1 E2E, 0 live.
 - **The corrective inverse after a reversal** (`B→supersedes→A` when `A→supersedes→B` exists) — rejected with `RELATE-028`. Deferred note.
 - **DB-level enforcement of the compat table** (AI spec 3.6:115). The compat table lives only in Python (`ember/relate/compat.py`). Adding it needs a `links` rebuild or triggers. Deferred note.
 - **The cross-column invariant `status='Closed' ⇒ close_reason IS NOT NULL`** (spec 3.2:60 "Closed: … Requires close reason"). Enforced in the write path, not by a schema CHECK. Deferred note.
-- **`reversed` as a human-settable close reason** — a valid enum value that no path here produces.
+- **`reversed` as a close reason** — a valid enum value that **no path here produces**: the spec's reversal semantics *restore* an item to `Active` rather than close it, so there is never a `Closed/reversed` item. It is **not** settable by `close-item` (`MAINTAIN-003`). The spec requires the value to exist; the plan keeps it in the enum and records that nothing writes it.
 - **Plain-text export** (AI spec 3.6:118 / human 3.6:115) — "Read-only CLI export script dumps DB into formatted text file." **No engine owns it.** Deferred issue (§0).
 - **The stale window** — between a link confirmation and the next `ember maintain`, the superseded item is still `Active`, so Relate's gatekeeper rule 7 (which blocks `supersedes` to a `Closed` target) would allow a second supersedes onto it. **Nothing schedules a sweep, so the window is unbounded**, not "until the next sweep". Mitigation: the user is expected to run `ember maintain` after `ember relate`; a future step may chain them. Deferred to L3 (§9).
 
@@ -437,9 +445,9 @@ The substantive open decisions. Do NOT forget these when writing L3 step plans.
 
 3 steps in `plans/steps/maintain/`, matching both peers:
 
-- **`01-load-and-derive.md`** (landed) — migration 010; `errors.py`; `rows.py`; `maintain_lookup.py` (`MaintainLookupPort`); `derive.py` (pure: `derive_status_changes`, `merge_and_filter`); `SqliteMaintainContext`; `open_maintain_database` + `ensure_maintain_schema`; the architecture-test extension; `tests/maintain/fakes.py`; **the 5 existing-test edits**; **the migration-010 non-empty regression test**; unit + integration tests. **CLI check:** `ember maintain --dry-run --db <fixture>` → prints the planned changes, exits 0. (**Ships a runnable CLI** — Rule S1. The dry-run needs only Phases 1 + 2, so it is available at the end of step 01.)
-- **`02-apply-and-cli.md`** — `apply_status.py` (`MaintainStorePort`, the atomic batch, the clock); `SqliteMaintainStore`; `run_maintain.py` (`MaintainPorts`, `MaintainRequest`, `MaintainResult`, `run_sweep`, `_load`, `_apply_and_report`); the `ember maintain` command (+ the write path of `--dry-run`); the atomicity test (real FK violation); the error-code tests for 010-012. **CLI check:** `ember maintain --db <fixture>` → prints the summary, exits 0.
-- **`03-human-actions.md`** — `ember close-item`, `ember set-status`, `ember reverse-supersedes`; the three pure validators; `run_close_item`, `run_set_status`, `run_reverse_supersedes`; `apply_status_origin`; the `status_origin` + `link_reversed` change_log rows. **CLI check:** each command on a fixture DB.
+- **`01-load-and-derive.md`** — migration 010; `errors.py`; `rows.py`; `maintain_lookup.py` (`MaintainLookupPort`); `derive.py` (pure: `derive_status_changes`, `merge_and_filter`); `report.py` (**`format_report`**); `run_maintain.py` (`_load` + the `by_id` index); `SqliteMaintainContext`; `open_maintain_database` + `ensure_maintain_schema`; the architecture-test extension; the `tests/fakes.py` helpers (`insert_item` params, `insert_link`, `insert_link_reversed`); **the 5 existing-test edits**; **the migration-010 non-empty regression test**; unit + integration tests. **CLI check:** `ember maintain --dry-run --db <fixture>` → prints the planned changes, exits 0. (**Ships a runnable CLI** — Rule S1. The dry-run needs only Phases 1 + 2, so it is available at the end of step 01.)
+- **`02-apply-and-cli.md`** — `apply_status.py` (`MaintainStorePort`, the atomic batch, the clock); `SqliteMaintainStore`; `run_maintain.py` (`MaintainPorts`, `MaintainRequest`, `MaintainResult`, `run_sweep`, `_apply_and_report`); the real-run branch of the `ember maintain` command; the atomicity test (real FK violation); the error-code tests for 010-012. **CLI check:** `ember maintain --db <fixture>` → prints the summary, exits 0.
+- **`03-human-actions.md`** — `ember close-item`, `ember set-status`, `ember reverse-supersedes`; the three pure validators; `run_close_item`, `run_set_status`, `run_reverse_supersedes`; `apply_status_origin`; **`apply_reversal`** (the `link_reversed` marker); the `status_origin` + `link_reversed` change_log rows. **CLI check:** each command on a fixture DB.
 
 ## 11. Amendments to Other Plans
 

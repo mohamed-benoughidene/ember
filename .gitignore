@@ -12,6 +12,9 @@ Thumbs.db
 # OpenCode local config
 .opencode/
 
+# Command Code local settings
+.commandcode/
+
 # Python
 __pycache__/
 *.py[cod]

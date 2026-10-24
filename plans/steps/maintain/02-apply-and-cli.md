@@ -22,13 +22,14 @@ Implements Phase 3 (Apply) and Phase 4 (Report) of the L2 Maintain plan, and shi
 - **I7** — fail fast, roll back the whole batch, never swallow.
 - **I11** — the port method's docstring lists the codes it raises.
 - **I12** — the report goes to stdout; errors go to stderr with `error: {exc.log_line()}`.
-- **I15** — no external service, no timeout.
 - **I17 / I21** — error codes are stable; tests assert the code, not the message.
+- **I20** — errors print as one line: `error: {exc.log_line()}` to stderr.
 - **T1** — Phase 2 (step 1) stays pure; this step is the edge.
 - **T2** — the transaction lives in the adapter.
 - **T3** — unit tests use a fake store; the atomicity test uses the **real** adapter.
 - **T4** — one integration test per write path.
 - **T9** — `ember/maintain/*.py` imports nothing from `ember.adapters.*`.
+- **T10** — the atomicity test needs FK enforcement ON, so it must use `open_maintain_database` / `_connect`, not a bare `sqlite3.connect`. This step owns that test.
 - **S1** — `ember maintain` runs the whole pipeline.
 - **S3** — input/output shapes in §2 and §3.
 
@@ -62,15 +63,17 @@ From the port (`MaintainStorePort`, L2 §4.5 — in `ember/maintain/apply_status
 2. **Load.** `_load(ports) -> MaintainSnapshot` — the three port reads.
 3. **Derive.** `derive_status_changes(snapshot) -> list[StatusChange]`.
 4. **Apply** — unless `--dry-run`. `store.apply_status_changes(changes)`.
-5. **Report.** One `format_report(changes, total_items) -> list[str]` used by **both** the dry-run and the real run. Otherwise the dry run and the real run describe the same batch differently, and the flag is worse than useless.
+5. **Report.** Step 1's `format_report(changes, total_items) -> list[str]` (shipped in `ember/maintain/report.py`) — used by **both** the dry-run and the real run, so the two describe the same batch identically.
 
 ### 4.1 The write transaction — the transport is specified
 
-**Copy `insert_link_with_log` (`ember/adapters/sqlite.py:655-708`), not `save_validated_flag` (`sqlite.py:572-596`).** The latter commits per method; the former is the only writer in the codebase with one commit and a rollback in every `except`. The rules:
+**Copy `insert_link_with_log` (`ember/adapters/sqlite.py:655-708`).** It is the only writer in the codebase that rolls back on failure. The rules:
 
 - **Exactly one `commit()`, at the very end.** Never inside the loop.
 - **An explicit `rollback()` in every `except` branch** — even though no commit has happened. sqlite3 leaves the implicit transaction open on exception, and the next `commit()` on that connection would commit the partial batch.
-- **One `BEGIN` for the whole batch** — do not rely on the implicit transaction and do not let any helper commit.
+- **Rely on the implicit transaction; do NOT issue `BEGIN`.** `insert_link_with_log` issues no `BEGIN` — it relies on sqlite3's implicit transaction (`isolation_level=""`, the default), and the only explicit `BEGIN` in the codebase is inside the migration runner's `executescript` (`sqlite.py:125-130`). A literal `conn.execute("BEGIN")` while an implicit transaction is open raises `OperationalError: cannot start a transaction within a transaction`.
+
+**What actually differs from `save_validated_flag`** (`sqlite.py:572-596`), the other two-statement writer: that method also writes two statements with one commit at the end, but it has **no `rollback()`**. The advice to add the rollback is the point; the difference is not "one commit vs. many".
 
 The batch, in order:
 1. For each `StatusChange`: `UPDATE items SET status=?, close_reason=? WHERE id=?`.
@@ -99,12 +102,10 @@ class MaintainPorts:
 
 @dataclass(frozen=True)
 class MaintainRequest:
-    command: str            # "sweep" | "close_item" | "set_status" | "reverse_supersedes"
     item_id: int | None = None
     reason: str | None = None
     to_status: str | None = None
     link_id: int | None = None
-    dry_run: bool = False
 
 @dataclass(frozen=True)
 class MaintainResult:
@@ -113,9 +114,13 @@ class MaintainResult:
     reopened: int
 ```
 
-Entry points: `run_sweep(ports, request) -> MaintainResult`, plus `run_close_item`, `run_set_status`, `run_reverse_supersedes` (step 3). All share a private `_load(ports)` and `_apply_and_report(ports, changes, request)`. The shared pipeline is a helper, not a phase engine — I2 holds and each command has its own named entry point.
+**`MaintainRequest` has no `command` and no `dry_run` field.** The four commands are separate entry points (`run_sweep`, `run_close_item`, `run_set_status`, `run_reverse_supersedes`), so a `command` discriminator would be a mode switch nothing reads. And `--dry-run` is a **CLI** concern: the command omits the `apply_*` call entirely, so no boolean ever crosses into a function (I2). A `dry_run` field on the request would be a boolean that nothing reads.
 
-**`run_maintain.py` lands in this step**, not step 1 — it needs both ports, and the store port arrives with the write path.
+Entry points: `run_sweep(ports, request) -> MaintainResult`, plus `run_close_item`, `run_set_status`, `run_reverse_supersedes` (step 3). All share a private `_load(ports)` and `_apply_and_report(ports, changes)`. The shared pipeline is a helper, not a phase engine — I2 holds and each command has its own named entry point.
+
+**`MaintainResult.reopened`** = the count of **applied** changes whose `old_status` is not `'Active'` and whose `new_status` is `'Active'` (a `Challenged → Active` or `Closed → Active` move). Compute it from the **applied** changes, not the requested ones — a change the merge dropped was not applied and must not be counted.
+
+**`run_maintain.py` lands in this step**, not step 1 — it needs both ports, and the store port arrives with the write path. Step 1 already ships `_load` and `format_report`.
 
 ### 4.3 The CLI command
 
@@ -123,8 +128,8 @@ Entry points: `run_sweep(ports, request) -> MaintainResult`, plus `run_close_ite
 ember maintain [--dry-run] [--db <path>]
 ```
 
-- `--dry-run` runs Phases 1 + 2, prints the plan, writes **no rows**. It is **not** "writes nothing" at the file level: `open_maintain_database` applies migrations, so a dry-run against a fresh path creates the file and schema. The guarantee is "writes no `items` or `change_log` rows."
-- The dry-run still fails on domain errors — the flag check happens **after** the validators.
+- `--dry-run` runs Phases 1 + 2, prints the plan, writes **no `items` or `change_log` rows**. The DB must already exist — `open_maintain_database` refuses a missing file with `MAINTAIN-007`, so a dry run against a fresh path **fails**; there is no create path. The only writes a dry run can make are the migrations, when the DB is at version 9.
+- `ember maintain` takes no `--reason`, `--to`, or `--link`, so it raises **no domain code**. The domain errors (`MAINTAIN-002`/`003`/`004`/`005`/`006`) belong to step 3's commands.
 - Exit 0 on success, including "nothing to change".
 - The report goes to stdout. Errors go to stderr as `error: {exc.log_line()}`.
 
@@ -142,8 +147,8 @@ ember maintain [--dry-run] [--db <path>]
 ## 6. Test Targets
 
 Unit (fake store — the pipeline's shape, not the adapter's atomicity):
-- The dry-run path calls the store **zero** times.
-- The write path calls `apply_status_changes` exactly once with the derived list.
+- `--dry-run` leaves `items` and `change_log` unchanged (CLI test, not a unit test — the branch lives in the Click command).
+- The write path calls `apply_status_changes` exactly once with the derived list (unit test, fake store).
 - `format_report` buckets the changes correctly: `closed`, `challenged`, `reopened`, `unchanged`.
 - `unchanged` = total items − changed items.
 
@@ -152,8 +157,8 @@ Integration (real SQLite temp DB, migrations 001-010 applied):
 - Idempotence: run the sweep twice → the second run writes **zero** rows.
 - **Atomicity — with a REAL connection and a REAL constraint violation, not a fake.** The vehicle: give one `StatusChange` a `link_id` with no `links` row → the `change_log.link_id REFERENCES links(id)` FK (migration 008) raises `FOREIGN KEY constraint failed` on the INSERT, because `_connect` sets `PRAGMA foreign_keys = ON` (`sqlite.py:45`). Assert: **zero** `items` rows changed and **zero** `change_log` rows written, and the error is `MAINTAIN-012`.
   - Trap: a test that builds its own connection with bare `sqlite3.connect` has FK **off** and the violation silently won't fire. Use `open_maintain_database` / `_connect`.
-  - Trap: a fake store cannot observe the adapter's commit boundaries, so it cannot test this. The test must run against the real `SqliteMaintainStore`.
-- The items UPDATE fails (a `StatusChange` whose `new_status` violates the `items.status` CHECK) → `MAINTAIN-011`, and the whole batch rolls back.
+  - Trap: a fake store cannot observe the adapter's commit boundaries, so it cannot test this. The test must run against the real `SqliteMaintainStore`. Assert "zero `items` rows changed" **on the store's own connection** — a second connection would see nothing regardless and the test would be vacuous. Also note `link_id=None` (every human path) skips the FK, so the FK only guards machine rows.
+- The items UPDATE fails (a `StatusChange` whose `new_status` violates the `items.status` CHECK) → `MAINTAIN-011`, and the whole batch rolls back. **`StatusChange.new_status` must stay a plain `str`**, not a Pydantic `Literal[...]` — a `Literal` would reject `'Bogus'` at construction and make this test unwritable.
 - The store stamps `timestamp` from its injected clock (`clock=lambda: FIXED_TIME`) — the same technique `tests/test_item_store_integration.py` uses.
 
 CLI:
@@ -172,6 +177,7 @@ CLI:
 - The `status_origin` shield write (`apply_status_origin` is defined here; step 3 calls it).
 - The `link_reversed` marker write — step 3.
 - The reversal itself — step 3.
+- `format_report` — shipped in step 1 (`ember/maintain/report.py`); this step only calls it.
 
 ## 9. Next
 
@@ -179,10 +185,14 @@ Step 3 adds `ember close-item`, `ember set-status`, and `ember reverse-supersede
 
 ## 10. Deferred Settings (from L2 §9)
 
-- (L2 §9 #1) Whether `ember relate` chains `ember maintain` at the end of its confirm loop (closes the stale window). L2 picks "no — separate commands"; **this step confirms the seam.** The `run_sweep` entry point is the place a future chain would call.
-- (L2 §9 #2) The report's exact wording and ordering — **this step picks** (the buckets are fixed: `closed`, `challenged`, `reopened`, `unchanged`).
-- (L2 §9 #4) Whether the sweep reports the items it skipped because they were `manual` — **this step picks.**
-- (L2 §9 #5) The `--dry-run` output shape — **this step picks**; it shares the real run's `format_report`.
+- (L2 §9 #1) Whether `ember relate` chains `ember maintain` at the end of its confirm loop (closes the stale window). L2 picks "no — separate commands"; **this step confirms the seam**: the seam is `run_sweep(ports, request)`, and a future chain would call it after Relate's confirm loop. No chain ships in V1.
+- (L2 §9 #2) The report's exact wording and ordering — **this step picks**:
+  - **Line format:** `item <id>: <old_status> -> <new_status>` and, when the item is closed, `item <id>: <old_status> -> <new_status> (<close_reason>)`.
+  - **Ordering:** lines are sorted by `item_id` ascending. The summary line is always last.
+  - **Summary format:** `closed: N, challenged: N, reopened: N, unchanged: N`, in that bucket order.
+  - The buckets are fixed by L2 §4 Phase 4 and are not extended.
+- (L2 §9 #4) Whether the sweep reports the items it skipped because they were `manual` — **this step picks: no.** The summary keeps its fixed four buckets; skipped-`manual` items are **not** reported. A `manual` item is invisible to the sweep by design. Recorded as a `deferred` note.
+- (L2 §9 #5) The `--dry-run` output shape — **this step picks**: the dry run and the real run print **the same lines**, because both call `format_report` (shipped in step 1). The dry run simply omits the write.
 
 **L2 amendment log entries recorded by this step** (folded into `plans/engine-maintain-plan.md` when the L2 is amended):
 - None yet. If step 2 changes any port method, error trigger text, the `StatusChange` shape, or the `change_log` encoding, record it here and amend the L2 in the same commit.
@@ -193,8 +203,8 @@ Writes are append-only: `items.status`/`items.close_reason` are updated in place
 
 Undo before the first Maintain run on an existing DB: `cp ember.db ember.db.bak`.
 
-No data rollback per L1 §4 rule 7. A `change_log` row is never edited or deleted — a mistaken status change is corrected by a new row, not by editing history.
+No data rollback. L1 §4 rule 7 ("Raw input immutable. Historical items immutable") protects item **content**; `items.status` / `close_reason` / `status_origin` are derived state whose mutation this engine exists to perform (L2 §1). The append-only guarantee that applies here is `change_log`'s: a log row is never edited or deleted — a mistaken status change is corrected by a new row, not by rewriting history.
 
 ## 12. Build Notes (post-implementation)
 
-_Landed on `feat/maintain-engine`._
+_Not started. This step is planned only; the notes are filled in after the code lands on `feat/maintain-engine`._
