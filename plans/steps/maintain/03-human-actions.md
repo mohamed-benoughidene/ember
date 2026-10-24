@@ -223,8 +223,9 @@ Do **not** close them before the code is merged — the issues stay open until t
 2. **Delete L2 §11.0** from `plans/engine-maintain-plan.md`, and replace the first bullet of L2 §11.1 with `- **Status: applied <date> in <commit-sha>.**`
 3. Update L2 §0's "Closed when:" line to `"#6 and #9 closed on <date> in <commit-sha>"`.
 4. Record it all in this step's §12 Build Notes.
+5. **Update the L1 §8 ordering constraint** — it now reads "do not write the Engine D L2 until Engine C's step 03 has landed". Say the constraint is satisfied (or delete the paragraph), so it does not outlive its purpose.
 
-**Do not write Engine D's L2 before this amendment lands** — it would read L1 line 117 and assume an AI-callable `close_item` exists.
+**Do not write Engine D's L2 before this amendment lands** — it would read L1 line 117 and assume an AI-callable `close_item` exists. The constraint is also recorded in L1 §8, where an Engine D author starts.
 
 ## 10. Deferred Settings (from L2 §9)
 

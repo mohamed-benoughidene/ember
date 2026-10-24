@@ -23,6 +23,8 @@ Terse caveman style. Source: L1 (`plans/master-plan.md`) + V1 spec 3.2/3.3/3.5/3
 
 **New `note` issues:** (7) `links` rows have no lifecycle — a reversed supersedes stays `Confirmed` (§2 Gap C); (8) `supersedes_ancestors` false-rejects the corrective inverse after a reversal; (9) `items.close_reason` / `status_origin` need a matching Engine D `history` rendering (Engine D's L2); (10) the cross-column invariant `Closed ⇒ close_reason IS NOT NULL` is not enforced in the schema (spec 3.2:60).
 
+**Also filed:** **#24** (`deferred`) — the Engine D (Query) L2 must not be written until this plan's §11 amendments land. Tracked there so the dependency is enforced by the issue list, not only by a note in this file.
+
 ## 1. Engine Job
 
 Keep the graph coherent when items and links change. Read `items` + confirmed `links`, derive the status each item should have, write the difference, log every change. Engine 3 of 4. Four deterministic triggers, zero AI.
@@ -462,9 +464,11 @@ The substantive open decisions. Do NOT forget these when writing L3 step plans.
 3. Update **§0** in this file: change the "Closed when:" line so it reads **"#6 and #9 closed on <date> in <commit-sha>"** — the issues are closed by the same commit, so the plan records the fact rather than the intent.
 4. Update **§12 Build Notes** of `plans/steps/maintain/03-human-actions.md` to record the amendments, the closed issues, and the commit sha.
 
+**Already applied — do NOT re-apply:** L1 §8 carries an **ordering constraint** ("do not write the Engine D L2 until Engine C's step 03 has landed"). It is applied now, not deferred, because it is a **sequencing note, not a rule change** — L1's rules are untouched, so applying it early does not make L1 describe behaviour that is not built. It is in L1 §8 because that is where an Engine D author starts; a warning buried only in the Maintain plan would not be seen by the person it is aimed at. **When step 03 lands, update that L1 §8 paragraph** to say the constraint is satisfied (or delete it), so it does not outlive its purpose.
+
 **Why this is deferred and not done at planning time:** L1 is the approved system plan, and line 117 ("AI-callable mutations: `add_item`, `add_link`, `close_item`") is a **global** invariant. Amending it before the behaviour exists would leave L1 describing something that is not built. Doing it in the implementation commit means L1 always matches the code.
 
-**The risk this creates, and how to avoid it:** Engine D's L2 must **not** be written before this amendment lands — it would read L1 line 117 and assume an AI-callable `close_item` exists. If Engine D's L2 has to be written first, apply the L1 amendments then, before writing it.
+**The risk this creates, and how to avoid it:** Engine D's L2 must **not** be written before this amendment lands — it would read L1 line 117 and assume an AI-callable `close_item` exists. If Engine D's L2 has to be written first, apply the L1 amendments then, before writing it. Tracked as **issue #24**; the constraint is also written in L1 §8, where an Engine D author starts.
 
 ### 11.1 `plans/master-plan.md` (L1) — 5 lines + 1 new line
 

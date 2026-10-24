@@ -154,6 +154,8 @@ AI testing (Rule T7): test parser, validation, retries with saved fixtures. Asse
 
 Human approves L1. Then 4 L2 engine master plans: `capture`, `relate`, `maintain`, `query`. Each L2 defines internal pipeline phases for its engine.
 
+**Ordering constraint on `query`:** do not write the Engine D L2 until Engine C's step 03 has landed. Engine C's step 03 amends this L1 — `close_item` moves from the AI-callable list (rule 3, line 117) to the human-only list, and `validate_close_item` + `validate_reverse_supersedes` join the human-only gatekeepers (lines 81, 83). An Engine D L2 written before that amendment would read line 117 and assume an AI-callable `close_item` exists. The exact edits are in `plans/engine-maintain-plan.md` §11.1; the reason is in that plan's §11.0.
+
 ## 9. Deferred to L2 (Reminder)
 
 - Embedding table name and metadata table name.
