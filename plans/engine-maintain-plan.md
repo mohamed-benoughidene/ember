@@ -451,22 +451,58 @@ The substantive open decisions. Do NOT forget these when writing L3 step plans.
 
 ## 11. Amendments to Other Plans
 
-**`plans/master-plan.md`** (L1) — **5 lines**, not 2:
+### 11.0 HOW TO APPLY THESE AMENDMENTS (read first)
 
-- **Line 45** — "Input: any state change event (link confirmed, item closed, etc.)" → the input is the **`items` + `links` tables**, reconciled on demand; there is no event.
-- **Line 47** — "Four fixed triggers (via `validate_close_item` script)" → the four triggers are implemented by `derive_status_changes`; `validate_close_item` is one human-command validator among four.
-- **Line 81** — `validate_close_item` moves from "For AI mutations" to "For human-only operations".
-- **Line 83** — the human-only gatekeeper list gains `validate_close_item` **and `validate_reverse_supersedes`**.
-- **Line 117** — `close_item` moves from "AI-callable mutations" to "Human-only operations".
-- **§5 Out of Scope** — add: "AI-proposed `close_item` deferred to V1.x. V1 ships `ember close-item` human-invoked; the human running the command is the confirmation."
+**These amendments are NOT applied yet.** They are deferred to implementation time so that L1 never disagrees with shipped code. They are applied by **step 03**, in the same commit that lands the Maintain engine.
+
+**The implementing agent must, in the same commit that merges the Maintain engine:**
+
+1. Apply every amendment in §11.1 (L1), §11.2 (Relate L2), §11.3 (README), §11.4 (PROJECT_MAP) — using the exact "from → to" text given.
+2. **Delete this entire subsection `### 11.0`** from this file, and replace the **first bullet of §11.1** (the `- **Status: NOT YET APPLIED.**` line) with `- **Status: applied <date> in <commit-sha>.**`
+3. Update **§0** in this file: change the "Closed when:" line so it reads **"#6 and #9 closed on <date> in <commit-sha>"** — the issues are closed by the same commit, so the plan records the fact rather than the intent.
+4. Update **§12 Build Notes** of `plans/steps/maintain/03-human-actions.md` to record the amendments, the closed issues, and the commit sha.
+
+**Why this is deferred and not done at planning time:** L1 is the approved system plan, and line 117 ("AI-callable mutations: `add_item`, `add_link`, `close_item`") is a **global** invariant. Amending it before the behaviour exists would leave L1 describing something that is not built. Doing it in the implementation commit means L1 always matches the code.
+
+**The risk this creates, and how to avoid it:** Engine D's L2 must **not** be written before this amendment lands — it would read L1 line 117 and assume an AI-callable `close_item` exists. If Engine D's L2 has to be written first, apply the L1 amendments then, before writing it.
+
+### 11.1 `plans/master-plan.md` (L1) — 5 lines + 1 new line
+
+- **Status: NOT YET APPLIED.** Deferred to step 03 per §11.0.
+- **Line 45** — from: `- Input: any state change event (link confirmed, item closed, etc.).`
+  to: `- Input: the `items` + `links` tables, reconciled on demand. No event bus.`
+- **Line 47** — from: `- Four fixed triggers (via `validate_close_item` script):`
+  to: `- Four fixed triggers (via the `derive_status_changes` script):`
+- **Line 81** — from: `- For AI mutations: `validate_add_item`, `validate_add_link`, `validate_close_item`.`
+  to: `- For AI mutations: `validate_add_item`, `validate_add_link`.`
+- **Line 83** — from: `- For human-only operations: `validate_edit_item`, `validate_set_status`, `validate_set_validated`, `validate_remove_link`.`
+  to: `- For human-only operations: `validate_edit_item`, `validate_set_status`, `validate_set_validated`, `validate_remove_link`, `validate_close_item`, `validate_reverse_supersedes`.`
+- **Line 117** — from: `3. AI-callable mutations (each requires user confirm): `add_item`, `add_link`, `close_item`.`
+  to: `3. AI-callable mutations (each requires user confirm): `add_item`, `add_link`.`
+- **§5 Out of Scope** — add a line: `AI-proposed `close_item` deferred to V1.x (issue #16). V1 ships `ember close-item` human-invoked; the human running the command is the confirmation.`
 - **Rationale for amending L1 (not just noting it in L2):** L1 §4 is the **global-invariant list for the whole system**; a false entry poisons every later plan, and Engine D's L2 would read line 117 and assume an AI-callable `close_item` exists. L1 line 7's "Changes to stack = new L1 amendment" covers §0 stack decisions, not §4 invariants — **this is a consistency amendment, not a stack amendment.**
+- **Not changed by these amendments:** lines 46, 48-51 (the four rules themselves), 52 (single-step flag spread), 53 (self-fix for typos), 54 (reversal intent), 55, and every other L1 section. Line 54's *intent* is unchanged — the amendment only makes the mechanism explicit elsewhere (§2 Gap C).
 
-**`plans/engine-relate-plan.md`** — 3 lines (§3.1:39, §8, §9 #8) plus §6:368:
+### 11.2 `plans/engine-relate-plan.md` — 4 lines
 
-- **§3.1 line 39** — "Reversal of `supersedes` writes a new link row, not an update" → "Reversal of `supersedes` is an **item-status** event owned by Engine C; it writes **no `links` row** and does not change `links.status`. It is recorded as a `change_log` row with `field_changed='link_reversed'`. See `plans/engine-maintain-plan.md` §2 Gap C." (v2 claimed no amendment was needed — a non-sequitur: the sentence is a *positive* claim about a write that no longer happens.)
+- **§3.1 line 39** — from: "Reversal of `supersedes` writes a new link row, not an update" → to: "Reversal of `supersedes` is an **item-status** event owned by Engine C; it writes **no `links` row** and does not change `links.status`. It is recorded as a `change_log` row with `field_changed='link_reversed'`. See `plans/engine-maintain-plan.md` §2 Gap C." (v2 claimed no amendment was needed — a non-sequitur: the sentence is a *positive* claim about a write that no longer happens.)
 - **§8** — the Engine C bullet → the resolved statement (Maintain does not listen for events; it sweeps the `links` table) + the §4.6 vocabulary table.
 - **§9 #8** — "Engine C dispatch vocabulary" → **resolved** by `plans/engine-maintain-plan.md` §4.6.
 - **§6 line 368** — "version < 9" → note that migration 010 makes the DB version 10 and Relate's floor stays 9.
+
+### 11.3 `README.md` — 2 engine lines + a CLI block
+
+- **Line 41** — "Engine B (Relate): Next up" → "Built and verified".
+- **Line 42** — "Engine C (Maintain): Planned." → "Built and verified".
+- Add a CLI-usage block for the four new commands (`ember maintain`, `ember close-item`, `ember set-status`, `ember reverse-supersedes`) in the same style as the existing command blocks, and fix the stale "183 tests" count.
+
+### 11.4 `PROJECT_MAP.md` — add files, columns, and commands
+
+- Add `ember/maintain/` (every module), `tests/maintain/` (every file), `plans/engine-maintain-plan.md`, `plans/steps/maintain/*.md`, and `ember/adapters/migrations/010_add_item_close_reason.sql`.
+- Add the 2 new `items` columns (`close_reason`, `status_origin`) to the `items` table entry.
+- Add the 4 CLI commands to the `ember/cli.py` entry.
+- Add the `open_maintain_database` boot path.
+- The `links.status` note ("`Confirmed` or `Rejected`") **stays accurate** — Maintain adds no third link status.
 
 **`README.md`** — lines 41 + 42 (both engine status lines), a new CLI-usage block for the 4 commands, and the stale "183 tests" count.
 

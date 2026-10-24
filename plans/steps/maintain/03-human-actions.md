@@ -2,6 +2,8 @@
 
 Implements the three human commands of the L2 Maintain plan. Each one loads the snapshot, runs a pure validator, writes through the same atomic store, and prints through the same shared formatter the sweep uses. Ships the `status_origin` shield row and the `link_reversed` reversal marker.
 
+**This step also closes out the engine**: it closes GitHub issues #6 and #9, and applies the cross-plan amendments to L1, the Relate L2, the README, and PROJECT_MAP. See §9 for the exact checklist — it is deferred here so L1 never disagrees with shipped code.
+
 ## 0. Constitution rules this step enforces
 
 - **B1** — the three validators live in `ember/maintain/human_actions.py`; the user loop is not a phase.
@@ -215,6 +217,14 @@ The Maintain engine is complete. Next: the L2 amendments (L1, Relate, README, PR
 - **#9**: the reversal is an item-status event — it writes **no** `links` row and does not change `links.status`; the marker is `field_changed='link_reversed'`; the engine **sweeps** `links`, it does not listen for events; dependents stay `Challenged` (spec 3.5:111); the rule-2 vocabulary is `dependency_closed`.
 
 Do **not** close them before the code is merged — the issues stay open until the behaviour that satisfies them ships.
+
+**Applying the cross-plan amendments — this step's deliverable.** `plans/engine-maintain-plan.md` §11 lists the amendments to L1, the Relate L2, the README, and PROJECT_MAP. They are **deferred to this step** (see L2 §11.0 for why). In the **same commit** that lands the Maintain engine:
+1. Apply every amendment in L2 §11.1-§11.4, using the exact "from → to" text given there.
+2. **Delete L2 §11.0** from `plans/engine-maintain-plan.md`, and replace the first bullet of L2 §11.1 with `- **Status: applied <date> in <commit-sha>.**`
+3. Update L2 §0's "Closed when:" line to `"#6 and #9 closed on <date> in <commit-sha>"`.
+4. Record it all in this step's §12 Build Notes.
+
+**Do not write Engine D's L2 before this amendment lands** — it would read L1 line 117 and assume an AI-callable `close_item` exists.
 
 ## 10. Deferred Settings (from L2 §9)
 
