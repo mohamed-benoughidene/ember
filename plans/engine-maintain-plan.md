@@ -17,7 +17,7 @@ Terse caveman style. Source: L1 (`plans/master-plan.md`) + V1 spec 3.2/3.3/3.5/3
 | #8 | `Signals` wrapper | Relate | not ours. |
 | #12 | embedder re-validation at scale | Relate | not ours. |
 
-**Closed when:** the Maintain engine ships — **the engine landed 2026-10-25 in `7b4266d`; #6 and #9 close on merge**, with the comments above. Closing them was **step 03's deliverable** (§10), not a planning task: the issues stay open until the code that satisfies them is merged.
+**Closed 2026-10-25:** #6 and #9 are closed, each with the mechanism comment above; the engine landed in `7b4266d`. Closing them was **step 03's deliverable** (§10), not a planning task.
 
 **New `deferred` issues filed by this plan:** (1) re-challenge an item after a human clears it manually (§2 Gap B/B4); (2) re-supersede the same `(source, target)` pair after a reversal; (3) AI-proposed `close_item`; (4) enforce the link compatibility table at the database level (spec 3.6:115); (5) plain-text export command (spec 3.6:118) — **no engine owns it**; (6) `edit_item` + `remove_link` (spec 3.7:130, :133) — **no plan owns them** (`remove_link` is also the only way to delete a link; `edit_item` is the likely writer for issue #1's `items.rationale`/`source`).
 

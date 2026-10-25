@@ -216,7 +216,7 @@ The Maintain engine is complete. Next: the L2 amendments (L1, Relate, README, PR
 - **#6**: the cascade is expressed on `items.status`, not on `links`; link statuses stay `Confirmed`/`Rejected` by design (spec 3.3, migration 006's CHECK forbids a third value).
 - **#9**: the reversal is an item-status event — it writes **no** `links` row and does not change `links.status`; the marker is `field_changed='link_reversed'`; the engine **sweeps** `links`, it does not listen for events; dependents stay `Challenged` (spec 3.5:111); the rule-2 vocabulary is `dependency_closed`.
 
-Do **not** close them before the code is merged — the issues stay open until the behaviour that satisfies them ships.
+Do **not** close them before the code is merged — the issues stay open until the behaviour that satisfies them ships. (In this instance the repo owner directed closing them on 2026-10-25, before merge; see §12.)
 
 **Applying the cross-plan amendments — this step's deliverable.** `plans/engine-maintain-plan.md` §11 lists the amendments to L1, the Relate L2, the README, and PROJECT_MAP. They were deferred to implementation time so L1 never described behaviour that was not built. In the **same commit** that lands the Maintain engine:
 1. Apply every amendment in L2 §11.1-§11.4, using the exact "from → to" text given there.
@@ -249,7 +249,7 @@ No data rollback. L1 §4 rule 7 ("Raw input immutable. Historical items immutabl
 
 **Engine implemented.** All three human commands (`close-item`, `set-status`, `reverse-supersedes`) ship on `feat/maintain-engine`, on top of steps 1 and 2. The validators live in `ember/maintain/human_actions.py`; the entry points are `run_close_item` / `run_set_status` / `run_reverse_supersedes` in `ember/maintain/run_maintain.py`; the writes go through `SqliteMaintainStore`.
 
-**Issues #6 and #9 are to be closed on merge — NOT closed yet.** The code that satisfies them is complete, but the issues stay open until this branch is merged (per L2 §0: "the issue stays open until the code that satisfies it is merged"). This docs-only amendment commit does not close them.
+**Issues #6 and #9 are closed (2026-10-25).** The code that satisfies them landed on `feat/maintain-engine`, and the repo owner directed closing them at this point (rather than waiting for the merge), each with the mechanism comment from L2 §0.
 
 **Cross-plan amendments applied 2026-10-25 in `7b4266d`.** L2 §11.1 (L1), §11.2 (Relate L2), §11.3 (README), and §11.4 (PROJECT_MAP) are applied. L2 §11.0 is deleted, L2 §11.1's status bullet is updated to "applied", and the L1 §8 ordering constraint is marked satisfied. The exact "from → to" text is in L2 §11.
 
