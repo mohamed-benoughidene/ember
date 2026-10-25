@@ -114,14 +114,58 @@ def insert_item(
     statement: str = "Use SQLite",
     created_at: str = FIXED_TIME,
     validated: bool | None = None,
+    status: str = "Active",
+    close_reason: str | None = None,
+    status_origin: str = "derived",
 ) -> int:
     """Insert one `items` row and return its id."""
     cursor = conn.execute(
         "INSERT INTO items (id, type, statement, source_id, status, created_at,"
-        " validated) VALUES (?, ?, ?, ?, 'Active', ?, ?)",
-        (item_id, item_type, statement, source_id, created_at, validated),
+        " validated, close_reason, status_origin)"
+        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (
+            item_id,
+            item_type,
+            statement,
+            source_id,
+            status,
+            created_at,
+            validated,
+            close_reason,
+            status_origin,
+        ),
     )
     return int(cursor.lastrowid)
+
+
+def insert_link(
+    conn: sqlite3.Connection,
+    source_item_id: int,
+    target_item_id: int,
+    link_type: str,
+    *,
+    status: str = "Confirmed",
+    created_at: str = FIXED_TIME,
+) -> int:
+    """Insert one `links` row and return its id."""
+    cursor = conn.execute(
+        "INSERT INTO links (source_item_id, target_item_id, link_type, status,"
+        " created_at) VALUES (?, ?, ?, ?, ?)",
+        (source_item_id, target_item_id, link_type, status, created_at),
+    )
+    return int(cursor.lastrowid)
+
+
+def insert_link_reversed(
+    conn: sqlite3.Connection, link_id: int, item_id: int
+) -> None:
+    """Write the `link_reversed` marker row for a reversed link."""
+    conn.execute(
+        "INSERT INTO change_log (item_id, link_id, field_changed, old_value,"
+        " new_value, timestamp, trigger_cause)"
+        " VALUES (?, ?, 'link_reversed', 'Confirmed', 'Reversed', ?, 'reversal')",
+        (item_id, link_id, FIXED_TIME),
+    )
 
 
 def make_item(

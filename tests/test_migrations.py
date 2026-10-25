@@ -30,6 +30,8 @@ def test_items_table_has_expected_columns(db_path) -> None:
         "validated",
         "rationale",
         "source",
+        "close_reason",
+        "status_origin",
     ]
 
 
@@ -207,7 +209,7 @@ def test_migrations_008_009_preserve_existing_rows(db_path) -> None:
 
     conn = open_database(db_path)
 
-    assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == 9
+    assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == 10
     assert conn.execute(
         "SELECT COUNT(*) FROM change_log WHERE id = 7"
     ).fetchone()[0] == 1
