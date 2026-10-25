@@ -1,14 +1,45 @@
-"""Maintain Phase-1 load helper and the by-id item index.
+"""Maintain Phase-1 load helper, the by-id item index, and the sweep pipeline.
 
 Step 02 adds `MaintainPorts` / `MaintainRequest` / `MaintainResult` and the
 `run_sweep` entry point here (it owns the store port). Step 03 adds the three
-validators and their human entry points. This module only owns the read step.
+validators and their human entry points. This module owns the read step.
 """
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
+from ember.maintain.apply_status import MaintainStorePort
+from ember.maintain.derive import derive_status_changes
 from ember.maintain.maintain_lookup import MaintainLookupPort
-from ember.maintain.rows import ItemState, MaintainSnapshot
+from ember.maintain.rows import ItemState, MaintainSnapshot, StatusChange
+
+
+@dataclass(frozen=True)
+class MaintainPorts:
+    """The two ports the maintain pipeline reads and writes through."""
+
+    lookup: MaintainLookupPort
+    store: MaintainStorePort
+
+
+@dataclass(frozen=True)
+class MaintainRequest:
+    """The data for one maintain run; each command reads only its own fields."""
+
+    item_id: int | None = None
+    reason: str | None = None
+    to_status: str | None = None
+    link_id: int | None = None
+
+
+@dataclass(frozen=True)
+class MaintainResult:
+    """The outcome Phase 4 reports from (I4: named object, not a tuple)."""
+
+    changed: list[StatusChange]
+    applied: int
+    reopened: int
 
 
 def _load(ports: MaintainLookupPort) -> MaintainSnapshot:
@@ -31,3 +62,37 @@ def index_items(snapshot: MaintainSnapshot) -> dict[int, ItemState]:
     no extra port method is needed.
     """
     return {item.id: item for item in snapshot.items}
+
+
+def _apply_and_report(
+    ports: MaintainPorts, changes: list[StatusChange]
+) -> MaintainResult:
+    """Write the batch through the store port, then count the reopens.
+
+    Raises `MAINTAIN-011 StatusWriteFailed` / `MAINTAIN-012 ChangeLogWriteFailed`
+    from the store, which rolls the whole batch back (I7).
+
+    `reopened` counts the changes that actually moved to `Active` from a
+    non-`Active` status — a `Challenged -> Active` or `Closed -> Active` move.
+    It is computed from the merged list passed to the store, so a change the
+    merge dropped is never counted.
+    """
+    applied = ports.store.apply_status_changes(changes)
+    reopened = sum(
+        1
+        for change in changes
+        if change.new_status == "Active" and change.old_status != "Active"
+    )
+    return MaintainResult(changed=changes, applied=applied, reopened=reopened)
+
+
+def run_sweep(ports: MaintainPorts, request: MaintainRequest) -> MaintainResult:
+    """Run the whole sweep pipeline: load, derive, apply, report.
+
+    Raises `MAINTAIN-010` on a read failure, `MAINTAIN-011` / `MAINTAIN-012`
+    from the store write. The sweep takes no input fields, so `request` is
+    carried only for the shared four-command contract.
+    """
+    snapshot = _load(ports.lookup)
+    changes = derive_status_changes(snapshot)
+    return _apply_and_report(ports, changes)
