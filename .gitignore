@@ -24,6 +24,9 @@ __pycache__/
 build/
 dist/
 
+# Incidental uv lockfile (this project uses setuptools)
+uv.lock
+
 # Local database files
 *.db
 *.sqlite
