@@ -38,8 +38,8 @@ Ember is a system for maintaining that durable context. It does not store the pr
 ## Status
 
 - **Engine A (Capture):** Built and verified. Implements raw input storage, hash deduplication, AI item proposals, gatekeeper validation, user confirm loop, and the assumption validation flag.
-- **Engine B (Relate):** Next up (finding candidate typed links between items).
-- **Engine C (Maintain):** Planned.
+- **Engine B (Relate):** Built and verified (finding candidate typed links between items).
+- **Engine C (Maintain):** Built and verified.
 - **Engine D (Query):** Planned.
 
 ---
@@ -110,10 +110,28 @@ ember relate --latest [--db PATH]
 
 Phase 1 loads the item, drops pairs that already have a link (any status), and prints `{"phase": 1, "new_item_id": <id>, "candidates": <count>}` (or `no unrelated items`). `--db` must point to an existing database.
 
+**5. Maintain the graph (Engine C):**
+
+```bash
+# Reconcile item statuses from links (add --dry-run to preview)
+ember maintain [--db PATH]
+
+# Close an item by hand (human-only reasons: invalidated, expired)
+ember close-item --item <id> --reason invalidated [--dry-run] [--db PATH]
+
+# Move an item between Active and Challenged
+ember set-status --item <id> --to Active [--db PATH]
+
+# Undo a supersedes (restores the closed item to Active)
+ember reverse-supersedes --item <id> --link <id> [--db PATH]
+```
+
+The sweep reads `items` + Confirmed `links`, derives each item's status, and writes the difference with a `change_log` row per change. `close-item`, `set-status`, and `reverse-supersedes` are the human-only mutations; all four render through the same report format.
+
 ### Running Tests
 
 ```bash
-# Run all offline tests (183 tests)
+# Run all offline tests (468 tests)
 pytest
 
 # Run the live AI round-trip test (requires EMBER_AI_API_KEY)

@@ -67,12 +67,14 @@ Earlier logo and character images, kept for history.
 - `plans/steps/relate/03-ai-propose-and-confirm-write.md`: L3 Relate Step 3 plan. Phases 3+4, AI proposal, confirm, and write.
 - `plans/engine-maintain-plan.md`: L2 Maintain engine master plan. Pipeline phases 1-4 (load, derive, apply, report), migration 010, the four deterministic zero-AI rules, and the change_log vocabulary.
 - `plans/steps/maintain/01-load-and-derive.md`: L3 Maintain Step 1 plan. Phases 1+2, migration 010, the pure derive core, and a runnable `ember maintain --dry-run`.
+- `plans/steps/maintain/02-apply-and-cli.md`: L3 Maintain Step 2 plan. Phases 3+4, the atomic status + `change_log` write path, and the `ember maintain` command.
+- `plans/steps/maintain/03-human-actions.md`: L3 Maintain Step 3 plan. The three human commands (`close-item`, `set-status`, `reverse-supersedes`), the `status_origin` shield and the `link_reversed` reversal marker, and the cross-plan amendments that close out the engine.
 
 ## Python Implementation (`ember/`)
 - `pyproject.toml`: Package metadata, locked stack deps (click, openai, pydantic; pytest is a dev dep), the optional `relate` extra (`sentence-transformers`), pytest config.
 - `ember/__init__.py`: Package version.
 - `ember/__main__.py`: Runs the CLI via `python -m ember`.
-- `ember/cli.py`: Click CLI. `capture` runs the full 4-phase pipeline; `capture-source` is the Phase 1 standalone command; `relate` runs all 4 Relate phases (Phase 3 AI propose, Phase 3.5 raw-answer save, Phase 4 gatekeeper + confirm + atomic write) and defines `RelateTerminalConfirm` (raises the relate `UserAbort` on end of input); `set-validated` / `clear-validated` write the Assumption flag; `maintain` runs the Maintain sweep (load + derive + atomic write + report; `--dry-run` prints the plan and writes nothing).
+- `ember/cli.py`: Click CLI. `capture` runs the full 4-phase pipeline; `capture-source` is the Phase 1 standalone command; `relate` runs all 4 Relate phases (Phase 3 AI propose, Phase 3.5 raw-answer save, Phase 4 gatekeeper + confirm + atomic write) and defines `RelateTerminalConfirm` (raises the relate `UserAbort` on end of input); `set-validated` / `clear-validated` write the Assumption flag; `maintain` runs the Maintain sweep (load + derive + atomic write + report; `--dry-run` prints the plan and writes nothing); `close-item` / `set-status` / `reverse-supersedes` are the Maintain human-only mutations (close an item by hand, move it between `Active` and `Challenged`, and undo a `supersedes`).
 - `ember/errors.py`: Base `EmberError`. Carries a stable code and the raising module.function, no secrets.
 - `ember/capture/__init__.py`: Marks the capture engine folder as a package.
 - `ember/capture/errors.py`: Capture error codes `CAPTURE-001` to `CAPTURE-016`.
@@ -101,8 +103,9 @@ Earlier logo and character images, kept for history.
 - `ember/maintain/maintain_lookup.py`: The `MaintainLookupPort` protocol (3 reads: items, confirmed links, reversed link ids).
 - `ember/maintain/derive.py`: Maintain Phase 2 pure core. `derive_status_changes` (the four rules) and `merge_and_filter` (one change per item, escalation-only, manual shield).
 - `ember/maintain/report.py`: `format_report`, the shared run/dry-run report formatter.
-- `ember/maintain/run_maintain.py`: Maintain Phase 1 loader `_load(ports)`, the `index_items` by-id index, and the engine-core orchestration: `MaintainPorts`, `MaintainRequest`, `MaintainResult`, `_apply_and_report`, `run_sweep`.
-- `ember/maintain/apply_status.py`: The `MaintainStorePort` protocol — the atomic write port (`apply_status_changes`, `apply_status_origin`).
+- `ember/maintain/run_maintain.py`: Maintain Phase 1 loader `_load(ports)`, the `index_items` by-id index, and the engine-core orchestration: `MaintainPorts`, `MaintainRequest`, `MaintainResult` (carries `total_items`), `_apply_and_report(ports, snapshot, changes)`, `run_sweep`, and the three human entry points `run_close_item` / `run_set_status` / `run_reverse_supersedes`.
+- `ember/maintain/human_actions.py`: The pure validators for the three human commands — `validate_close_item`, `validate_set_status`, `validate_reverse_supersedes`. Each reads a `MaintainSnapshot` and returns the `list[StatusChange]` to apply (no DB).
+- `ember/maintain/apply_status.py`: The `MaintainStorePort` protocol — the atomic write port (`apply_status_changes`, `apply_status_origin`, `apply_reversal`).
 - `ember/adapters/__init__.py`: Marks the adapters layer folder as a package.
 - `ember/adapters/sqlite.py`: SQLite connection, numbered migrations, `SqliteSourceStore` and `SqliteItemGatekeeper` (writes are the gatekeeper boundary), `SqliteItemContext` (item reads), `SqliteAiResponseStore` (raw AI answers) and `build_ai_response_store`, `SqliteLinkContext` (relate item/link reads plus 1-hop neighbors, and the `item_status` / `supersedes_ancestors` reads), `SqliteLinkStore` (atomic `insert_link_with_log`), `SqliteEmbedderStore` (packed-vector cache; reads `RELATE-037`, writes `RELATE-019`), `build_embedding_store`, `open_relate_database` / `ensure_relate_schema` (relate boot checks), `SqliteMaintainContext` (maintain item/link/reversed-link reads), `SqliteMaintainStore` (maintain atomic status + `change_log` writes), and `open_maintain_database` / `ensure_maintain_schema` (maintain boot checks).
 - `ember/adapters/llm.py`: `OpenAiItemProposer` (`ItemProposerPort` on the OpenAI SDK, OpenRouter base URL) and the env-driven factory; `OpenAiLinkProposer` (`LinkProposerPort`) and the `build_link_proposer` factory.
@@ -150,6 +153,7 @@ Earlier logo and character images, kept for history.
 - `tests/maintain/test_derive_unit.py`: Phase 2 unit tests: the four rules, tie-breaks, one-change-per-item, escalation-only, and the manual shield, on the fake lookup.
 - `tests/maintain/test_report_unit.py`: `format_report` line, ordering, and summary-bucket tests.
 - `tests/maintain/test_apply_unit.py`: `run_sweep` / `_apply_and_report` unit tests on a fake store: the write path calls `apply_status_changes` once and counts `reopened`.
+- `tests/maintain/test_human_actions_unit.py`: Unit tests for the three pure human-action validators (`validate_close_item`, `validate_set_status`, `validate_reverse_supersedes`): error codes, the no-op path, and the ladder regression (a human may move an item down) on the fake lookup.
 - `tests/maintain/test_migration_010.py`: Migration 010 on a non-empty DB: rows survive, the new columns default correctly.
 - `tests/maintain/test_maintain_boot.py`: `open_maintain_database` missing / corrupt / migration-fail / schema-version checks (`MAINTAIN-007` / `008` / `009`).
 - `tests/maintain/test_maintain_read_failures.py`: Every `SqliteMaintainContext` read maps a `sqlite3` failure to `MAINTAIN-010`.
@@ -157,6 +161,9 @@ Earlier logo and character images, kept for history.
 - `tests/maintain/test_maintain_integration.py`: `_load` + `derive_status_changes` on a real temp DB: the exact `StatusChange` list.
 - `tests/maintain/test_maintain_run_integration.py`: `run_sweep` end to end on a real temp DB: exact `items` + `change_log` state and idempotence.
 - `tests/maintain/test_maintain_cli.py`: `ember maintain` CLI checks: dry-run writes nothing, a plain run applies, idempotence, and `MAINTAIN-007` on a missing DB.
+- `tests/maintain/test_maintain_commands_cli.py`: CLI checks for `ember close-item` / `set-status` / `reverse-supersedes`: exit codes and the `MAINTAIN-001`–`006` codes.
+- `tests/maintain/test_maintain_commands_integration.py`: The three human commands end to end on a real temp DB: the `status_origin` shield row, the close fan-out, and the no-op path.
+- `tests/maintain/test_maintain_reversal_integration.py`: `reverse-supersedes` end to end on a real temp DB: the item is restored, two `change_log` rows exist (`status` + `link_reversed`), the `links` row is unchanged, and a later supersedes still closes the item.
 
 ### Relate Tests (`tests/relate/`)
 - `tests/relate/__init__.py`: Marks the relate tests folder as a package.

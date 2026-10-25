@@ -218,9 +218,9 @@ The Maintain engine is complete. Next: the L2 amendments (L1, Relate, README, PR
 
 Do **not** close them before the code is merged — the issues stay open until the behaviour that satisfies them ships.
 
-**Applying the cross-plan amendments — this step's deliverable.** `plans/engine-maintain-plan.md` §11 lists the amendments to L1, the Relate L2, the README, and PROJECT_MAP. They are **deferred to this step** (see L2 §11.0 for why). In the **same commit** that lands the Maintain engine:
+**Applying the cross-plan amendments — this step's deliverable.** `plans/engine-maintain-plan.md` §11 lists the amendments to L1, the Relate L2, the README, and PROJECT_MAP. They were deferred to implementation time so L1 never described behaviour that was not built. In the **same commit** that lands the Maintain engine:
 1. Apply every amendment in L2 §11.1-§11.4, using the exact "from → to" text given there.
-2. **Delete L2 §11.0** from `plans/engine-maintain-plan.md`, and replace the first bullet of L2 §11.1 with `- **Status: applied <date> in <commit-sha>.**`
+2. **L2 §11.0 is deleted**, and the first bullet of L2 §11.1 records the applied status.
 3. Update L2 §0's "Closed when:" line to `"#6 and #9 closed on <date> in <commit-sha>"`.
 4. Record it all in this step's §12 Build Notes.
 5. **Update the L1 §8 ordering constraint** — it now reads "do not write the Engine D L2 until Engine C's step 03 has landed". Say the constraint is satisfied (or delete the paragraph), so it does not outlive its purpose.
@@ -247,4 +247,14 @@ No data rollback. L1 §4 rule 7 ("Raw input immutable. Historical items immutabl
 
 ## 12. Build Notes (post-implementation)
 
-_Not started. This step is planned only; the notes are filled in after the code lands on `feat/maintain-engine`._
+**Engine implemented.** All three human commands (`close-item`, `set-status`, `reverse-supersedes`) ship on `feat/maintain-engine`, on top of steps 1 and 2. The validators live in `ember/maintain/human_actions.py`; the entry points are `run_close_item` / `run_set_status` / `run_reverse_supersedes` in `ember/maintain/run_maintain.py`; the writes go through `SqliteMaintainStore`.
+
+**Issues #6 and #9 are to be closed on merge — NOT closed yet.** The code that satisfies them is complete, but the issues stay open until this branch is merged (per L2 §0: "the issue stays open until the code that satisfies it is merged"). This docs-only amendment commit does not close them.
+
+**Cross-plan amendments applied 2026-10-25 in `<COMMIT_SHA>`.** L2 §11.1 (L1), §11.2 (Relate L2), §11.3 (README), and §11.4 (PROJECT_MAP) are applied. L2 §11.0 is deleted, L2 §11.1's status bullet is updated to "applied", and the L1 §8 ordering constraint is marked satisfied. The exact "from → to" text is in L2 §11.
+
+**Deviations recorded from the step plan:**
+- Step 2's decision B holds: `_apply_and_report` takes `(ports, snapshot, changes)` — the snapshot is passed in, not re-loaded.
+- `MaintainResult` gained a `total_items` field, so the CLI can call `run_sweep` without re-counting.
+- `apply_status_origin` logs the **observed** prior `items.status_origin` (read before the UPDATE), not the constant `'derived'` — the L2 §4.6 amendment.
+- `apply_reversal(change, marker)` was added as a **third** store method: `apply_status_changes` derives `field_changed='status'` for every row it writes, so it cannot produce the `link_reversed` marker, and a second port method would mean two commits. This is the L2 §4.5 amendment (recorded in §10 above).

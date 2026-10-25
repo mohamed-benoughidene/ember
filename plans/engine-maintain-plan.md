@@ -17,7 +17,7 @@ Terse caveman style. Source: L1 (`plans/master-plan.md`) + V1 spec 3.2/3.3/3.5/3
 | #8 | `Signals` wrapper | Relate | not ours. |
 | #12 | embedder re-validation at scale | Relate | not ours. |
 
-**Closed when:** the Maintain engine ships — **#6 and #9 close on merge**, with the comments above. Closing them is **step 03's deliverable** (§10), not a planning task: the issue stays open until the code that satisfies it is merged.
+**Closed when:** the Maintain engine ships — **#6 and #9 closed on 2026-10-25 in <COMMIT_SHA>**, with the comments above. Closing them was **step 03's deliverable** (§10), not a planning task: the issues stayed open until the code that satisfies them was merged.
 
 **New `deferred` issues filed by this plan:** (1) re-challenge an item after a human clears it manually (§2 Gap B/B4); (2) re-supersede the same `(source, target)` pair after a reversal; (3) AI-proposed `close_item`; (4) enforce the link compatibility table at the database level (spec 3.6:115); (5) plain-text export command (spec 3.6:118) — **no engine owns it**; (6) `edit_item` + `remove_link` (spec 3.7:130, :133) — **no plan owns them** (`remove_link` is also the only way to delete a link; `edit_item` is the likely writer for issue #1's `items.rationale`/`source`).
 
@@ -453,26 +453,9 @@ The substantive open decisions. Do NOT forget these when writing L3 step plans.
 
 ## 11. Amendments to Other Plans
 
-### 11.0 HOW TO APPLY THESE AMENDMENTS (read first)
-
-**These amendments are NOT applied yet.** They are deferred to implementation time so that L1 never disagrees with shipped code. They are applied by **step 03**, in the same commit that lands the Maintain engine.
-
-**The implementing agent must, in the same commit that merges the Maintain engine:**
-
-1. Apply every amendment in §11.1 (L1), §11.2 (Relate L2), §11.3 (README), §11.4 (PROJECT_MAP) — using the exact "from → to" text given.
-2. **Delete this entire subsection `### 11.0`** from this file, and replace the **first bullet of §11.1** (the `- **Status: NOT YET APPLIED.**` line) with `- **Status: applied <date> in <commit-sha>.**`
-3. Update **§0** in this file: change the "Closed when:" line so it reads **"#6 and #9 closed on <date> in <commit-sha>"** — the issues are closed by the same commit, so the plan records the fact rather than the intent.
-4. Update **§12 Build Notes** of `plans/steps/maintain/03-human-actions.md` to record the amendments, the closed issues, and the commit sha.
-
-**Already applied — do NOT re-apply:** L1 §8 carries an **ordering constraint** ("do not write the Engine D L2 until Engine C's step 03 has landed"). It is applied now, not deferred, because it is a **sequencing note, not a rule change** — L1's rules are untouched, so applying it early does not make L1 describe behaviour that is not built. It is in L1 §8 because that is where an Engine D author starts; a warning buried only in the Maintain plan would not be seen by the person it is aimed at. **When step 03 lands, update that L1 §8 paragraph** to say the constraint is satisfied (or delete it), so it does not outlive its purpose.
-
-**Why this is deferred and not done at planning time:** L1 is the approved system plan, and line 117 ("AI-callable mutations: `add_item`, `add_link`, `close_item`") is a **global** invariant. Amending it before the behaviour exists would leave L1 describing something that is not built. Doing it in the implementation commit means L1 always matches the code.
-
-**The risk this creates, and how to avoid it:** Engine D's L2 must **not** be written before this amendment lands — it would read L1 line 117 and assume an AI-callable `close_item` exists. If Engine D's L2 has to be written first, apply the L1 amendments then, before writing it. Tracked as **issue #24**; the constraint is also written in L1 §8, where an Engine D author starts.
-
 ### 11.1 `plans/master-plan.md` (L1) — 5 lines + 1 new line
 
-- **Status: NOT YET APPLIED.** Deferred to step 03 per §11.0.
+- **Status: applied 2026-10-25 in <COMMIT_SHA>.**
 - **Line 45** — from: `- Input: any state change event (link confirmed, item closed, etc.).`
   to: `- Input: the `items` + `links` tables, reconciled on demand. No event bus.`
 - **Line 47** — from: `- Four fixed triggers (via `validate_close_item` script):`
