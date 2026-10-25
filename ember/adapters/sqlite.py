@@ -22,12 +22,14 @@ from ember.capture.item_proposal import ContextItem
 from ember.capture.source_storage import SourceRecord
 from ember.errors import EmberError
 from ember.maintain.errors import (
+    ChangeLogWriteFailed as MaintainChangeLogWriteFailed,
     DbMigrationFailed as MaintainDbMigrationFailed,
     DbOpenFailed as MaintainDbOpenFailed,
     ItemsReadFailed as MaintainItemsReadFailed,
     SchemaOutdated as MaintainSchemaOutdated,
+    StatusWriteFailed as MaintainStatusWriteFailed,
 )
-from ember.maintain.rows import ItemState
+from ember.maintain.rows import ItemState, StatusChange
 from ember.relate.embedding_store import EmbeddingStorePort
 from ember.relate.errors import (
     ChangeLogWriteFailed,
@@ -563,6 +565,112 @@ class SqliteMaintainContext:
         except sqlite3.Error as exc:
             raise MaintainItemsReadFailed("change_log read fail") from exc
         return {int(row["link_id"]) for row in rows}
+
+
+class SqliteMaintainStore:
+    """`MaintainStorePort` on SQLite: one atomic status write per batch.
+
+    The `items` UPDATEs and the `change_log` INSERTs share one implicit
+    transaction with a single `commit()` at the end, so the batch is
+    all-or-nothing (Constitution D3). A failure on either half rolls the whole
+    batch back, so a caller never sees a status written without its log row.
+    """
+
+    def __init__(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        clock: Callable[[], str] | None = None,
+    ) -> None:
+        self._conn = conn
+        self._clock = clock or _utc_now
+
+    def apply_status_changes(self, changes: list[StatusChange]) -> int:
+        """Write every change's status and its `change_log` row in one batch.
+
+        Return `len(changes)`. Raise `StatusWriteFailed` (MAINTAIN-011) when an
+        `items` UPDATE fails, and `ChangeLogWriteFailed` (MAINTAIN-012) when a
+        `change_log` INSERT fails. Either failure rolls the whole batch back.
+        """
+        for change in changes:
+            try:
+                self._conn.execute(
+                    "UPDATE items SET status = ?, close_reason = ? WHERE id = ?",
+                    (change.new_status, change.close_reason, change.item_id),
+                )
+            except sqlite3.Error as exc:
+                self._conn.rollback()
+                raise MaintainStatusWriteFailed(
+                    "status update fail", item_id=change.item_id
+                ) from exc
+        timestamp = self._clock()
+        for change in changes:
+            try:
+                self._conn.execute(
+                    "INSERT INTO change_log"
+                    " (item_id, link_id, field_changed, old_value, new_value,"
+                    " timestamp, trigger_cause) VALUES (?, ?, 'status', ?, ?, ?, ?)",
+                    (
+                        change.item_id,
+                        change.link_id,
+                        _status_old_value(change),
+                        _status_new_value(change),
+                        timestamp,
+                        change.trigger_cause,
+                    ),
+                )
+            except sqlite3.Error as exc:
+                self._conn.rollback()
+                raise MaintainChangeLogWriteFailed(
+                    "change_log insert fail", item_id=change.item_id
+                ) from exc
+        self._conn.commit()
+        return len(changes)
+
+    def apply_status_origin(self, item_id: int, origin: str) -> None:
+        """Write one item's `status_origin` and its `change_log` row atomically.
+
+        Raise `StatusWriteFailed` (MAINTAIN-011) when the `items` UPDATE fails,
+        and `ChangeLogWriteFailed` (MAINTAIN-012) when the `change_log` INSERT
+        fails. Either failure rolls the whole write back.
+        """
+        try:
+            self._conn.execute(
+                "UPDATE items SET status_origin = ? WHERE id = ?",
+                (origin, item_id),
+            )
+        except sqlite3.Error as exc:
+            self._conn.rollback()
+            raise MaintainStatusWriteFailed(
+                "status_origin update fail", item_id=item_id
+            ) from exc
+        try:
+            self._conn.execute(
+                "INSERT INTO change_log"
+                " (item_id, link_id, field_changed, old_value, new_value,"
+                " timestamp, trigger_cause)"
+                " VALUES (?, NULL, 'status_origin', 'derived', ?, ?,"
+                " 'user_set_status')",
+                (item_id, origin, self._clock()),
+            )
+        except sqlite3.Error as exc:
+            self._conn.rollback()
+            raise MaintainChangeLogWriteFailed(
+                "change_log insert fail", item_id=item_id
+            ) from exc
+        self._conn.commit()
+
+
+def _status_old_value(change: StatusChange) -> str:
+    if change.old_status == "Closed":
+        return f"{change.old_status}:{change.old_close_reason}"
+    return change.old_status
+
+
+def _status_new_value(change: StatusChange) -> str:
+    if change.new_status == "Closed":
+        return f"{change.new_status}:{change.close_reason}"
+    return change.new_status
 
 
 class SqliteItemGatekeeper:
