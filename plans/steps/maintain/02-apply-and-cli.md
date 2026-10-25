@@ -53,7 +53,7 @@ From the port (`MaintainStorePort`, L2 §4.5 — in `ember/maintain/apply_status
 
 ## 3. Outputs
 
-- `MaintainResult(changed: list[StatusChange], applied: int, reopened: int)` — the named object Phase 4 reports from.
+- `MaintainResult(changed: list[StatusChange], applied: int, reopened: int, total_items: int)` — the named object Phase 4 reports from (`total_items` is a step-02 amendment; §10).
 - STDOUT: one line per change (`item 3: Active -> Closed (superseded)`) plus a summary (`closed: 1, challenged: 2, reopened: 0, unchanged: 38`).
 - `unchanged` = total items − changed items. A `reopened` bucket exists because `reverse-supersedes` and `set-status --to Active` move `Closed → Active` / `Challenged → Active`.
 
@@ -112,11 +112,12 @@ class MaintainResult:
     changed: list[StatusChange]
     applied: int
     reopened: int
+    total_items: int
 ```
 
 **`MaintainRequest` has no `command` and no `dry_run` field.** The four commands are separate entry points (`run_sweep`, `run_close_item`, `run_set_status`, `run_reverse_supersedes`), so a `command` discriminator would be a mode switch nothing reads. And `--dry-run` is a **CLI** concern: the command omits the `apply_*` call entirely, so no boolean ever crosses into a function (I2). A `dry_run` field on the request would be a boolean that nothing reads.
 
-Entry points: `run_sweep(ports, request) -> MaintainResult`, plus `run_close_item`, `run_set_status`, `run_reverse_supersedes` (step 3). All share a private `_load(ports)` and `_apply_and_report(ports, changes)`. The shared pipeline is a helper, not a phase engine — I2 holds and each command has its own named entry point.
+Entry points: `run_sweep(ports, request) -> MaintainResult`, plus `run_close_item`, `run_set_status`, `run_reverse_supersedes` (step 3). All share a private `_load(ports)` and `_apply_and_report(ports, snapshot, changes)`. The shared pipeline is a helper, not a phase engine — I2 holds and each command has its own named entry point.
 
 **`MaintainResult.reopened`** = the count of **applied** changes whose `old_status` is not `'Active'` and whose `new_status` is `'Active'` (a `Challenged → Active` or `Closed → Active` move). Compute it from the **applied** changes, not the requested ones — a change the merge dropped was not applied and must not be counted.
 
@@ -195,7 +196,7 @@ Step 3 adds `ember close-item`, `ember set-status`, and `ember reverse-supersede
 - (L2 §9 #5) The `--dry-run` output shape — **this step picks**: the dry run and the real run print **the same lines**, because both call `format_report` (shipped in step 1). The dry run simply omits the write.
 
 **L2 amendment log entries recorded by this step** (folded into `plans/engine-maintain-plan.md` when the L2 is amended):
-- None yet. If step 2 changes any port method, error trigger text, the `StatusChange` shape, or the `change_log` encoding, record it here and amend the L2 in the same commit.
+- **`MaintainResult` gains a 4th field `total_items`.** L2 §4.7 originally fixed three fields. The report's `unchanged` bucket is `total_items − changed items`, and `MaintainResult` carried no item total, so the CLI would have had to re-run Phase 1 just to count. Carrying `total_items` lets the CLI call `run_sweep` (one load) and report from its result. L2 §4.7 amended in the same commit; `_apply_and_report` therefore takes `(ports, snapshot, changes)`.
 
 ## 11. Rollback
 

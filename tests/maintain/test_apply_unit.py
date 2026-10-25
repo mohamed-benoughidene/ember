@@ -88,6 +88,7 @@ def test_run_sweep_calls_apply_exactly_once_with_derived_list() -> None:
     assert store.applied_changes[0] == expected
     assert len(expected) == 1
     assert result.changed == expected
+    assert result.total_items == 2
 
 
 def test_run_sweep_empty_snapshot_reports_zero() -> None:
@@ -95,7 +96,9 @@ def test_run_sweep_empty_snapshot_reports_zero() -> None:
 
     result = run_sweep(ports, MaintainRequest())
 
-    assert result == MaintainResult(changed=[], applied=0, reopened=0)
+    assert result == MaintainResult(
+        changed=[], applied=0, reopened=0, total_items=0
+    )
     assert store.applied_changes == [[]]
 
 
@@ -124,9 +127,11 @@ def test_apply_and_report_counts_reopen_for_challenged_to_active() -> None:
         link_id=None,
     )
 
-    result = _apply_and_report(ports, [change])
+    result = _apply_and_report(ports, _snapshot([], []), [change])
 
-    assert result == MaintainResult(changed=[change], applied=1, reopened=1)
+    assert result == MaintainResult(
+        changed=[change], applied=1, reopened=1, total_items=0
+    )
     assert store.applied_changes == [[change]]
 
 
@@ -158,7 +163,7 @@ def test_apply_and_report_ignores_non_reopen_moves() -> None:
     )
 
     result = _apply_and_report(
-        ports, [active_to_active, active_to_challenged, closed_to_active]
+        ports, _snapshot([], []), [active_to_active, active_to_challenged, closed_to_active]
     )
 
     assert result.applied == 3

@@ -45,7 +45,12 @@ from ember.capture.source_storage import StoredSource, store_source
 from ember.errors import EmberError
 from ember.maintain.derive import derive_status_changes
 from ember.maintain.report import format_report
-from ember.maintain.run_maintain import MaintainPorts, _load
+from ember.maintain.run_maintain import (
+    MaintainPorts,
+    MaintainRequest,
+    _load,
+    run_sweep,
+)
 from ember.relate.candidate_pool import build_candidate_pool
 from ember.relate.errors import UserAbort as RelateUserAbort
 from ember.relate.load_filter import load_item_candidates, load_latest_candidates
@@ -332,11 +337,13 @@ def maintain(dry_run: bool, db_path: str) -> None:
             lookup=SqliteMaintainContext(conn),
             store=SqliteMaintainStore(conn),
         )
-        snapshot = _load(ports.lookup)
-        changes = derive_status_changes(snapshot)
-        if not dry_run:
-            ports.store.apply_status_changes(changes)
-        report = format_report(changes, len(snapshot.items))
+        if dry_run:
+            snapshot = _load(ports.lookup)
+            changes = derive_status_changes(snapshot)
+            report = format_report(changes, len(snapshot.items))
+        else:
+            result = run_sweep(ports, MaintainRequest())
+            report = format_report(result.changed, result.total_items)
     except EmberError as exc:
         click.echo(f"error: {exc.log_line()}", err=True)
         raise SystemExit(1)

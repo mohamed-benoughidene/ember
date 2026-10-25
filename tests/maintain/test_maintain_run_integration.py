@@ -97,6 +97,7 @@ def test_sweep_writes_exact_status_and_change_log_rows(db_path) -> None:
         assert isinstance(result, MaintainResult)
         assert result.applied == len(result.changed) == 3
         assert result.reopened == 0
+        assert result.total_items == 5
 
         assert _items_state(conn) == {
             1: ("Closed", "superseded"),
@@ -122,7 +123,8 @@ def test_second_sweep_writes_no_new_rows(db_path) -> None:
     conn = open_maintain_database(db_path)
     try:
         first = run_sweep(_ports(conn), MaintainRequest())
-        assert first.applied == 3
+        assert first.applied == len(first.changed) == 3
+        assert first.total_items == 5
         after_items = _items_state(conn)
         after_logs = _log_rows(conn)
 
@@ -130,6 +132,7 @@ def test_second_sweep_writes_no_new_rows(db_path) -> None:
 
         assert second.applied == 0
         assert second.changed == []
+        assert second.total_items == 5
         assert _items_state(conn) == after_items
         assert _log_rows(conn) == after_logs
     finally:

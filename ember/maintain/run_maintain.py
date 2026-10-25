@@ -35,11 +35,16 @@ class MaintainRequest:
 
 @dataclass(frozen=True)
 class MaintainResult:
-    """The outcome Phase 4 reports from (I4: named object, not a tuple)."""
+    """The outcome Phase 4 reports from (I4: named object, not a tuple).
+
+    `total_items` is the size of the snapshot this run derived from, so the
+    caller can render the report without re-reading the graph.
+    """
 
     changed: list[StatusChange]
     applied: int
     reopened: int
+    total_items: int
 
 
 def _load(ports: MaintainLookupPort) -> MaintainSnapshot:
@@ -65,7 +70,9 @@ def index_items(snapshot: MaintainSnapshot) -> dict[int, ItemState]:
 
 
 def _apply_and_report(
-    ports: MaintainPorts, changes: list[StatusChange]
+    ports: MaintainPorts,
+    snapshot: MaintainSnapshot,
+    changes: list[StatusChange],
 ) -> MaintainResult:
     """Write the batch through the store port, then count the reopens.
 
@@ -75,7 +82,8 @@ def _apply_and_report(
     `reopened` counts the changes that actually moved to `Active` from a
     non-`Active` status — a `Challenged -> Active` or `Closed -> Active` move.
     It is computed from the merged list passed to the store, so a change the
-    merge dropped is never counted.
+    merge dropped is never counted. `total_items` is the snapshot size, carried
+    so the caller can report without a second load.
     """
     applied = ports.store.apply_status_changes(changes)
     reopened = sum(
@@ -83,7 +91,12 @@ def _apply_and_report(
         for change in changes
         if change.new_status == "Active" and change.old_status != "Active"
     )
-    return MaintainResult(changed=changes, applied=applied, reopened=reopened)
+    return MaintainResult(
+        changed=changes,
+        applied=applied,
+        reopened=reopened,
+        total_items=len(snapshot.items),
+    )
 
 
 def run_sweep(ports: MaintainPorts, request: MaintainRequest) -> MaintainResult:
@@ -95,4 +108,4 @@ def run_sweep(ports: MaintainPorts, request: MaintainRequest) -> MaintainResult:
     """
     snapshot = _load(ports.lookup)
     changes = derive_status_changes(snapshot)
-    return _apply_and_report(ports, changes)
+    return _apply_and_report(ports, snapshot, changes)
