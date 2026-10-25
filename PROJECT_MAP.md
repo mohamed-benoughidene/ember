@@ -72,7 +72,7 @@ Earlier logo and character images, kept for history.
 - `pyproject.toml`: Package metadata, locked stack deps (click, openai, pydantic; pytest is a dev dep), the optional `relate` extra (`sentence-transformers`), pytest config.
 - `ember/__init__.py`: Package version.
 - `ember/__main__.py`: Runs the CLI via `python -m ember`.
-- `ember/cli.py`: Click CLI. `capture` runs the full 4-phase pipeline; `capture-source` is the Phase 1 standalone command; `relate` runs all 4 Relate phases (Phase 3 AI propose, Phase 3.5 raw-answer save, Phase 4 gatekeeper + confirm + atomic write) and defines `RelateTerminalConfirm` (raises the relate `UserAbort` on end of input); `set-validated` / `clear-validated` write the Assumption flag; `maintain` runs the Maintain sweep (step 1: load + derive + print the planned status changes, with `--dry-run` writing nothing).
+- `ember/cli.py`: Click CLI. `capture` runs the full 4-phase pipeline; `capture-source` is the Phase 1 standalone command; `relate` runs all 4 Relate phases (Phase 3 AI propose, Phase 3.5 raw-answer save, Phase 4 gatekeeper + confirm + atomic write) and defines `RelateTerminalConfirm` (raises the relate `UserAbort` on end of input); `set-validated` / `clear-validated` write the Assumption flag; `maintain` runs the Maintain sweep (load + derive + atomic write + report; `--dry-run` prints the plan and writes nothing).
 - `ember/errors.py`: Base `EmberError`. Carries a stable code and the raising module.function, no secrets.
 - `ember/capture/__init__.py`: Marks the capture engine folder as a package.
 - `ember/capture/errors.py`: Capture error codes `CAPTURE-001` to `CAPTURE-016`.
@@ -101,9 +101,10 @@ Earlier logo and character images, kept for history.
 - `ember/maintain/maintain_lookup.py`: The `MaintainLookupPort` protocol (3 reads: items, confirmed links, reversed link ids).
 - `ember/maintain/derive.py`: Maintain Phase 2 pure core. `derive_status_changes` (the four rules) and `merge_and_filter` (one change per item, escalation-only, manual shield).
 - `ember/maintain/report.py`: `format_report`, the shared run/dry-run report formatter.
-- `ember/maintain/run_maintain.py`: Maintain Phase 1 loader `_load(ports)` and the `index_items` by-id index.
+- `ember/maintain/run_maintain.py`: Maintain Phase 1 loader `_load(ports)`, the `index_items` by-id index, and the engine-core orchestration: `MaintainPorts`, `MaintainRequest`, `MaintainResult`, `_apply_and_report`, `run_sweep`.
+- `ember/maintain/apply_status.py`: The `MaintainStorePort` protocol — the atomic write port (`apply_status_changes`, `apply_status_origin`).
 - `ember/adapters/__init__.py`: Marks the adapters layer folder as a package.
-- `ember/adapters/sqlite.py`: SQLite connection, numbered migrations, `SqliteSourceStore` and `SqliteItemGatekeeper` (writes are the gatekeeper boundary), `SqliteItemContext` (item reads), `SqliteAiResponseStore` (raw AI answers) and `build_ai_response_store`, `SqliteLinkContext` (relate item/link reads plus 1-hop neighbors, and the `item_status` / `supersedes_ancestors` reads), `SqliteLinkStore` (atomic `insert_link_with_log`), `SqliteEmbedderStore` (packed-vector cache; reads `RELATE-037`, writes `RELATE-019`), `build_embedding_store`, `open_relate_database` / `ensure_relate_schema` (relate boot checks), `SqliteMaintainContext` (maintain item/link/reversed-link reads), and `open_maintain_database` / `ensure_maintain_schema` (maintain boot checks).
+- `ember/adapters/sqlite.py`: SQLite connection, numbered migrations, `SqliteSourceStore` and `SqliteItemGatekeeper` (writes are the gatekeeper boundary), `SqliteItemContext` (item reads), `SqliteAiResponseStore` (raw AI answers) and `build_ai_response_store`, `SqliteLinkContext` (relate item/link reads plus 1-hop neighbors, and the `item_status` / `supersedes_ancestors` reads), `SqliteLinkStore` (atomic `insert_link_with_log`), `SqliteEmbedderStore` (packed-vector cache; reads `RELATE-037`, writes `RELATE-019`), `build_embedding_store`, `open_relate_database` / `ensure_relate_schema` (relate boot checks), `SqliteMaintainContext` (maintain item/link/reversed-link reads), `SqliteMaintainStore` (maintain atomic status + `change_log` writes), and `open_maintain_database` / `ensure_maintain_schema` (maintain boot checks).
 - `ember/adapters/llm.py`: `OpenAiItemProposer` (`ItemProposerPort` on the OpenAI SDK, OpenRouter base URL) and the env-driven factory; `OpenAiLinkProposer` (`LinkProposerPort`) and the `build_link_proposer` factory.
 - `ember/adapters/embedder.py`: `SentenceTransformerEmbedder` (`EmbedderPort` on the optional `sentence-transformers` extra), the env-driven `build_embedder` factory, and `validate_embedder_config` (boot check for the timeout and optional packages).
 - `ember/adapters/migrations/__init__.py`: Marks the migrations folder as a package.
@@ -148,11 +149,14 @@ Earlier logo and character images, kept for history.
 - `tests/maintain/fakes.py`: In-memory port fake `FakeMaintainLookup`.
 - `tests/maintain/test_derive_unit.py`: Phase 2 unit tests: the four rules, tie-breaks, one-change-per-item, escalation-only, and the manual shield, on the fake lookup.
 - `tests/maintain/test_report_unit.py`: `format_report` line, ordering, and summary-bucket tests.
+- `tests/maintain/test_apply_unit.py`: `run_sweep` / `_apply_and_report` unit tests on a fake store: the write path calls `apply_status_changes` once and counts `reopened`.
 - `tests/maintain/test_migration_010.py`: Migration 010 on a non-empty DB: rows survive, the new columns default correctly.
 - `tests/maintain/test_maintain_boot.py`: `open_maintain_database` missing / corrupt / migration-fail / schema-version checks (`MAINTAIN-007` / `008` / `009`).
 - `tests/maintain/test_maintain_read_failures.py`: Every `SqliteMaintainContext` read maps a `sqlite3` failure to `MAINTAIN-010`.
+- `tests/maintain/test_maintain_store_integration.py`: `SqliteMaintainStore` on a real temp DB: exact log rows, the `MAINTAIN-011` / `012` codes, real FK atomicity rollback, and the injected clock.
 - `tests/maintain/test_maintain_integration.py`: `_load` + `derive_status_changes` on a real temp DB: the exact `StatusChange` list.
-- `tests/maintain/test_maintain_cli.py`: `ember maintain` CLI checks: dry-run output, no writes, and `MAINTAIN-007` on a missing DB.
+- `tests/maintain/test_maintain_run_integration.py`: `run_sweep` end to end on a real temp DB: exact `items` + `change_log` state and idempotence.
+- `tests/maintain/test_maintain_cli.py`: `ember maintain` CLI checks: dry-run writes nothing, a plain run applies, idempotence, and `MAINTAIN-007` on a missing DB.
 
 ### Relate Tests (`tests/relate/`)
 - `tests/relate/__init__.py`: Marks the relate tests folder as a package.
