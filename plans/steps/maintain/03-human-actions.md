@@ -251,7 +251,7 @@ No data rollback. L1 §4 rule 7 ("Raw input immutable. Historical items immutabl
 
 **Issues #6 and #9 are to be closed on merge — NOT closed yet.** The code that satisfies them is complete, but the issues stay open until this branch is merged (per L2 §0: "the issue stays open until the code that satisfies it is merged"). This docs-only amendment commit does not close them.
 
-**Cross-plan amendments applied 2026-10-25 in `<COMMIT_SHA>`.** L2 §11.1 (L1), §11.2 (Relate L2), §11.3 (README), and §11.4 (PROJECT_MAP) are applied. L2 §11.0 is deleted, L2 §11.1's status bullet is updated to "applied", and the L1 §8 ordering constraint is marked satisfied. The exact "from → to" text is in L2 §11.
+**Cross-plan amendments applied 2026-10-25 in `7b4266d`.** L2 §11.1 (L1), §11.2 (Relate L2), §11.3 (README), and §11.4 (PROJECT_MAP) are applied. L2 §11.0 is deleted, L2 §11.1's status bullet is updated to "applied", and the L1 §8 ordering constraint is marked satisfied. The exact "from → to" text is in L2 §11.
 
 **Deviations recorded from the step plan:**
 - Step 2's decision B holds: `_apply_and_report` takes `(ports, snapshot, changes)` — the snapshot is passed in, not re-loaded.
