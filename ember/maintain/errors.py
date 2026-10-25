@@ -1,0 +1,70 @@
+"""Maintain engine errors. Codes are stable and never reused."""
+
+from __future__ import annotations
+
+from ember.errors import EmberError
+
+
+class MaintainError(EmberError):
+    code = "MAINTAIN-000"
+    name = "MaintainError"
+
+
+class MaintainItemNotFound(MaintainError):
+    code = "MAINTAIN-001"
+    name = "MaintainItemNotFound"
+
+
+class CloseReasonInvalid(MaintainError):
+    code = "MAINTAIN-002"
+    name = "CloseReasonInvalid"
+
+
+class CloseReasonMismatch(MaintainError):
+    code = "MAINTAIN-003"
+    name = "CloseReasonMismatch"
+
+
+class ItemAlreadyClosed(MaintainError):
+    code = "MAINTAIN-004"
+    name = "ItemAlreadyClosed"
+
+
+class ReversalPreconditionFailed(MaintainError):
+    code = "MAINTAIN-005"
+    name = "ReversalPreconditionFailed"
+
+
+class StatusTransitionInvalid(MaintainError):
+    code = "MAINTAIN-006"
+    name = "StatusTransitionInvalid"
+
+
+class DbOpenFailed(MaintainError):
+    code = "MAINTAIN-007"
+    name = "DbOpenFailed"
+
+
+class DbMigrationFailed(MaintainError):
+    code = "MAINTAIN-008"
+    name = "DbMigrationFailed"
+
+
+class SchemaOutdated(MaintainError):
+    code = "MAINTAIN-009"
+    name = "SchemaOutdated"
+
+
+class ItemsReadFailed(MaintainError):
+    code = "MAINTAIN-010"
+    name = "ItemsReadFailed"
+
+
+class StatusWriteFailed(MaintainError):
+    code = "MAINTAIN-011"
+    name = "StatusWriteFailed"
+
+
+class ChangeLogWriteFailed(MaintainError):
+    code = "MAINTAIN-012"
+    name = "ChangeLogWriteFailed"
