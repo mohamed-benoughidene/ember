@@ -154,9 +154,9 @@ AI testing (Rule T7): test parser, validation, retries with saved fixtures. Asse
 
 ## 8. Next Step
 
-Human approves L1. Then 4 L2 engine master plans: `capture`, `relate`, `maintain`, `query`. Each L2 defines internal pipeline phases for its engine.
+Human approves L1. Then 4 L2 engine master plans: `capture`, `relate`, `maintain`, `query`. Each L2 defines internal pipeline phases for its engine. All 4 are written (`plans/engine-capture-plan.md`, `plans/engine-relate-plan.md`, `plans/engine-maintain-plan.md`, `plans/engine-query-plan.md`).
 
-**Ordering constraint on `query`: satisfied.** Engine C's step 03 landed on 2026-10-25, and the L1 amendments it deferred are applied: `close_item` has moved from the AI-callable list (rule 3, line 117) to the human-only list, and `validate_close_item` + `validate_reverse_supersedes` have joined the human-only gatekeepers (lines 81, 83). Engine D's L2 may now be written — line 117 no longer claims an AI-callable `close_item` exists.
+**Ordering constraint on `query`: satisfied.** Engine C's step 03 landed on 2026-10-25, and the L1 amendments it deferred are applied: `close_item` has moved from the AI-callable list (rule 3, line 117) to the human-only list, and `validate_close_item` + `validate_reverse_supersedes` have joined the human-only gatekeepers (lines 81, 83). Engine D's L2 may now be written — line 117 no longer claims an AI-callable `close_item` exists. The Engine D L2 is now written (`plans/engine-query-plan.md`); its four modes are `current_state`, `topic_search`, `why`, `history`.
 
 ## 9. Deferred to L2 (Reminder)
 

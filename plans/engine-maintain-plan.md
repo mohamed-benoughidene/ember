@@ -10,10 +10,10 @@ Terse caveman style. Source: L1 (`plans/master-plan.md`) + V1 spec 3.2/3.3/3.5/3
 |---|---|---|---|
 | **#6** | status cascade propagation | **Engine C** | **this engine's core job.** The L2 names the cascade rules (§4). Close **when the Maintain engine merges**, with a comment: the cascade is expressed on `items.status`, not on `links`; link statuses stay `Confirmed`/`Rejected` by design (spec 3.3, migration 006's CHECK forbids a third value). |
 | **#9** | `supersedes` reversal | **Engine C** | **the reversal.** The L2 names the dispatch vocabulary (§4.6). Close **when the Maintain engine merges**, with a comment recording: the reversal is an item-status event — it writes **no** `links` row and does not change `links.status`; the marker is `field_changed='link_reversed'`; Engine C **sweeps** `links`, it does not listen for events; dependents stay `Challenged` (spec 3.5:111); the rule-2 vocabulary is `dependency_closed`. |
-| #1 | `items.rationale` / `items.source` | Capture | not ours (Engine D's `why` mode needs it). Its Done-when implies an `edit_item` writer — §8. |
+| #1 | `items.rationale` / `items.source` | Capture | not ours (Engine D's `why` mode needs it — it reads `rationale`, and the column is NULL until a writer lands; Engine D L2 §2.4). Its Done-when implies an `edit_item` writer — §8. |
 | #5 | `items.metadata` | Relate | not ours. |
 | #4 | external vector DB | Relate | not ours. |
-| #7 | BM25 `topic_search` | Engine D | not ours. |
+| #7 | BM25 `topic_search` | Engine D — plans/engine-query-plan.md | **this engine's job.** The mode and its BM25 formula are specified in that plan (§2.2, §4 Phase 2). Close when the Engine D L2 lands. |
 | #8 | `Signals` wrapper | Relate | not ours. |
 | #12 | embedder re-validation at scale | Relate | not ours. |
 
@@ -21,7 +21,7 @@ Terse caveman style. Source: L1 (`plans/master-plan.md`) + V1 spec 3.2/3.3/3.5/3
 
 **New `deferred` issues filed by this plan:** (1) re-challenge an item after a human clears it manually (§2 Gap B/B4); (2) re-supersede the same `(source, target)` pair after a reversal; (3) AI-proposed `close_item`; (4) enforce the link compatibility table at the database level (spec 3.6:115); (5) plain-text export command (spec 3.6:118) — **no engine owns it**; (6) `edit_item` + `remove_link` (spec 3.7:130, :133) — **no plan owns them** (`remove_link` is also the only way to delete a link; `edit_item` is the likely writer for issue #1's `items.rationale`/`source`).
 
-**New `note` issues:** (7) `links` rows have no lifecycle — a reversed supersedes stays `Confirmed` (§2 Gap C); (8) `supersedes_ancestors` false-rejects the corrective inverse after a reversal; (9) `items.close_reason` / `status_origin` need a matching Engine D `history` rendering (Engine D's L2); (10) the cross-column invariant `Closed ⇒ close_reason IS NOT NULL` is not enforced in the schema (spec 3.2:60).
+**New `note` issues:** (7) `links` rows have no lifecycle — a reversed supersedes stays `Confirmed` (§2 Gap C); (8) `supersedes_ancestors` false-rejects the corrective inverse after a reversal; (9) `items.close_reason` / `status_origin` need a matching Engine D `history` rendering (`plans/engine-query-plan.md` §4.6 — **issue #22**, now resolved); (10) the cross-column invariant `Closed ⇒ close_reason IS NOT NULL` is not enforced in the schema (spec 3.2:60).
 
 **Also filed:** **#24** (`deferred`) — the Engine D (Query) L2 must not be written until this plan's §11 amendments land. Tracked there so the dependency is enforced by the issue list, not only by a note in this file.
 
@@ -417,12 +417,12 @@ Pyramid (T4): ~18 unit, ~14 integration, 1 E2E, 0 live.
 
 ## 8. Out of Scope (this L2 plan)
 
-- Engine D (Query) — `current_state`, `topic_search`, `why`, `history` are Engine D's.
+- Engine D (Query) — `current_state`, `topic_search`, `why`, `history` are Engine D's (`plans/engine-query-plan.md`).
 - Multi-step cascade — the one-step flag-spread limit is a spec rule, not a limitation.
 - Re-opening a `Closed` item by any path other than reversal.
 - `edit_item` (human-only, spec 3.7) — a content edit. **No plan owns it** — deferred issue (§0).
 - `remove_link` (human-only, spec 3.7) — deletes a link edge. **No plan owns it** — deferred issue (§0). Note: removing a `supersedes` link does **not** reopen the old item.
-- `items.rationale` / `items.source` (issue #1) — Capture's write path.
+- `items.rationale` / `items.source` (issue #1) — Capture's write path. Engine D's `why` mode reads `rationale` (`plans/engine-query-plan.md` §2.4); the column has no writer yet.
 - AI-proposed `close_item` (V1 uses a human-invoked command).
 - Re-challenge after a manual clear (Gap B / B4) — deferred issue.
 - **Re-superseding the same `(source, target)` pair after a reversal** — blocked by the UNIQUE constraint + gatekeeper rule 9. Deferred note.

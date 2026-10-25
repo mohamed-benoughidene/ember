@@ -454,7 +454,7 @@ Test pyramid per L1 §7 + Constitution T1-T4 + T7 + T9.
 ## 8. Out of Scope (this L2 plan)
 
 - Engine C (Maintain) cascade rules — out of scope. Reversal of `supersedes` is Engine C's job. **Resolved (2026-10-25):** Maintain does **not** listen for events — it **sweeps** the `links` table (`status='Confirmed'`) to know what is live; there is no dispatch table because there is no event bus (L1:70). The vocabulary Maintain writes is fixed in `plans/engine-maintain-plan.md` §4.6. Relate does not own the cascade writes; it only emits the source-of-truth link row + the user-confirm log row.
-- Engine D (Query) BM25 — out of scope. BM25 is Engine D's `topic_search` only.
+- Engine D (Query) BM25 — out of scope. BM25 is Engine D's `topic_search` only (`plans/engine-query-plan.md` §4 Phase 2).
 - `items.metadata` field — V1 spec 3.x deferred. Relate uses `created_at` proximity as a proxy.
 - A `Signals` object wrapper — L1 §9 deferred until signal count > 3.
 - Embedder model swap — kept `bge-base-en-v1.5` per L1 §0. Scale test is GitHub issue #12 (note: consider External vector DB at scale, tracked as GitHub issue #4, `note`).

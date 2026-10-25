@@ -65,6 +65,7 @@ Earlier logo and character images, kept for history.
 - `plans/steps/relate/01-load-and-filter.md`: L3 Relate Step 1 plan. Phase 1, load the item and filter type-compatible candidates.
 - `plans/steps/relate/02-candidate-pool.md`: L3 Relate Step 2 plan. Phase 2, the 3 signals and merge.
 - `plans/steps/relate/03-ai-propose-and-confirm-write.md`: L3 Relate Step 3 plan. Phases 3+4, AI proposal, confirm, and write.
+- `plans/engine-query-plan.md`: L2 Query engine master plan. The four read modes (`current_state`, `topic_search`, `why`, `history`), the read-only boot path, the BM25 formula, and the `change_log` vocabulary contract.
 - `plans/engine-maintain-plan.md`: L2 Maintain engine master plan. Pipeline phases 1-4 (load, derive, apply, report), migration 010, the four deterministic zero-AI rules, and the change_log vocabulary.
 - `plans/steps/maintain/01-load-and-derive.md`: L3 Maintain Step 1 plan. Phases 1+2, migration 010, the pure derive core, and a runnable `ember maintain --dry-run`.
 - `plans/steps/maintain/02-apply-and-cli.md`: L3 Maintain Step 2 plan. Phases 3+4, the atomic status + `change_log` write path, and the `ember maintain` command.
