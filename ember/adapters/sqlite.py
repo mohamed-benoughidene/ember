@@ -21,6 +21,13 @@ from ember.capture.item_gatekeeper import ExistingItem, StoredItem, ValidatedIte
 from ember.capture.item_proposal import ContextItem
 from ember.capture.source_storage import SourceRecord
 from ember.errors import EmberError
+from ember.maintain.errors import (
+    DbMigrationFailed as MaintainDbMigrationFailed,
+    DbOpenFailed as MaintainDbOpenFailed,
+    ItemsReadFailed as MaintainItemsReadFailed,
+    SchemaOutdated as MaintainSchemaOutdated,
+)
+from ember.maintain.rows import ItemState
 from ember.relate.embedding_store import EmbeddingStorePort
 from ember.relate.errors import (
     ChangeLogWriteFailed,
@@ -96,6 +103,54 @@ def ensure_relate_schema(conn: sqlite3.Connection) -> None:
         raise DbOpenFailed("schema version read fail") from exc
     if version < 9:
         raise SchemaOutdated("schema version too old", version=version, required=9)
+
+
+def open_maintain_database(db_path: str) -> sqlite3.Connection:
+    """Open an existing maintain DB, apply migrations, check the schema.
+
+    Raise `DbOpenFailed` (MAINTAIN-007) when the file is missing or is not a
+    readable SQLite database, `DbMigrationFailed` (MAINTAIN-008) when a
+    migration fails, and `SchemaOutdated` (MAINTAIN-009) when the applied
+    version is below the required 10.
+    """
+    if not os.path.exists(db_path):
+        raise MaintainDbOpenFailed("db file missing", db_path=db_path)
+    conn: sqlite3.Connection | None = None
+    try:
+        conn = _connect(db_path)
+        conn.execute("SELECT COUNT(*) FROM sqlite_master").fetchone()
+    except sqlite3.Error as exc:
+        if conn is not None:
+            conn.close()
+        raise MaintainDbOpenFailed("db open fail", db_path=db_path) from exc
+    try:
+        _apply_migrations(conn)
+    except (sqlite3.Error, ValueError) as exc:
+        conn.close()
+        raise MaintainDbMigrationFailed("migration fail", db_path=db_path) from exc
+    try:
+        ensure_maintain_schema(conn)
+    except EmberError:
+        conn.close()
+        raise
+    return conn
+
+
+def ensure_maintain_schema(conn: sqlite3.Connection) -> None:
+    """Check the applied schema version is new enough for the maintain engine.
+
+    Raise `DbOpenFailed` (MAINTAIN-007) if the version cannot be read, and
+    `SchemaOutdated` (MAINTAIN-009) if the version is below the required 10.
+    """
+    try:
+        row = conn.execute("SELECT version FROM schema_version").fetchone()
+        version = 0 if row is None else int(row["version"])
+    except (sqlite3.Error, ValueError, TypeError) as exc:
+        raise MaintainDbOpenFailed("schema version read fail") from exc
+    if version < 10:
+        raise MaintainSchemaOutdated(
+            "schema version too old", version=version, required=10
+        )
 
 
 def _apply_migrations(conn: sqlite3.Connection) -> None:
@@ -438,6 +493,76 @@ class SqliteLinkContext:
         except sqlite3.Error as exc:
             raise ItemsReadFailed("link read fail", item_id=item_id) from exc
         return ancestors
+
+
+class SqliteMaintainContext:
+    """`MaintainLookupPort` on SQLite. Read-only item, link and marker looks.
+
+    Every read raises `ItemsReadFailed` (MAINTAIN-010) on a read failure.
+    """
+
+    def __init__(self, conn: sqlite3.Connection) -> None:
+        self._conn = conn
+
+    def list_items(self) -> list[ItemState]:
+        """Return every item: id, type, status, close_reason, status_origin.
+
+        Raise `ItemsReadFailed` (MAINTAIN-010) on a read failure.
+        """
+        try:
+            rows = self._conn.execute(
+                "SELECT id, type, status, close_reason, status_origin FROM items"
+            ).fetchall()
+        except sqlite3.Error as exc:
+            raise MaintainItemsReadFailed("item read fail") from exc
+        return [
+            ItemState(
+                id=row["id"],
+                type=row["type"],
+                status=row["status"],
+                close_reason=row["close_reason"],
+                status_origin=row["status_origin"],
+            )
+            for row in rows
+        ]
+
+    def list_confirmed_links(self) -> list[Link]:
+        """Return every `links` row whose status is `Confirmed`.
+
+        Raise `ItemsReadFailed` (MAINTAIN-010) on a read failure.
+        """
+        try:
+            rows = self._conn.execute(
+                "SELECT id, source_item_id, target_item_id, link_type, status,"
+                " created_at FROM links WHERE status = 'Confirmed'"
+            ).fetchall()
+        except sqlite3.Error as exc:
+            raise MaintainItemsReadFailed("link read fail") from exc
+        return [
+            Link(
+                id=row["id"],
+                source_item_id=row["source_item_id"],
+                target_item_id=row["target_item_id"],
+                link_type=row["link_type"],
+                status=row["status"],
+                created_at=row["created_at"],
+            )
+            for row in rows
+        ]
+
+    def list_reversed_link_ids(self) -> set[int]:
+        """Return the link ids carrying a `link_reversed` change_log row.
+
+        Raise `ItemsReadFailed` (MAINTAIN-010) on a read failure.
+        """
+        try:
+            rows = self._conn.execute(
+                "SELECT DISTINCT link_id FROM change_log"
+                " WHERE field_changed = 'link_reversed' AND link_id IS NOT NULL"
+            ).fetchall()
+        except sqlite3.Error as exc:
+            raise MaintainItemsReadFailed("change_log read fail") from exc
+        return {int(row["link_id"]) for row in rows}
 
 
 class SqliteItemGatekeeper:

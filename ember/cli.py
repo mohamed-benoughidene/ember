@@ -16,10 +16,12 @@ from ember.adapters.sqlite import (
     SqliteItemGatekeeper,
     SqliteLinkContext,
     SqliteLinkStore,
+    SqliteMaintainContext,
     SqliteSourceStore,
     build_ai_response_store,
     build_embedding_store,
     open_database,
+    open_maintain_database,
     open_relate_database,
 )
 from ember.capture.confirm_write import run_confirm_loop
@@ -40,6 +42,9 @@ from ember.capture.item_proposal import (
 )
 from ember.capture.source_storage import StoredSource, store_source
 from ember.errors import EmberError
+from ember.maintain.derive import derive_status_changes
+from ember.maintain.report import format_report
+from ember.maintain.run_maintain import _load
 from ember.relate.candidate_pool import build_candidate_pool
 from ember.relate.errors import UserAbort as RelateUserAbort
 from ember.relate.load_filter import load_item_candidates, load_latest_candidates
@@ -298,6 +303,40 @@ def relate(item_id: int | None, latest: bool, db_path: str) -> None:
         sys.exit(1)
     if aborted:
         sys.exit(2)
+
+
+@main.command("maintain")
+@click.option(
+    "--dry-run",
+    is_flag=True,
+    default=False,
+    help="Print the planned changes and write nothing.",
+)
+@click.option(
+    "--db",
+    "db_path",
+    default=DEFAULT_DB_PATH,
+    help="SQLite database path.",
+)
+def maintain(dry_run: bool, db_path: str) -> None:
+    """Run the maintain sweep: load the graph, derive changes, report them.
+
+    Step 1 runs Phase 1 + Phase 2 only. Both a plain run and `--dry-run` load,
+    derive and print; neither writes an `items` or `change_log` row.
+    """
+    try:
+        conn = open_maintain_database(db_path)
+        ctx = SqliteMaintainContext(conn)
+        snapshot = _load(ctx)
+        changes = derive_status_changes(snapshot)
+        report = format_report(changes, len(snapshot.items))
+    except EmberError as exc:
+        click.echo(f"error: {exc.log_line()}", err=True)
+        raise SystemExit(1)
+    for line in report:
+        click.echo(line)
+    # Step 2 adds the write branch: a plain run applies `changes` here.
+    # `dry_run` never crosses into a function (I2); it stays in this body.
 
 
 def _write_validated_flag(item_id: int, db_path: str, *, new_value: bool) -> None:
