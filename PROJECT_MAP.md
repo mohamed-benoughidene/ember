@@ -65,12 +65,14 @@ Earlier logo and character images, kept for history.
 - `plans/steps/relate/01-load-and-filter.md`: L3 Relate Step 1 plan. Phase 1, load the item and filter type-compatible candidates.
 - `plans/steps/relate/02-candidate-pool.md`: L3 Relate Step 2 plan. Phase 2, the 3 signals and merge.
 - `plans/steps/relate/03-ai-propose-and-confirm-write.md`: L3 Relate Step 3 plan. Phases 3+4, AI proposal, confirm, and write.
+- `plans/engine-maintain-plan.md`: L2 Maintain engine master plan. Pipeline phases 1-4 (load, derive, apply, report), migration 010, the four deterministic zero-AI rules, and the change_log vocabulary.
+- `plans/steps/maintain/01-load-and-derive.md`: L3 Maintain Step 1 plan. Phases 1+2, migration 010, the pure derive core, and a runnable `ember maintain --dry-run`.
 
 ## Python Implementation (`ember/`)
 - `pyproject.toml`: Package metadata, locked stack deps (click, openai, pydantic; pytest is a dev dep), the optional `relate` extra (`sentence-transformers`), pytest config.
 - `ember/__init__.py`: Package version.
 - `ember/__main__.py`: Runs the CLI via `python -m ember`.
-- `ember/cli.py`: Click CLI. `capture` runs the full 4-phase pipeline; `capture-source` is the Phase 1 standalone command; `relate` runs all 4 Relate phases (Phase 3 AI propose, Phase 3.5 raw-answer save, Phase 4 gatekeeper + confirm + atomic write) and defines `RelateTerminalConfirm` (raises the relate `UserAbort` on end of input); `set-validated` / `clear-validated` write the Assumption flag.
+- `ember/cli.py`: Click CLI. `capture` runs the full 4-phase pipeline; `capture-source` is the Phase 1 standalone command; `relate` runs all 4 Relate phases (Phase 3 AI propose, Phase 3.5 raw-answer save, Phase 4 gatekeeper + confirm + atomic write) and defines `RelateTerminalConfirm` (raises the relate `UserAbort` on end of input); `set-validated` / `clear-validated` write the Assumption flag; `maintain` runs the Maintain sweep (step 1: load + derive + print the planned status changes, with `--dry-run` writing nothing).
 - `ember/errors.py`: Base `EmberError`. Carries a stable code and the raising module.function, no secrets.
 - `ember/capture/__init__.py`: Marks the capture engine folder as a package.
 - `ember/capture/errors.py`: Capture error codes `CAPTURE-001` to `CAPTURE-016`.
@@ -93,8 +95,15 @@ Earlier logo and character images, kept for history.
 - `ember/relate/link_gatekeeper.py`: Relate Phase 4 pure gatekeeper. `validate_add_link` runs the 9 rules and returns `ValidatedLink` or `RejectedLink`.
 - `ember/relate/confirm_write.py`: Relate Phase 4 core. The `y/n/s/q` confirm loop, `format_link_block`, and `ConfirmResult`.
 - `ember/relate/run_relate.py`: Relate engine-core entry point. `RelatePorts`, `RelateRequest`, `run_relate` tie Phases 3 + 3.5 + 4 together behind ports.
+- `ember/maintain/__init__.py`: Marks the maintain engine folder as a package.
+- `ember/maintain/errors.py`: Maintain error codes `MAINTAIN-000` to `MAINTAIN-012`.
+- `ember/maintain/rows.py`: Pydantic row models `ItemState`, `MaintainSnapshot`, `StatusChange` (`Link` is imported from `ember.relate.rows`).
+- `ember/maintain/maintain_lookup.py`: The `MaintainLookupPort` protocol (3 reads: items, confirmed links, reversed link ids).
+- `ember/maintain/derive.py`: Maintain Phase 2 pure core. `derive_status_changes` (the four rules) and `merge_and_filter` (one change per item, escalation-only, manual shield).
+- `ember/maintain/report.py`: `format_report`, the shared run/dry-run report formatter.
+- `ember/maintain/run_maintain.py`: Maintain Phase 1 loader `_load(ports)` and the `index_items` by-id index.
 - `ember/adapters/__init__.py`: Marks the adapters layer folder as a package.
-- `ember/adapters/sqlite.py`: SQLite connection, numbered migrations, `SqliteSourceStore` and `SqliteItemGatekeeper` (writes are the gatekeeper boundary), `SqliteItemContext` (item reads), `SqliteAiResponseStore` (raw AI answers) and `build_ai_response_store`, `SqliteLinkContext` (relate item/link reads plus 1-hop neighbors, and the `item_status` / `supersedes_ancestors` reads), `SqliteLinkStore` (atomic `insert_link_with_log`), `SqliteEmbedderStore` (packed-vector cache; reads `RELATE-037`, writes `RELATE-019`), `build_embedding_store`, `open_relate_database` / `ensure_relate_schema` (relate boot checks).
+- `ember/adapters/sqlite.py`: SQLite connection, numbered migrations, `SqliteSourceStore` and `SqliteItemGatekeeper` (writes are the gatekeeper boundary), `SqliteItemContext` (item reads), `SqliteAiResponseStore` (raw AI answers) and `build_ai_response_store`, `SqliteLinkContext` (relate item/link reads plus 1-hop neighbors, and the `item_status` / `supersedes_ancestors` reads), `SqliteLinkStore` (atomic `insert_link_with_log`), `SqliteEmbedderStore` (packed-vector cache; reads `RELATE-037`, writes `RELATE-019`), `build_embedding_store`, `open_relate_database` / `ensure_relate_schema` (relate boot checks), `SqliteMaintainContext` (maintain item/link/reversed-link reads), and `open_maintain_database` / `ensure_maintain_schema` (maintain boot checks).
 - `ember/adapters/llm.py`: `OpenAiItemProposer` (`ItemProposerPort` on the OpenAI SDK, OpenRouter base URL) and the env-driven factory; `OpenAiLinkProposer` (`LinkProposerPort`) and the `build_link_proposer` factory.
 - `ember/adapters/embedder.py`: `SentenceTransformerEmbedder` (`EmbedderPort` on the optional `sentence-transformers` extra), the env-driven `build_embedder` factory, and `validate_embedder_config` (boot check for the timeout and optional packages).
 - `ember/adapters/migrations/__init__.py`: Marks the migrations folder as a package.
@@ -107,11 +116,12 @@ Earlier logo and character images, kept for history.
 - `ember/adapters/migrations/007_create_item_embeddings.sql`: Creates the `item_embeddings` cache table.
 - `ember/adapters/migrations/008_add_change_log_link_fk.sql`: Rebuilds `change_log` with the `link_id` foreign key.
 - `ember/adapters/migrations/009_drop_source_id_not_null_and_add_item_id.sql`: Makes `ai_responses.source_id` nullable and adds `item_id`.
+- `ember/adapters/migrations/010_add_item_close_reason.sql`: Adds the `items.close_reason` and `items.status_origin` columns.
 
 ## Tests (`tests/`)
 - `tests/__init__.py`: Marks the tests folder as a package.
 - `tests/conftest.py`: `db_path` temp-file fixture.
-- `tests/fakes.py`: Shared test helpers: the port stand-ins (`FakeSourceStore`, `FakeItemProposer`, `FakeItemContext`, `FakeConfirm`, `FakeItemCommit`), `FIXED_TIME`, and the row-seed helpers `insert_source`, `insert_item`, `make_item`.
+- `tests/fakes.py`: Shared test helpers: the port stand-ins (`FakeSourceStore`, `FakeItemProposer`, `FakeItemContext`, `FakeConfirm`, `FakeItemCommit`), `FIXED_TIME`, and the row-seed helpers `insert_source`, `insert_item` (with `status` / `close_reason` / `status_origin` params), `insert_link`, `insert_link_reversed`, and `make_item`.
 - `tests/test_source_storage_unit.py`: Phase 1 unit tests on a fake store, no DB.
 - `tests/test_source_storage_integration.py`: Phase 1 tests on a real SQLite temp DB.
 - `tests/test_item_proposal_unit.py`: Phase 2 unit tests on a fake AI and fake item reader, no network.
@@ -128,10 +138,21 @@ Earlier logo and character images, kept for history.
 - `tests/test_cli_validated.py`: CLI checks for `set-validated` / `clear-validated` and the Assumption-only rule.
 - `tests/test_capture_live.py`: Live AI round trip. Marked `live`, so a plain pytest run never calls the API; run it with `./.venv/bin/python -m pytest -m live`.
 - `tests/test_relate_live.py`: Live AI round trip for the relate link proposer. Marked `live`, so a plain pytest run never calls the API; run it with `./.venv/bin/python -m pytest -m live`.
-- `tests/test_architecture.py`: Asserts the capture and relate engine cores never import an adapter.
+- `tests/test_architecture.py`: Asserts the capture, relate, and maintain engine cores never import an adapter.
 - `tests/test_relate_db_open.py`: Relate DB open checks: missing/corrupt file, migration fail, schema version 5/8/9 gate, and all migrations applied.
 - `tests/test_relate_read_failures.py`: Every `SqliteLinkContext` read maps a `sqlite3` failure to `RELATE-016`; also covers `item_status` and `supersedes_ancestors`.
 - `tests/test_migration_runner.py`: Each migration and its version bump are one transaction; failures roll back.
+
+### Maintain Tests (`tests/maintain/`)
+- `tests/maintain/__init__.py`: Marks the maintain tests folder as a package.
+- `tests/maintain/fakes.py`: In-memory port fake `FakeMaintainLookup`.
+- `tests/maintain/test_derive_unit.py`: Phase 2 unit tests: the four rules, tie-breaks, one-change-per-item, escalation-only, and the manual shield, on the fake lookup.
+- `tests/maintain/test_report_unit.py`: `format_report` line, ordering, and summary-bucket tests.
+- `tests/maintain/test_migration_010.py`: Migration 010 on a non-empty DB: rows survive, the new columns default correctly.
+- `tests/maintain/test_maintain_boot.py`: `open_maintain_database` missing / corrupt / migration-fail / schema-version checks (`MAINTAIN-007` / `008` / `009`).
+- `tests/maintain/test_maintain_read_failures.py`: Every `SqliteMaintainContext` read maps a `sqlite3` failure to `MAINTAIN-010`.
+- `tests/maintain/test_maintain_integration.py`: `_load` + `derive_status_changes` on a real temp DB: the exact `StatusChange` list.
+- `tests/maintain/test_maintain_cli.py`: `ember maintain` CLI checks: dry-run output, no writes, and `MAINTAIN-007` on a missing DB.
 
 ### Relate Tests (`tests/relate/`)
 - `tests/relate/__init__.py`: Marks the relate tests folder as a package.
@@ -161,8 +182,8 @@ Saved AI answers for parser tests. Each pair is `case_NN.raw_text.txt` (the sour
 ## Database Tables (SQLite)
 - `schema_version`: Holds the applied migration number.
 - `sources`: Immutable raw input texts. Columns `id`, `title`, `full_text`, `timestamp`, `content_hash` (unique, the dedup key).
-- `items`: Confirmed typed items. Columns `id`, `type`, `statement`, `source_id` (foreign key to `sources.id`), `status`, `created_at`, `validated` (set only on Assumption rows), `rationale` (Decision text), `source` (Finding evidence text).
-- `change_log`: Append-only ledger. Columns `id`, `item_id`, `link_id` (foreign key to `links.id`), `field_changed`, `old_value`, `new_value`, `timestamp`, `trigger_cause`.
+- `items`: Confirmed typed items. Columns `id`, `type`, `statement`, `source_id` (foreign key to `sources.id`), `status`, `created_at`, `validated` (set only on Assumption rows), `rationale` (Decision text), `source` (Finding evidence text), `close_reason` (why closed; one of 5 reasons, NULL when open), `status_origin` (`derived` or `manual`).
+- `change_log`: Append-only ledger. Columns `id`, `item_id`, `link_id` (foreign key to `links.id`), `field_changed`, `old_value`, `new_value`, `timestamp`, `trigger_cause`. Maintain writes `field_changed` values `status`, `status_origin`, and `link_reversed`.
 - `ai_responses`: Raw AI answers, stored verbatim. Columns `id`, `source_id` (nullable foreign key to `sources.id`), `item_id` (nullable foreign key to `items.id`), `response_text`, `timestamp`.
 - `links`: Typed directional edges. Columns `id`, `source_item_id`, `target_item_id`, `link_type`, `status` (`Confirmed` or `Rejected`), `created_at`. Unique per source/target/type.
 - `item_embeddings`: Rebuildable vector cache. Columns `item_id`, `vector`, `model_name`, `embedded_at`.
