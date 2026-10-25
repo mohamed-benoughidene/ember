@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from ember.maintain.rows import ItemState, StatusChange
-from ember.relate.rows import Link
+from ember.relate.rows import ChangeLogEntry, Link
 
 
 class FakeMaintainLookup:
@@ -33,12 +33,14 @@ class FakeMaintainStore:
     `applied_changes` holds one entry per `apply_status_changes` call (so a
     test can assert exactly-once and inspect the exact list written).
     `origins` holds one `(item_id, origin)` tuple per `apply_status_origin`
-    call. `apply_status_changes` returns `len(changes)`, the port's contract.
+    call. `reversals` holds one `(change, marker)` tuple per `apply_reversal`
+    call. `apply_status_changes` and `apply_reversal` return the port's count.
     """
 
     def __init__(self) -> None:
         self.applied_changes: list[list[StatusChange]] = []
         self.origins: list[tuple[int, str]] = []
+        self.reversals: list[tuple[StatusChange, ChangeLogEntry]] = []
 
     def apply_status_changes(self, changes: list[StatusChange]) -> int:
         self.applied_changes.append(list(changes))
@@ -46,3 +48,7 @@ class FakeMaintainStore:
 
     def apply_status_origin(self, item_id: int, origin: str) -> None:
         self.origins.append((item_id, origin))
+
+    def apply_reversal(self, change: StatusChange, marker: ChangeLogEntry) -> int:
+        self.reversals.append((change, marker))
+        return 1
