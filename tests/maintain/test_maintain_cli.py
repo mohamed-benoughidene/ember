@@ -52,7 +52,7 @@ def test_maintain_dry_run_prints_plan_and_writes_no_rows(db_path) -> None:
     assert _row_counts(db_path) == before
 
 
-def test_maintain_plain_run_also_writes_no_rows_in_step_1(db_path) -> None:
+def test_maintain_plain_run_applies_the_change(db_path) -> None:
     Path(db_path).touch()
     _seed_supersede(db_path)
     before = _row_counts(db_path)
@@ -60,8 +60,31 @@ def test_maintain_plain_run_also_writes_no_rows_in_step_1(db_path) -> None:
     result = CliRunner().invoke(main, ["maintain", "--db", db_path])
 
     assert result.exit_code == 0
+    assert "item 1: Active -> Closed (superseded)" in result.output
     assert "closed: 1, challenged: 0, reopened: 0, unchanged: 1" in result.output
-    assert _row_counts(db_path) == before
+    assert _row_counts(db_path) == (before[0], before[1] + 1)
+
+    conn = sqlite3.connect(db_path)
+    try:
+        row = conn.execute(
+            "SELECT status, close_reason FROM items WHERE id = 1"
+        ).fetchone()
+    finally:
+        conn.close()
+    assert row == ("Closed", "superseded")
+
+
+def test_maintain_plain_run_twice_is_idempotent(db_path) -> None:
+    Path(db_path).touch()
+    _seed_supersede(db_path)
+    first = CliRunner().invoke(main, ["maintain", "--db", db_path])
+    assert first.exit_code == 0
+    after_first = _row_counts(db_path)
+
+    result = CliRunner().invoke(main, ["maintain", "--db", db_path])
+
+    assert result.exit_code == 0
+    assert _row_counts(db_path) == after_first
 
 
 def test_maintain_missing_db_exits_1_with_007(tmp_path) -> None:

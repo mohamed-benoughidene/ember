@@ -17,6 +17,7 @@ from ember.adapters.sqlite import (
     SqliteLinkContext,
     SqliteLinkStore,
     SqliteMaintainContext,
+    SqliteMaintainStore,
     SqliteSourceStore,
     build_ai_response_store,
     build_embedding_store,
@@ -44,7 +45,7 @@ from ember.capture.source_storage import StoredSource, store_source
 from ember.errors import EmberError
 from ember.maintain.derive import derive_status_changes
 from ember.maintain.report import format_report
-from ember.maintain.run_maintain import _load
+from ember.maintain.run_maintain import MaintainPorts, _load
 from ember.relate.candidate_pool import build_candidate_pool
 from ember.relate.errors import UserAbort as RelateUserAbort
 from ember.relate.load_filter import load_item_candidates, load_latest_candidates
@@ -319,24 +320,28 @@ def relate(item_id: int | None, latest: bool, db_path: str) -> None:
     help="SQLite database path.",
 )
 def maintain(dry_run: bool, db_path: str) -> None:
-    """Run the maintain sweep: load the graph, derive changes, report them.
+    """Run the maintain sweep: load the graph, derive, apply, report.
 
-    Step 1 runs Phase 1 + Phase 2 only. Both a plain run and `--dry-run` load,
-    derive and print; neither writes an `items` or `change_log` row.
+    A plain run writes the derived status changes to `items` and appends one
+    `change_log` row per change. `--dry-run` loads, derives and prints only; it
+    writes no `items` or `change_log` row.
     """
     try:
         conn = open_maintain_database(db_path)
-        ctx = SqliteMaintainContext(conn)
-        snapshot = _load(ctx)
+        ports = MaintainPorts(
+            lookup=SqliteMaintainContext(conn),
+            store=SqliteMaintainStore(conn),
+        )
+        snapshot = _load(ports.lookup)
         changes = derive_status_changes(snapshot)
+        if not dry_run:
+            ports.store.apply_status_changes(changes)
         report = format_report(changes, len(snapshot.items))
     except EmberError as exc:
         click.echo(f"error: {exc.log_line()}", err=True)
         raise SystemExit(1)
     for line in report:
         click.echo(line)
-    # Step 2 adds the write branch: a plain run applies `changes` here.
-    # `dry_run` never crosses into a function (I2); it stays in this body.
 
 
 def _write_validated_flag(item_id: int, db_path: str, *, new_value: bool) -> None:
