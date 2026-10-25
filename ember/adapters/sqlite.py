@@ -21,6 +21,15 @@ from ember.capture.item_gatekeeper import ExistingItem, StoredItem, ValidatedIte
 from ember.capture.item_proposal import ContextItem
 from ember.capture.source_storage import SourceRecord
 from ember.errors import EmberError
+from ember.maintain.errors import (
+    ChangeLogWriteFailed as MaintainChangeLogWriteFailed,
+    DbMigrationFailed as MaintainDbMigrationFailed,
+    DbOpenFailed as MaintainDbOpenFailed,
+    ItemsReadFailed as MaintainItemsReadFailed,
+    SchemaOutdated as MaintainSchemaOutdated,
+    StatusWriteFailed as MaintainStatusWriteFailed,
+)
+from ember.maintain.rows import ItemState, StatusChange
 from ember.relate.embedding_store import EmbeddingStorePort
 from ember.relate.errors import (
     ChangeLogWriteFailed,
@@ -96,6 +105,54 @@ def ensure_relate_schema(conn: sqlite3.Connection) -> None:
         raise DbOpenFailed("schema version read fail") from exc
     if version < 9:
         raise SchemaOutdated("schema version too old", version=version, required=9)
+
+
+def open_maintain_database(db_path: str) -> sqlite3.Connection:
+    """Open an existing maintain DB, apply migrations, check the schema.
+
+    Raise `DbOpenFailed` (MAINTAIN-007) when the file is missing or is not a
+    readable SQLite database, `DbMigrationFailed` (MAINTAIN-008) when a
+    migration fails, and `SchemaOutdated` (MAINTAIN-009) when the applied
+    version is below the required 10.
+    """
+    if not os.path.exists(db_path):
+        raise MaintainDbOpenFailed("db file missing", db_path=db_path)
+    conn: sqlite3.Connection | None = None
+    try:
+        conn = _connect(db_path)
+        conn.execute("SELECT COUNT(*) FROM sqlite_master").fetchone()
+    except sqlite3.Error as exc:
+        if conn is not None:
+            conn.close()
+        raise MaintainDbOpenFailed("db open fail", db_path=db_path) from exc
+    try:
+        _apply_migrations(conn)
+    except (sqlite3.Error, ValueError) as exc:
+        conn.close()
+        raise MaintainDbMigrationFailed("migration fail", db_path=db_path) from exc
+    try:
+        ensure_maintain_schema(conn)
+    except EmberError:
+        conn.close()
+        raise
+    return conn
+
+
+def ensure_maintain_schema(conn: sqlite3.Connection) -> None:
+    """Check the applied schema version is new enough for the maintain engine.
+
+    Raise `DbOpenFailed` (MAINTAIN-007) if the version cannot be read, and
+    `SchemaOutdated` (MAINTAIN-009) if the version is below the required 10.
+    """
+    try:
+        row = conn.execute("SELECT version FROM schema_version").fetchone()
+        version = 0 if row is None else int(row["version"])
+    except (sqlite3.Error, ValueError, TypeError) as exc:
+        raise MaintainDbOpenFailed("schema version read fail") from exc
+    if version < 10:
+        raise MaintainSchemaOutdated(
+            "schema version too old", version=version, required=10
+        )
 
 
 def _apply_migrations(conn: sqlite3.Connection) -> None:
@@ -438,6 +495,254 @@ class SqliteLinkContext:
         except sqlite3.Error as exc:
             raise ItemsReadFailed("link read fail", item_id=item_id) from exc
         return ancestors
+
+
+class SqliteMaintainContext:
+    """`MaintainLookupPort` on SQLite. Read-only item, link and marker looks.
+
+    Every read raises `ItemsReadFailed` (MAINTAIN-010) on a read failure.
+    """
+
+    def __init__(self, conn: sqlite3.Connection) -> None:
+        self._conn = conn
+
+    def list_items(self) -> list[ItemState]:
+        """Return every item: id, type, status, close_reason, status_origin.
+
+        Raise `ItemsReadFailed` (MAINTAIN-010) on a read failure.
+        """
+        try:
+            rows = self._conn.execute(
+                "SELECT id, type, status, close_reason, status_origin FROM items"
+            ).fetchall()
+        except sqlite3.Error as exc:
+            raise MaintainItemsReadFailed("item read fail") from exc
+        return [
+            ItemState(
+                id=row["id"],
+                type=row["type"],
+                status=row["status"],
+                close_reason=row["close_reason"],
+                status_origin=row["status_origin"],
+            )
+            for row in rows
+        ]
+
+    def list_confirmed_links(self) -> list[Link]:
+        """Return every `links` row whose status is `Confirmed`.
+
+        Raise `ItemsReadFailed` (MAINTAIN-010) on a read failure.
+        """
+        try:
+            rows = self._conn.execute(
+                "SELECT id, source_item_id, target_item_id, link_type, status,"
+                " created_at FROM links WHERE status = 'Confirmed'"
+            ).fetchall()
+        except sqlite3.Error as exc:
+            raise MaintainItemsReadFailed("link read fail") from exc
+        return [
+            Link(
+                id=row["id"],
+                source_item_id=row["source_item_id"],
+                target_item_id=row["target_item_id"],
+                link_type=row["link_type"],
+                status=row["status"],
+                created_at=row["created_at"],
+            )
+            for row in rows
+        ]
+
+    def list_reversed_link_ids(self) -> set[int]:
+        """Return the link ids carrying a `link_reversed` change_log row.
+
+        Raise `ItemsReadFailed` (MAINTAIN-010) on a read failure.
+        """
+        try:
+            rows = self._conn.execute(
+                "SELECT DISTINCT link_id FROM change_log"
+                " WHERE field_changed = 'link_reversed' AND link_id IS NOT NULL"
+            ).fetchall()
+        except sqlite3.Error as exc:
+            raise MaintainItemsReadFailed("change_log read fail") from exc
+        return {int(row["link_id"]) for row in rows}
+
+
+class SqliteMaintainStore:
+    """`MaintainStorePort` on SQLite: one atomic status write per batch.
+
+    The `items` UPDATEs and the `change_log` INSERTs share one implicit
+    transaction with a single `commit()` at the end, so the batch is
+    all-or-nothing (Constitution D3). A failure on either half rolls the whole
+    batch back, so a caller never sees a status written without its log row.
+    """
+
+    def __init__(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        clock: Callable[[], str] | None = None,
+    ) -> None:
+        self._conn = conn
+        self._clock = clock or _utc_now
+
+    def apply_status_changes(self, changes: list[StatusChange]) -> int:
+        """Write every change's status and its `change_log` row in one batch.
+
+        Return `len(changes)`. Raise `StatusWriteFailed` (MAINTAIN-011) when an
+        `items` UPDATE fails, and `ChangeLogWriteFailed` (MAINTAIN-012) when a
+        `change_log` INSERT fails. Either failure rolls the whole batch back.
+        """
+        for change in changes:
+            try:
+                self._conn.execute(
+                    "UPDATE items SET status = ?, close_reason = ? WHERE id = ?",
+                    (change.new_status, change.close_reason, change.item_id),
+                )
+            except sqlite3.Error as exc:
+                self._conn.rollback()
+                raise MaintainStatusWriteFailed(
+                    "status update fail", item_id=change.item_id
+                ) from exc
+        timestamp = self._clock()
+        for change in changes:
+            try:
+                self._conn.execute(
+                    "INSERT INTO change_log"
+                    " (item_id, link_id, field_changed, old_value, new_value,"
+                    " timestamp, trigger_cause) VALUES (?, ?, 'status', ?, ?, ?, ?)",
+                    (
+                        change.item_id,
+                        change.link_id,
+                        _status_old_value(change),
+                        _status_new_value(change),
+                        timestamp,
+                        change.trigger_cause,
+                    ),
+                )
+            except sqlite3.Error as exc:
+                self._conn.rollback()
+                raise MaintainChangeLogWriteFailed(
+                    "change_log insert fail", item_id=change.item_id
+                ) from exc
+        self._conn.commit()
+        return len(changes)
+
+    def apply_status_origin(self, item_id: int, origin: str) -> None:
+        """Write one item's `status_origin` and its `change_log` row atomically.
+
+        Raise `StatusWriteFailed` (MAINTAIN-011) when the `items` UPDATE fails,
+        and `ChangeLogWriteFailed` (MAINTAIN-012) when the `change_log` INSERT
+        fails. Either failure rolls the whole write back.
+        """
+        try:
+            row = self._conn.execute(
+                "SELECT status_origin FROM items WHERE id = ?", (item_id,)
+            ).fetchone()
+            old_origin = row["status_origin"] if row is not None else "derived"
+            self._conn.execute(
+                "UPDATE items SET status_origin = ? WHERE id = ?",
+                (origin, item_id),
+            )
+        except sqlite3.Error as exc:
+            self._conn.rollback()
+            raise MaintainStatusWriteFailed(
+                "status_origin update fail", item_id=item_id
+            ) from exc
+        try:
+            self._conn.execute(
+                "INSERT INTO change_log"
+                " (item_id, link_id, field_changed, old_value, new_value,"
+                " timestamp, trigger_cause)"
+                " VALUES (?, NULL, 'status_origin', ?, ?, ?,"
+                " 'user_set_status')",
+                (item_id, old_origin, origin, self._clock()),
+            )
+        except sqlite3.Error as exc:
+            self._conn.rollback()
+            raise MaintainChangeLogWriteFailed(
+                "change_log insert fail", item_id=item_id
+            ) from exc
+        self._conn.commit()
+
+    def apply_reversal(self, change: StatusChange, marker: ChangeLogEntry) -> int:
+        """Restore one item and append both its `status` row and the marker.
+
+        One implicit transaction, one `commit()` at the end: the `items`
+        UPDATE, the `status` `change_log` row derived from `change`, and the
+        `link_reversed` marker row taken from `marker` are all-or-nothing.
+
+        The adapter owns time: it stamps both rows from `self._clock()` and
+        **overwrites** the passed `marker.timestamp` (the marker's timestamp is
+        a placeholder, not trusted).
+
+        Return `1`. Raise `StatusWriteFailed` (MAINTAIN-011) when the `items`
+        UPDATE fails, and `ChangeLogWriteFailed` (MAINTAIN-012) when either
+        `change_log` INSERT fails. Either failure rolls the whole write back.
+        """
+        try:
+            self._conn.execute(
+                "UPDATE items SET status = ?, close_reason = ? WHERE id = ?",
+                (change.new_status, change.close_reason, change.item_id),
+            )
+        except sqlite3.Error as exc:
+            self._conn.rollback()
+            raise MaintainStatusWriteFailed(
+                "status update fail", item_id=change.item_id
+            ) from exc
+        timestamp = self._clock()
+        try:
+            self._conn.execute(
+                "INSERT INTO change_log"
+                " (item_id, link_id, field_changed, old_value, new_value,"
+                " timestamp, trigger_cause) VALUES (?, ?, 'status', ?, ?, ?, ?)",
+                (
+                    change.item_id,
+                    change.link_id,
+                    _status_old_value(change),
+                    _status_new_value(change),
+                    timestamp,
+                    change.trigger_cause,
+                ),
+            )
+        except sqlite3.Error as exc:
+            self._conn.rollback()
+            raise MaintainChangeLogWriteFailed(
+                "change_log insert fail", item_id=change.item_id
+            ) from exc
+        try:
+            self._conn.execute(
+                "INSERT INTO change_log"
+                " (item_id, link_id, field_changed, old_value, new_value,"
+                " timestamp, trigger_cause) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (
+                    marker.item_id,
+                    marker.link_id,
+                    marker.field_changed,
+                    marker.old_value,
+                    marker.new_value,
+                    timestamp,
+                    marker.trigger_cause,
+                ),
+            )
+        except sqlite3.Error as exc:
+            self._conn.rollback()
+            raise MaintainChangeLogWriteFailed(
+                "change_log insert fail", item_id=marker.item_id
+            ) from exc
+        self._conn.commit()
+        return 1
+
+
+def _status_old_value(change: StatusChange) -> str:
+    if change.old_status == "Closed":
+        return f"{change.old_status}:{change.old_close_reason}"
+    return change.old_status
+
+
+def _status_new_value(change: StatusChange) -> str:
+    if change.new_status == "Closed":
+        return f"{change.new_status}:{change.close_reason}"
+    return change.new_status
 
 
 class SqliteItemGatekeeper:

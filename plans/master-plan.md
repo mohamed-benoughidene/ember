@@ -42,9 +42,9 @@ Four engines. Each one job. Each runs alone via its own CLI command on sample in
 
 ### Engine C: Maintain
 - Job: keep graph coherent after item or link changes.
-- Input: any state change event (link confirmed, item closed, etc.).
+- Input: the `items` + `links` tables, reconciled on demand. No event bus.
 - Output: derived state changes on dependent items.
-- Four fixed triggers (via `validate_close_item` script):
+- Four fixed triggers (via the `derive_status_changes` script):
   1. `supersedes` confirmed -> old target `Closed` reason `superseded`.
   2. item `Closed` reason `invalidated`/`superseded`/`reversed` -> direct `depends_on` dependents set `Challenged`.
   3. `contradicts` confirmed -> target set `Challenged`. Link direction chosen by user at accept time.
@@ -78,9 +78,9 @@ Storage architecture (Spec 3.6):
 - Embedding table + metadata table: implementation detail, decided in L2 (do not invent in L1).
 
 Boundary rule: gatekeeper scripts are the castle gate. Engine core is the clean inside. Engine core trusts what gatekeeper gives it. Gatekeeper scripts:
-- For AI mutations: `validate_add_item`, `validate_add_link`, `validate_close_item`.
+- For AI mutations: `validate_add_item`, `validate_add_link`.
 - For AI reads: `validate_query`.
-- For human-only operations: `validate_edit_item`, `validate_set_status`, `validate_set_validated`, `validate_remove_link`.
+- For human-only operations: `validate_edit_item`, `validate_set_status`, `validate_set_validated`, `validate_remove_link`, `validate_close_item`, `validate_reverse_supersedes`.
 
 ### Dependency Chain
 
@@ -114,7 +114,7 @@ Dependency order, not runtime order. Each engine invoked independently.
 
 1. AI direct DB write: PROHIBITED (Spec 3.7).
 2. All mutations pass gatekeeper validation scripts.
-3. AI-callable mutations (each requires user confirm): `add_item`, `add_link`, `close_item`.
+3. AI-callable mutations (each requires user confirm): `add_item`, `add_link`.
 4. AI-callable reads (no confirm needed, raw data only): `query`.
 5. Human-only operations: `edit_item`, `set_status` (only `Active` <-> `Challenged`), `set_validated`, `remove_link`.
 6. `Challenged` resolution: human only via `set_status` (Spec 3.5, 3.2).
@@ -127,6 +127,8 @@ Deferred item types: `Constraint`, `Issue`, `Evidence` standalone, `Rationale` s
 - `Evidence` text lives on `Finding` row as the `source` field (Spec 3.1).
 
 Deferred link types: `informs`, `constrained_by`, `invalidates`, `raises`, `derived_from`. Handling note: `invalidates` is achieved by creating a `contradicts` link plus closing the target as `Closed` reason `invalidated` (Spec 3.3).
+
+AI-proposed `close_item` deferred to V1.x (issue #16). V1 ships `ember close-item` human-invoked; the human running the command is the confirmation.
 
 ## 6. Live Measures (Post-Build)
 
@@ -153,6 +155,8 @@ AI testing (Rule T7): test parser, validation, retries with saved fixtures. Asse
 ## 8. Next Step
 
 Human approves L1. Then 4 L2 engine master plans: `capture`, `relate`, `maintain`, `query`. Each L2 defines internal pipeline phases for its engine.
+
+**Ordering constraint on `query`: satisfied.** Engine C's step 03 landed on 2026-10-25, and the L1 amendments it deferred are applied: `close_item` has moved from the AI-callable list (rule 3, line 117) to the human-only list, and `validate_close_item` + `validate_reverse_supersedes` have joined the human-only gatekeepers (lines 81, 83). Engine D's L2 may now be written — line 117 no longer claims an AI-callable `close_item` exists.
 
 ## 9. Deferred to L2 (Reminder)
 

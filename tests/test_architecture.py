@@ -35,3 +35,13 @@ def test_relate_core_does_not_import_adapters() -> None:
         text = path.read_text(encoding="utf-8")
         for token in FORBIDDEN_RELATE:
             assert token not in text, f"{path} references {token}"
+
+
+def test_maintain_core_does_not_import_adapters() -> None:
+    maintain_dir = Path(__file__).resolve().parents[1] / "ember" / "maintain"
+    paths = sorted(maintain_dir.glob("*.py"))
+    assert paths
+    for path in paths:
+        text = path.read_text(encoding="utf-8")
+        for token in FORBIDDEN_RELATE:
+            assert token not in text, f"{path} references {token}"

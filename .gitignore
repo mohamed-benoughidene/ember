@@ -12,6 +12,9 @@ Thumbs.db
 # OpenCode local config
 .opencode/
 
+# Command Code local settings
+.commandcode/
+
 # Python
 __pycache__/
 *.py[cod]
@@ -20,6 +23,9 @@ __pycache__/
 .pytest_cache/
 build/
 dist/
+
+# Incidental uv lockfile (this project uses setuptools)
+uv.lock
 
 # Local database files
 *.db

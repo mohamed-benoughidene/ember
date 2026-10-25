@@ -36,7 +36,7 @@ Columns:
 - `UNIQUE (source_item_id, target_item_id, link_type)` — no duplicate links
 - `CHECK (source_item_id != target_item_id)` — no self-links
 
-No `updated_at` column: links are immutable (V1 spec 3.3). Reversal of `supersedes` writes a new link row, not an update (Engine C concern; out of scope here).
+No `updated_at` column: links are immutable (V1 spec 3.3). Reversal of `supersedes` is an **item-status** event owned by Engine C; it writes **no `links` row** and does not change `links.status`. It is recorded as a `change_log` row with `field_changed='link_reversed'`. See `plans/engine-maintain-plan.md` §2 Gap C.
 
 ### 3.2 `item_embeddings` table (migration `007_create_item_embeddings.sql`)
 
@@ -365,7 +365,7 @@ Codes in `ember/relate/errors.py` (31 codes total: 001 + 005-014 + 016-019 + 021
 | `RELATE-011` | `ChangeLogWriteFailed` | 4 | `change_log` row insert failed (after link row insert succeeded). | 1 |
 | `RELATE-012` | `DbOpenFailed` | 1 | DB file missing, corrupt, permission denied, or otherwise unopenable. | 1 |
 | `RELATE-013` | `DbMigrationFailed` | 1 | Migration 006/007/008/009 crashed during apply. | 1 |
-| `RELATE-014` | `SchemaOutdated` | 1 | `schema_version` version < 9 (migrations 006-009 not applied). | 1 |
+| `RELATE-014` | `SchemaOutdated` | 1 | `schema_version` version < 9 (migrations 006-009 not applied). Migration 010 makes the DB version 10; Relate's floor stays 9. | 1 |
 | `RELATE-016` | `ItemsReadFailed` | 1 | Phase 1 read failed (items or links table: disk mid-read, lock). | 1 |
 | `RELATE-017` | `EmbedderLoadFailed` | 2 | Optional package missing at CLI boot, or the model load timed out / network / DNS failed. | 1 |
 | `RELATE-018` | `EmbedderEncodeFailed` | 2 | `EmbedderPort.embed(texts)` raised or returned the wrong vector count. | 1 |
@@ -453,7 +453,7 @@ Test pyramid per L1 §7 + Constitution T1-T4 + T7 + T9.
 
 ## 8. Out of Scope (this L2 plan)
 
-- Engine C (Maintain) cascade rules — out of scope. Reversal of `supersedes` is Engine C's job. Relate writes the `change_log` row with `trigger_cause='user_confirmed'`; Engine C listens for that pattern (and the matching `link_id` FK post-008) and writes the cascade `change_log` rows (`trigger_cause='cascade'` or similar — TBD with Engine C L2). Relate does not own the cascade writes; it only emits the source-of-truth link row + the user-confirm log row.
+- Engine C (Maintain) cascade rules — out of scope. Reversal of `supersedes` is Engine C's job. **Resolved (2026-10-25):** Maintain does **not** listen for events — it **sweeps** the `links` table (`status='Confirmed'`) to know what is live; there is no dispatch table because there is no event bus (L1:70). The vocabulary Maintain writes is fixed in `plans/engine-maintain-plan.md` §4.6. Relate does not own the cascade writes; it only emits the source-of-truth link row + the user-confirm log row.
 - Engine D (Query) BM25 — out of scope. BM25 is Engine D's `topic_search` only.
 - `items.metadata` field — V1 spec 3.x deferred. Relate uses `created_at` proximity as a proxy.
 - A `Signals` object wrapper — L1 §9 deferred until signal count > 3.
@@ -472,7 +472,7 @@ L3 step plans (in `plans/steps/relate/`) will resolve these. They are recorded h
 5. **Live AI prompt format for `LinkProposerPort`.** System prompt contents, few-shot examples, temperature.
 6. **CLI confirm prompt format.** Exact wording, color output, paging for many candidates.
 7. **Post-union candidate cap.** L2 has no cap. L3 may add a cap (e.g. top 30 by cosine) if `LinkProposerPort` cost becomes a problem on hub items.
-8. **Engine C dispatch vocabulary.** L2 picks `trigger_cause='user_confirmed'` for `link_confirmed` and `trigger_cause='rejected'` for `link_rejected`. Engine C L2 author confirms the dispatch table.
+8. **Engine C dispatch vocabulary** — **resolved** by `plans/engine-maintain-plan.md` §4.6.
 
 ## 10. Next Step
 
