@@ -44,11 +44,15 @@ from ember.capture.item_proposal import (
 from ember.capture.source_storage import StoredSource, store_source
 from ember.errors import EmberError
 from ember.maintain.derive import derive_status_changes
+from ember.maintain.human_actions import validate_close_item
 from ember.maintain.report import format_report
 from ember.maintain.run_maintain import (
     MaintainPorts,
     MaintainRequest,
     _load,
+    run_close_item,
+    run_reverse_supersedes,
+    run_set_status,
     run_sweep,
 )
 from ember.relate.candidate_pool import build_candidate_pool
@@ -344,6 +348,148 @@ def maintain(dry_run: bool, db_path: str) -> None:
         else:
             result = run_sweep(ports, MaintainRequest())
             report = format_report(result.changed, result.total_items)
+    except EmberError as exc:
+        click.echo(f"error: {exc.log_line()}", err=True)
+        raise SystemExit(1)
+    for line in report:
+        click.echo(line)
+
+
+@main.command("close-item")
+@click.option(
+    "--item",
+    "item_id",
+    type=int,
+    required=True,
+    help="Item id to close.",
+)
+@click.option(
+    "--reason",
+    "reason",
+    required=True,
+    help="Close reason: invalidated or expired.",
+)
+@click.option(
+    "--dry-run",
+    is_flag=True,
+    default=False,
+    help="Print the planned changes and write nothing.",
+)
+@click.option(
+    "--db",
+    "db_path",
+    default=DEFAULT_DB_PATH,
+    help="SQLite database path.",
+)
+def close_item(item_id: int, reason: str, dry_run: bool, db_path: str) -> None:
+    """Close an item by hand, challenging its live dependents.
+
+    Prints the same report as `maintain`. `--dry-run` loads and validates only;
+    it writes no `items` or `change_log` row.
+    """
+    try:
+        conn = open_maintain_database(db_path)
+        ports = MaintainPorts(
+            lookup=SqliteMaintainContext(conn),
+            store=SqliteMaintainStore(conn),
+        )
+        if dry_run:
+            snapshot = _load(ports.lookup)
+            changes = validate_close_item(snapshot, item_id, reason)
+            report = format_report(changes, len(snapshot.items))
+        else:
+            result = run_close_item(
+                ports, MaintainRequest(item_id=item_id, reason=reason)
+            )
+            report = format_report(result.changed, result.total_items)
+    except EmberError as exc:
+        click.echo(f"error: {exc.log_line()}", err=True)
+        raise SystemExit(1)
+    for line in report:
+        click.echo(line)
+
+
+@main.command("set-status")
+@click.option(
+    "--item",
+    "item_id",
+    type=int,
+    required=True,
+    help="Item id to move.",
+)
+@click.option(
+    "--to",
+    "to_status",
+    required=True,
+    help="Target status: Active or Challenged.",
+)
+@click.option(
+    "--db",
+    "db_path",
+    default=DEFAULT_DB_PATH,
+    help="SQLite database path.",
+)
+def set_status(item_id: int, to_status: str, db_path: str) -> None:
+    """Move an item between Active and Challenged by hand.
+
+    Exactly one of those two values is accepted; a `--to Active` on a
+    `Challenged` item also sets the manual shield. Prints the same report as
+    `maintain`.
+    """
+    try:
+        conn = open_maintain_database(db_path)
+        ports = MaintainPorts(
+            lookup=SqliteMaintainContext(conn),
+            store=SqliteMaintainStore(conn),
+        )
+        result = run_set_status(
+            ports, MaintainRequest(item_id=item_id, to_status=to_status)
+        )
+        report = format_report(result.changed, result.total_items)
+    except EmberError as exc:
+        click.echo(f"error: {exc.log_line()}", err=True)
+        raise SystemExit(1)
+    for line in report:
+        click.echo(line)
+
+
+@main.command("reverse-supersedes")
+@click.option(
+    "--item",
+    "item_id",
+    type=int,
+    required=True,
+    help="Item id to restore.",
+)
+@click.option(
+    "--link",
+    "link_id",
+    type=int,
+    required=True,
+    help="Confirmed supersedes link id to reverse.",
+)
+@click.option(
+    "--db",
+    "db_path",
+    default=DEFAULT_DB_PATH,
+    help="SQLite database path.",
+)
+def reverse_supersedes(item_id: int, link_id: int, db_path: str) -> None:
+    """Undo a supersedes: restore the item and mark the link reversed.
+
+    Writes no `links` row; the reversal is an item-status event logged in
+    `change_log`. Prints the same report as `maintain`.
+    """
+    try:
+        conn = open_maintain_database(db_path)
+        ports = MaintainPorts(
+            lookup=SqliteMaintainContext(conn),
+            store=SqliteMaintainStore(conn),
+        )
+        result = run_reverse_supersedes(
+            ports, MaintainRequest(item_id=item_id, link_id=link_id)
+        )
+        report = format_report(result.changed, result.total_items)
     except EmberError as exc:
         click.echo(f"error: {exc.log_line()}", err=True)
         raise SystemExit(1)
