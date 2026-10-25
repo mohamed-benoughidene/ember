@@ -635,6 +635,10 @@ class SqliteMaintainStore:
         fails. Either failure rolls the whole write back.
         """
         try:
+            row = self._conn.execute(
+                "SELECT status_origin FROM items WHERE id = ?", (item_id,)
+            ).fetchone()
+            old_origin = row["status_origin"] if row is not None else "derived"
             self._conn.execute(
                 "UPDATE items SET status_origin = ? WHERE id = ?",
                 (origin, item_id),
@@ -649,9 +653,9 @@ class SqliteMaintainStore:
                 "INSERT INTO change_log"
                 " (item_id, link_id, field_changed, old_value, new_value,"
                 " timestamp, trigger_cause)"
-                " VALUES (?, NULL, 'status_origin', 'derived', ?, ?,"
+                " VALUES (?, NULL, 'status_origin', ?, ?, ?,"
                 " 'user_set_status')",
-                (item_id, origin, self._clock()),
+                (item_id, old_origin, origin, self._clock()),
             )
         except sqlite3.Error as exc:
             self._conn.rollback()
@@ -659,6 +663,74 @@ class SqliteMaintainStore:
                 "change_log insert fail", item_id=item_id
             ) from exc
         self._conn.commit()
+
+    def apply_reversal(self, change: StatusChange, marker: ChangeLogEntry) -> int:
+        """Restore one item and append both its `status` row and the marker.
+
+        One implicit transaction, one `commit()` at the end: the `items`
+        UPDATE, the `status` `change_log` row derived from `change`, and the
+        `link_reversed` marker row taken from `marker` are all-or-nothing.
+
+        The adapter owns time: it stamps both rows from `self._clock()` and
+        **overwrites** the passed `marker.timestamp` (the marker's timestamp is
+        a placeholder, not trusted).
+
+        Return `1`. Raise `StatusWriteFailed` (MAINTAIN-011) when the `items`
+        UPDATE fails, and `ChangeLogWriteFailed` (MAINTAIN-012) when either
+        `change_log` INSERT fails. Either failure rolls the whole write back.
+        """
+        try:
+            self._conn.execute(
+                "UPDATE items SET status = ?, close_reason = ? WHERE id = ?",
+                (change.new_status, change.close_reason, change.item_id),
+            )
+        except sqlite3.Error as exc:
+            self._conn.rollback()
+            raise MaintainStatusWriteFailed(
+                "status update fail", item_id=change.item_id
+            ) from exc
+        timestamp = self._clock()
+        try:
+            self._conn.execute(
+                "INSERT INTO change_log"
+                " (item_id, link_id, field_changed, old_value, new_value,"
+                " timestamp, trigger_cause) VALUES (?, ?, 'status', ?, ?, ?, ?)",
+                (
+                    change.item_id,
+                    change.link_id,
+                    _status_old_value(change),
+                    _status_new_value(change),
+                    timestamp,
+                    change.trigger_cause,
+                ),
+            )
+        except sqlite3.Error as exc:
+            self._conn.rollback()
+            raise MaintainChangeLogWriteFailed(
+                "change_log insert fail", item_id=change.item_id
+            ) from exc
+        try:
+            self._conn.execute(
+                "INSERT INTO change_log"
+                " (item_id, link_id, field_changed, old_value, new_value,"
+                " timestamp, trigger_cause) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (
+                    marker.item_id,
+                    marker.link_id,
+                    marker.field_changed,
+                    marker.old_value,
+                    marker.new_value,
+                    timestamp,
+                    marker.trigger_cause,
+                ),
+            )
+        except sqlite3.Error as exc:
+            self._conn.rollback()
+            raise MaintainChangeLogWriteFailed(
+                "change_log insert fail", item_id=marker.item_id
+            ) from exc
+        self._conn.commit()
+        return 1
 
 
 def _status_old_value(change: StatusChange) -> str:

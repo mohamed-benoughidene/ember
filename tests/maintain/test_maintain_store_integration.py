@@ -217,3 +217,30 @@ def test_apply_status_origin_writes_shield_and_log_row(db_path) -> None:
     assert only["trigger_cause"] == "user_set_status"
     assert only["timestamp"] == FIXED_TIME
     conn.close()
+
+
+def test_apply_status_origin_reclear_logs_observed_manual_old_value(db_path) -> None:
+    conn = _open_v10(db_path)
+    source_id = insert_source(conn)
+    insert_item(
+        conn,
+        source_id=source_id,
+        item_id=1,
+        status="Challenged",
+        status_origin="manual",
+    )
+    conn.commit()
+    store = SqliteMaintainStore(conn, clock=lambda: FIXED_TIME)
+
+    store.apply_status_origin(1, "manual")
+
+    log = conn.execute("SELECT * FROM change_log").fetchall()
+    assert len(log) == 1
+    only = log[0]
+    assert only["item_id"] == 1
+    assert only["field_changed"] == "status_origin"
+    assert only["old_value"] == "manual"
+    assert only["new_value"] == "manual"
+    assert only["trigger_cause"] == "user_set_status"
+    assert only["timestamp"] == FIXED_TIME
+    conn.close()

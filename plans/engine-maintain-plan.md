@@ -251,7 +251,7 @@ The dispatch table the L2 Relate plan asked for:
 | Human `close-item` | `status` | `<observed>` | `Closed:<reason>` | `user_closed` | NULL | the closed item |
 | Human `set-status` (clear) | `status` | `<observed>` | `Active` | `user_set_status` | NULL | the item |
 | Human `set-status` (challenge) | `status` | `<observed>` | `Challenged` | `user_set_status` | NULL | the item |
-| Human `set-status` (the shield) | **`status_origin`** | `derived` | `manual` | `user_set_status` | NULL | the item |
+| Human `set-status` (the shield) | **`status_origin`** | `<observed>` | `manual` | `user_set_status` | NULL | the item |
 | Reversal (the item) | `status` | `Closed:superseded` | `Active` | `reversal` | the `supersedes` link id | the restored item |
 | Reversal (the marker) | **`link_reversed`** | `Confirmed` | `Reversed` | `reversal` | the `supersedes` link id | the restored item |
 
@@ -259,7 +259,7 @@ The dispatch table the L2 Relate plan asked for:
 - **`old_value` is the OBSERVED prior status**, read from the snapshot — not a constant. A `Challenged` target closed by rule 1 records `old_value='Challenged'`. A reversal records `old_value='Closed:superseded'` (prior status **and** reason).
 - **`new_value` encoding is decided:** `<new_status>` alone, or `<new_status>:<close_reason>` for a close.
 - **The `link_reversed` row is the reversal marker** (Gap C). It is what makes the reversal visible to readers of `links` and to the sweep's rule 1. It satisfies human spec 3.6:113 ("every change to a note **or link** adds a row to an audit ledger") — the link's change **is** logged.
-- **The `status_origin` row** makes the shield change auditable — same spec clause, same reason. `status_origin` is **NOT** written by the sweep — only by `set-status`, and only when the shield is set.
+- **The `status_origin` row** makes the shield change auditable — same spec clause, same reason. `status_origin` is **NOT** written by the sweep — only by `set-status`, and only when the shield is set. Its `old_value` is the **observed** prior `status_origin`, read before the UPDATE (a manual item re-cleared records `old_value='manual'`, not a constant `'derived'`).
 - Every `trigger_cause` string is unique; every `field_changed` value is `status`, `status_origin`, or `link_reversed`.
 
 ### 4.7 Orchestration
