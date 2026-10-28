@@ -68,7 +68,7 @@ Phase 5 check   : ember db-check proves version, triggers, drift, replay
 
 ## 5. Migration 011 — `ember/adapters/migrations/011_add_links_reversed_at_and_enforcement_triggers.sql`
 
-Plain SQL only. No `BEGIN`/`COMMIT`/`PRAGMA` in the script — the runner owns them. Pinned verbatim (L3 pastes it):
+Plain SQL only. No `BEGIN`/`COMMIT`/`PRAGMA` in the script — the runner owns them. Pinned verbatim as amended (option B — includes the `_guard_011_links` links guard; L3 pastes it):
 
 ```sql
 -- Guard (#23 pre-assertion): migration dies if any v10 row breaks the new rule.
@@ -115,6 +115,20 @@ INSERT INTO link_compat (source_type, target_type, link_type) VALUES
     ('Finding', 'Finding', 'supersedes'),
     ('Finding', 'Question', 'answers'),
     ('Question', 'Question', 'supersedes');
+
+-- §8 symmetric pre-assertion for links (decision closed as option B): migration
+-- dies if any existing links row violates TYPE_COMPAT — a pre-existing illegal
+-- pair must not migrate silently. Same throwaway-guard pattern as above.
+CREATE TABLE _guard_011_links (bad INTEGER NOT NULL CHECK (bad = 0));
+INSERT INTO _guard_011_links (bad)
+    SELECT COUNT(*) FROM links AS l
+    WHERE NOT EXISTS (
+        SELECT 1 FROM link_compat
+        WHERE source_type = (SELECT type FROM items WHERE id = l.source_item_id)
+          AND target_type = (SELECT type FROM items WHERE id = l.target_item_id)
+          AND link_type = l.link_type
+    );
+DROP TABLE _guard_011_links;
 
 -- #17: DB-level pair enforcement. INSERT plus the three mutation columns on UPDATE
 -- (the #20/#21 writes touch only reversed_at, which never fires this trigger).
@@ -176,7 +190,7 @@ The backup runs ONCE per `_apply_migrations` run, before the first above-current
 
 ## 8. #23 — items Trigger
 
-Rule: `status='Closed'` implies `close_reason NOT NULL` — enforced by the two `items` triggers above. Pre-assertion: the `_guard_011` CHECK kills migration 011 (IntegrityError → runner rollback → per-engine migration code, §12) if any existing row breaks the rule. `items` never rebuilds — a rebuild would manufacture the "another reason" #23 says to wait for (L1). Existing writers are clean today (`apply_status_changes` always writes `close_reason` with status), but the guard tests the data, not the writers. Symmetric pre-assertion for `links`: a guard count with the same `_guard_011` technique asserts every existing `links` row satisfies `TYPE_COMPAT` (via the compat table) before the `links_compat_*` triggers land — "test the data, not the writers" holds for both tables.
+Rule: `status='Closed'` implies `close_reason NOT NULL` — enforced by the two `items` triggers above. Pre-assertion: the `_guard_011` CHECK kills migration 011 (IntegrityError → runner rollback → per-engine migration code, §12) if any existing row breaks the rule. `items` never rebuilds — a rebuild would manufacture the "another reason" #23 says to wait for (L1). Existing writers are clean today (`apply_status_changes` always writes `close_reason` with status), but the guard tests the data, not the writers. Symmetric pre-assertion for `links`: a guard count with the same `_guard_011` technique asserts every existing `links` row satisfies `TYPE_COMPAT` (via the compat table) before the `links_compat_*` triggers land — "test the data, not the writers" holds for both tables. **Applied in §5 as amended (option B, recorded at L3 step-01 §11): the `_guard_011_links` table sits in the pinned script after the `link_compat` INSERT, before trigger creation; the script is no longer pasted "verbatim" but "as amended by this decision".**
 
 ## 9. #20 + #21 — Readers See the Reversal (relate deltas only)
 

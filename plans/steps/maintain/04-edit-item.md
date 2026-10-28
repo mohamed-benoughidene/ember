@@ -53,11 +53,12 @@ Let a human write `items.rationale` (on a `Decision`) or `items.source` (on a `F
 - STDOUT, one line (§12.3's sample is the final wording — §12.9 item 1 resolved):
   `item 3: rationale edited`
 - A no-op (same value) prints **nothing** and exits 0.
+- `--dry-run` STDOUT, one line, pinned: `item 3: rationale: <old> -> <new> (dry-run)` — §12.3's final-run wording style; writes zero rows, exit 0.
 
 ## 4. Steps
 
 1. Gate-1 ADR is filled (see Gates) — else no build.
-2. Grow `ItemState` + the Phase-1 read (`rationale`, `source`); extend `FakeMaintainLookup` with the two fields (§12.8 unit bullet 1).
+2. `ItemState` (ember/maintain/rows.py) gains `rationale: str | None = None` and `source: str | None = None` (I10 defaults — required fields would break every existing constructor), and the Phase-1 read (`rationale`, `source`) grows with it (§12.8 unit bullet 1). `FakeMaintainLookup` needs no shape change — do not extend it with the new fields.
 3. Add `EditChange`, `validate_edit_item`, `apply_item_edit`, `run_edit_item`, `MaintainRequest.field`/`.value`, the CLI command.
 4. Error-code audit before numbering: verify nothing after `MAINTAIN-012` exists in any branch (`git log -p ember/maintain/errors.py` is the receipt, §12.7) — verified at plan time: `errors.py` ends at 012.
 5. Apply the plan amendments listed in §10 in the same commit.
@@ -87,7 +88,7 @@ Unit — `tests/maintain/test_edit_item.py` (FakeMaintainLookup, pure):
 
 Integration — `tests/maintain/test_edit_item_integration.py` (real temp DB, `open_maintain_database`):
 - `test_apply_item_edit_update_and_ledger_row_one_transaction` — §12.8 integration bullet 1.
-- `test_apply_item_edit_sqlite_error_injection_raises_016_and_rolls_back` — bullet 1 + the I21 named row for 016. **Vehicle: inject `sqlite3.Error` at the connection's `execute`; assert the rollback (no column change, no ledger row) plus the code.** Real store, not a fake — the step-02 T10 trap applies.
+- `test_apply_item_edit_sqlite_error_injection_raises_016_and_rolls_back` — bullet 1 + the I21 named row for 016. **Vehicle (precisely): a test-local delegating connection proxy that raises `sqlite3.Error` only when the SQL matches the `items` UPDATE under test; it delegates everything else — including `rollback()` — to the real connection. A fake per T3, not a mock: there is no in-repo write-side precedent (`BrokenConnection` is read-side all-or-nothing; real-constraint routes cannot fire for these columns). The MAINTAIN-016 assertions stay as written: assert the rollback (no column change, no ledger row) plus the code.** Real store, not a fake — the step-02 T10 trap applies.
 - `test_apply_item_edit_insert_failure_raises_012_and_rolls_back` — the I21 named row for the reused 012.
 - `test_item_state_read_carries_rationale_and_source` — §12.6 ItemState growth, §12.4 Phase-1 read.
 - `test_sweep_never_reads_rationale_or_source` — §12.8 integration last bullet.
@@ -102,8 +103,8 @@ CLI — `tests/maintain/test_edit_item_cli.py` (§12.8 CLI bullets):
 - `test_edit_item_cli_dry_run_writes_zero_rows` — bullet 8.
 - `test_edit_item_cli_missing_value_exits_2` + `test_edit_item_cli_non_integer_item_exits_2` — §12.3 + L1 CLI contract: Click errors tested by exit code, not error code.
 
-E2E — `tests/maintain/`:
-- `test_e2e_edit_item_then_history_renders_unknown_kind` — §12.8 E2E: `ember edit-item` then `ember history --item <id>` asserts the row renders `kind='unknown'` **with raw values visible and nothing crashing** — Query is NOT modified in this phase; the unknown rendering IS the contract. Caveat: holds **until §12.9 item 4** (the classifier extension) lands — Engine D work, not ours. Note: §12.8 says "one E2E test drives both shipped CLIs" — see §10; this step owns the edit-item half, step 05 the remove-link half.
+E2E — `tests/maintain/test_edit_item.py` (this step's file; step-local half only):
+- `test_e2e_edit_item_then_history_renders_unknown_kind` — §12.8 E2E, the step-local half: `ember edit-item` then `ember history --item <id>` asserts the row renders `kind='unknown'` **with raw values visible and nothing crashing** — Query is NOT modified in this phase; the unknown rendering IS the contract. Caveat: holds **until §12.9 item 4** (the classifier extension) lands — Engine D work, not ours. Note: §12.8's "one E2E test drives both shipped CLIs" is owned by step 05 as one combined test (`ember edit-item` → `ember remove-link` → `ember history --item <id>`, in step 05's file); this step keeps only these step-local half-assertions — see §10.
 
 ## 7. CLI check (Rule S1)
 
@@ -116,7 +117,7 @@ $ ember edit-item --item 99 --field rationale --value "x" --db research.db
 error: MAINTAIN-001 ...           # exit 1
 ```
 
-`--dry-run` prints the planned old→new, writes zero rows, exit 0; missing DB → exit 1 `MAINTAIN-007`; missing `--value` → exit 2 (§12.3).
+`--dry-run` prints the pinned one line `item 3: rationale: <old> -> <new> (dry-run)` (§12.3's final-run wording style), writes zero rows, exit 0; missing DB → exit 1 `MAINTAIN-007`; missing `--value` → exit 2 (§12.3).
 
 ## 8. Out of scope (this step)
 
@@ -137,6 +138,9 @@ Step 05 (`05-remove-link.md`) — gated on Gate 2, per §12.1.
 - Plan amendments this step applies (same commit): the **rule-7 scoping amendment to master-plan rule 7** per the ADR outcome (§12.2 item 2); **query-plan §0's #19 owner cell** → Maintain §12 (§12.5 vs §12.2 item 3); the **`rationale`/`source` writer-side rows appended to the frozen L2 §4.6 vocabulary table** (§12.4).
 - **L2 §12.9 amendment recorded:** the L2 names ONE step plan (`04-edit-and-remove.md`); the coordinator split it into `04-edit-item.md` + `05-remove-link.md` (this file + step 05). Recorded here; fold into the L2 when amended.
 - **L2 §12.6 amendment recorded:** `run_edit_item` / `run_remove_link` return types are unspecified; recorded as `list[EditChange]` / `list[LinkChange]` (empty list = no-op, I4; `MaintainResult` stays the sweep's shape).
+- **L2 §12.8 amendment recorded (§12.8 as amended at review):** §12.8's single both-CLIs E2E is owned by step 05 as one combined test; step 04 owns only step-local assertions (mirrored in step 05 §10; fold into the L2 when amended).
+- **L2 §12.9 amendment recorded:** §12.9's both-gates-before-authoring rule is superseded by the split: 04 proceeds on Gate 1 alone, 05 on Gate 2 alone (plus Gate 1 only if the ADR touches links) (mirrored in step 05 §10; fold into the L2 when amended).
+- **Test-file ownership:** step 04's tests land in `tests/maintain/test_edit_item.py` / `test_edit_item_integration.py` / `test_edit_item_cli.py` (all new files); step 05's in `tests/maintain/test_remove_link.py` / `test_remove_link_integration.py` / `test_remove_link_cli.py` (all new files); the combined E2E lives in step 05's file — identical test names can never shadow one file.
 
 ## 11. Rollback
 

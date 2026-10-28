@@ -16,7 +16,7 @@ The plan is written now; the build waits. §12.1: "Until that ruling lands, `rem
 - **B1** — `validate_remove_link` lives in `ember/maintain/human_actions.py` beside its peers (§12.6); the B6 watch is recorded in §12.8, not split.
 - **B2** — reads through `MaintainLookupPort`, writes through `MaintainStorePort`.
 - **B3 / T1** — the validator is pure; `old_status` comes from the Phase-1 snapshot.
-- **D1** — the `links` row is **updated, never deleted** — `change_log.link_id REFERENCES links(id)` (migration 008); a DELETE would orphan the ledger (§12.5). The one status flip is the removal; it is recorded in the ledger, never rewritten.
+- **D1** — the `links` row is **updated, never deleted** — `change_log.link_id REFERENCES links(id)`; a DELETE is refused outright by the `change_log.link_id` foreign key (migration 008) with `PRAGMA foreign_keys ON` (§12.5). The one status flip is the removal; it is recorded in the ledger, never rewritten.
 - **D2 / D3** — the UPDATE and its `link_removed` ledger row land in **one transaction** (the `apply_status_origin` pattern, `ember/adapters/sqlite.py:805-840`); the removed state is rebuildable from the `link_removed` rows (§12.10a D2).
 - **I1** — named by job (`validate_remove_link`, `apply_remove_link`).
 - **I2** — no boolean flags; `--dry-run` omits the store call.
@@ -41,6 +41,7 @@ Let a human remove one confirmed relationship edge — all five link types in sc
   2. a **reversed-but-Confirmed link is ACCEPTED** (§12.5, orthogonal-to-reversal): it is still a Confirmed row; the ledger then ends with both a `link_reversed` and a `link_removed` row;
   3. otherwise one `LinkChange(link_id, old_status='Confirmed' <observed>, new_status='Rejected', trigger_cause='user_remove_link', item_id=<the link's source_item_id>)`.
 - **`LinkChange(link_id: int, old_status: str, new_status: str, trigger_cause: str, item_id: int)`** — pydantic, in `ember/maintain/rows.py` next to `StatusChange` (§12.6). `item_id` = the link's **source** — Relate's convention, stated so Query guesses nothing (engine-query-plan §4.6, cited by §12.5).
+- **Query's `HistoryPage` — stated here so the two plans do not drift:** HistoryPage carries limit/offset/since only; the raw item_id parameter governs (Amendment §D as amended at review: item_id removed from the shape). The SHAPE edit to `plans/engine-query-plan.md` §D is NOT this step's edit.
 - **`MaintainStorePort.apply_remove_link(change: LinkChange) -> int`** — int = 1 or raise; joins `ember/maintain/apply_status.py` (§12.6). One transaction: `UPDATE links SET status='Rejected' WHERE id=?` + `INSERT INTO change_log (item_id=<source>, link_id=<id>, field_changed='link_removed', old_value='Confirmed', new_value='Rejected', timestamp, trigger_cause='user_remove_link')`, the `insert_link_with_log` discipline — one `commit()`, `rollback()` in every `except` (§12.5 Phase 3). Raises `MAINTAIN-017` on the UPDATE, `MAINTAIN-012` on the INSERT (§12.6).
 - **`run_remove_link(ports, request) -> list[LinkChange]`** — joins `ember/maintain/run_maintain.py` (§12.6): `_load(ports.lookup)` (the SAME Phase-1 snapshot the sweep uses, §12.4) → `validate_remove_link` → store. Reads `request.link_id` (already on `MaintainRequest` — no new field). Returns `list[LinkChange]`; it always holds exactly 1 element or raises — a no-op is impossible by design (MAINTAIN-015 eats it, §12.5 / §12.10c). Return type = the L2 gap recorded in step 04's §10 and folded into the L2.
 - **CLI** — `ember remove-link --link <id> [--dry-run] [--db <path>]` (§12.3). `--link` is plain `type=int`; non-integer → Click exit 2. No confirm loop — the human invoking IS the confirmation (§12.3). Same `open_maintain_database` boot (I13; no new migration — §12 preamble).
@@ -51,6 +52,7 @@ Let a human remove one confirmed relationship edge — all five link types in sc
 - STDOUT, one line (§12.3's sample is the final wording — §12.9 item 1 resolved):
   `link 7: supersedes 2 -> 5 removed (Confirmed -> Rejected)`
   The line needs the link's type/source/target from the snapshot — display only (§12.9 item 3: the derived state left standing is **not** named on stdout; the per-type table below lives in the tests, not the report).
+- `--dry-run` STDOUT, one line, pinned: `link 7: Confirmed -> Rejected (dry-run)` — §12.3's final-run wording style; writes zero rows, exit 0.
 
 ## 4. Steps
 
@@ -98,9 +100,10 @@ Unit — `tests/maintain/test_remove_link.py` (FakeMaintainLookup, pure):
 
 Integration — `tests/maintain/test_remove_link_integration.py` (real temp DB, `open_maintain_database`):
 - `test_apply_remove_link_flip_and_ledger_row_one_transaction` — §12.8 integration bullet 2.
-- `test_apply_remove_link_sqlite_error_injection_raises_017_and_rolls_back` — the I21 named row for 017; the `sqlite3.Error` injection vehicle, real store (step-02 T10 trap applies).
+- `test_apply_remove_link_sqlite_error_injection_raises_017_and_rolls_back` — the I21 named row for 017. **Vehicle (precisely): a test-local delegating connection proxy that raises `sqlite3.Error` only when the SQL matches the `links` UPDATE under test; it delegates everything else — including `rollback()` — to the real connection. A fake per T3, not a mock: there is no in-repo write-side precedent (`BrokenConnection` is read-side all-or-nothing; real-constraint routes cannot fire for these columns). The MAINTAIN-017 assertions stay as written.** Real store, not a fake (the step-02 T10 trap applies).
 - `test_apply_remove_link_insert_failure_raises_012_and_rolls_back` — the I21 named row for the reused 012.
 - `test_sweep_ignores_removed_link[supersedes|answers|contradicts|depends_on|supports]` — **the ONE parameterized sweep-interplay test over all five types** (§12.8 integration bullet): after removing each, the next sweep writes zero rows and no derived state unwinds — the §4.2 table, row by row.
+  - per-param item-type fixtures required — legal seeds per TYPE_COMPAT: supersedes same-type pairs; answers (Decision|Finding)->Question; contradicts (Finding, Assumption|Decision); depends_on (Decision|Assumption)->(Assumption|Finding|Decision); supports (Finding)->(Assumption|Decision). supports feeds no trigger even Confirmed, so its param pins a trivially-true case.
 - `test_removed_supersedes_does_not_reopen_the_closed_item` — **named regression 1** (§12.8 bullet; engine-maintain-plan §8, verbatim).
 - `test_reversed_then_removed_link_has_both_marker_rows_sweep_unaffected` — **named regression 2** (§12.8 bullet; §12.5 orthogonal-to-reversal).
 - `test_change_log_still_joins_links_after_removal` — the **migration-008 reason proven**: no DELETE ever ran; the ledger's FK still joins (§12.8 integration bullet).
@@ -113,8 +116,8 @@ CLI — `tests/maintain/test_remove_link_cli.py` (§12.8 CLI bullets):
 - `test_remove_link_cli_dry_run_writes_zero_rows` — bullet 8.
 - `test_remove_link_cli_non_integer_link_exits_2` — bullet 9 (Click, exit code not error code).
 
-E2E:
-- `test_e2e_remove_link_then_history_renders_unknown_kind` — the remove-link half of §12.8's E2E (rendered `kind='unknown'` with raw values; caveat: holds until §12.9 item 4). Step 04 owns the edit-item half; see step 04 §10.
+E2E — `tests/maintain/test_remove_link.py` (this step's file; the ONE combined test lives here):
+- `test_e2e_edit_item_then_remove_link_then_history_renders_unknown_kind` — §12.8's single both-CLIs E2E, owned by this step as ONE combined test: `ember edit-item` → `ember remove-link` → `ember history --item <id>` asserts **all** new rows render `kind='unknown'` with raw values visible and nothing crashing (caveat: holds until §12.9 item 4 — Engine D work, not ours). Step 04 keeps only its step-local half-assertions in its own file; see §10.
 
 ## 7. CLI check (Rule S1)
 
@@ -127,7 +130,7 @@ $ ember remove-link --link 7 --db research.db               # again
 error: MAINTAIN-015 ...                                     # exit 1 — an error, not a no-op (§12.10c I8)
 ```
 
-`--dry-run` prints the planned flip, writes zero rows, exit 0; missing DB → exit 1 `MAINTAIN-007`; non-integer `--link` → exit 2 (§12.3).
+`--dry-run` prints the pinned one line `link 7: Confirmed -> Rejected (dry-run)` (§12.3's final-run wording style), writes zero rows, exit 0; missing DB → exit 1 `MAINTAIN-007`; non-integer `--link` → exit 2 (§12.3).
 
 ## 8. Out of scope (this step)
 
@@ -145,8 +148,12 @@ Cluster 2 is complete; both #19 halves and #1's writer have shipped. Engine-quer
 
 - (§12.9 item 1) Report wording — **resolved**: §12.3's sample line verbatim.
 - (§12.9 item 3) Naming the derived state left standing — **resolved: no.** One line per §12.3; the consequence table is realized as the §6 tests, not stdout.
-- Plan amendments this step applies (same commit as `apply_remove_link`, per §12.2 item 1): the **engine-maintain-plan §1 clause edit** — "Maintain never writes `links`" gains the two named writes (this step's status UPDATE; `apply_reversal`'s `UPDATE links SET reversed_at` per schema-plan §6's cross-plan note — landed by cluster 1); the **`link_removed` writer-side row appended to the frozen L2 §4.6 vocabulary table** (§12.4's table, its last row). Until this commit the frozen §1 text stays — this file is the amendment of record (§12.2).
+- Plan amendments this step applies (same commit as `apply_remove_link`, per §12.2 item 1): the **engine-maintain-plan §1 clause edit** — "Maintain never writes `links`" gains the two named writes (this step's status UPDATE; `apply_reversal`'s `UPDATE links SET reversed_at` per schema-plan §6's cross-plan note — apply the `reversed_at` mention only if cluster 1 has landed at build time; otherwise amend the removal half alone); the **`link_removed` writer-side row appended to the frozen L2 §4.6 vocabulary table** (§12.4's table, its last row). Until this commit the frozen §1 text stays — this file is the amendment of record (§12.2).
 - **L2 §12.9 amendment recorded:** the singular `04-edit-and-remove.md` is split into `04-edit-item.md` + `05-remove-link.md` — mirrored in step 04 §10; fold into the L2 when amended.
+- **L2 §12.8 amendment recorded (§12.8 as amended at review):** §12.8's single both-CLIs E2E is owned by step 05 as one combined test; step 04 owns only step-local assertions (mirrored in step 04 §10; fold into the L2 when amended).
+- **L2 §12.9 amendment recorded:** §12.9's both-gates-before-authoring rule is superseded by the split: 04 proceeds on Gate 1 alone, 05 on Gate 2 alone (plus Gate 1 only if the ADR touches links) (mirrored in step 04 §10; fold into the L2 when amended).
+- **Test-file ownership:** step 04's tests land in `tests/maintain/test_edit_item.py` / `test_edit_item_integration.py` / `test_edit_item_cli.py` (all new files); step 05's in `tests/maintain/test_remove_link.py` / `test_remove_link_integration.py` / `test_remove_link_cli.py` (all new files); the combined E2E lives in step 05's file — identical test names can never shadow one file.
+- **Amendment §D as amended at review recorded:** HistoryPage carries limit/offset/since only; the raw item_id parameter governs — item_id removed from the shape. The SHAPE edit to `plans/engine-query-plan.md` §D is not this step's; stated in §2 so the two plans do not drift (fold into the L2 when amended).
 
 ## 11. Rollback
 

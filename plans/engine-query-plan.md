@@ -335,7 +335,7 @@ ember why --item <id> [--db PATH]
 ember history [--item <id>] [--db PATH]
 ```
 
-- `--db` defaults to `ember.db` — the module-level `DEFAULT_DB_PATH` in `ember/cli.py:64`. The commands live in `ember/cli.py` and use that constant directly; **no module imports it from `ember.cli`** (that would be a circular import, Constitution B6's first warning sign).
+- `--db` defaults to `ember.db` — the module-level `DEFAULT_DB_PATH` in `ember/cli.py:72`. The commands live in `ember/cli.py` and use that constant directly; **no module imports it from `ember.cli`** (that would be a circular import, Constitution B6's first warning sign).
 - `--item` is `type=int`. **Required** for `why`. **Optional** for `history`: with no `--item` the mode returns the **global** ledger, every row in `(timestamp, id)` order — which is the literal spec reading ("Reads the change log", AI spec 3.8:140) and the only way Capture's NULL-subject `proposed` rows are reachable at all. With `--item <id>` it returns that item's rows by the union rule (§4 Phase 2). **A `--item` id that is not in `items` raises QUERY-001** (see §4.7), the same as `why`; the global view never raises it.
 - `--query` is **required** for `topic-search`.
 - **Exit codes:** 0 success (including an empty result), 1 on any `QUERY-*` error, 2 on a Click usage error. No exit 2 for abort — this engine has no prompt, so there is no `UserAbort`.
@@ -355,7 +355,7 @@ ember history [--item <id>] [--db PATH]
 | `QUERY-004` | `SchemaOutdated` | `schema_version` is below the required 10. | `version`, `required` |
 | `QUERY-005` | `ItemsReadFailed` | an `items`, `links` or `change_log` read failed (disk error, lock, corrupt page). | `table` |
 | `QUERY-006` | `QueryFilterInvalid` | a filter value not in the legal set (`--status`, `--type`), or a negative `--limit` / `--offset` — one shared non-negative helper behind `validate_topic_filter` / `validate_history_page`. | `field` |
-| `QUERY-007` | `QuerySinceInvalid` | `--since` does not parse as an ISO-8601 datetime — raised by `validate_history_page`. | `since_length` |
+| `QUERY-007` | `QuerySinceInvalid` | `--since` does not parse as an ISO-8601 datetime, or parses as naive (no offset). Raised by `validate_history_page`. | `since_length` |
 
 **Codes are contiguous, 000–007, with no gaps and no removals** (I17) — the same shape as Maintain's 000–012. Eight raisable codes is the right size for a read-only engine with one read port: Maintain has 12 raised codes (plus the `MAINTAIN-000` base), Relate 31, Capture 16. (006 and 007 are added by the V1.x amendment, §E.)
 
@@ -665,8 +665,10 @@ ember topic-search --query sqlite --status Active --type Decision --limit 5 --db
 
 ember history --item 3 --limit 20 --offset 40 --db ember.db
 # exit 0 → {"mode": "history", "item_id": 3, "count": N, "events": [HistoryEvent, …]}
-ember history --since 2026-10-01T00:00:00 --db ember.db
+ember history --since 2026-10-01T00:00:00+00:00 --db ember.db
 # exit 0 → {"mode": "history", "item_id": null, "count": N, "events": [HistoryEvent, …]}
+ember history --since 2026-10-01T00:00:00 --db ember.db
+# exit 1 → QUERY-007 QuerySinceInvalid | … | since_length=19   (naive — parses but names no offset)
 ```
 
 Envelope keys are unchanged — no new field, so the no-flag document stays byte-identical. Exit codes per §5: 0 success, 1 on `QUERY-*`, 2 on Click usage. All three work on both the global and the `--item` history view.
@@ -685,11 +687,12 @@ class TopicFilter(BaseModel):    # ember/query/rows.py
     limit: int | None = None     # None = no cap; ≥ 0
 
 class HistoryPage(BaseModel):
-    item_id: int | None = None   # None = global view
     limit: int | None = None     # None = no cap; ≥ 0
     offset: int | None = None    # None = no skip; ≥ 0
     since: str | None = None     # ISO-8601; normalised by the validator
 ```
+
+item_id stays a plain parameter on `history`/`run_history`/`render_history` — never part of the page object (D3: one source of truth for the item scope).
 
 Signatures that change (verified names):
 
@@ -698,7 +701,7 @@ Signatures that change (verified names):
 | `topic_search(items, query, topic_filter=TopicFilter())` | `ember/query/topic_search.py` | 2 → 3 inputs |
 | `history(rows, links, item_id, page=HistoryPage())` | `ember/query/history.py` | additive — the raw `item_id` param stays, the page object joins as a defaulted final parameter; 3 → 4 inputs (I3-legal at the ceiling) |
 | `run_topic_search(lookup, query, topic_filter=TopicFilter())` | `ember/query/run_query.py` | 2 → 3 inputs |
-| `run_history(lookup, item_id, page=HistoryPage())` | `ember/query/run_query.py` | additive — the raw id stays, `page` is a defaulted final parameter; 2 inputs |
+| `run_history(lookup, item_id, page=HistoryPage())` | `ember/query/run_query.py` | additive — the raw id stays, `page` is a defaulted final parameter; 2 + the defaulted page |
 | `validate_topic_filter(tf) -> None`, `validate_history_page(page) -> HistoryPage` | `ember/query/query_gatekeeper.py` | new, pure (MAINTAIN-002 precedent: `ember/maintain/human_actions.py` validates enums in the pure core and raises a coded error — same shape here) |
 
 Purely additive — every existing call site (CLI, tests, fakes) compiles unchanged.
@@ -720,7 +723,7 @@ Purely additive — every existing call site (CLI, tests, fakes) compiles unchan
 | Code | Name | Trigger | Context (I19) |
 |---|---|---|---|
 | `QUERY-006` | `QueryFilterInvalid` | a filter value not in the legal set (`--status`, `--type`), or a negative `--limit` / `--offset`. | `field` |
-| `QUERY-007` | `QuerySinceInvalid` | `--since` does not parse as an ISO-8601 datetime. | `since_length` |
+| `QUERY-007` | `QuerySinceInvalid` | `--since` does not parse as an ISO-8601 datetime, or parses as naive (no offset). | `since_length` |
 
 Continue from QUERY-005; numbers never reused. Verified no `FilterInvalid` / `SinceInvalid` name exists in any family. Raising sites: both in `ember/query/query_gatekeeper.py` (`validate_topic_filter`, `validate_history_page`). The non-negative check is factored into ONE shared helper so QUERY-006 has exactly one raising site (`validate_topic_filter` and `validate_history_page` both call it); QUERY-007's single site is `validate_history_page`. `since_length`, not the raw text — QUERY-002's rule (a newline would break the one-line log, and user text can hold a secret). **No code for Click-rejected input:** an unknown flag or a non-integer `--limit` never reaches Python — tested by exit code 2 and no house `error:` log line (Click's own usage block still prints), per hardening contract 5.
 

@@ -33,7 +33,7 @@ ember topic-search --query "sqlite" [--status STATUS] [--type TYPE] [--limit N] 
 - `--query` unchanged (required; gatekeeper QUERY-002 first, §C order).
 - `--status` / `--type`: plain strings, exact case, legal values checked by the validator.
 - `--limit`: `type=int`. A non-integer never reaches Python — Click rejects it (exit 2, hardening contract 5, §E).
-- `--db` unchanged (`DEFAULT_DB_PATH`, `ember/cli.py:64`).
+- `--db` unchanged (`DEFAULT_DB_PATH`, `ember/cli.py:72`).
 
 Shape (amendment §D), added to `ember/query/rows.py`:
 
@@ -43,6 +43,8 @@ class TopicFilter(BaseModel):
     type: str | None = None      # one of Decision | Assumption | Finding | Question
     limit: int | None = None     # None = no cap; ≥ 0
 ```
+
+For step 05's shape: `HistoryPage` carries limit/offset/since only; the raw `item_id` parameter governs (amendment §D as amended at review).
 
 ## 3. Outputs
 
@@ -75,7 +77,11 @@ No code for Click-rejected input: an unknown flag or a non-integer `--limit` nev
 
 ## 6. Test Targets
 
-**Pre-code capture (amendment §F, before ANY amendment code):** run the pre-amendment build and store stdout into `tests/fixtures/query/no_flags_golden.json` for the three commands: `ember topic-search --query sqlite --db <fixture>`, `ember history --db <fixture>`, `ember history --item <existing id> --db <fixture>`. This step owns the capture session (it is the first amendment step); step 05 asserts the history lines from the same file. If step 05 ever lands first, the capture moves there — the file must predate the first amendment commit.
+**Pre-code capture (amendment §F, before ANY amendment code):** run the pre-amendment build and store stdout into `tests/fixtures/query/no_flags_golden.json` for the three commands: `ember topic-search --query sqlite --db <fixture>`, `ember history --db <fixture>`, `ember history --item <existing id> --db <fixture>`. This step owns the capture session (it is the first amendment step); step 05 asserts the history lines from the same file. If step 05 ever lands first, the capture moves there — the file must predate the first amendment commit. The capture recipe is pinned:
+- the fixture DB is a temp v10 DB seeded with a FIXED clock — the `change_log` timestamps use `tests/fakes.py::FIXED_TIME`-style stamps (the real writer stamps the machine clock, which would make the golden irreproducible);
+- named ids, as in the existing seeds: source 1, items 1–3;
+- the JSON file shape is `{"topic_search": <envelope>, "history": <envelope>, "history_item_1": <envelope>}`;
+- the test rebuilds the same DB via the same seed helpers and compares raw stdout bytes (CliRunner output), ignoring nothing.
 
 Unit, pure cores, fakes per T3 (`tests/query/fakes.py` untouched) (§F):
 - `test_default_topic_filter_scores_every_item` — `topic_search(items, query, TopicFilter())` equals `topic_search(items, query)`; `TopicFilter()` ≡ today, every item scores.
@@ -86,7 +92,7 @@ Unit, pure cores, fakes per T3 (`tests/query/fakes.py` untouched) (§F):
 Golden fixture (§F):
 - `tests/fixtures/query/bm25_golden.json` stays green **untouched**: `tests/query/test_topic_search_unit.py::test_scores_match_the_hand_computed_golden_fixture` calls `topic_search(items, GOLDEN["query"])` with no filter (verified) — the defaulted `TopicFilter()` is a no-op, so every score is unchanged. The fixture file does not move.
 
-Integration / CLI, real temp DB (§F):
+Integration / CLI, real temp DB (§F), in `tests/query/test_topic_filter_cli.py` (identical test names legally live in different modules — step 05's file is `tests/query/test_history_window_cli.py`):
 - `test_no_flags_output_is_byte_identical_to_pre_amendment` — the captured `topic-search` command output, byte-identical after.
 - `test_cli_flags_never_touch_the_database_file` — this step lands it; sha256 before/after with every new flag set (mechanism of the existing `_hash` in `tests/query/test_query_db_open.py::test_query_leaves_the_database_byte_identical`); extends the §7.2 proof (§F). Step 05 extends the same test.
 - the `mode=ro` write-attempt test stays green (§F).
@@ -94,7 +100,7 @@ Integration / CLI, real temp DB (§F):
 
 ## 7. CLI check (Rule S1)
 
-Against a temp v10 DB built by the seed helpers (`tests/query/fakes.py::make_v10` — no binary committed, per step 01's recorded deviation):
+Against a temp v10 DB — `make_v10` (`tests/query/fakes.py:139`) opens a schema-10 DB; seeding uses the `insert_source`/`insert_item`/`insert_link` helpers from `tests/fakes.py` (the pattern in `tests/query/test_query_cli.py:11`) — no binary committed, per step 01's recorded deviation:
 
 - `ember topic-search --query "sqlite" --status Active --type Decision --limit 5 --db <fixture>` → exit 0, one JSON document `{"mode": "topic_search", "query": "sqlite", "count": N, "results": [SearchHit, …]}` with `N ≤ 5` (amendment §B).
 - `ember topic-search --query "sqlite" --db <fixture>` (no flags) → exit 0, byte-identical to `no_flags_golden.json`.

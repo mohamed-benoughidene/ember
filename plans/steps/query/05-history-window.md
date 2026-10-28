@@ -39,20 +39,19 @@ Shape (amendment §D), added to `ember/query/rows.py`:
 
 ```python
 class HistoryPage(BaseModel):
-    item_id: int | None = None   # None = global view
     limit: int | None = None     # None = no cap; ≥ 0
     offset: int | None = None    # None = no skip; ≥ 0
     since: str | None = None     # ISO-8601; normalised by the validator
 ```
 
-**Recorded for review, not invented:** §D's shape carries `item_id` while §D's signature table keeps the raw `item_id` parameter on `run_history` / `history` ("the raw id stays, `page` is a defaulted final parameter") and says `render_history(events, item_id)` keeps the raw parameter "the runner already passes". So on the CLI path the raw parameter governs and the CLI never populates `page.item_id` (there is no second `--item` flag). The field's purpose is an open question for the maintainer; this step changes nothing about who owns the id.
+**HistoryPage carries limit/offset/since only; the raw `item_id` parameter governs** (amendment §D as amended at review) — one source of truth for the item scope (D3): `history`/`run_history`/`render_history` keep the raw parameter, the CLI never populates `page.item_id` (there is no second `--item` flag).
 
 ## 3. Outputs
 
 - `ember/query/errors.py`: `QuerySinceInvalid` — QUERY-007 (§E). (QUERY-006 landed in step 04.)
 - `ember/query/query_gatekeeper.py`: `validate_history_page(page) -> HistoryPage` — pure (§D).
   - `limit < 0` or `offset < 0` → QUERY-006 (`field`), raised by the ONE shared non-negative helper from step 04 — the same single raising point (§E).
-  - `since`: parse with `datetime.fromisoformat` — unparseable → QUERY-007 (`since_length` = the raw text's length, §E). Parse OK → normalise `astimezone(timezone.utc).isoformat()` (§D history-ordering contract) and return the page with `since` replaced, so the core compares normalised ISO text.
+  - `since`: three steps, in this order, before any `astimezone` call: 1) parse with `datetime.fromisoformat` — unparseable → QUERY-007 (`since_length` = the raw text's length, §E); 2) `parsed.tzinfo is None` → QUERY-007 — a naive spelling names no zone, and `astimezone` on it would silently assume the local machine's clock (non-deterministic, against this step's T1 claim); 3) otherwise normalise `parsed.astimezone(timezone.utc).isoformat()` (§D history-ordering contract) and return the page with `since` replaced, so the core compares normalised ISO text.
 - `ember/query/history.py`: `history(rows, links, item_id, page=HistoryPage()) -> list[HistoryEvent]` — additive, 3 → 4 inputs (§D). After the unchanged classify → union → `(timestamp, id)` sort (verified `ember/query/history.py:110` — the amendment never changes it): `--since` keeps rows with `timestamp >= since` as opaque ISO text, the exact comparison the sort already uses (§D); then `--offset` skips, then `--limit` caps (`events[offset:]`, then `[:limit]`). `offset == None` → no skip; `limit == None` → no cap. **A stored timestamp that cannot parse renders everywhere today but is invisible to a `--since` view** (a hand-edited row; recorded, not hidden — §D).
 - `ember/query/run_query.py`: `run_history(lookup, item_id, page=HistoryPage()) -> str` — validate page, item check only when the id was named (QUERY-001), load → derive → render (§C).
 - `render_history(events, item_id)` untouched (§D): `{"mode": "history", "item_id": N or null, "count": N, "events": [HistoryEvent, …]}`.
@@ -67,7 +66,7 @@ class HistoryPage(BaseModel):
 
 1. `ember/query/errors.py`: add `QuerySinceInvalid` (QUERY-007, `since_length`). No `__init__` (I18). Codes stay contiguous 000–007 (I17).
 2. `ember/query/rows.py`: add `HistoryPage` (§D shape above).
-3. `ember/query/query_gatekeeper.py`: `validate_history_page(page) -> HistoryPage` per §3 — shared helper for the non-negative checks, `fromisoformat` + `astimezone(timezone.utc).isoformat()` for `since`.
+3. `ember/query/query_gatekeeper.py`: `validate_history_page(page) -> HistoryPage` per §3 — shared helper for the non-negative checks; for `since`: `fromisoformat` → naive (`tzinfo is None`) → QUERY-007 → else `astimezone(timezone.utc).isoformat()`.
 4. `ember/query/history.py`: add the defaulted `page` parameter; window **behind** the existing sort: since-filter, then offset, then limit. Union, classifier, dedup and `(timestamp, id)` untouched.
 5. `ember/query/render.py`: untouched.
 6. `ember/query/run_query.py`: `run_history(lookup, item_id, page=HistoryPage())` — validator, optional item gate, load, derive, render (§C order).
@@ -76,22 +75,22 @@ class HistoryPage(BaseModel):
 ## 5. Errors (codes only, per amendment §E)
 
 - `QUERY-006` — `QueryFilterInvalid` — context `field`. Negative `--limit` or `--offset`; raised by the ONE shared non-negative helper (step 04's single raising point), called by `validate_history_page`.
-- `QUERY-007` — `QuerySinceInvalid` — context `since_length`. `--since` does not parse as an ISO-8601 datetime; single site `validate_history_page`.
+- `QUERY-007` — `QuerySinceInvalid` — context `since_length`. `--since` does not parse as an ISO-8601 datetime, or parses as naive (no offset — `astimezone` on naive input assumes local time, so it is rejected); single site `validate_history_page`.
 - Existing codes untouched: QUERY-001 (`--item <unknown>`, only when named, §4.7), QUERY-003/004/005 (boot + port).
 
 No code for Click-rejected input: an unknown flag or a non-integer `--limit` / `--offset` never reaches Python — exit 2, no house `error:` log line, Click's usage block still prints (§E; hardening contract 5).
 
 ## 6. Test Targets
 
-**Pre-code capture:** the byte-identical golden capture is step 04's (§F, `tests/fixtures/query/no_flags_golden.json`, taken before ANY amendment code). This step owns the history assertions against it: `ember history --db <fixture>` and `ember history --item <existing id> --db <fixture>` stdout stays byte-identical — `history --item` is the most-used path through the changed runner (§F).
+**Pre-code capture:** the byte-identical golden capture is step 04's (§F, `tests/fixtures/query/no_flags_golden.json`, taken before ANY amendment code); the capture recipe is pinned there (temp v10 DB seeded with a FIXED clock — `tests/fakes.py::FIXED_TIME`-style stamps; named ids: source 1, items 1–3; file shape `{"topic_search": <envelope>, "history": <envelope>, "history_item_1": <envelope>}`; the test rebuilds the same DB via the same seed helpers and compares raw stdout bytes, ignoring nothing). This step owns the history assertions against it: `ember history --db <fixture>` and `ember history --item <existing id> --db <fixture>` stdout stays byte-identical — `history --item` is the most-used path through the changed runner (§F).
 
 Unit, pure cores, fakes per T3 (`tests/query/fakes.py` untouched) (§F):
 - `test_history_page_windows_within_the_union_rule` — window applies **after** the union + sort, on both the global and the `--item` view; a row matching both union conditions still appears once; NULL-subject rows stay global-only.
-- `test_since_drops_older_rows` — older rows dropped, newer kept, boundary row kept (`>=`); global and `--item` both; **the TZ case**: a ledger timestamp written tz-aware UTC and a `--since` given with a different offset (e.g. `+02:00`) compare equal after `astimezone(timezone.utc).isoformat()` — the boundary row is not lost to a spelling. (§G.2 leaves the accepted spellings to this test surface: date-only, space separator, fractional seconds — pin them here; the validator's rule is fixed: `fromisoformat` parses, `astimezone(timezone.utc)` normalises, anything unparseable is QUERY-007.)
+- `test_since_drops_older_rows` — older rows dropped, newer kept, boundary row kept (`>=`); global and `--item` both; **the TZ case**: a ledger timestamp written tz-aware UTC and a `--since` given with a different offset (e.g. `+02:00`) compare equal after `astimezone(timezone.utc).isoformat()` — the boundary row is not lost to a spelling. (§G.2 leaves the accepted spellings to this test surface: date-only, space separator, fractional seconds — pin them here; the validator's rule is fixed: `fromisoformat` parses, a naive parse (no offset) is QUERY-007, `astimezone(timezone.utc)` normalises the rest, anything unparseable is QUERY-007.)
 - `test_offset_skips_then_limit_caps` — offset skips `offset` rows after the sort, then limit caps; `limit == 0` → empty; offset past the end → `[]`; global and `--item` both (§F, §D).
-- `test_validate_history_page_raises_query_007` — `since = "yesterday"` / `""` → QUERY-007 with `since_length`, never the raw text; a valid `since` comes back normalised to `…+00:00`; `limit = -1` / `offset = -1` → QUERY-006 with `field=limit` / `field=offset` via the shared helper (step 04's `test_validate_topic_filter_raises_query_006` names the helper; this step covers its `offset` caller).
+- `test_validate_history_page_raises_query_007` — `since = "yesterday"` / `""` → QUERY-007 with `since_length`, never the raw text; a naive-but-parseable `since = "2026-10-01T00:00:00"` (no offset) → QUERY-007, `since_length=19` (determinism: `astimezone` on it would assume the machine's local zone); a valid `since` comes back normalised to `…+00:00`; `limit = -1` / `offset = -1` → QUERY-006 with `field=limit` / `field=offset` via the shared helper (step 04's `test_validate_topic_filter_raises_query_006` names the helper; this step covers its `offset` caller).
 
-Integration / CLI, real temp DB (§F):
+Integration / CLI, real temp DB (§F), in `tests/query/test_history_window_cli.py` (identical test names legally live in different modules — step 04's file is `tests/query/test_topic_filter_cli.py`):
 - `test_no_flags_output_is_byte_identical_to_pre_amendment` — the history assertions above; step 04 owns the topic-search assertion.
 - `test_cli_flags_never_touch_the_database_file` — **extended** with every history flag set (`--limit`, `--offset`, `--since`, combined, on both views); the `mode=ro` write-attempt test stays green; the existing `test_query_leaves_the_database_byte_identical` (`tests/query/test_query_db_open.py`, sha256 mechanism) stays green exactly as written (§F read-only proof).
 - CLI: exit 0 / 1 / 2 paths per §7; parse stdout with `json.loads`, match no strings; `count == len(events)` always.
@@ -101,7 +100,8 @@ Integration / CLI, real temp DB (§F):
 Against a temp v10 DB built by the seed helpers (`tests/query/fakes.py::make_v10` + real write paths — no binary committed, per step 01's recorded deviation):
 
 - `ember history --item 3 --limit 20 --offset 40 --db <fixture>` → exit 0, `{"mode": "history", "item_id": 3, "count": N, "events": [HistoryEvent, …]}` with `N ≤ 20` (amendment §B).
-- `ember history --since 2026-10-01T00:00:00 --db <fixture>` → exit 0, `{"mode": "history", "item_id": null, "count": N, "events": […]}` — only rows at or after the window (amendment §B).
+- `ember history --since 2026-10-01T00:00:00+00:00 --db <fixture>` → exit 0, `{"mode": "history", "item_id": null, "count": N, "events": […]}` — only rows at or after the window (amendment §B).
+- `ember history --since 2026-10-01T00:00:00 --db <fixture>` (naive — parses but names no offset) → exit 1, `error: QUERY-007 QuerySinceInvalid | … | since_length=19` on stderr.
 - `ember history --db <fixture>` and `ember history --item 1 --db <fixture>` with no flags → exit 0, byte-identical to `no_flags_golden.json`.
 - `ember history --offset -1 --db <fixture>` → exit 1, `error: QUERY-006 QueryFilterInvalid | … | field=offset` on stderr; same for `--limit -1` (`field=limit`).
 - `ember history --since "yesterday" --db <fixture>` → exit 1, `error: QUERY-007 QuerySinceInvalid | … | since_length=9` on stderr.
@@ -125,7 +125,7 @@ Against a temp v10 DB built by the seed helpers (`tests/query/fakes.py::make_v10
 ## 10. Deferred Settings — resolved by this step
 
 - L2 §9 item 4 (history pagination / limit) → `HistoryPage` flags, default `None` = no cap, never a silent default cap (§G.1; step 03's "none in V1" ruling is superseded by the approved amendment).
-- §G.2 (`--since` grammar) → resolved into tests here: the validator's rule is fixed (`fromisoformat` + `astimezone(timezone.utc).isoformat()`); which spellings pass is pinned by `test_since_drops_older_rows`. No new setting.
+- §G.2 (`--since` grammar) → resolved into tests here: the validator's rule is fixed (`fromisoformat` → naive (no offset) → QUERY-007 → else `astimezone(timezone.utc).isoformat()`); which spellings pass is pinned by `test_since_drops_older_rows`. No new setting.
 
 ## 11. Rollback
 
