@@ -141,3 +141,7 @@ Landed on `feat/query-engine`.
 - `ember history --item abc` → Click `Error: Invalid value for '--item': 'abc' is not a valid integer.`, exit 2.
 
 **Linter:** none configured in the repo (CI runs `pytest` only).
+
+**Code review pass (2026-10-28) — findings fixed**
+- **Untested spec target: NULL `close_reason` (spec, L2 §7.1 / step §6).** `test_history_unit.py` gained `test_a_closed_item_with_a_null_close_reason_renders_without_failing` (bare `Closed` and `new_value=None` both render `close_reason: None`), and the splitter parametrization gained the `(None, None)` case. The `if new_value is None` branch of `_close_reason` is now covered.
+- **Prose style (standards).** Em dashes and semicolons removed from the new modules' and tests' prose.

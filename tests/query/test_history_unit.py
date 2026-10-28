@@ -5,9 +5,6 @@ from __future__ import annotations
 import pytest
 
 from ember.query.history import classify_change_row, history
-from ember.query.rows import ChangeRow
-from ember.relate.rows import Link
-from tests.fakes import FIXED_TIME
 from tests.query.fakes import make_change_row, make_link
 
 
@@ -97,9 +94,10 @@ def test_unrecognised_field_renders_as_unknown_with_raw_values() -> None:
         ("Closed:None", None),
         ("Closed:", None),
         ("Active", None),
+        (None, None),
     ],
 )
-def test_close_reason_splitter(new_value: str, expected) -> None:
+def test_close_reason_splitter(new_value, expected) -> None:
     row = make_change_row(
         field_changed="status", trigger_cause="user_closed", new_value=new_value
     )
@@ -107,6 +105,35 @@ def test_close_reason_splitter(new_value: str, expected) -> None:
     (event,) = history([row], [], None)
 
     assert event.close_reason == expected
+
+
+def test_a_closed_item_with_a_null_close_reason_renders_without_failing() -> None:
+    """Issue #23: nothing ties `status = 'Closed'` to a non-null reason.
+
+    A row whose new value is a bare `Closed`, and a NULL value with no status
+    at all, both render as `close_reason: None` instead of failing.
+    """
+    rows = [
+        make_change_row(
+            row_id=1,
+            field_changed="status",
+            trigger_cause="user_closed",
+            new_value="Closed",
+        ),
+        make_change_row(
+            row_id=2,
+            field_changed="status",
+            trigger_cause="user_closed",
+            new_value=None,
+        ),
+    ]
+
+    events = history(rows, [], None)
+
+    assert [(event.new_value, event.close_reason) for event in events] == [
+        ("Closed", None),
+        (None, None),
+    ]
 
 
 def test_status_origin_and_link_reversed_have_no_close_reason() -> None:

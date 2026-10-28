@@ -112,12 +112,12 @@ Earlier logo and character images, kept for history.
 - `ember/query/rows.py`: Pydantic row models `QueryItem`, `CurrentStateRow`, `ChangeRow` (nullable `item_id` read shape), `SearchHit`, `WhyReason`, `WhyResult`, `HistoryEvent` (`Link` is imported from `ember.relate.rows`).
 - `ember/query/tokenize.py`: The one tokenizer shared by the query gate and the BM25 scorer (lowercase, split on non-alphanumerics).
 - `ember/query/lookup.py`: The `QueryLookupPort` protocol (4 reads: items, links, change_log, item_exists).
-- `ember/query/query_gatekeeper.py`: The read gate — `validate_query_text` (`QUERY-002`) and `validate_query_item` (`QUERY-001`).
+- `ember/query/query_gatekeeper.py`: The read gate: `validate_query_text` (`QUERY-002`) and `validate_query_item` (`QUERY-001`).
 - `ember/query/current_state.py`: `current_state` pure core. Keeps `Active` + `Challenged` and returns the input order.
 - `ember/query/topic_search.py`: BM25 pure core (`k1 = 1.2`, `b = 0.75`, `ln(1 + …)` IDF, score-then-`item_id` tie-break).
-- `ember/query/why.py`: The `why` pure core — `depends_on` to its target, `supports` to its source, Confirmed only, transitive and cycle-safe.
+- `ember/query/why.py`: The `why` pure core: `depends_on` to its target, `supports` to its source, Confirmed only, transitive and cycle-safe.
 - `ember/query/history.py`: The `change_log` classifier (nine kinds from the `(field_changed, trigger_cause)` pair, `unknown` fallback) and the `history` union derivation.
-- `ember/query/render.py`: The display layer — `render_current_state` (Challenged first), `render_topic_search`, `render_why`, `render_history`; `json.dumps` only.
+- `ember/query/render.py`: The display layer: `render_current_state` (Challenged first), `render_topic_search`, `render_why`, `render_history`, all `json.dumps` only.
 - `ember/query/run_query.py`: The four engine entry points `run_current_state`, `run_topic_search`, `run_why`, `run_history` (validate, load, derive, render).
 - `ember/adapters/__init__.py`: Marks the adapters layer folder as a package.
 - `ember/adapters/sqlite.py`: SQLite connection, numbered migrations, `SqliteSourceStore` and `SqliteItemGatekeeper` (writes are the gatekeeper boundary), `SqliteItemContext` (item reads), `SqliteAiResponseStore` (raw AI answers) and `build_ai_response_store`, `SqliteLinkContext` (relate item/link reads plus 1-hop neighbors, and the `item_status` / `supersedes_ancestors` reads), `SqliteLinkStore` (atomic `insert_link_with_log`), `SqliteEmbedderStore` (packed-vector cache; reads `RELATE-037`, writes `RELATE-019`), `build_embedding_store`, `open_relate_database` / `ensure_relate_schema` (relate boot checks), `SqliteMaintainContext` (maintain item/link/reversed-link reads), `SqliteMaintainStore` (maintain atomic status + `change_log` writes), `open_maintain_database` / `ensure_maintain_schema` (maintain boot checks), and `SqliteQueryContext` (the four query reads) with `open_query_database` / `ensure_query_schema` (read-only boot, required version 10, never migrates).

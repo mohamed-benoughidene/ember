@@ -74,8 +74,8 @@ def test_topic_search_prints_results(db_path) -> None:
     document = json.loads(result.output)
     assert document["mode"] == "topic_search"
     assert document["query"] == "sqlite"
-    # All three seeded items share the default statement, so all three match —
-    # including the `Closed` one, which is searched on purpose (L2 §2.2).
+    # All three seeded items share the default statement, so all three match.
+    # That includes the `Closed` one, which is searched on purpose (L2 §2.2).
     assert document["count"] == 3
     assert [hit["item_id"] for hit in document["results"]] == [1, 2, 3]
 

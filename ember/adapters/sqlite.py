@@ -196,24 +196,28 @@ def open_query_database(db_path: str) -> sqlite3.Connection:
     except sqlite3.Error as exc:
         raise QueryDbOpenFailed("db open fail", db_path=db_path) from exc
     try:
-        ensure_query_schema(conn)
+        ensure_query_schema(conn, db_path)
     except EmberError:
         conn.close()
         raise
     return conn
 
 
-def ensure_query_schema(conn: sqlite3.Connection) -> None:
+def ensure_query_schema(
+    conn: sqlite3.Connection, db_path: str | None = None
+) -> None:
     """Check the applied schema version is new enough for the query engine.
 
     Raise `DbOpenFailed` (QUERY-003) if the version cannot be read, and
     `SchemaOutdated` (QUERY-004) if the version is below the required 10.
+    `db_path` is carried as context when the caller has it.
     """
     try:
         row = conn.execute("SELECT version FROM schema_version").fetchone()
         version = 0 if row is None else int(row["version"])
     except (sqlite3.Error, ValueError, TypeError) as exc:
-        raise QueryDbOpenFailed("schema version read fail") from exc
+        context = {"db_path": db_path} if db_path is not None else {}
+        raise QueryDbOpenFailed("schema version read fail", **context) from exc
     if version < 10:
         raise QuerySchemaOutdated(
             "schema version too old", version=version, required=10
@@ -636,7 +640,7 @@ class SqliteQueryContext:
     """`QueryLookupPort` on SQLite: the whole world Engine D may read.
 
     Every read raises `ItemsReadFailed` (QUERY-005) on a read failure. Reads
-    cover `items`, `links` and `change_log` only — never `sources` or
+    cover `items`, `links` and `change_log` only, never `sources` or
     `ai_responses`, the two tables holding the most sensitive bytes.
     """
 

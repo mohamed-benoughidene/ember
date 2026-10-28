@@ -1,6 +1,7 @@
 """The display layer: pure formatters that return a JSON string.
 
-`json.dumps` only — no click, no print. Sorting lives here, not in the core.
+`json.dumps` only, with no click and no print. Sorting lives here, not in the
+core.
 """
 
 from __future__ import annotations

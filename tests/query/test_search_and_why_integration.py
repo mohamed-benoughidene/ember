@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from ember.adapters.sqlite import SqliteQueryContext, open_query_database
 from ember.query.run_query import run_topic_search, run_why
 from tests.fakes import insert_item, insert_link, insert_source
@@ -11,7 +13,7 @@ from tests.query.fakes import make_v10
 
 
 def _seed(db_path: str) -> None:
-    """Item 1 depends_on item 2; item 3 is unrelated."""
+    """Item 1 depends_on item 2. Item 3 is unrelated."""
     conn = make_v10(db_path)
     try:
         source_id = insert_source(conn)
@@ -52,7 +54,12 @@ def test_topic_search_finds_the_expected_item_with_its_score(db_path) -> None:
 
     assert document["count"] == 2
     assert [hit["item_id"] for hit in document["results"]] == [1, 2]
-    assert all(hit["score"] > 0 for hit in document["results"])
+    # Same formula as the golden fixture, re-derived by hand for this corpus:
+    # N = 3, avgdl = 5, idf('sqlite') = 0.47000362924573563. Item 1 has 4
+    # tokens (term ratio 2.2/2.02) and item 2 has 8 (2.2/2.74).
+    assert [hit["score"] for hit in document["results"]] == pytest.approx(
+        [0.5118851408, 0.3773751768], abs=1e-6
+    )
 
 
 def test_topic_search_on_a_missing_term_exits_with_an_empty_list(db_path) -> None:

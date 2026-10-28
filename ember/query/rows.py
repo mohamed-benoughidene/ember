@@ -98,7 +98,7 @@ class WhyResult(BaseModel):
 class HistoryEvent(BaseModel):
     """One rendered `change_log` event.
 
-    `item_id` means whatever the writer recorded as the subject; the two
+    `item_id` means whatever the writer recorded as the subject. The two
     `link_*_item_id` fields sit beside it so the two possible meanings never
     blur. `cause` is the raw `trigger_cause`, and `close_reason` is the one
     derived field (non-null only on a `status_changed` event whose new value

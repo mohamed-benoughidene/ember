@@ -35,8 +35,8 @@ def classify_change_row(row: ChangeRow) -> str:
 
     Neither half works alone: `status` covers seven causes, and both
     `user_set_status` and `reversal` cover two different field types. A pair
-    this build does not know is `unknown` — a future engine's row, or a hand
-    edit — and it still renders with its raw values.
+    this build does not know is `unknown`, a future engine's row or a hand
+    edit, and it still renders with its raw values.
     """
     return _KIND_BY_PAIR.get((row.field_changed, row.trigger_cause), UNKNOWN_KIND)
 
@@ -97,7 +97,7 @@ def history(
     """Return the ledger events for `item_id`, or the whole ledger.
 
     A row belongs to an item when its `item_id` is that item **or** its
-    `link_id` names a link touching that item; a row matching both appears
+    `link_id` names a link touching that item. A row matching both appears
     once. A row with no subject and no link belongs to no item and appears in
     the global view only. Order is `(timestamp, id)`.
     """

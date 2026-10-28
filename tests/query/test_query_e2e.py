@@ -1,10 +1,10 @@
 """The query engine's one end-to-end test (L2 §7.6).
 
 Runs the whole house chain on a single temp database with every outside tool
-faked — `FakeItemProposer` for Capture's model, `FakeLinkProposer` for
-Relate's, `FakeConfirm` for the user — then asserts the JSON of all four query
-commands against that same database, and that the query phase left the file
-untouched.
+faked: `FakeItemProposer` for Capture's model, `FakeLinkProposer` for
+Relate's, and `FakeConfirm` for the user. Then it asserts the JSON of all four
+query commands against that same database, and that the query phase left the
+file untouched.
 """
 
 from __future__ import annotations
@@ -199,8 +199,8 @@ def test_the_house_chain_then_all_four_query_commands(db_path) -> None:
     finally:
         conn.close()
 
-    # Item 1 was superseded by item 2 and closed; item 2 was challenged as a
-    # dependent of item 1; item 3 stays Active.
+    # Item 1 was superseded by item 2 and closed. Item 2 was challenged as a
+    # dependent of item 1. Item 3 stays Active.
     assert current_state["count"] == 2
     assert [item["id"] for item in current_state["items"]] == [2, 3]
     assert current_state["items"][0]["challenged"] is True

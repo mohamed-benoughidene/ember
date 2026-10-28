@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pytest
 
+import ember.adapters.sqlite as sqlite_adapter
 from ember.adapters.sqlite import (
     SqliteQueryContext,
     ensure_query_schema,
@@ -100,6 +101,31 @@ def test_ensure_query_schema_accepts_version_10(db_path) -> None:
         ensure_query_schema(conn)
     finally:
         conn.close()
+
+
+def test_schema_version_read_failure_raises_003_with_the_db_path(
+    tmp_path, monkeypatch
+) -> None:
+    target = tmp_path / "test.db"
+    Path(target).touch()
+
+    class SchemaVersionReadError(sqlite3.Connection):
+        def execute(self, sql, *args, **kwargs):
+            if "FROM schema_version" in sql:
+                raise sqlite3.Error("schema version read fail")
+            return super().execute(sql, *args, **kwargs)
+
+    monkeypatch.setattr(
+        sqlite_adapter,
+        "_connect_readonly",
+        lambda db_path: SchemaVersionReadError(str(target)),
+    )
+
+    with pytest.raises(DbOpenFailed) as exc:
+        open_query_database(str(target))
+
+    assert exc.value.code == "QUERY-003"
+    assert exc.value.context["db_path"] == str(target)
 
 
 def test_query_leaves_the_database_byte_identical(db_path) -> None:

@@ -1,7 +1,7 @@
 """BM25 scoring over item statements (the pure core of Phase 2).
 
 No I/O, no clock, no DB, no printing. Formula, tokenizer and tie-break are
-fixed by the L2 plan; `k1` and `b` are not tuned here.
+fixed by the L2 plan. `k1` and `b` are not tuned here.
 """
 
 from __future__ import annotations

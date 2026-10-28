@@ -150,6 +150,11 @@ Landed on `feat/query-engine`.
 - `validate_query_text` returns the **stripped** text (L2 §4.7 says "normalises the text"); the core tokenizes it anyway, so stripping is the whole normalisation.
 - The `v9` integration test lowers `schema_version` after a real migration run, so the file is a genuine v10 database with a v9 stamp — the read-only boot refuses it for real, with no monkeypatch.
 
+**Code review pass (2026-10-28) — findings fixed**
+- **QUERY-003 context (spec, L2 §6).** `ensure_query_schema` now takes an optional `db_path` and carries it on the version-read failure; `open_query_database` passes it. A direct call with no path still raises with no `db_path` key, so the log line never prints `db_path=None`. Covered by `test_query_db_open.py::test_schema_version_read_failure_raises_003_with_the_db_path`. This **replaces the earlier recorded deviation** ("raises without `db_path` context") — the deviation is closed.
+- **Prose style (standards, `Personal guidelines.md` "avoid em dashes and semicolons").** The new engine code, tests, README block and PROJECT_MAP lines were swept; the em dashes and semicolons in their prose are gone. The plan documents are left as they are: all four engines' plans use that punctuation uniformly, and changing one engine's plans would make them inconsistent.
+- **Call-count assertions kept (standards, `Constitution.md` T5/T6).** The review flagged the port-call-trace assertions as a "poor target". They are kept on purpose: `lookup.calls == []` and the exact sequences are what prove L2 §4.7's fail-fast ordering (the gate runs before any table read), which no outcome assertion can show. Judgement recorded as a knowing, justified exception.
+
 **Tests (49 new; suite 468 → 518 passed, 4 deselected, 3.02s)**
 - `tests/query/test_current_state_unit.py` (5): status filter, `challenged` flag, no `close_reason`/`rationale` leak, **input order preserved**, empty input.
 - `tests/query/test_query_gatekeeper_unit.py` (9): empty/blank/punctuation QUERY-002 (parametrized), `query_length` not the text, strip, no lookup on the text path, QUERY-001 + `item_id`, one lookup on the item path.

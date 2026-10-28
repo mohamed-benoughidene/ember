@@ -586,7 +586,7 @@ def why_command(item_id: int, db_path: str) -> None:
     "item_id",
     type=int,
     default=None,
-    help="Item id to show; omit for the whole ledger.",
+    help="Item id to show. Omit it for the whole ledger.",
 )
 @click.option(
     "--db",

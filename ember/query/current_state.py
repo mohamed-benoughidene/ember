@@ -1,7 +1,7 @@
 """`current_state` derivation: the pure core of Phase 2.
 
 No I/O, no clock, no DB, no printing. It returns items in the order the port
-gave them — the `Challenged`-first ordering is the display layer's job (L1).
+gave them. The `Challenged`-first ordering is the display layer's job (L1).
 """
 
 from __future__ import annotations

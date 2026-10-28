@@ -137,7 +137,7 @@ ember why --item <id> [--db PATH]
 ember history [--item <id>] [--db PATH]
 ```
 
-All four are read-only and never write to the database. Each prints one JSON document on stdout. `current-state` lists the `Active` and `Challenged` items with the `Challenged` ones first; `topic-search` ranks by BM25 over item statements; `why` walks the `depends_on` and `supports` links behind an item; `history` shows that item's `change_log` rows with the cause of each change, or the whole ledger with no `--item`.
+All four are read-only and never write to the database. Each prints one JSON document on stdout. `current-state` lists the `Active` and `Challenged` items with the `Challenged` ones first. `topic-search` ranks by BM25 over item statements. `why` walks the `depends_on` and `supports` links behind an item. `history` shows that item's `change_log` rows with the cause of each change, or the whole ledger with no `--item`.
 
 ### Running Tests
 

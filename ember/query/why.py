@@ -44,7 +44,7 @@ def why(items: list[QueryItem], links: list[Link], item_id: int) -> WhyResult:
     The walk is the transitive closure of the two edge rules: no depth limit,
     and a visited set makes it terminate on a `depends_on` cycle. Each reason
     carries its `depth` (1 for a direct reason). The start item is not one of
-    the reasons; it travels as `WhyResult.item`.
+    the reasons, it travels as `WhyResult.item`.
 
     The gatekeeper guarantees `item_id` exists, so a missing id here is an
     internal error, not a user error (I9).

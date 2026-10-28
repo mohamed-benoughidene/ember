@@ -150,3 +150,8 @@ Landed on `feat/query-engine`.
 - `ember why --db …` (no `--item`) → Click `Error: Missing option '--item'.`, exit 2.
 
 **Linter:** none configured in the repo (CI runs `pytest` only).
+
+**Code review pass (2026-10-28) — findings fixed**
+- **Integration score assertion (spec, step §6).** `test_search_and_why_integration.py` now asserts the two expected scores (`0.5118851408`, `0.3773751768`), re-derived by hand for that corpus (N = 3, avgdl = 5), instead of only `score > 0`.
+- **Two behaviour notes recorded rather than changed**, both verified correct: query terms are de-duplicated (`dict.fromkeys`) so a repeated word cannot double a score, and the envelope echoes the normalised query text, which for a query with no surrounding whitespace is the input verbatim.
+- **Prose style (standards).** Em dashes and semicolons removed from the new modules' and tests' prose.
