@@ -18,11 +18,13 @@ from ember.adapters.sqlite import (
     SqliteLinkStore,
     SqliteMaintainContext,
     SqliteMaintainStore,
+    SqliteQueryContext,
     SqliteSourceStore,
     build_ai_response_store,
     build_embedding_store,
     open_database,
     open_maintain_database,
+    open_query_database,
     open_relate_database,
 )
 from ember.capture.confirm_write import run_confirm_loop
@@ -55,6 +57,7 @@ from ember.maintain.run_maintain import (
     run_set_status,
     run_sweep,
 )
+from ember.query.run_query import run_current_state
 from ember.relate.candidate_pool import build_candidate_pool
 from ember.relate.errors import UserAbort as RelateUserAbort
 from ember.relate.load_filter import load_item_candidates, load_latest_candidates
@@ -495,6 +498,28 @@ def reverse_supersedes(item_id: int, link_id: int, db_path: str) -> None:
         raise SystemExit(1)
     for line in report:
         click.echo(line)
+
+
+@main.command("current-state")
+@click.option(
+    "--db",
+    "db_path",
+    default=DEFAULT_DB_PATH,
+    help="SQLite database path.",
+)
+def current_state_command(db_path: str) -> None:
+    """List the live items: `Challenged` first, then `Active`, as JSON.
+
+    Read-only: the database is opened read-only and never migrated, so a
+    database behind the required schema version is refused, not upgraded.
+    """
+    try:
+        conn = open_query_database(db_path)
+        output = run_current_state(SqliteQueryContext(conn))
+    except EmberError as exc:
+        click.echo(f"error: {exc.log_line()}", err=True)
+        raise SystemExit(1)
+    click.echo(output)
 
 
 def _write_validated_flag(item_id: int, db_path: str, *, new_value: bool) -> None:

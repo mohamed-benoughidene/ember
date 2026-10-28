@@ -107,6 +107,8 @@ CLI (smoke, L2 §7.4):
 
 `ember current-state --db tests/fixtures/query/current_state.db` → one JSON document, `{"mode": "current_state", "count": 2, "items": [...]}` with the Challenged item at `items[0]`, exit 0. (Fixture DB is a copy of a temp DB built by the integration tests; it is never written to.)
 
+**As built:** no binary DB is committed — `*.db` is gitignored, so the check is run against a temp DB built by the same seed helpers (`tests/query/fakes.py`). See Build Notes below.
+
 ## 8. Out of Scope (this step)
 
 - `topic_search` / `why` / `history` cores and commands (steps 02–03).
@@ -128,4 +130,38 @@ No rollback — Engine D writes no rows and ships no migration (L2 §2.6); the d
 
 ## 12. Build Notes (post-implementation)
 
-To be added after the code lands.
+Landed on `feat/query-engine`.
+
+**Code**
+- `ember/query/errors.py`: `QueryError` + the five subclasses (000–005), no `__init__` anywhere (I18).
+- `ember/query/rows.py`: `QueryItem`, `CurrentStateRow`, `ChangeRow`; `Link` imported from `ember.relate.rows`.
+- `ember/query/tokenize.py`: `tokenize(text) -> list[str]`, lowercase + `str.isalnum` split.
+- `ember/query/lookup.py`: `QueryLookupPort` (4 methods).
+- `ember/query/query_gatekeeper.py`: `validate_query_text` (QUERY-002, `query_length`), `validate_query_item` (QUERY-001, `item_id`).
+- `ember/query/current_state.py`: `current_state(items) -> list[CurrentStateRow]`, input order preserved.
+- `ember/query/render.py`: `render_current_state(rows) -> str`; sort `(challenged first, id)`.
+- `ember/query/run_query.py`: `run_current_state(lookup) -> str`.
+- `ember/adapters/sqlite.py`: `_connect_readonly` (URI `mode=ro`, quoted path, `uri=True`), `open_query_database` (no migration), `ensure_query_schema` (required 10), `SqliteQueryContext` (4 reads, `table=` context, `QUERY-005`).
+- `ember/cli.py`: `ember current-state [--db PATH]`.
+
+**Deviations recorded**
+- **No fixture DB is committed.** Step §7 named `tests/fixtures/query/current_state.db`; `*.db` is gitignored in this repo, and a binary fixture adds nothing a seed helper does not. The CLI check ran against a temp DB built by the same helpers (`tests/query/fakes.py::make_v10` + `tests/fakes.py`). Revisit only if a human wants a hand-inspectable file in the repo.
+- `ensure_query_schema`'s version-read failure raises QUERY-003 **without** `db_path` context: the function receives only the connection, and the house's `ensure_relate_schema` / `ensure_maintain_schema` do the same. The path *is* carried on the missing-file and open-fail paths.
+- `validate_query_text` returns the **stripped** text (L2 §4.7 says "normalises the text"); the core tokenizes it anyway, so stripping is the whole normalisation.
+- The `v9` integration test lowers `schema_version` after a real migration run, so the file is a genuine v10 database with a v9 stamp — the read-only boot refuses it for real, with no monkeypatch.
+
+**Tests (49 new; suite 468 → 518 passed, 4 deselected, 3.02s)**
+- `tests/query/test_current_state_unit.py` (5): status filter, `challenged` flag, no `close_reason`/`rationale` leak, **input order preserved**, empty input.
+- `tests/query/test_query_gatekeeper_unit.py` (9): empty/blank/punctuation QUERY-002 (parametrized), `query_length` not the text, strip, no lookup on the text path, QUERY-001 + `item_id`, one lookup on the item path.
+- `tests/query/test_render_unit.py` (3): Challenged-first from a scrambled list, JSON round-trip + key match, empty → `count: 0`.
+- `tests/query/test_query_errors_unit.py` (18, parametrized ×3): codes/names stable, every class subclasses `QueryError`/`EmberError`, no subclass defines `__init__`.
+- `tests/query/test_query_db_open.py` (11): missing file (not created), non-SQLite file, **real v9 → QUERY-004 with `version=9`/`required=10` and the version unchanged afterwards**, `ensure_query_schema` accepts 10, **DB byte-identical (sha256) across a query**, a write on the handle raises `sqlite3.OperationalError`, port reads ordered by id incl. the NULL-`item_id` row, and QUERY-005 for all four reads on a closed connection (parametrized).
+- `tests/query/test_query_cli.py` (3): happy path Challenged-first, unknown flag → exit 2, stdout is JSON only.
+- `tests/test_architecture.py`: `test_query_core_does_not_import_adapters` (the 4th arch test).
+
+**Manual CLI check (real output)**
+- `ember current-state --db <temp v10>` → `{"mode": "current_state", "count": 2, "items": [{... "id": 2, "status": "Challenged", "challenged": true}, {... "id": 1, "status": "Active", "challenged": false}]}`, exit 0.
+- Same DB with `version = 9` → `error: QUERY-004 SchemaOutdated | ember.adapters.sqlite.ensure_query_schema | schema version too old | version=9 required=10`, exit 1.
+- Missing file → `error: QUERY-003 DbOpenFailed | ember.adapters.sqlite.open_query_database | db file missing | db_path=…`, exit 1.
+
+**Linter:** the repo has none configured (`.github/workflows/test.yml` runs `pytest` only), so there was nothing to run.
