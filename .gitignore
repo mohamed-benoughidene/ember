@@ -31,3 +31,6 @@ uv.lock
 *.db
 *.sqlite
 *.sqlite3
+
+# Local ticket scratch space
+.scratch/
