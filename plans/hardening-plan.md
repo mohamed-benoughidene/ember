@@ -31,6 +31,8 @@ D3 ruling (reversal truth): `change_log` stays the source (master plan rule 7); 
 
 Rebuild mechanics (apply only if #15 is decided "build"): SQLite-documented safe order — create new table, copy rows with explicit ids, drop old, rename last. The rename-first pattern migration 008 used is forbidden for these tables: on SQLite ≥ 3.26 a rename rewrites child foreign keys to the dead name. The merged CREATE TABLE is pinned verbatim, column order pinned. `sqlite_sequence` preserved. Tests: value-level row equality, `change_log` join intact, `PRAGMA foreign_key_check` empty, sequence preserved, failed migration leaves an intact v10 DB, fresh install applies the whole sequence.
 
+S1 artifact: an `ember db-check` read-only command reports schema/replay drift (recorded at review as this cluster's CLI surface).
+
 ### Cluster 2 — Human edit commands (issues #19, #1)
 
 Job: the two human-only operations the master plan names (`edit_item`, `remove_link`) exist as commands plus gatekeepers. **One ruling is recorded before any code.**

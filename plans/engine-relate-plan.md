@@ -521,3 +521,9 @@ Amended 2026-10-28, implementation pending. Source: `plans/hardening-schema-plan
 - **Gatekeeper rules 8 and 9 will see the reversal column.** Rule 8: `supersedes_ancestors` walks only `Confirmed` links with `reversed_at IS NULL` — a corrective inverse after reversal no longer false-fires. Rule 9: `find_existing` still rejects the duplicate triple but reports the existing row's reversal state (the UNIQUE triple itself stands pending #15).
 - **RELATE-028 message improves.** The rejection gains a detail naming the blocking link (id, source -> target); the cycle decision logic is unchanged.
 - **UNIQUE-triple ruling (#15) pending.** Keep-block = spec 3.3 compliant, no schema work. Relax = partial unique index on live rows = `links` table rebuild + recorded spec 3.3 deviation. Decision is the maintainer's; it gates any rebuild — mechanics pinned in `plans/hardening-schema-plan.md` §10.
+- Boot floor: relate 9 → 11 (RELATE-014 required moves; the six `version == 10` test sites are declared churn points).
+- Maintain's floor moves 10 → 11 in the same migration (`MAINTAIN-009`); recorded here because both floors ship in one step.
+- The pairing UPDATE widens "Maintain never writes links" by one column; this L2 records that widening now (mirrored in `plans/hardening-schema-plan.md` §6) — it is not deferred to the cluster-2 amendment.
+- `RejectedLink` gains an optional `detail` field (the frozen "no reason field" clause, §5.5, is amended).
+- `LinkLookupPort` grows a 12th method, `supersedes_blocking_link` (the frozen 11-method protocol, §5.4, is amended).
+- Boot floors move with the immutability migration — see the two floor bullets above; both ship in one step.

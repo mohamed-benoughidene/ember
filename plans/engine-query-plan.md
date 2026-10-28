@@ -354,8 +354,10 @@ ember history [--item <id>] [--db PATH]
 | `QUERY-003` | `DbOpenFailed` | the DB file is missing, is not a readable SQLite database, the `schema_version` read failed, or the database has a hot journal. | `db_path` |
 | `QUERY-004` | `SchemaOutdated` | `schema_version` is below the required 10. | `version`, `required` |
 | `QUERY-005` | `ItemsReadFailed` | an `items`, `links` or `change_log` read failed (disk error, lock, corrupt page). | `table` |
+| `QUERY-006` | `QueryFilterInvalid` | a filter value not in the legal set (`--status`, `--type`), or a negative `--limit` / `--offset` — one shared non-negative helper behind `validate_topic_filter` / `validate_history_page`. | `field` |
+| `QUERY-007` | `QuerySinceInvalid` | `--since` does not parse as an ISO-8601 datetime — raised by `validate_history_page`. | `since_length` |
 
-**Codes are contiguous, 000–005, with no gaps and no removals** (I17) — the same shape as Maintain's 000–012. Six raisable codes is the right size for a read-only engine with one read port: Maintain has 12 raised codes (plus the `MAINTAIN-000` base), Relate 31, Capture 16.
+**Codes are contiguous, 000–007, with no gaps and no removals** (I17) — the same shape as Maintain's 000–012. Eight raisable codes is the right size for a read-only engine with one read port: Maintain has 12 raised codes (plus the `MAINTAIN-000` base), Relate 31, Capture 16. (006 and 007 are added by the V1.x amendment, §E.)
 
 **Name collisions are house style.** `DbOpenFailed` is also RELATE-012 and MAINTAIN-007; `SchemaOutdated` is RELATE-014 and MAINTAIN-009; `ItemsReadFailed` is RELATE-016 and MAINTAIN-010. The house resolves this with an import alias (`from ember.relate.errors import DbOpenFailed as MaintainDbOpenFailed`, `ember/adapters/sqlite.py:24-31`). Engine D follows it: `from ember.query.errors import DbOpenFailed as QueryDbOpenFailed` in the adapter. The `QUERY-` prefix makes the **code** unique (I17); the shared name makes it readable, and `name` is the bare class name, exactly as Maintain does it (`name = "DbOpenFailed"`).
 
@@ -376,6 +378,8 @@ ember history [--item <id>] [--db PATH]
 | 003 | `ember.adapters.sqlite.open_query_database` (missing file, open fail, probe fail) and `ensure_query_schema` (version read fail) |
 | 004 | `ember.adapters.sqlite.ensure_query_schema` |
 | 005 | `ember.adapters.sqlite.SqliteQueryContext.list_items` / `list_links` / `list_change_log` / `item_exists` |
+| 006 | `ember.query.query_gatekeeper.validate_topic_filter` (one shared non-negative helper; also called by `validate_history_page`) — added by the V1.x amendment (§E) |
+| 007 | `ember.query.query_gatekeeper.validate_history_page` — added by the V1.x amendment (§E) |
 
 ## 7. Test Targets
 
@@ -491,9 +495,9 @@ T4 caps E2E at 1–2 per engine; Relate and Maintain each ship one.
 L3 step plans (in `plans/steps/query/`) will resolve these. Recorded so the L3 author does not forget:
 
 1. **BM25 `k1` and `b`.** L2 fixes 1.2 / 0.75. L3 may tune them — but a change to either changes every expected score in §7.1, so the golden fixture moves with it.
-2. **A result cap for `topic_search`.** L2 has none, so a one-word query over a 5 000-item database returns 5 000 hits. L3 may add a `--limit`.
-3. **Status and type filters** on `topic_search` (§2.2's `Closed` decision is about search *scope*, not filters).
-4. **Whether `history` needs pagination or a limit** once the ledger is large.
+2. **A result cap for `topic_search`.** L2 has none, so a one-word query over a 5 000-item database returns 5 000 hits. L3 may add a `--limit` (closed by the V1.x amendment, §A/§G.1).
+3. **Status and type filters** on `topic_search` (§2.2's `Closed` decision is about search *scope*, not filters) (closed by the V1.x amendment, §A/§G.1).
+4. **Whether `history` needs pagination or a limit** once the ledger is large (closed by the V1.x amendment, §A/§G.1).
 5. **The `unknown` `kind` fallback.** L2 defines it; L3 may decide a future vocabulary deserves its own kind instead.
 6. **Plan length (housekeeping).** This L2 runs past the framework's 500-line guidance (§1 L2) even though it has none of the named exceptions (few codes, no migrations, one port). Nothing is wrong today; if the plan grows, split an appendix: §A error codes, §B the `change_log` vocabulary contract (§4.6).
 
@@ -646,7 +650,7 @@ Source: `plans/hardening-plan.md` §2 cluster 3 (approved L1). **Exactly three f
 
 ### A. Purpose
 
-The three read features §9 parked as deferred L3 items: a `--limit` on `topic-search` (default **no cap**), `--status` / `--type` filters on `topic-search`, and `--limit` / `--offset` / `--since` on `history` (**never a silent default cap**). All are data into the pure cores. Phase 3 (render) and Phase 1 (load) are untouched: same envelope, same rows, same `(timestamp, id)` order. Read-only proof preserved: the `mode=ro` open (§3) and the DB-hash test (§7.2) stay; every new flag path runs behind the same `open_query_database` — no new open, no migration, no write.
+The three read features §9 parked as deferred L3 items: a `--limit` on `topic-search` (default **no cap**), `--status` / `--type` filters on `topic-search`, and `--limit` / `--offset` / `--since` on `history` (**never a silent default cap**). All are data into the pure cores. Phase 3 (render) and Phase 1 (load) are untouched: same envelope, same rows, same `(timestamp, id)` order. Read-only proof preserved: the `mode=ro` open (§3) and the DB-hash test (§7.2) stay; every new flag path runs behind the same `open_query_database` — no new open, no migration, no write. `--offset` travels with `--limit` as one paging pair; `--since` ships alongside — all three are issue #28's flags (crop window vs time window are different jobs).
 
 ### B. CLI interface (samples)
 
@@ -692,18 +696,20 @@ Signatures that change (verified names):
 | Symbol | File | Change |
 |---|---|---|
 | `topic_search(items, query, topic_filter=TopicFilter())` | `ember/query/topic_search.py` | 2 → 3 inputs |
-| `history(rows, links, page: HistoryPage)` | `ember/query/history.py` | `item_id` param moves into `HistoryPage`; 3 → 3 inputs |
+| `history(rows, links, item_id, page=HistoryPage())` | `ember/query/history.py` | additive — the raw `item_id` param stays, the page object joins as a defaulted final parameter; 3 → 4 inputs (I3-legal at the ceiling) |
 | `run_topic_search(lookup, query, topic_filter=TopicFilter())` | `ember/query/run_query.py` | 2 → 3 inputs |
-| `run_history(lookup, page: HistoryPage)` | `ember/query/run_query.py` | 2 inputs; raw id gone |
+| `run_history(lookup, item_id, page=HistoryPage())` | `ember/query/run_query.py` | additive — the raw id stays, `page` is a defaulted final parameter; 2 inputs |
 | `validate_topic_filter(tf) -> None`, `validate_history_page(page) -> HistoryPage` | `ember/query/query_gatekeeper.py` | new, pure (MAINTAIN-002 precedent: `ember/maintain/human_actions.py` validates enums in the pure core and raises a coded error — same shape here) |
 
-`render_history(events, item_id)` is unchanged — `item_id` comes from `page.item_id`. No CLI boolean, no mode switch (I2): every flag is a typed value.
+Purely additive — every existing call site (CLI, tests, fakes) compiles unchanged.
 
-**Port boundary — decided: the core slices; `QueryLookupPort` grows no method.** A windowed `list_change_log(page)` would push the window into SQL, cut memory on a huge ledger — but it duplicates the window rule outside the pure core, breaks every `FakeQueryLookup`, and changes the load path the byte-identical test pins. Full loads are what the engine does today (§4 Phase 1) and the §6 live measures have shown no ledger-size cost. Flip only if a scale measure ever names it (see Deferred).
+`render_history(events, item_id)` is unchanged — `item_id` is the raw parameter the runner already passes. No CLI boolean, no mode switch (I2): every flag is a typed value.
 
-**Filter-before-scoring consequence, stated:** the filtered subset **is the corpus**, so `N`, `df` and `avgdl` recompute — the remaining scores differ from the unfiltered run of the same query, and filtered-out items change `count` (they never appear with score 0). A window (offset/limit) only crops rows behind the existing sort; the no-flag path crops nothing.
+**Port boundary — decided: the core slices; `QueryLookupPort` grows no method.** A windowed `list_change_log(page)` would push the window into SQL, cut memory on a huge ledger — but it duplicates the window rule outside the pure core, breaks every `FakeQueryLookup`, and changes the load path the byte-identical test pins. Full loads are what the engine does today (§4 Phase 1) and §7.7 has no live tier (0 live), so no ledger-size measurement exists; the full load is today's only path and stands until a measurement says otherwise. Flip only if a scale measure ever names it (see Deferred).
 
-**History ordering contract (verified `ember/query/history.py:110`):** events sort `(timestamp, id)` ascending; the amendment never changes that. `--since` filters *on* it: the validator parses `since` with `datetime.fromisoformat` (QUERY-007 if unparseable) and normalises it via `.isoformat()`, then the core keeps rows with `timestamp >= since` as opaque ISO text — the exact comparison the sort already uses (§4 Phase 2). A stored timestamp that cannot parse renders everywhere today but is invisible to a `--since` view (a hand-edited row; recorded, not hidden).
+**Filter-before-scoring consequence, stated:** the filtered subset **is the corpus**, so `N`, `df` and `avgdl` recompute — the remaining scores differ from the unfiltered run of the same query, and filtered-out items change `count` (they never appear with score 0). A window (offset/limit) only crops rows behind the existing sort; the no-flag path crops nothing. Edge cases: limit 0 returns zero rows (explicit empty, not an error); offset past the end returns `[]`. Both edges fold into `test_offset_skips_then_limit_caps`.
+
+**History ordering contract (verified `ember/query/history.py:110`):** events sort `(timestamp, id)` ascending; the amendment never changes that. `--since` filters *on* it: the validator parses `since` with `datetime.fromisoformat` (QUERY-007 if unparseable) and normalises it via `.isoformat()`, then the core keeps rows with `timestamp >= since` as opaque ISO text — the exact comparison the sort already uses (§4 Phase 2). The validator normalises the parsed `--since` with `astimezone(timezone.utc).isoformat()` before the lexical compare (the ledger's single clock writes tz-aware UTC); any spelling Python cannot parse, or that has no offset after normalisation, is QUERY-007. A stored timestamp that cannot parse renders everywhere today but is invisible to a `--since` view (a hand-edited row; recorded, not hidden).
 
 **`count` semantics — decided: `count` = the number of rows returned** (after filter/window, `len()` of the list), not the total matching. Justification: the no-flag byte-identical requirement and the house rule `count == len(list)` for all four envelopes (§4 Phase 3) allow nothing else; the price, stated honestly, is that a windowed caller cannot see there are more rows (see Deferred).
 
@@ -716,13 +722,13 @@ Signatures that change (verified names):
 | `QUERY-006` | `QueryFilterInvalid` | a filter value not in the legal set (`--status`, `--type`), or a negative `--limit` / `--offset`. | `field` |
 | `QUERY-007` | `QuerySinceInvalid` | `--since` does not parse as an ISO-8601 datetime. | `since_length` |
 
-Continue from QUERY-005; numbers never reused. Verified no `FilterInvalid` / `SinceInvalid` name exists in any family. Raising sites: both in `ember/query/query_gatekeeper.py` (`validate_topic_filter`, `validate_history_page`). `since_length`, not the raw text — QUERY-002's rule (a newline would break the one-line log, and user text can hold a secret). **No code for Click-rejected input:** an unknown flag or a non-integer `--limit` never reaches Python — tested by exit code 2 and an empty `error:` channel, per hardening contract 5.
+Continue from QUERY-005; numbers never reused. Verified no `FilterInvalid` / `SinceInvalid` name exists in any family. Raising sites: both in `ember/query/query_gatekeeper.py` (`validate_topic_filter`, `validate_history_page`). The non-negative check is factored into ONE shared helper so QUERY-006 has exactly one raising site (`validate_topic_filter` and `validate_history_page` both call it); QUERY-007's single site is `validate_history_page`. `since_length`, not the raw text — QUERY-002's rule (a newline would break the one-line log, and user text can hold a secret). **No code for Click-rejected input:** an unknown flag or a non-integer `--limit` never reaches Python — tested by exit code 2 and no house `error:` log line (Click's own usage block still prints), per hardening contract 5.
 
 ### F. Test targets
 
 - **Unit, pure cores, fakes per T3** (`tests/query/fakes.py` — untouched): `test_default_topic_filter_scores_every_item` (`TopicFilter()` ≡ today); `test_status_and_type_filter_the_items_handed_to_the_scorer` (a `Closed` hit excluded under `--status Active`; remaining scores recompute over the smaller corpus); `test_limit_windows_after_ranking` (top N by score, not first N by id); `test_history_page_windows_within_the_union_rule` + `test_since_drops_older_rows` + `test_offset_skips_then_limit_caps` (global and `--item` both); `test_validate_topic_filter_raises_query_006`; `test_validate_history_page_raises_query_007`.
 - **Integration, real temp DB:** the CLI checks of §B with exact exit codes (0 / 1 with `error: QUERY-006 …` or `QUERY-007 …` on stderr / 2 with no code for `--limit abc` and `--pagesize`); **`test_cli_flags_never_touch_the_database_file`** — hash before/after with every new flag set, extending the existing §7.2 proof; the `mode=ro` write-attempt test stays green.
-- **Byte-identical test (I2, explicit):** `test_no_flags_output_is_byte_identical_to_pre_amendment` — before any code, capture `ember topic-search --query … --db <fixture>` and `ember history --db <fixture>` stdout from the pre-amendment build into `tests/fixtures/query/no_flags_golden.json`; after, the same commands with **no flags** print byte-identical bytes.
+- **Byte-identical test (I2, explicit):** `test_no_flags_output_is_byte_identical_to_pre_amendment` — before any code, capture `ember topic-search --query … --db <fixture>`, `ember history --db <fixture>`, and `ember history --item <existing id> --db <fixture>` (the most-used path through the changed runner) stdout from the pre-amendment build into `tests/fixtures/query/no_flags_golden.json`; after, the same commands with **no flags** print byte-identical bytes.
 - **Golden BM25 fixture:** `tests/fixtures/query/bm25_golden.json` is used by `tests/query/test_topic_search_unit.py`, which calls `topic_search(items, query)` with no filter — the default `TopicFilter()` is a no-op, so every score is unchanged and the test stays green **untouched**; the fixture file does not move.
 - **Read-only proof:** the §7.2 hash-identical test stays green exactly as written; the new-flag hash test reuses its mechanism.
 
@@ -730,8 +736,8 @@ Continue from QUERY-005; numbers never reused. Verified no `FilterInvalid` / `Si
 
 1. §9 items 2 (`result cap` = #26), 3 (`status/type filters` = #27), 4 (`history pagination` = #28) are **closed by this amendment**; L3 plans cite this section.
 2. The exact `--since` grammar: the code fixes `datetime.fromisoformat` + `.isoformat()` normalisation; which human spellings that accepts (date-only, space separator, fractional seconds) becomes L3's test surface. No new setting.
-3. A `total_matching` count next to a windowed `count`: **rejected for now** — it would break the no-flag byte-identical contract and the house `count == len(list)` rule. Needs maintainer sign-off; not absorbed here.
-4. The port windowed read (§D): recorded trigger only — a §6-style live measure showing the full-ledger load is the cost. Not planned work.
+3. A `total_matching` count next to a windowed `count`: **rejected for now** — the envelope's fields are fixed per the base plan §4 Phase 3; a conditional field changes the document shape per call. Both #26 and #28 voice exactly the visibility concern total_matching answers — parked for maintainer sign-off; not absorbed here.
+4. The port windowed read (§D): recorded trigger only — a scale measure on a synthetic large ledger showing the full-ledger load is the cost. Not planned work.
 
 ### §Z Constitution compliance (amendment)
 
@@ -746,11 +752,11 @@ Continue from QUERY-005; numbers never reused. Verified no `FilterInvalid` / `Si
 | D4 | flags are outside data: Click type-checks, the validators code-check, the core trusts (I9). |
 | I1 | `TopicFilter`, `HistoryPage`, `validate_topic_filter`, `validate_history_page` — named by job. |
 | I2 | flags are data, never mode switches — no boolean, no mode argument; the no-flag path is the old path, proven byte-identical. |
-| I3 | filter objects keep every touched call at ≤ 4 inputs; `history` drops to 3. |
+| I3 | filter objects keep every touched call at ≤ 4 inputs; `history` keeps its raw id and sits at the 4-input ceiling, `run_history` has 2 plus the defaulted page. |
 | I4 | return types unchanged — lists of named models; empty result stays exit 0 / `count: 0`. |
 | I5 / I6 | expected domain failures are coded: QUERY-006 / QUERY-007 under the one `QueryError` base. |
 | I7 / I9 | validators run before load; the cores assume clean input. |
-| I10 | new params are keyword-with-default; old call sites compile; the no-flag envelope is unchanged (byte-identical test). |
+| I10 | new params are keyword-with-default; topic_search gains a defaulted param so old call sites compile; history's id param stays, the new page param is additive — no existing call site is edited. The no-flag envelope is unchanged (byte-identical test). |
 | I11 | the changed cores and new validators update their contract docstrings (input, output, raised codes). |
 | I12 | explicit flags; 0/1/2 exit codes; JSON stdout; `error: {log_line()}` stderr — unchanged. |
 | I17 | codes continue from QUERY-005, never reused; no name collision with any family (checked). |

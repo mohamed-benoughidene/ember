@@ -22,6 +22,8 @@ Make the DB guarantee what the gatekeepers already enforce: illegal link pairs r
 
 This cluster ships storage, not an engine. Its inspectable artifact is one read-only command. It opens the DB `mode=ro`, never migrates, never writes.
 
+This is the phase's S1 artifact — a storage cluster with no user-facing mutation still needs one runnable, inspectable command (S1), and db-check is where the D2 replay check lives.
+
 ```
 $ ember db-check --db ember.db
 version: 11
@@ -158,14 +160,15 @@ END;
 
 ### 5.0 Runner backup step (D7 + L1 contract 2)
 
-Before `_apply_migrations` applies any script with `number > current`: `shutil.copy2(db_path, db_path + ".bak-v" + str(current))`. Failure to copy aborts before any script runs and surfaces through the caller's existing wrapping (§12). **Retention: keep the newest 3** `<name>.bak-v*` files, delete older — decided here at L2 per L1 contract 2. Backup counts a rehearsal procedure: copy prod DB → migrate the copy → run the §13 diff tests against the copy.
+The backup runs ONCE per `_apply_migrations` run, before the first above-current-version script (a fresh install backs up once, not per script): `shutil.copy2(db_path, db_path + ".bak-v" + str(current))`. Failure to copy aborts before any script runs and surfaces through the caller's existing wrapping (§12): the backup call is wrapped at L3 — `OSError` is caught and re-raised as the caller's `DbMigrationFailed` (RELATE-013 / MAINTAIN-008). **Retention: keep the newest 3** `<name>.bak-v*` files, delete older — decided here at L2 per L1 contract 2. Backup counts a rehearsal procedure: copy prod DB → migrate the copy → run the §13 diff tests against the copy.
 
 ## 6. D3 Replay Contract (the column is derived)
 
 - **Source of truth:** `change_log` rows `field_changed='link_reversed'` (master plan rule 7 unchanged). `links.reversed_at` is a labelled, rebuildable copy (D3).
 - **Replay rule (named, pure):** a link's `reversed_at` = the `timestamp` of the **highest-id** `change_log` row with `field_changed='link_reversed'`, `link_id = links.id` (append order breaks any clock tie); no such row → `NULL`. Deterministic, no clock, no I/O.
 - **Pure step:** `replay_reversals(entries: list[ChangeRow]) -> dict[int, str | None]` in `ember/adapters/link_replay.py` (adapters — engine cores never import it, T9/B3; input rows are already-validated shapes). The Monday-morning case: column corrupted or drift suspected → rerun `replay_reversals` on the ledger, compare with live column (db-check Phase 5 does exactly this). The backfill UPDATE in migration 011 applies the same rule for pre-011 markers.
-- **Pairing rule (apply_status_origin pattern, `sqlite.py:805-840`):** `SqliteMaintainStore.apply_reversal` gains one statement inside its existing transaction — `UPDATE links SET reversed_at = ? WHERE id = ?` — before the marker INSERT, single `commit()` at the end; either failure rolls back the whole write and raises `MAINTAIN-011` / `MAINTAIN-012` (existing codes). No second port method — two methods would mean two commits, the exact smell step-03 ruled out. Cross-plan note for the coordinator: this widens maintain's store to touch one `links` column; the maintain-plan "Maintain never writes links" amendment belongs to Cluster 2's amendment and must mention this too.
+- **Pairing rule (apply_status_origin pattern, `sqlite.py:805-840`):** `SqliteMaintainStore.apply_reversal` gains one statement inside its existing transaction — `UPDATE links SET reversed_at = ? WHERE id = ?` — before the marker INSERT, single `commit()` at the end; either failure rolls back the whole write and raises `MAINTAIN-011` / `MAINTAIN-012` (existing codes). No second port method — two methods would mean two commits, the exact smell step-03 ruled out. `reversed_at` receives the SAME single clock value stamped into the marker row — one `self._clock()` read shared by both halves of the transaction; a second clock read makes `column == ledger` false by construction and breaks db-check. Cross-plan note for the coordinator: this widens maintain's store to touch one `links` column; the maintain-plan "Maintain never writes links" amendment belongs to Cluster 2's amendment and must mention this too.
+- The pairing UPDATE widens "Maintain never writes links" by one column; this L2 records that widening now (also mirrored in the relate §11 amendment) — it is not deferred to the cluster-2 amendment.
 
 ## 7. #17 — Compat Drift Contract
 
@@ -173,7 +176,7 @@ Before `_apply_migrations` applies any script with `number > current`: `shutil.c
 
 ## 8. #23 — items Trigger
 
-Rule: `status='Closed'` implies `close_reason NOT NULL` — enforced by the two `items` triggers above. Pre-assertion: the `_guard_011` CHECK kills migration 011 (IntegrityError → runner rollback → per-engine migration code, §12) if any existing row breaks the rule. `items` never rebuilds — a rebuild would manufacture the "another reason" #23 says to wait for (L1). Existing writers are clean today (`apply_status_changes` always writes `close_reason` with status), but the guard tests the data, not the writers.
+Rule: `status='Closed'` implies `close_reason NOT NULL` — enforced by the two `items` triggers above. Pre-assertion: the `_guard_011` CHECK kills migration 011 (IntegrityError → runner rollback → per-engine migration code, §12) if any existing row breaks the rule. `items` never rebuilds — a rebuild would manufacture the "another reason" #23 says to wait for (L1). Existing writers are clean today (`apply_status_changes` always writes `close_reason` with status), but the guard tests the data, not the writers. Symmetric pre-assertion for `links`: a guard count with the same `_guard_011` technique asserts every existing `links` row satisfies `TYPE_COMPAT` (via the compat table) before the `links_compat_*` triggers land — "test the data, not the writers" holds for both tables.
 
 ## 9. #20 + #21 — Readers See the Reversal (relate deltas only)
 
@@ -229,14 +232,15 @@ No new family, no new code. Call-site mapping (existing codes re-raised at exist
 | DB unopenable / version read fails | existing boot paths | `RELATE-012` / `MAINTAIN-007` / `QUERY-003` |
 | Version below floor after floor bump | `ensure_*_schema` | `RELATE-014` / `MAINTAIN-009` / `QUERY-004` |
 | `apply_reversal` column UPDATE fails | `SqliteMaintainStore` | `MAINTAIN-011`; marker fail → `MAINTAIN-012` |
-| Backup copy fails before any script runs | same try as migrations | `RELATE-013` / `MAINTAIN-008` (capture: raw `sqlite3` error — capture has no migration codes, unchanged) |
+| Backup copy fails before any script runs | same try as migrations (`OSError` wrapped at L3, §5.0) | `RELATE-013` / `MAINTAIN-008` (capture: raw `sqlite3` error — capture has no migration codes, unchanged). Reuse of RELATE-013 justified: migration-phase failure, keeps zero-new-codes; RELATE-038 stays free |
 | `db-check` anything | report + exit 1, no code (I12) | — |
+| Runtime trigger abort on a legitimate port write (gatekeeper-passing `insert_link_with_log` hitting the compat trigger) | existing `sqlite3.Error` wrapping | `RELATE-029` / `MAINTAIN-011` — and a direct INSERT bypass outside the ports reaches no Ember code at all (raw IntegrityError, no family) |
 
 `RELATE-038` is the next free relate code but is **not** introduced here — nothing in this plan needs it.
 
 ## 13. Test Targets (fakes per T3; cores pure; real temp DBs for migrations)
 
-New files `tests/test_migration_011.py`, `tests/test_schema_enforcement.py`, `tests/test_link_replay.py`; extensions marked (churn).
+New files `tests/test_migration_011.py`, `tests/test_schema_enforcement.py`, `tests/test_link_replay.py`; extensions marked (churn). The six rebuild test names live in §10 and activate only if the #15 ruling selects "relax"; until then only the trigger/column/guard tests apply.
 
 **Migration accept list (L1 §5, real temp DBs):**
 1. `test_migration_011_preserves_all_rows_and_values` — full-row before/after equality for `items`, `links`, `change_log` (values, not counts).
@@ -261,18 +265,19 @@ New files `tests/test_migration_011.py`, `tests/test_schema_enforcement.py`, `te
 
 **Relate readers (§9) — unit on the pure gatekeeper with an existing fake `LinkLookupPort` + integration:**
 - `test_reversed_supersedes_not_cycle` — after reversal, inverse `supersedes` passes rule 8 (no RELATE-028).
-- `test_relate_028_names_blocking_link` — genuine cycle → code `RELATE-028`, detail contains id + both endpoints.
+- `test_relate_028_names_blocking_link` — genuine cycle → code `RELATE-028`; the test asserts the detail carries the link id + both endpoints (data), not prose wording.
 - `test_relate_009_duplicate_reports_reversed_state`.
 - Floors: extend `tests/test_relate_db_open.py`, `tests/maintain/test_maintain_boot.py` for 11.
 
 **CLI:**
 - `ember db-check --db <fixture>` — exit 0 report above; stale DB → exit 1 `DRIFT`; missing file → exit 1 `UNREADABLE`; read-only proof: file hash identical before/after.
+- `test_db_check_rejects_unknown_flag` — `ember db-check --nope` exits 2 (Click usage error, no code), per the L1 CLI contract.
 
 ## 14. Deferred to L3
 
 - Exact wording of CLI `db-check` lines beyond the pinned key-value rows.
 - `supersedes_blocking_link` BFS tie-break order detail beyond "first edge in id order" (check appears in `detail` text only).
-- Maintain/query populating `Link.reversed_at` from their own reads (today only relate's `find_existing` does; models default `None`).
+- No reader other than relate's `find_existing` populates the field in this plan; anything wider is a new L2 amendment.
 - Whether `db-check` ever gains a `--repair` mode (today: report only; repair = restore from `.bak-v*` or re-run the §6 replay rule by hand).
 - In the #15 relax branch: migration 012's L3 step plan and the engine-relate-plan one-liner — both blocked on the ruling (§10).
 
@@ -298,7 +303,7 @@ New files `tests/test_migration_011.py`, `tests/test_schema_enforcement.py`, `te
 - **I17/I21** — zero new codes; existing codes re-raised at call sites (table in §12); tests assert codes, not prose.
 - **T1/T3** — `replay_reversals` is pure (rows in, dict out); fake `LinkLookupPort` reused for gatekeeper units, no mocks.
 - **T4/T5** — migration acceptance on real temp DBs at observable boundaries; no private-helper tests.
-- **T9** — no engine core imports `ember.adapters.link_replay`; architecture tests already enforce, extension not needed (no new core module).
+- **T9** — no engine core imports `ember.adapters.link_replay`; architecture tests already enforce, extension not needed (no new core module). The L1's recursive-glob instruction for `tests/test_architecture.py` is part of this phase's test work (this plan adds no subpackage, so no coverage gap here).
 - **T10** — tests reuse `db_path` fixtures + `tests/fakes.py` seed helpers, no new harness.
 - **S1/S2/S3/S4** — db-check runs the cluster alone with inspectable output; new test files run in isolation; data shapes are §4; transfer mechanism = the SQLite file via documented SQL.
 - **Untouched:** B4 (nothing hidden), D1/D4 (raw input + validation untouched), I1/I6/I8/I9/I11/I13-I20 (no new functions outside named deltas — I11/I20 satisfied by existing port docstrings gaining the reversal column), P1/P2 (no new pattern), T2/T6/T7/T8 (no AI, no adapters touched beyond the named store methods). If L3 adds a core module, I11/I20 re-check at that step.
