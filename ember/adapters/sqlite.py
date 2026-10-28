@@ -892,19 +892,23 @@ class SqliteMaintainStore:
         self._conn.commit()
 
     def apply_reversal(self, change: StatusChange, marker: ChangeLogEntry) -> int:
-        """Restore one item and append both its `status` row and the marker.
+        """Restore one item and pair the reversal column with its marker.
 
         One implicit transaction, one `commit()` at the end: the `items`
-        UPDATE, the `status` `change_log` row derived from `change`, and the
-        `link_reversed` marker row taken from `marker` are all-or-nothing.
+        UPDATE, the `status` `change_log` row derived from `change`, the
+        `reversed_at` column on the `links` row, and the `link_reversed`
+        marker row taken from `marker` are all-or-nothing (L2 §6 pairing rule).
 
-        The adapter owns time: it stamps both rows from `self._clock()` and
-        **overwrites** the passed `marker.timestamp` (the marker's timestamp is
-        a placeholder, not trusted).
+        The adapter owns time: it stamps all three writes from ONE
+        `self._clock()` read and **overwrites** the passed `marker.timestamp`
+        (the marker's timestamp is a placeholder, not trusted). One read is
+        what keeps `links.reversed_at` == the marker's `timestamp` by
+        construction; a second read would break the db-check replay rule.
 
         Return `1`. Raise `StatusWriteFailed` (MAINTAIN-011) when the `items`
-        UPDATE fails, and `ChangeLogWriteFailed` (MAINTAIN-012) when either
-        `change_log` INSERT fails. Either failure rolls the whole write back.
+        UPDATE or the `reversed_at` UPDATE fails, and
+        `ChangeLogWriteFailed` (MAINTAIN-012) when either `change_log` INSERT
+        fails. Either failure rolls the whole write back.
         """
         try:
             self._conn.execute(
@@ -935,6 +939,16 @@ class SqliteMaintainStore:
             self._conn.rollback()
             raise MaintainChangeLogWriteFailed(
                 "change_log insert fail", item_id=change.item_id
+            ) from exc
+        try:
+            self._conn.execute(
+                "UPDATE links SET reversed_at = ? WHERE id = ?",
+                (timestamp, marker.link_id),
+            )
+        except sqlite3.Error as exc:
+            self._conn.rollback()
+            raise MaintainStatusWriteFailed(
+                "reversed_at update fail", item_id=change.item_id
             ) from exc
         try:
             self._conn.execute(

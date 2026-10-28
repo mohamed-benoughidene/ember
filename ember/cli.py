@@ -8,6 +8,7 @@ import sys
 
 import click
 
+from ember.adapters.db_check import check_database
 from ember.adapters.embedder import build_embedder, validate_embedder_config
 from ember.adapters.llm import build_item_proposer, build_link_proposer
 from ember.adapters.sqlite import (
@@ -485,8 +486,9 @@ def set_status(item_id: int, to_status: str, db_path: str) -> None:
 def reverse_supersedes(item_id: int, link_id: int, db_path: str) -> None:
     """Undo a supersedes: restore the item and mark the link reversed.
 
-    Writes no `links` row; the reversal is an item-status event logged in
-    `change_log`. Prints the same report as `maintain`.
+    Writes the `reversed_at` column on the `links` row, the item restore, and
+    the two `change_log` rows in one transaction from one clock read. Prints
+    the same report as `maintain`.
     """
     try:
         conn = open_maintain_database(db_path)
@@ -608,6 +610,29 @@ def history_command(item_id: int | None, db_path: str) -> None:
         click.echo(f"error: {exc.log_line()}", err=True)
         raise SystemExit(1)
     click.echo(output)
+
+
+@main.command("db-check")
+@click.option(
+    "--db",
+    "db_path",
+    default=DEFAULT_DB_PATH,
+    help="SQLite database path.",
+)
+def db_check(db_path: str) -> None:
+    """Report database health: version, floors, triggers, drift, replay.
+
+    Read-only: the file is opened `mode=ro` and never migrated or written.
+    One command, one job, no mode flags. Exit 0 when the report ends
+    `result: OK`, 1 on `result: DRIFT` or `result: UNREADABLE`.
+    """
+    report = check_database(db_path)
+    if report.detail is not None:
+        click.echo(f"detail: {report.detail}", err=True)
+    for line in report.lines:
+        click.echo(line)
+    if report.result != "OK":
+        sys.exit(1)
 
 
 def _write_validated_flag(item_id: int, db_path: str, *, new_value: bool) -> None:

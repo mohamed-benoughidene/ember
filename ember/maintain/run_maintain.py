@@ -166,13 +166,14 @@ def run_set_status(ports: MaintainPorts, request: MaintainRequest) -> MaintainRe
 def run_reverse_supersedes(
     ports: MaintainPorts, request: MaintainRequest
 ) -> MaintainResult:
-    """Undo a supersedes by hand: restore the item and append the marker.
+    """Undo a supersedes by hand: restore the item and mark the link reversed.
 
     Reads `request.item_id` and `request.link_id`. Raises `MAINTAIN-001` /
     `005` from the validator, `MAINTAIN-010` on a read failure, `MAINTAIN-011` /
     `012` from the store. The reversal writes the item restore, the `status`
-    row, and the `link_reversed` marker row in one transaction; it never touches
-    the `links` row and never sets the shield (step-03 §4.3).
+    row, the `reversed_at` column on the `links` row, and the `link_reversed`
+    marker row in one transaction from one clock read (L2 §6 pairing rule); it
+    never sets the shield (step-03 §4.3).
     """
     snapshot = _load(ports.lookup)
     changes = validate_reverse_supersedes(
