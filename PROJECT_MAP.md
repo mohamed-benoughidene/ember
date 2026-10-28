@@ -107,8 +107,20 @@ Earlier logo and character images, kept for history.
 - `ember/maintain/run_maintain.py`: Maintain Phase 1 loader `_load(ports)`, the `index_items` by-id index, and the engine-core orchestration: `MaintainPorts`, `MaintainRequest`, `MaintainResult` (carries `total_items`), `_apply_and_report(ports, snapshot, changes)`, `run_sweep`, and the three human entry points `run_close_item` / `run_set_status` / `run_reverse_supersedes`.
 - `ember/maintain/human_actions.py`: The pure validators for the three human commands — `validate_close_item`, `validate_set_status`, `validate_reverse_supersedes`. Each reads a `MaintainSnapshot` and returns the `list[StatusChange]` to apply (no DB).
 - `ember/maintain/apply_status.py`: The `MaintainStorePort` protocol — the atomic write port (`apply_status_changes`, `apply_status_origin`, `apply_reversal`).
+- `ember/query/__init__.py`: Marks the query engine folder as a package.
+- `ember/query/errors.py`: Query error codes `QUERY-000` to `QUERY-005` (`QueryError` base, item-not-found, empty text, DB open, schema outdated, items read).
+- `ember/query/rows.py`: Pydantic row models `QueryItem`, `CurrentStateRow`, `ChangeRow` (nullable `item_id` read shape), `SearchHit`, `WhyReason`, `WhyResult`, `HistoryEvent` (`Link` is imported from `ember.relate.rows`).
+- `ember/query/tokenize.py`: The one tokenizer shared by the query gate and the BM25 scorer (lowercase, split on non-alphanumerics).
+- `ember/query/lookup.py`: The `QueryLookupPort` protocol (4 reads: items, links, change_log, item_exists).
+- `ember/query/query_gatekeeper.py`: The read gate: `validate_query_text` (`QUERY-002`) and `validate_query_item` (`QUERY-001`).
+- `ember/query/current_state.py`: `current_state` pure core. Keeps `Active` + `Challenged` and returns the input order.
+- `ember/query/topic_search.py`: BM25 pure core (`k1 = 1.2`, `b = 0.75`, `ln(1 + …)` IDF, score-then-`item_id` tie-break).
+- `ember/query/why.py`: The `why` pure core: `depends_on` to its target, `supports` to its source, Confirmed only, transitive and cycle-safe.
+- `ember/query/history.py`: The `change_log` classifier (nine kinds from the `(field_changed, trigger_cause)` pair, `unknown` fallback) and the `history` union derivation.
+- `ember/query/render.py`: The display layer: `render_current_state` (Challenged first), `render_topic_search`, `render_why`, `render_history`, all `json.dumps` only.
+- `ember/query/run_query.py`: The four engine entry points `run_current_state`, `run_topic_search`, `run_why`, `run_history` (validate, load, derive, render).
 - `ember/adapters/__init__.py`: Marks the adapters layer folder as a package.
-- `ember/adapters/sqlite.py`: SQLite connection, numbered migrations, `SqliteSourceStore` and `SqliteItemGatekeeper` (writes are the gatekeeper boundary), `SqliteItemContext` (item reads), `SqliteAiResponseStore` (raw AI answers) and `build_ai_response_store`, `SqliteLinkContext` (relate item/link reads plus 1-hop neighbors, and the `item_status` / `supersedes_ancestors` reads), `SqliteLinkStore` (atomic `insert_link_with_log`), `SqliteEmbedderStore` (packed-vector cache; reads `RELATE-037`, writes `RELATE-019`), `build_embedding_store`, `open_relate_database` / `ensure_relate_schema` (relate boot checks), `SqliteMaintainContext` (maintain item/link/reversed-link reads), `SqliteMaintainStore` (maintain atomic status + `change_log` writes), and `open_maintain_database` / `ensure_maintain_schema` (maintain boot checks).
+- `ember/adapters/sqlite.py`: SQLite connection, numbered migrations, `SqliteSourceStore` and `SqliteItemGatekeeper` (writes are the gatekeeper boundary), `SqliteItemContext` (item reads), `SqliteAiResponseStore` (raw AI answers) and `build_ai_response_store`, `SqliteLinkContext` (relate item/link reads plus 1-hop neighbors, and the `item_status` / `supersedes_ancestors` reads), `SqliteLinkStore` (atomic `insert_link_with_log`), `SqliteEmbedderStore` (packed-vector cache; reads `RELATE-037`, writes `RELATE-019`), `build_embedding_store`, `open_relate_database` / `ensure_relate_schema` (relate boot checks), `SqliteMaintainContext` (maintain item/link/reversed-link reads), `SqliteMaintainStore` (maintain atomic status + `change_log` writes), `open_maintain_database` / `ensure_maintain_schema` (maintain boot checks), and `SqliteQueryContext` (the four query reads) with `open_query_database` / `ensure_query_schema` (read-only boot, required version 10, never migrates).
 - `ember/adapters/llm.py`: `OpenAiItemProposer` (`ItemProposerPort` on the OpenAI SDK, OpenRouter base URL) and the env-driven factory; `OpenAiLinkProposer` (`LinkProposerPort`) and the `build_link_proposer` factory.
 - `ember/adapters/embedder.py`: `SentenceTransformerEmbedder` (`EmbedderPort` on the optional `sentence-transformers` extra), the env-driven `build_embedder` factory, and `validate_embedder_config` (boot check for the timeout and optional packages).
 - `ember/adapters/migrations/__init__.py`: Marks the migrations folder as a package.
@@ -143,7 +155,7 @@ Earlier logo and character images, kept for history.
 - `tests/test_cli_validated.py`: CLI checks for `set-validated` / `clear-validated` and the Assumption-only rule.
 - `tests/test_capture_live.py`: Live AI round trip. Marked `live`, so a plain pytest run never calls the API; run it with `./.venv/bin/python -m pytest -m live`.
 - `tests/test_relate_live.py`: Live AI round trip for the relate link proposer. Marked `live`, so a plain pytest run never calls the API; run it with `./.venv/bin/python -m pytest -m live`.
-- `tests/test_architecture.py`: Asserts the capture, relate, and maintain engine cores never import an adapter.
+- `tests/test_architecture.py`: Asserts the capture, relate, maintain, and query engine cores never import an adapter.
 - `tests/test_relate_db_open.py`: Relate DB open checks: missing/corrupt file, migration fail, schema version 5/8/9 gate, and all migrations applied.
 - `tests/test_relate_read_failures.py`: Every `SqliteLinkContext` read maps a `sqlite3` failure to `RELATE-016`; also covers `item_status` and `supersedes_ancestors`.
 - `tests/test_migration_runner.py`: Each migration and its version bump are one transaction; failures roll back.
@@ -190,6 +202,26 @@ Saved AI answers for parser tests. Each pair is `case_NN.raw_text.txt` (the sour
 - `tests/fixtures/ai_responses/case_01.response.json`: Case 1 answer, all entries valid.
 - `tests/fixtures/ai_responses/case_02.raw_text.txt`: Source text for case 2.
 - `tests/fixtures/ai_responses/case_02.response.json`: Case 2 answer, 1 valid + 3 bad entries.
+
+### Query Tests (`tests/query/`)
+- `tests/query/__init__.py`: Marks the query tests folder as a package.
+- `tests/query/fakes.py`: In-memory port fake `FakeQueryLookup` (records every call) plus the row builders `make_item`, `make_row`, `make_change_row`, `make_link`, and the DB builders `make_v10` / `make_v9`.
+- `tests/query/test_current_state_unit.py`: The `current_state` pure core: the status filter, the `challenged` flag, no field leak, and input-order preservation.
+- `tests/query/test_tokenize_unit.py`: The shared tokenizer: case folding, punctuation and underscore splitting, unicode letters, digits.
+- `tests/query/test_topic_search_unit.py`: BM25 against the hand-computed golden fixture (6 decimal places), the positive-IDF property, the zero-token corpus guard, the tie-break, and the hit fields.
+- `tests/query/test_why_unit.py`: Both link directions, Rejected links, a terminating cycle, transitivity with depth, rationale, and the empty case.
+- `tests/query/test_history_unit.py`: All 14 documented `(field_changed, trigger_cause)` pairs, the seven status causes, the `unknown` fallback, the `Closed:*` / `Closed:None` splitter, the union and dedup rules, the NULL-subject row, and the `(timestamp, id)` order.
+- `tests/query/test_render_unit.py`: The four envelopes: ordering, JSON round-trip, and keys matching the row models.
+- `tests/query/test_run_query_unit.py`: The four entry points: the gate runs before any read, the global history view makes no item lookup, and each path reads through the port in the expected order.
+- `tests/query/test_query_errors_unit.py`: Codes and names are stable, every class subclasses `QueryError`, and none defines `__init__`.
+- `tests/query/test_query_db_open.py`: The read-only boot: missing file not created, non-SQLite file, a real v9 database refused without migrating, the file byte-identical across a query, a write rejected by the handle, and `QUERY-005` on a closed connection.
+- `tests/query/test_search_and_why_integration.py`: `topic-search` and `why` end to end on a real temp DB.
+- `tests/query/test_history_integration.py`: `history` over a ledger written by the real Relate and Maintain writers.
+- `tests/query/test_query_cli.py`: CLI checks for all four commands: exit codes, `QUERY-001` / `QUERY-002`, and JSON-only stdout.
+- `tests/query/test_query_e2e.py`: The one end-to-end chain: capture → relate → maintain → query on a single temp DB with every outside tool faked, all four query documents asserted, and the database hash unchanged by the query phase.
+
+### Query Fixtures (`tests/fixtures/query/`)
+- `tests/fixtures/query/bm25_golden.json`: The hand-computed BM25 corpus, query and expected scores, with the derivation notes.
 
 ## Database Tables (SQLite)
 - `schema_version`: Holds the applied migration number.

@@ -1,0 +1,19 @@
+{
+  "name": "two-token query with a score tie",
+  "note": "Hand-computed from the L2 formula with exact rational arithmetic, then rounded to 6 decimals. N=3, avgdl=7/3, k1=1.2, b=0.75. idf('alpha')=idf('beta')=ln(1+1.5/2.5)=0.47000362924573563. Re-derive: for f=1,len=3 the term ratio is 77/86; f=2,len=3 is 154/121; f=1,len=2 is 154/145.",
+  "k1": 1.2,
+  "b": 0.75,
+  "tokenizer": "lowercase, split on runs of non-alphanumerics",
+  "corpus": [
+    {"item_id": 1, "statement": "alpha beta beta"},
+    {"item_id": 2, "statement": "beta gamma"},
+    {"item_id": 3, "statement": "alpha delta"}
+  ],
+  "query": "alpha beta",
+  "expected": [
+    {"item_id": 1, "score": 1.019004},
+    {"item_id": 2, "score": 0.499176},
+    {"item_id": 3, "score": 0.499176}
+  ],
+  "expected_note": "2 and 3 tie on 0.499176, so the tie-break (item_id ascending) decides their order."
+}

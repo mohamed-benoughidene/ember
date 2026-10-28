@@ -6,6 +6,7 @@ import json
 import os
 import sqlite3
 import sys
+import urllib.parse
 from array import array
 from datetime import datetime, timezone
 from importlib import resources
@@ -30,6 +31,12 @@ from ember.maintain.errors import (
     StatusWriteFailed as MaintainStatusWriteFailed,
 )
 from ember.maintain.rows import ItemState, StatusChange
+from ember.query.errors import (
+    DbOpenFailed as QueryDbOpenFailed,
+    ItemsReadFailed as QueryItemsReadFailed,
+    SchemaOutdated as QuerySchemaOutdated,
+)
+from ember.query.rows import ChangeRow, QueryItem
 from ember.relate.embedding_store import EmbeddingStorePort
 from ember.relate.errors import (
     ChangeLogWriteFailed,
@@ -50,6 +57,21 @@ _MIGRATIONS_MODULE = "ember.adapters.migrations"
 def _connect(db_path: str) -> sqlite3.Connection:
     """Open a raw SQLite connection with row access by name and foreign keys on."""
     conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
+    return conn
+
+
+def _connect_readonly(db_path: str) -> sqlite3.Connection:
+    """Open a connection that cannot write, even by accident.
+
+    The path is URI-quoted because SQLite parses `?`, `#` and `%` as URI
+    syntax, and `uri=True` is required for the `mode=ro` parameter to be read
+    at all.
+    """
+    conn = sqlite3.connect(
+        f"file:{urllib.parse.quote(str(db_path))}?mode=ro", uri=True
+    )
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     return conn
@@ -151,6 +173,53 @@ def ensure_maintain_schema(conn: sqlite3.Connection) -> None:
         raise MaintainDbOpenFailed("schema version read fail") from exc
     if version < 10:
         raise MaintainSchemaOutdated(
+            "schema version too old", version=version, required=10
+        )
+
+
+def open_query_database(db_path: str) -> sqlite3.Connection:
+    """Open an existing query DB **read-only**, check the schema, never migrate.
+
+    Raise `DbOpenFailed` (QUERY-003) when the file is missing or is not a
+    readable SQLite database, and `SchemaOutdated` (QUERY-004) when the applied
+    version is below the required 10.
+
+    Unlike every other engine's boot path this one applies no migration: a read
+    command that rewrites the ledger is not a read, and `query` is the one
+    command an AI may run against the user's database.
+    """
+    if not os.path.exists(db_path):
+        raise QueryDbOpenFailed("db file missing", db_path=db_path)
+    try:
+        conn = _connect_readonly(db_path)
+        conn.execute("SELECT COUNT(*) FROM sqlite_master").fetchone()
+    except sqlite3.Error as exc:
+        raise QueryDbOpenFailed("db open fail", db_path=db_path) from exc
+    try:
+        ensure_query_schema(conn, db_path)
+    except EmberError:
+        conn.close()
+        raise
+    return conn
+
+
+def ensure_query_schema(
+    conn: sqlite3.Connection, db_path: str | None = None
+) -> None:
+    """Check the applied schema version is new enough for the query engine.
+
+    Raise `DbOpenFailed` (QUERY-003) if the version cannot be read, and
+    `SchemaOutdated` (QUERY-004) if the version is below the required 10.
+    `db_path` is carried as context when the caller has it.
+    """
+    try:
+        row = conn.execute("SELECT version FROM schema_version").fetchone()
+        version = 0 if row is None else int(row["version"])
+    except (sqlite3.Error, ValueError, TypeError) as exc:
+        context = {"db_path": db_path} if db_path is not None else {}
+        raise QueryDbOpenFailed("schema version read fail", **context) from exc
+    if version < 10:
+        raise QuerySchemaOutdated(
             "schema version too old", version=version, required=10
         )
 
@@ -565,6 +634,112 @@ class SqliteMaintainContext:
         except sqlite3.Error as exc:
             raise MaintainItemsReadFailed("change_log read fail") from exc
         return {int(row["link_id"]) for row in rows}
+
+
+class SqliteQueryContext:
+    """`QueryLookupPort` on SQLite: the whole world Engine D may read.
+
+    Every read raises `ItemsReadFailed` (QUERY-005) on a read failure. Reads
+    cover `items`, `links` and `change_log` only, never `sources` or
+    `ai_responses`, the two tables holding the most sensitive bytes.
+    """
+
+    def __init__(self, conn: sqlite3.Connection) -> None:
+        self._conn = conn
+
+    def list_items(self) -> list[QueryItem]:
+        """Return every item, ordered by id ascending.
+
+        Raise `ItemsReadFailed` (QUERY-005) on a read failure.
+        """
+        try:
+            rows = self._conn.execute(
+                "SELECT id, type, statement, status, close_reason,"
+                " status_origin, rationale, created_at, source_id"
+                " FROM items ORDER BY id"
+            ).fetchall()
+        except sqlite3.Error as exc:
+            raise QueryItemsReadFailed("item read fail", table="items") from exc
+        return [
+            QueryItem(
+                id=row["id"],
+                type=row["type"],
+                statement=row["statement"],
+                status=row["status"],
+                close_reason=row["close_reason"],
+                status_origin=row["status_origin"],
+                rationale=row["rationale"],
+                created_at=row["created_at"],
+                source_id=row["source_id"],
+            )
+            for row in rows
+        ]
+
+    def list_links(self) -> list[Link]:
+        """Return every link, ordered by id ascending.
+
+        Raise `ItemsReadFailed` (QUERY-005) on a read failure.
+        """
+        try:
+            rows = self._conn.execute(
+                "SELECT id, source_item_id, target_item_id, link_type, status,"
+                " created_at FROM links ORDER BY id"
+            ).fetchall()
+        except sqlite3.Error as exc:
+            raise QueryItemsReadFailed("link read fail", table="links") from exc
+        return [
+            Link(
+                id=row["id"],
+                source_item_id=row["source_item_id"],
+                target_item_id=row["target_item_id"],
+                link_type=row["link_type"],
+                status=row["status"],
+                created_at=row["created_at"],
+            )
+            for row in rows
+        ]
+
+    def list_change_log(self) -> list[ChangeRow]:
+        """Return every `change_log` row, ordered by id ascending.
+
+        Raise `ItemsReadFailed` (QUERY-005) on a read failure.
+        """
+        try:
+            rows = self._conn.execute(
+                "SELECT id, item_id, link_id, field_changed, old_value,"
+                " new_value, timestamp, trigger_cause"
+                " FROM change_log ORDER BY id"
+            ).fetchall()
+        except sqlite3.Error as exc:
+            raise QueryItemsReadFailed(
+                "change_log read fail", table="change_log"
+            ) from exc
+        return [
+            ChangeRow(
+                id=row["id"],
+                item_id=row["item_id"],
+                link_id=row["link_id"],
+                field_changed=row["field_changed"],
+                old_value=row["old_value"],
+                new_value=row["new_value"],
+                timestamp=row["timestamp"],
+                trigger_cause=row["trigger_cause"],
+            )
+            for row in rows
+        ]
+
+    def item_exists(self, item_id: int) -> bool:
+        """Return whether `items` holds `item_id`.
+
+        Raise `ItemsReadFailed` (QUERY-005) on a read failure.
+        """
+        try:
+            row = self._conn.execute(
+                "SELECT 1 FROM items WHERE id = ?", (item_id,)
+            ).fetchone()
+        except sqlite3.Error as exc:
+            raise QueryItemsReadFailed("item read fail", table="items") from exc
+        return row is not None
 
 
 class SqliteMaintainStore:

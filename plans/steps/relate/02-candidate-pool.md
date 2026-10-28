@@ -121,6 +121,10 @@ Step 3 runs Phase 3 (AI propose via `LinkProposerPort` + Phase 3.5 raw-response 
 - (L2 §9 #3) Metadata temporal window — Step 2 picks **±30 days** as the literal L2 default. No widening for older items.
 - (L2 §9 #4) Tie-breaker for `cosine=None` rows — Step 2 picks **id ASC** as the stable tie-breaker. No recency or statement-length tie-breaker.
 - (L2 §9 #7) Post-union cap — Step 2 picks **no cap**. If the user reports cost problems on hub items later, this step grows a `top_k` parameter at L3 next time.
+- **L2 amendment log entries recorded by this step** (folded into `plans/engine-relate-plan.md` on 2026-10-17):
+  - L2 §6 gains `RELATE-037 EmbeddingReadFailed` for `item_embeddings` cache reads; `RELATE-016` stays for Phase 1 `items` / `links` reads (folded at L2 §6 line 388).
+  - L2 §4.5 `EmbeddingStorePort` gains `first_model_name() -> str | None` — the pre-flight "any row" read, because `model_name_of(item_id)` cannot read an arbitrary first row.
+  - **Added at review 2026-10-28:** `_resolve_vector` in the engine core raises `RELATE-022` when a cached or freshly encoded vector's length ≠ `embedder.dim()`, *before* cosine runs. This is a defensive duplicate of the embedder adapter's `RELATE-018` wrong-count check; neither §4 steps 2-3 nor §5 spelled it out, so it is recorded here.
 
 ## 11. Rollback
 

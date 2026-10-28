@@ -90,23 +90,23 @@ Plus the summary line `accepted: N, rejected: N, skipped: N, aborted: true|false
 
 7. **User confirm loop** (per surviving proposal; gatekeeper-rejected proposals are not shown to the user and counted as `rejected`):
    - Print the YAML block to STDOUT using `format_link_block(link)` (defined in `ember/relate/confirm_write.py` per §3; parallel to Capture's `format_block`, not imported from it).
-   - Prompt: `[y]es / [n]o / [s]kip / [q]uit` (L2 §4 Phase 4 line 207 verbatim). `s` = skip this one (count as `skipped`, no DB write). `q` = abort the run (set `aborted=true`, raise `RELATE-031 UserAbort` for exit-2 plumbing).
+   - Prompt: `[y]es / [n]o / [s]kip / [q]uit` (L2 §4 Phase 4 line 206 verbatim). `s` = skip this one (count as `skipped`, no DB write). `q` = abort the run (set `aborted=true`; see the note on RELATE-031 under §5 — a literal `q` returns `ConfirmResult(aborted=True)`, only end of input raises the RELATE-031 code).
    - `y`: call `link_store.insert_link_with_log(link_row, change_log_row)`. On success, append `link_id` to `accepted`. If the link INSERT fails, raise `RELATE-029 LinkWriteFailed`. If the change_log INSERT fails after a successful link INSERT, the atomic transaction rolls back the link row; raise `RELATE-011 ChangeLogWriteFailed`. (Per L2 §4 Phase 4 line 212: a new pattern for Relate, distinct from Capture's per-method autocommit.)
    - `n`: call `link_store.insert_link_with_log(link_row, change_log_row)` with the link row's `status='Rejected'` and the change_log row per §10 (link_rejected template). On success, increment `rejected`. This is the **negative-memory persistence** path (L2 §1 line 9 + L2 §4 Phase 4 lines 222-231).
    - `s`: increment `skipped`. No DB write.
-   - `q`: raise `RELATE-031 UserAbort`. The CLI maps it to exit 2 and prints the summary with `aborted=true`. Pending proposals are neither confirmed nor rejected nor skipped.
+   - `q`: set `aborted=true` and end the run (`ConfirmResult(aborted=True)`; the CLI maps it to exit 2 and prints the summary with `aborted=true`). The RELATE-031 code is raised at the terminal edge on **end of input** (Ctrl-D), not on a literal `q`. Pending proposals are neither confirmed nor rejected nor skipped.
 8. Build `ConfirmResult` and return to the orchestrator.
 
 ### 4.4 CLI edge wiring
 
 9. The CLI builds:
-   - `conn = open_database(DEFAULT_DB_PATH)` (from `ember/adapters/sqlite.py:24-30`, which sets `PRAGMA foreign_keys=ON` at line 28 and runs migrations via `_apply_migrations`)
+   - `conn = open_relate_database(db_path)` (from `ember/adapters/sqlite.py:65-92`; it opens read-write, runs migrations via `_apply_migrations`, and sets `PRAGMA foreign_keys=ON` through `_connect`). A missing or corrupt file raises `RELATE-012` and is never created — Step 1 owns that strict open.
    - `lookup = SqliteLinkContext(conn)`
    - `store = SqliteLinkStore(conn)`
    - `link_proposer = build_link_proposer(env)`
    - `ai_response_store = build_ai_response_store(conn)`
    - `--db` default imports `DEFAULT_DB_PATH` from `ember.cli` (no string-literal drift).
-   - `PRAGMA foreign_keys=ON` is set **once at connection open** by `open_database` at `ember/adapters/sqlite.py:28`. No `try/finally` per-init; the pragma is per-connection and lives for the connection's lifetime.
+   - `PRAGMA foreign_keys=ON` is set **once at connection open** by `_connect` (called by `open_relate_database`) at `ember/adapters/sqlite.py:54`. No `try/finally` per-init; the pragma is per-connection and lives for the connection's lifetime.
 10. The CLI passes two named objects to `run_relate(ports: RelatePorts, request: RelateRequest) -> ConfirmResult` (engine-core entry point; not a port itself). This keeps the public function at 2 inputs (Constitution I3: maximum 4). Shapes:
    - `RelatePorts(link_lookup, link_store, link_proposer, ai_response_store)` — the four ports Phase 3+4 use.
    - `RelateRequest(new_item, ranked, env)` — the data for this run; `ranked` is `Pool.ranked` from Step 2.
@@ -130,7 +130,7 @@ Codes raised in this step, in L2 §6 order:
 - `RELATE-028` — supersedes cycle (gatekeeper rule 8).
 - `RELATE-029` — `links` row INSERT failed inside the atomic `insert_link_with_log` transaction.
 - `RELATE-030` — Phase 3.5 `ai_response_store.save` raised `ValueError` (both/neither of `source_id`/`item_id` set).
-- `RELATE-031` — user abort (`q`); exit 2.
+- `RELATE-031` — user abort. **Note (review 2026-10-28):** a literal `q` key returns `ConfirmResult(aborted=True)` rather than raising this code; the code is raised at the terminal edge on **end of input** (Ctrl-D). Either way the run ends and the CLI exits 2 with `aborted=true`. This step's §4.3 wording is corrected to match.
 - `RELATE-032` — adapter call raised (timeout / network / auth / rate limit) on the 2nd attempt; 1 retry already burned.
 - `RELATE-033` — AI response not JSON, or wrong shape, on the 1st parse attempt (no retry).
 - `RELATE-035` — boot phase: a required env var is missing (e.g., no `OPENAI_API_KEY`). Surfaces from `build_link_proposer(env)` in §4.4 step 9 at CLI startup per Constitution I13.
@@ -153,7 +153,7 @@ Unit (in-memory / fake ports, per T3; pure gatekeeper):
 - Phase 3 parse failure: adapter returns unparseable response on the 1st call -> `RELATE-033 AiResponseSchemaInvalid` propagates immediately, no retry. (Distinct from the transport retry path.)
 - Phase 3.5: `ai_response_store.save` raises `ValueError` -> engine core raises `RELATE-030`. Raises `OperationalError` -> engine core raises `RELATE-036`.
 - Phase 3.4: AI returns a target not in candidates -> `RELATE-024`. AI returns wrong source -> `RELATE-025`.
-- Confirm loop: `y` -> 1 call to `link_store.insert_link_with_log` with the link_confirmed template; 1 link_id appended. `n` -> 1 call to `link_store.insert_link_with_log` with the link_rejected template (`status='Rejected'`); `rejected` incremented. `s` -> no DB call, `skipped` incremented. `q` -> `RELATE-031` raised, CLI exits 2.
+- Confirm loop: `y` -> 1 call to `link_store.insert_link_with_log` with the link_confirmed template; 1 link_id appended. `n` -> 1 call to `link_store.insert_link_with_log` with the link_rejected template (`status='Rejected'`); `rejected` incremented. `s` -> no DB call, `skipped` incremented. `q` -> `ConfirmResult(aborted=True)`, CLI exits 2; end of input raises `RELATE-031`, same exit 2.
 
 Integration (real SQLite temp DB, migrations 001-009 applied, fake AI adapter returning canned JSON):
 - Happy path: 3 candidates, all `y` -> 3 rows in `links` (all `status='Confirmed'`), 3 rows in `change_log` with `field_changed='link_confirmed'`, `trigger_cause='user_confirmed'`, `link_id=<matching links.id>`. 1 row in `ai_responses` (Phase 3.5) keyed by `item_id=new_item.id`.
@@ -166,7 +166,7 @@ Integration (real SQLite temp DB, migrations 001-009 applied, fake AI adapter re
 CLI (smoke, fake AI):
 - `ember relate --item <id>` -> exit 0, YAML block per accept (emitted by `format_link_block`), summary line.
 - `q` mid-loop -> exit 2, summary `aborted: true`.
-- Missing migrations (or `schema_version.version` < 8) -> `RELATE-014`, exit 1. (Step 1's check is the source of truth; Step 3 inherits.)
+- Missing migrations (or `schema_version.version` < 9) -> `RELATE-014`, exit 1. (Step 1's check is the source of truth; Step 3 inherits.)
 - `OPENAI_API_KEY` not set at CLI startup -> `RELATE-035`, exit 1 (raised by `build_link_proposer(env)` in §4.4 step 9, matching Capture's `CAPTURE-001` ConfigMissing pattern).
 
 Architecture (T9):
@@ -176,9 +176,9 @@ Architecture (T9):
 
 - `ember relate --item <id>` with 3 candidates and all `y` -> exit 0, 3 YAML blocks, summary `accepted: 3, rejected: 0, skipped: 0, aborted: false`.
 - `ember relate --item <id>` then `q` after 1 -> exit 2, 1 YAML block, summary `accepted: 1, rejected: 0, skipped: 0, aborted: true`.
-- `ember relate --latest` with no unlinked active items -> **exit 0**, prints "no unrelated items" to STDOUT (per L2 §4 Phase 1 line 153 + L2 §6 line 385: soft exit 0, no code). Step 1 owns this path.
+- `ember relate --latest` with no unlinked active items -> **exit 0**, prints "no unrelated items" to STDOUT (per L2 §4 Phase 1 line 153 + L2 §6 lines 390-394, where `RELATE-002` is removed: soft exit 0, no code). Step 1 owns this path.
 - `ember relate --item 9999` -> exit 1, `RELATE-001`, message includes the id and the DB path.
-- `ember relate --item 1` on a DB where migrations 001-005 ran but 006-009 did not (or `schema_version.version` < 8) -> exit 1, `RELATE-014 SchemaOutdated`. Step 1 owns this check; Step 3 inherits.
+- `ember relate --item 1` on a DB where migrations 001-005 ran but 006-009 did not (or `schema_version.version` < 9) -> exit 1, `RELATE-014 SchemaOutdated`. Step 1 owns this check; Step 3 inherits.
 
 ## 8. Out of Scope (this step)
 
@@ -199,11 +199,11 @@ All 3 L3 Relate steps written. After approval, implementation starts. Bottom-up 
   - Few-shot examples: 0.
   - Temperature: 0.0.
   - JSON output: strict `{"proposals": [{"target_item_id": int, "link_type": str, "rationale": str | null}]}`.
-- (L2 §9 #6) CLI confirm prompt format — **L2 §4 Phase 4 line 207 is `[y]es / [n]o / [s]kip / [q]uit`**. Step 3 uses this verbatim. `s` is per-proposal skip (increments `skipped`, no DB write, continues the loop). `q` is per-run abort (raises `RELATE-031`, sets `aborted=true`, exits 2). **Correction:** a previous draft of this paragraph claimed `s` was new in L3; that was wrong, L2 §4 Phase 4 line 207 already has it.
-- (L2 §9 #8) `trigger_cause` vocabulary — Step 3 codifies per L2 §4 Phase 4 lines 217, 227:
+- (L2 §9 #6) CLI confirm prompt format — **L2 §4 Phase 4 line 206 is `[y]es / [n]o / [s]kip / [q]uit`**. Step 3 uses this verbatim. `s` is per-proposal skip (increments `skipped`, no DB write, continues the loop). `q` is per-run abort (ends with `aborted=true`, exits 2). **Correction:** a previous draft of this paragraph claimed `s` was new in L3; that was wrong, L2 §4 Phase 4 already has it.
+- (L2 §9 #8) `trigger_cause` vocabulary — Step 3 codifies per L2 §4 Phase 4 lines 220, 230:
   - Accept (`y`): `field_changed='link_confirmed'`, `trigger_cause='user_confirmed'`, `link_id=<new link id>`, `item_id=new_item.id`, `old_value=NULL`, `new_value='<link_type>:<target_item_id>'` (e.g. `supports:42`), `timestamp=<now>`.
   - Reject (`n`): `field_changed='link_rejected'`, `trigger_cause='rejected'`, `link_id=<new Rejected link id>`, `item_id=new_item.id`, `old_value=NULL`, `new_value='<link_type>:<target_item_id>'`, `timestamp=<now>`. (Capture's `field_changed='proposed'` for items is NOT used here; that vocabulary is items-rejected, not links-rejected.)
-- Step 3 picks itself: Phase 4 `q` raises `RELATE-031 UserAbort` (matches L2 §4 Phase 4 line 233 + Capture's `CAPTURE-014` pattern). The CLI catches it and maps to exit 2.
+- Step 3 picks itself: Phase 4 `q` ends the run and the CLI maps it to exit 2; on end of input the terminal confirm raises `RELATE-031 UserAbort` (matches L2 §4 Phase 4 line 232 + Capture's `CAPTURE-014` pattern). **Correction (review 2026-10-28):** the body previously said `q` raises `RELATE-031`; the code returns `ConfirmResult(aborted=True)` for a literal `q` and raises the code only on end of input.
 - Step 3 picks itself: gatekeeper rule 6 (supersedes-Closed) is **narrow** — only `supersedes` link_type to a `Closed` target. `Active` and `Challenged` are allowed targets for ALL 5 link_types (including `supersedes`). This is the literal L2 §4 Phase 4 rule 6 reading; L3 does NOT tighten it.
 - Step 3 picks itself: Phase 3 retry is **transport-only** (per Capture convention). Parse failures raise `RELATE-033` on the first occurrence; no silent retry budget doubling. (B9 fix.)
 - **L2 amendment log entries recorded by this step** (for the next Relate plan revision to fold in):
@@ -233,13 +233,16 @@ Full suite green: `350 passed, 2 deselected` (live tests excluded). Command: `./
 1. Gatekeeper rule 5 (premise) runs BEFORE rule 6 (compat) so `(Assumption, supports) -> RELATE-008` is reachable (the compat table has no Assumption-source `supports`); `(Assumption, Finding, supports)` returns 008 not 006.
 2. `ValidatedLink` carries a third field `rationale` (the links table has no rationale column) so `format_link_block` can print it.
 3. `confirm_links` prints a non-YAML preview line before the prompt and the §3 YAML block only after an accepted write, so the §7 counts (3 accepted -> 3 blocks; 1 accept then `q` -> 1 block) hold; the §4.3 step-7 "print the block then prompt" wording is superseded.
-4. `q`/end-of-input returns `ConfirmResult(aborted=True)` (mirrors Capture) instead of raising `RELATE-031`; the CLI prints the summary and exits 2.
+4. `q`/end-of-input returns `ConfirmResult(aborted=True)` (mirrors Capture) rather than raising `RELATE-031` on a literal `q` key; the terminal confirm raises `RELATE-031` only on end of input. The CLI prints the summary and exits 2 in both cases.
 5. `RelatePorts` gains a fifth port `confirm` (the loop needs the user-I/O boundary; the plan's four-tuple omitted it).
 6. `RelateRequest.env` is carried but unread (the proposer is injected as a port).
 7. `run_relate` lives in the new `ember/relate/run_relate.py`.
 8. A raw-answer save failure maps to `RELATE-036` for the real adapter (its write error is a Capture `EmberError`, so only `RelateError` is re-raised).
 9. The AI key is validated at CLI startup, right after the DB opens and before candidates load, so a missing key fails fast (Constitution I13). Because of this, `--item` on a missing id with no key reports RELATE-035, not RELATE-001.
 10. The raw AI answer is saved before the target/source check, so an answer that names a bad item is still stored verbatim (Constitution D8).
+11. **The CLI opens through `open_relate_database`, not `open_database`.** The plan body (§4.4) first said `open_database`; corrected at review 2026-10-28. Consequence, tested in `tests/relate/test_relate_cli.py`: a missing or corrupt file fails with `RELATE-012` and is never created, and an old schema fails with `RELATE-014`.
+12. **The schema gate is `< 9`, not `< 8`.** The Step 3 body's first draft said `< 8`; the shipped check is `version < 9` (after migration 009). Recorded in Step 1's build notes; the Step 3 §6 / §7 wording is corrected at review 2026-10-28.
+13. **Parser tests use inline JSON strings, not named fixtures.** The framework's L3 rule asks AI-parser steps to use named fixture files under `tests/fixtures/` (Capture does). Relate's `parse_proposals` cases are small enough to sit inline. Recorded as a deviation; if the parser grows more cases, move them to `tests/fixtures/relate_ai_responses/`.
 
 ### Known gaps
 
