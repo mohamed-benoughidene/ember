@@ -55,3 +55,41 @@ class ChangeRow(BaseModel):
     new_value: str | None
     timestamp: str
     trigger_cause: str
+
+
+class SearchHit(BaseModel):
+    """One `topic_search` result: the score plus enough to read the item.
+
+    `status` travels with the hit so a superseded decision is visible next to
+    a live one (the `Closed` items are searched on purpose).
+    """
+
+    item_id: int
+    score: float
+    type: str
+    statement: str
+    status: str
+
+
+class WhyReason(BaseModel):
+    """One reason behind the item `why` was asked about.
+
+    `rationale` is NULL on every row this build can see (nothing writes the
+    column yet), and that is correct rather than a bug.
+    """
+
+    item_id: int
+    type: str
+    statement: str
+    status: str
+    rationale: str | None
+    depth: int
+    via_link_type: str
+    via_link_id: int
+
+
+class WhyResult(BaseModel):
+    """The start item plus its reasons, in `(depth, item_id)` order."""
+
+    item: QueryItem
+    reasons: list[WhyReason]

@@ -116,4 +116,37 @@ No rollback — Engine D writes no rows and ships no migration (L2 §2.6). Undo 
 
 ## 12. Build Notes (post-implementation)
 
-To be added after the code lands.
+Landed on `feat/query-engine`.
+
+**Code**
+- `ember/query/topic_search.py`: `topic_search(items, query) -> list[SearchHit]`, `K1 = 1.2`, `B = 0.75`, `_idf` with the `ln(1 + …)` form. Query terms de-duplicated (`dict.fromkeys`) so a repeated word cannot score twice. Guards in order: no query tokens → `[]`, empty corpus → `[]`, `avgdl == 0` → `[]`.
+- `ember/query/why.py`: `_reason_edges` (Confirmed `depends_on` source→target, `supports` target→source) + `why(items, links, item_id) -> WhyResult`. Breadth-first with one visited set, edges pre-sorted by `(reason_id, link_id)` so two routes to one node are deterministic.
+- `ember/query/rows.py`: `SearchHit`, `WhyReason`, `WhyResult` added.
+- `ember/query/render.py`: `render_topic_search(hits, query)`, `render_why(result)` — the cores' orders are kept, no re-sort.
+- `ember/query/run_query.py`: `run_topic_search(lookup, query)`, `run_why(lookup, item_id)` — gate first, then load, derive, render.
+- `ember/cli.py`: `ember topic-search --query TEXT [--db PATH]`, `ember why --item ID [--db PATH]`.
+- `tests/fixtures/query/bm25_golden.json`: the hand-computed corpus, query and expected scores.
+
+**Deviations recorded**
+- **The five tokenizer tests named in step 01 §6 were not written with step 01's commit** (that step shipped the module, but its test list listed only the gate and renderer bullets in the file that was written). They land here as `tests/query/test_tokenize_unit.py`, in the commit that first depends on the tokenizer's exact behaviour. Step 01's own suite was green without them; nothing about its deliverable changed.
+- **Underscores split.** `add_item` tokenizes to `["add", "item"]` — the L2 rule is "split on runs of characters that are not letters or digits", and `_` is not one. Written down because it is the one tokenizer edge a reader is most likely to assume the other way.
+- A reason's `via_link_*` records the link of the **first** BFS visit when several routes reach the same node at equal depth; ties are resolved by the sorted edge list, so the choice is stable across runs.
+- `run_why` calls `item_exists`, then `list_items`, then `list_links`; a missing item therefore never triggers a table read (asserted in `test_run_query_unit.py`).
+
+**Tests (37 new; suite 518 → 555 passed, 4 deselected, 2.63s)**
+- `tests/query/test_tokenize_unit.py` (5): case folding, punctuation split, unicode letters, digits, token-free input.
+- `tests/query/test_topic_search_unit.py` (8): **golden fixture scores to 1e-6**, the fixture's tie is broken by `item_id`, a term in every document still scores above zero, all-token-free corpus → `[]`, empty corpus → `[]`, item without a query token excluded, repeated query term counted once, hit carries the item fields.
+- `tests/query/test_why_unit.py` (9): `depends_on` yields the target, `supports` yields the source, the start item is not a reason, Rejected yields nothing, a `depends_on` cycle terminates with each item once, transitivity carries depth, other link types ignored, rationale carried or null, no reasons → empty.
+- `tests/query/test_run_query_unit.py` (4): QUERY-002 before any read, QUERY-001 before any read, both happy paths read through the port in the expected order.
+- `tests/query/test_render_unit.py` (+3): both new envelopes round-trip and their keys match the models; `why` with no reasons is `count: 0`.
+- `tests/query/test_search_and_why_integration.py` (4): search finds the expected items with scores above zero, an absent term is `count: 0`, `why` returns the premise over a real link, `why` on a reasonless item is not an error.
+- `tests/query/test_query_cli.py` (+4): `topic-search` results (including the `Closed` item), punctuation → exit 1 QUERY-002, `why --item 99` → exit 1 QUERY-001, `why` prints the reason.
+
+**Manual CLI check (real output)**
+- `ember topic-search --query sqlite --db <temp v10>` → `{"mode": "topic_search", "query": "sqlite", "count": 2, "results": [{"item_id": 1, "score": 0.4531509094719841, …}, {"item_id": 2, "score": 0.4531509094719841, …}]}`, exit 0 (a real tie, resolved by `item_id`).
+- `ember why --item 1 --db …` → `{"mode": "why", "item": {…}, "count": 1, "reasons": [{"item_id": 2, "depth": 1, "via_link_type": "depends_on", "via_link_id": 1, "rationale": null}]}`, exit 0.
+- `ember why --item 99` → `error: QUERY-001 QueryItemNotFound | ember.query.query_gatekeeper.validate_query_item | item not found | item_id=99`, exit 1.
+- `ember topic-search --query '!!!'` → `error: QUERY-002 QueryTextEmpty | … | query_text empty | query_length=3`, exit 1.
+- `ember why --db …` (no `--item`) → Click `Error: Missing option '--item'.`, exit 2.
+
+**Linter:** none configured in the repo (CI runs `pytest` only).

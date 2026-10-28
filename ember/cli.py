@@ -57,7 +57,11 @@ from ember.maintain.run_maintain import (
     run_set_status,
     run_sweep,
 )
-from ember.query.run_query import run_current_state
+from ember.query.run_query import (
+    run_current_state,
+    run_topic_search,
+    run_why,
+)
 from ember.relate.candidate_pool import build_candidate_pool
 from ember.relate.errors import UserAbort as RelateUserAbort
 from ember.relate.load_filter import load_item_candidates, load_latest_candidates
@@ -516,6 +520,59 @@ def current_state_command(db_path: str) -> None:
     try:
         conn = open_query_database(db_path)
         output = run_current_state(SqliteQueryContext(conn))
+    except EmberError as exc:
+        click.echo(f"error: {exc.log_line()}", err=True)
+        raise SystemExit(1)
+    click.echo(output)
+
+
+@main.command("topic-search")
+@click.option(
+    "--query",
+    "query",
+    required=True,
+    help="Search text: one or more words, matched as whole tokens.",
+)
+@click.option(
+    "--db",
+    "db_path",
+    default=DEFAULT_DB_PATH,
+    help="SQLite database path.",
+)
+def topic_search_command(query: str, db_path: str) -> None:
+    """Rank items by BM25 over their statements, as JSON.
+
+    Every item is searched, `Closed` ones included, and each result carries its
+    status. Read-only, like every query command.
+    """
+    try:
+        conn = open_query_database(db_path)
+        output = run_topic_search(SqliteQueryContext(conn), query)
+    except EmberError as exc:
+        click.echo(f"error: {exc.log_line()}", err=True)
+        raise SystemExit(1)
+    click.echo(output)
+
+
+@main.command("why")
+@click.option(
+    "--item", "item_id", type=int, required=True, help="Item id to explain."
+)
+@click.option(
+    "--db",
+    "db_path",
+    default=DEFAULT_DB_PATH,
+    help="SQLite database path.",
+)
+def why_command(item_id: int, db_path: str) -> None:
+    """Walk the reasons behind an item: `depends_on` back, `supports` back.
+
+    Prints the reasons nearest first, each with the depth it was reached at.
+    Read-only, like every query command.
+    """
+    try:
+        conn = open_query_database(db_path)
+        output = run_why(SqliteQueryContext(conn), item_id)
     except EmberError as exc:
         click.echo(f"error: {exc.log_line()}", err=True)
         raise SystemExit(1)
