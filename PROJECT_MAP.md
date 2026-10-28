@@ -120,7 +120,7 @@ Earlier logo and character images, kept for history.
 - `ember/query/render.py`: The display layer: `render_current_state` (Challenged first), `render_topic_search`, `render_why`, `render_history`, all `json.dumps` only.
 - `ember/query/run_query.py`: The four engine entry points `run_current_state`, `run_topic_search`, `run_why`, `run_history` (validate, load, derive, render).
 - `ember/adapters/__init__.py`: Marks the adapters layer folder as a package.
-- `ember/adapters/sqlite.py`: SQLite connection, numbered migrations, `SqliteSourceStore` and `SqliteItemGatekeeper` (writes are the gatekeeper boundary), `SqliteItemContext` (item reads), `SqliteAiResponseStore` (raw AI answers) and `build_ai_response_store`, `SqliteLinkContext` (relate item/link reads plus 1-hop neighbors, and the `item_status` / `supersedes_ancestors` reads), `SqliteLinkStore` (atomic `insert_link_with_log`), `SqliteEmbedderStore` (packed-vector cache; reads `RELATE-037`, writes `RELATE-019`), `build_embedding_store`, `open_relate_database` / `ensure_relate_schema` (relate boot checks), `SqliteMaintainContext` (maintain item/link/reversed-link reads), `SqliteMaintainStore` (maintain atomic status + `change_log` writes), `open_maintain_database` / `ensure_maintain_schema` (maintain boot checks), and `SqliteQueryContext` (the four query reads) with `open_query_database` / `ensure_query_schema` (read-only boot, required version 10, never migrates).
+- `ember/adapters/sqlite.py`: SQLite connection, numbered migrations with a pre-migration file backup (`<db>.bak-v<N>` taken once per run when scripts are pending, newest 3 kept; boot call sites wrap a failed copy as RELATE-013 / MAINTAIN-008), `SqliteSourceStore` and `SqliteItemGatekeeper` (writes are the gatekeeper boundary), `SqliteItemContext` (item reads), `SqliteAiResponseStore` (raw AI answers) and `build_ai_response_store`, `SqliteLinkContext` (relate item/link reads plus 1-hop neighbors, and the `item_status` / `supersedes_ancestors` reads), `SqliteLinkStore` (atomic `insert_link_with_log`), `SqliteEmbedderStore` (packed-vector cache; reads `RELATE-037`, writes `RELATE-019`), `build_embedding_store`, `open_relate_database` / `ensure_relate_schema` (relate boot checks, required version 11), `SqliteMaintainContext` (maintain item/link/reversed-link reads), `SqliteMaintainStore` (maintain atomic status + `change_log` writes), `open_maintain_database` / `ensure_maintain_schema` (maintain boot checks, required version 11), and `SqliteQueryContext` (the four query reads) with `open_query_database` / `ensure_query_schema` (read-only boot, required version 10, never migrates).
 - `ember/adapters/llm.py`: `OpenAiItemProposer` (`ItemProposerPort` on the OpenAI SDK, OpenRouter base URL) and the env-driven factory; `OpenAiLinkProposer` (`LinkProposerPort`) and the `build_link_proposer` factory.
 - `ember/adapters/embedder.py`: `SentenceTransformerEmbedder` (`EmbedderPort` on the optional `sentence-transformers` extra), the env-driven `build_embedder` factory, and `validate_embedder_config` (boot check for the timeout and optional packages).
 - `ember/adapters/migrations/__init__.py`: Marks the migrations folder as a package.
@@ -134,6 +134,7 @@ Earlier logo and character images, kept for history.
 - `ember/adapters/migrations/008_add_change_log_link_fk.sql`: Rebuilds `change_log` with the `link_id` foreign key.
 - `ember/adapters/migrations/009_drop_source_id_not_null_and_add_item_id.sql`: Makes `ai_responses.source_id` nullable and adds `item_id`.
 - `ember/adapters/migrations/010_add_item_close_reason.sql`: Adds the `items.close_reason` and `items.status_origin` columns.
+- `ember/adapters/migrations/011_add_links_reversed_at_and_enforcement_triggers.sql`: Adds `links.reversed_at`, the `link_compat` pair table (16 rows), the items/links guard pre-assertions, and the four enforcement triggers (compat pairs on `links`, `Closed` implies `close_reason` on `items`).
 
 ## Tests (`tests/`)
 - `tests/__init__.py`: Marks the tests folder as a package.
@@ -150,13 +151,15 @@ Earlier logo and character images, kept for history.
 - `tests/test_ai_response_store.py`: SQLite raw AI-answer store tests on a real temp DB: save by `source_id`, save by `item_id`, and the exactly-one-owner rule.
 - `tests/test_capture_pipeline_integration.py`: Phases 3 + 4 end to end on a real temp DB.
 - `tests/test_migrations.py`: Asserts the `items` and `change_log` schema after migrations.
+- `tests/test_migration_011.py`: Migration 011 on real v10 temp DBs: full-row preservation, schema diff, foreign-key check, `sqlite_sequence`, ledger backfill of `reversed_at`, both guard pre-assertions, backup-when-pending with retention 3, fresh install, and failed-migration rollback.
+- `tests/test_schema_enforcement.py`: The migration 011 triggers: direct illegal pair INSERT rejected, `link_compat` matches `TYPE_COMPAT` (16 rows), real writers still commit, and `Closed` without `close_reason` rejected.
 - `tests/test_cli.py`: CLI checks for the Phase 1 command, file/stdin modes and exit codes.
 - `tests/test_cli_capture.py`: CLI checks for the `capture` command with a fake AI.
 - `tests/test_cli_validated.py`: CLI checks for `set-validated` / `clear-validated` and the Assumption-only rule.
 - `tests/test_capture_live.py`: Live AI round trip. Marked `live`, so a plain pytest run never calls the API; run it with `./.venv/bin/python -m pytest -m live`.
 - `tests/test_relate_live.py`: Live AI round trip for the relate link proposer. Marked `live`, so a plain pytest run never calls the API; run it with `./.venv/bin/python -m pytest -m live`.
 - `tests/test_architecture.py`: Asserts the capture, relate, maintain, and query engine cores never import an adapter.
-- `tests/test_relate_db_open.py`: Relate DB open checks: missing/corrupt file, migration fail, schema version 5/8/9 gate, and all migrations applied.
+- `tests/test_relate_db_open.py`: Relate DB open checks: missing/corrupt file, migration fail, schema version 5/8/11 gate, and all migrations applied.
 - `tests/test_relate_read_failures.py`: Every `SqliteLinkContext` read maps a `sqlite3` failure to `RELATE-016`; also covers `item_status` and `supersedes_ancestors`.
 - `tests/test_migration_runner.py`: Each migration and its version bump are one transaction; failures roll back.
 
