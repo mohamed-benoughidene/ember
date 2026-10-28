@@ -71,9 +71,9 @@ The triage skill has five roles. This repo keeps its own labels. The map is:
 | `needs-triage` (not looked at yet) | no label |
 | `needs-info` (waiting on the reporter) | `question` |
 | `ready-for-agent` (written up, an agent can pick it up) | `deferred` |
-| `ready-for-human` (needs a person) | `help wanted` |
+| `ready-for-human` (ready to merge or needs a person) | no label, or the repo's own `dependencies` for bot PRs |
 | `wontfix` (rejected) | `wontfix` |
 
-Two rows are honest compromises. `deferred` means "parked", not "ready now": it holds issues that already carry a "Done when", so an agent can still pick one up. `help wanted` is the closest label this repo has to `ready-for-human`.
+Two rows are honest compromises. `deferred` means "parked", not "ready now": it holds issues that already carry a "Done when", so an agent can still pick one up. `ready-for-human` has no label of its own: a finished bot PR already carries `dependencies`, and this repo has no honest label for "ready to merge", so none is applied.
 
 A rejected enhancement is recorded in `.out-of-scope/` (one file per idea, see the triage skill's OUT-OF-SCOPE doc), not in a new label.
