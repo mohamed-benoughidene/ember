@@ -6,10 +6,18 @@ import json
 
 from ember.query.render import (
     render_current_state,
+    render_history,
     render_topic_search,
     render_why,
 )
-from ember.query.rows import CurrentStateRow, QueryItem, SearchHit, WhyReason, WhyResult
+from ember.query.rows import (
+    CurrentStateRow,
+    HistoryEvent,
+    QueryItem,
+    SearchHit,
+    WhyReason,
+    WhyResult,
+)
 from tests.query.fakes import make_item, make_row
 
 
@@ -87,3 +95,38 @@ def test_why_document_with_no_reasons_is_count_zero() -> None:
 
     assert document["count"] == 0
     assert document["reasons"] == []
+
+
+def test_history_document_round_trips_and_keys_match_the_model() -> None:
+    event = HistoryEvent(
+        timestamp="2026-01-01T00:00:00+00:00",
+        kind="status_changed",
+        cause="user_closed",
+        field_changed="status",
+        item_id=1,
+        link_id=None,
+        link_source_item_id=None,
+        link_target_item_id=None,
+        link_type=None,
+        old_value="Active",
+        new_value="Closed:expired",
+        close_reason="expired",
+    )
+
+    document = json.loads(render_history([event], 1))
+
+    assert document["mode"] == "history"
+    assert document["item_id"] == 1
+    assert document["count"] == 1
+    assert set(document["events"][0]) == set(HistoryEvent.model_fields)
+
+
+def test_history_document_for_the_global_view_has_a_null_item_id() -> None:
+    document = json.loads(render_history([], None))
+
+    assert document == {
+        "mode": "history",
+        "item_id": None,
+        "count": 0,
+        "events": [],
+    }

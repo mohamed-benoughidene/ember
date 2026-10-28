@@ -109,4 +109,35 @@ No rollback — Engine D writes no rows and ships no migration (L2 §2.6). The d
 
 ## 12. Build Notes (post-implementation)
 
-To be added after the code lands.
+Landed on `feat/query-engine`.
+
+**Code**
+- `ember/query/history.py`: `classify_change_row` (the 14 documented `(field_changed, trigger_cause)` pairs → nine kinds, `unknown` fallback), `_close_reason` (split on the first `:`; `Closed` + no reason / `Closed:None` / `Closed:` → null), `_belongs_to` (subject or link rule), `_to_event`, and `history(rows, links, item_id)` with the both-rules-once dedup and the `(timestamp, id)` order.
+- `ember/query/rows.py`: `HistoryEvent` added.
+- `ember/query/render.py`: `render_history(events, item_id)` — `item_id` is `null` for the global view.
+- `ember/query/run_query.py`: `run_history(lookup, item_id | None)` — the item check runs **only** when an id was named, so the global view makes no existence lookup.
+- `ember/cli.py`: `ember history [--item ID] [--db PATH]`.
+- `tests/query/test_query_e2e.py`: the engine's one E2E (L2 §7.6).
+
+**Closeout**
+- `README.md`: Engine D status → "Built and verified"; the four-command block added as step 6; the test count 468 → 598.
+- `PROJECT_MAP.md`: ten `ember/query/*` entries, the four `SqliteQueryContext` / boot additions to the adapter line, the new `tests/query/` and `tests/fixtures/query/` sections, and the architecture-test line now naming all four engines.
+- Cross-plan amendments §11.1–11.3: **verified already applied** by the planning commit — `plans/master-plan.md:157,159`, `plans/engine-maintain-plan.md` §0 rows + line 24 + §8 lines 420/425, `plans/engine-relate-plan.md:457`. No edit needed, as L2 §11's preface said.
+- Issues **#7, #22, #24**: already closed on the tracker since 2026-10-25 (the L2's landing); each got a comment with the code, the CLI output and the test evidence that makes "built and verified" true.
+- `deferred` issues opened as promised: **#26** (topic-search cap), **#27** (status/type filters), **#28** (history pagination) — the three deferrals this engine's L3 recorded.
+
+**Tests (43 new; suite 555 → 598 passed, 4 deselected, 3.52s)**
+- `tests/query/test_history_unit.py` (31): every documented pair maps to its kind (parametrized), the seven `status` causes are told apart by the cause alone, `user_set_status` is told apart by the field, the `unknown` fallback keeps its raw values, the splitter cases including `Closed:None`, `status_origin` / `link_reversed` have no `close_reason`, the NULL-subject row is global-only, the subject rule, the link rule (target reached though `item_id` is the source), the unrelated exclusions, the both-rules-once case, the `(timestamp, id)` order, and the link fields present-or-null.
+- `tests/query/test_run_query_unit.py` (+4): the global view makes **no** item lookup, the item view gates first, and the global view never raises QUERY-001.
+- `tests/query/test_render_unit.py` (+2): the `history` envelope round-trips with keys matching the model; the global envelope is well-formed.
+- `tests/query/test_history_integration.py` (3): a ledger written through the **real** `SqliteLinkStore` and `SqliteMaintainStore` — the item view returns `[link_confirmed, status_changed]` with `close_reason: "superseded"`, the global view returns every row, and an eventless item is `count: 0`.
+- `tests/query/test_query_cli.py` (+3): `history --item` events, the global ledger (including the NULL-subject row), and QUERY-001 on a missing item.
+- `tests/query/test_query_e2e.py` (1): the full chain — capture (faked AI + faked user) → relate (faked proposer + user) → maintain → all four query commands on one database, then the file hash unchanged.
+
+**Manual CLI check (real output)**
+- `ember history --item 1 --db <temp v10>` → `{"mode": "history", "item_id": 1, "count": 1, "events": [{"kind": "status_changed", "cause": "supersedes_confirmed", "old_value": "Active", "new_value": "Closed:superseded", "close_reason": "superseded", …}]}`, exit 0.
+- `ember history --db …` → `{"item_id": null, "count": 2, …}` including the `proposed_rejected` row with `"item_id": null`, exit 0.
+- `ember history --item 99` → `error: QUERY-001 QueryItemNotFound | … | item_id=99`, exit 1.
+- `ember history --item abc` → Click `Error: Invalid value for '--item': 'abc' is not a valid integer.`, exit 2.
+
+**Linter:** none configured in the repo (CI runs `pytest` only).

@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import json
 
-from ember.query.rows import CurrentStateRow, SearchHit, WhyResult
+from ember.query.rows import CurrentStateRow, HistoryEvent, SearchHit, WhyResult
 
 
 def render_current_state(rows: list[CurrentStateRow]) -> str:
@@ -50,6 +50,22 @@ def render_why(result: WhyResult) -> str:
             "item": result.item.model_dump(),
             "count": len(result.reasons),
             "reasons": [reason.model_dump() for reason in result.reasons],
+        },
+        ensure_ascii=False,
+    )
+
+
+def render_history(events: list[HistoryEvent], item_id: int | None) -> str:
+    """Return the `history` envelope in the `(timestamp, id)` order given.
+
+    `item_id` is `null` for the global view.
+    """
+    return json.dumps(
+        {
+            "mode": "history",
+            "item_id": item_id,
+            "count": len(events),
+            "events": [event.model_dump() for event in events],
         },
         ensure_ascii=False,
     )

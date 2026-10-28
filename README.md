@@ -40,7 +40,7 @@ Ember is a system for maintaining that durable context. It does not store the pr
 - **Engine A (Capture):** Built and verified. Implements raw input storage, hash deduplication, AI item proposals, gatekeeper validation, user confirm loop, and the assumption validation flag.
 - **Engine B (Relate):** Built and verified (finding candidate typed links between items).
 - **Engine C (Maintain):** Built and verified.
-- **Engine D (Query):** Planned.
+- **Engine D (Query):** Built and verified.
 
 ---
 
@@ -128,10 +128,21 @@ ember reverse-supersedes --item <id> --link <id> [--db PATH]
 
 The sweep reads `items` + Confirmed `links`, derives each item's status, and writes the difference with a `change_log` row per change. `close-item`, `set-status`, and `reverse-supersedes` are the human-only mutations; all four render through the same report format.
 
+**6. Query the project context (Engine D):**
+
+```bash
+ember current-state [--db PATH]
+ember topic-search --query TEXT [--db PATH]
+ember why --item <id> [--db PATH]
+ember history [--item <id>] [--db PATH]
+```
+
+All four are read-only and never write to the database. Each prints one JSON document on stdout. `current-state` lists the `Active` and `Challenged` items with the `Challenged` ones first; `topic-search` ranks by BM25 over item statements; `why` walks the `depends_on` and `supports` links behind an item; `history` shows that item's `change_log` rows with the cause of each change, or the whole ledger with no `--item`.
+
 ### Running Tests
 
 ```bash
-# Run all offline tests (468 tests)
+# Run all offline tests (598 tests)
 pytest
 
 # Run the live AI round-trip test (requires EMBER_AI_API_KEY)

@@ -93,6 +93,49 @@ def make_row(
     )
 
 
+def make_change_row(
+    row_id: int = 1,
+    *,
+    item_id: int | None = 1,
+    link_id: int | None = None,
+    field_changed: str = "created",
+    trigger_cause: str = "user_confirmed",
+    old_value: str | None = None,
+    new_value: str | None = "Active",
+    timestamp: str = FIXED_TIME,
+) -> ChangeRow:
+    """Build one `ChangeRow` for the classifier and history tests."""
+    return ChangeRow(
+        id=row_id,
+        item_id=item_id,
+        link_id=link_id,
+        field_changed=field_changed,
+        old_value=old_value,
+        new_value=new_value,
+        timestamp=timestamp,
+        trigger_cause=trigger_cause,
+    )
+
+
+def make_link(
+    link_id: int,
+    source_item_id: int,
+    target_item_id: int,
+    *,
+    link_type: str = "depends_on",
+    status: str = "Confirmed",
+) -> Link:
+    """Build one `Link` for the history tests."""
+    return Link(
+        id=link_id,
+        source_item_id=source_item_id,
+        target_item_id=target_item_id,
+        link_type=link_type,
+        status=status,
+        created_at=FIXED_TIME,
+    )
+
+
 def make_v10(db_path: str) -> sqlite3.Connection:
     """Create a real schema-version-10 database and return a writing handle."""
     return open_database(db_path)

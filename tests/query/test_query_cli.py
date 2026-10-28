@@ -122,3 +122,74 @@ def test_why_prints_the_reason(db_path) -> None:
     document = json.loads(result.output)
     assert [reason["item_id"] for reason in document["reasons"]] == [4]
     assert result.stdout.strip().startswith("{")
+
+
+def test_history_for_an_item_prints_its_events(db_path) -> None:
+    _seed(db_path)
+    conn = make_v10(db_path)
+    try:
+        conn.execute(
+            "INSERT INTO change_log (item_id, link_id, field_changed, old_value,"
+            " new_value, timestamp, trigger_cause)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (
+                1,
+                None,
+                "created",
+                None,
+                "Active",
+                "2026-01-01T00:00:00+00:00",
+                "user_confirmed",
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    result = CliRunner().invoke(main, ["history", "--item", "1", "--db", db_path])
+
+    assert result.exit_code == 0
+    document = json.loads(result.output)
+    assert document["mode"] == "history"
+    assert document["item_id"] == 1
+    assert [event["kind"] for event in document["events"]] == ["created"]
+
+
+def test_history_without_an_item_prints_the_global_ledger(db_path) -> None:
+    _seed(db_path)
+    conn = make_v10(db_path)
+    try:
+        # A rejected-proposal row: no subject, no link, global view only.
+        conn.execute(
+            "INSERT INTO change_log (item_id, link_id, field_changed, old_value,"
+            " new_value, timestamp, trigger_cause)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (
+                None,
+                None,
+                "proposed",
+                None,
+                "rejected",
+                "2026-01-01T00:00:00+00:00",
+                "rejected",
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    result = CliRunner().invoke(main, ["history", "--db", db_path])
+
+    assert result.exit_code == 0
+    document = json.loads(result.output)
+    assert document["item_id"] is None
+    assert [event["kind"] for event in document["events"]] == ["proposed_rejected"]
+
+
+def test_history_on_a_missing_item_exits_1_with_query_001(db_path) -> None:
+    _seed(db_path)
+
+    result = CliRunner().invoke(main, ["history", "--item", "99", "--db", db_path])
+
+    assert result.exit_code == 1
+    assert "QUERY-001" in (result.output + (result.stderr or ""))

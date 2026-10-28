@@ -93,3 +93,27 @@ class WhyResult(BaseModel):
 
     item: QueryItem
     reasons: list[WhyReason]
+
+
+class HistoryEvent(BaseModel):
+    """One rendered `change_log` event.
+
+    `item_id` means whatever the writer recorded as the subject; the two
+    `link_*_item_id` fields sit beside it so the two possible meanings never
+    blur. `cause` is the raw `trigger_cause`, and `close_reason` is the one
+    derived field (non-null only on a `status_changed` event whose new value
+    is a `Closed` status).
+    """
+
+    timestamp: str
+    kind: str
+    cause: str
+    field_changed: str
+    item_id: int | None
+    link_id: int | None
+    link_source_item_id: int | None
+    link_target_item_id: int | None
+    link_type: str | None
+    old_value: str | None
+    new_value: str | None
+    close_reason: str | None

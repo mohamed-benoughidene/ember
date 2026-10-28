@@ -59,6 +59,7 @@ from ember.maintain.run_maintain import (
 )
 from ember.query.run_query import (
     run_current_state,
+    run_history,
     run_topic_search,
     run_why,
 )
@@ -573,6 +574,36 @@ def why_command(item_id: int, db_path: str) -> None:
     try:
         conn = open_query_database(db_path)
         output = run_why(SqliteQueryContext(conn), item_id)
+    except EmberError as exc:
+        click.echo(f"error: {exc.log_line()}", err=True)
+        raise SystemExit(1)
+    click.echo(output)
+
+
+@main.command("history")
+@click.option(
+    "--item",
+    "item_id",
+    type=int,
+    default=None,
+    help="Item id to show; omit for the whole ledger.",
+)
+@click.option(
+    "--db",
+    "db_path",
+    default=DEFAULT_DB_PATH,
+    help="SQLite database path.",
+)
+def history_command(item_id: int | None, db_path: str) -> None:
+    """Show the change ledger: one item's events, or the whole ledger.
+
+    Each event carries what changed and why. With no `--item` every row is
+    shown, including the rejected-proposal rows that belong to no item.
+    Read-only, like every query command.
+    """
+    try:
+        conn = open_query_database(db_path)
+        output = run_history(SqliteQueryContext(conn), item_id)
     except EmberError as exc:
         click.echo(f"error: {exc.log_line()}", err=True)
         raise SystemExit(1)
