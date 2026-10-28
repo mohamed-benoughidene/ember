@@ -207,6 +207,8 @@ Schema half of #20 = migration 011 (§5). Reader half, kept to the minimum the c
 **Gate, not default.** No rebuild test is written, no migration 012 is drafted, until the maintainer records the #15 ruling (issue update + one-line record; ruling lands before any build, L1 §6). Outcomes:
 
 - **Keep the block** = V1 spec 3.3 compliant ("no duplicate links"). No schema work. Issue #15 closes with the recorded trigger (a real re-supersede workflow demand). Rules 8/9 as in §9 already stand.
+
+**RULING RECORDED — "Keep the block" (maintainer, 2026-10-28).** Context recorded with it: the product has no users yet and zero `links` rows exist anywhere (no `ember.db` on this machine), so the block's only cost — a removed pair reserved forever — has not accrued a single instance. Issued closed as "keep" with the trigger unchanged: re-open only on a real re-supersede workflow demand. Gate 2 closed.
 - **Relax** = live rows only. Mechanism: drop the table-level `UNIQUE` (a `links` table **rebuild** — SQLite cannot alter a constraint) and add `CREATE UNIQUE INDEX links_unique_triple_live ON links (source_item_id, target_item_id, link_type) WHERE status = 'Confirmed' AND reversed_at IS NULL`. Candidate predicate pinned here; the exact "live" definition (does a `Rejected` row stay blocking?) **is part of the #15 ruling** — open question below. Relax is a recorded spec 3.3 deviation (engine-relate-plan amendment gains one line at decision time).
 
 Rebuild mechanics (only in the relax branch — the exact L1 recipe, nothing softer):
