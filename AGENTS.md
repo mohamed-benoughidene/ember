@@ -59,3 +59,21 @@ If anything is risky, the first line of the message must start with "RISK:" and 
 **Not checked:** what you did not or could not check.
 **Could break:** one plain sentence. If nothing, write "Nothing found" and say what you looked at.
 **Decision needed:** A or B, or "None".
+
+## 7. Triage labels
+
+The triage skill has five roles. This repo keeps its own labels. The map is:
+
+| Triage role | Label used here |
+| --- | --- |
+| category: bug | `bug` |
+| category: enhancement | `enhancement` |
+| `needs-triage` (not looked at yet) | no label |
+| `needs-info` (waiting on the reporter) | `question` |
+| `ready-for-agent` (written up, an agent can pick it up) | `deferred` |
+| `ready-for-human` (needs a person) | `help wanted` |
+| `wontfix` (rejected) | `wontfix` |
+
+Two rows are honest compromises. `deferred` means "parked", not "ready now": it holds issues that already carry a "Done when", so an agent can still pick one up. `help wanted` is the closest label this repo has to `ready-for-human`.
+
+A rejected enhancement is recorded in `.out-of-scope/` (one file per idea, see the triage skill's OUT-OF-SCOPE doc), not in a new label.
