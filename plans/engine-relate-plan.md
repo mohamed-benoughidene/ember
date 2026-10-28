@@ -512,3 +512,12 @@ L3 deliverable checklists:
 - (i) Step 3 fakes + tests.
 
 (Five new ports across Step 2 + Step 3: `LinkProposerPort`, `EmbedderPort`, `LinkLookupPort` extended with `neighbors_of` / `item_status` / `supersedes_ancestors`, `LinkStorePort`, `EmbeddingStorePort`, `AiResponseStorePort`. The `AiResponseStorePort` is rarely faked — Capture's fakes pattern applies.)
+
+## 11. V1.x Amendment (hardening phase): links immutability narrowed
+
+Amended 2026-10-28, implementation pending. Source: `plans/hardening-schema-plan.md` (Cluster 1, issues #15 #17 #20 #21 #23).
+
+- **§3.1 immutability clause narrowed.** Migration 011 adds `links.reversed_at TEXT NULL` (NULL = live, non-NULL = reversal timestamp). `links` stays insert-only otherwise — `status`, `link_type`, endpoints never change. The column is derived from `change_log` (`link_reversed` markers) and rebuildable; the ledger stays the source (master plan rule 7 unchanged).
+- **Gatekeeper rules 8 and 9 will see the reversal column.** Rule 8: `supersedes_ancestors` walks only `Confirmed` links with `reversed_at IS NULL` — a corrective inverse after reversal no longer false-fires. Rule 9: `find_existing` still rejects the duplicate triple but reports the existing row's reversal state (the UNIQUE triple itself stands pending #15).
+- **RELATE-028 message improves.** The rejection gains a detail naming the blocking link (id, source -> target); the cycle decision logic is unchanged.
+- **UNIQUE-triple ruling (#15) pending.** Keep-block = spec 3.3 compliant, no schema work. Relax = partial unique index on live rows = `links` table rebuild + recorded spec 3.3 deviation. Decision is the maintainer's; it gates any rebuild — mechanics pinned in `plans/hardening-schema-plan.md` §10.
