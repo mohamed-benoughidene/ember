@@ -48,8 +48,8 @@ def _seed_items(conn: sqlite3.Connection, count: int) -> None:
 def test_confirmed_links_count_from_either_side(db_path) -> None:
     conn = open_database(db_path)
     _seed_items(conn, 3)
-    _insert_link(conn, 1, 2, "supports", "Confirmed")
-    _insert_link(conn, 3, 1, "answers", "Confirmed")
+    _insert_link(conn, 1, 2, "depends_on", "Confirmed")
+    _insert_link(conn, 3, 1, "supersedes", "Confirmed")
 
     assert SqliteLinkContext(conn).neighbors_of(1) == [2, 3]
 
@@ -57,9 +57,9 @@ def test_confirmed_links_count_from_either_side(db_path) -> None:
 def test_rejected_links_are_excluded(db_path) -> None:
     conn = open_database(db_path)
     _seed_items(conn, 4)
-    _insert_link(conn, 1, 2, "supports", "Confirmed")
-    _insert_link(conn, 1, 3, "supports", "Rejected")
-    _insert_link(conn, 4, 1, "supports", "Rejected")
+    _insert_link(conn, 1, 2, "depends_on", "Confirmed")
+    _insert_link(conn, 1, 3, "depends_on", "Rejected")
+    _insert_link(conn, 4, 1, "depends_on", "Rejected")
 
     assert SqliteLinkContext(conn).neighbors_of(1) == [2]
 
@@ -67,7 +67,7 @@ def test_rejected_links_are_excluded(db_path) -> None:
 def test_an_item_with_only_rejected_links_has_no_neighbors(db_path) -> None:
     conn = open_database(db_path)
     _seed_items(conn, 2)
-    _insert_link(conn, 1, 2, "contradicts", "Rejected")
+    _insert_link(conn, 1, 2, "depends_on", "Rejected")
 
     assert SqliteLinkContext(conn).neighbors_of(1) == []
 
@@ -82,11 +82,11 @@ def test_no_links_at_all_returns_an_empty_list(db_path) -> None:
 def test_neighbors_are_sorted_and_deduplicated(db_path) -> None:
     conn = open_database(db_path)
     _seed_items(conn, 4)
-    _insert_link(conn, 1, 3, "supports", "Confirmed")
-    _insert_link(conn, 3, 1, "supports", "Confirmed")
+    _insert_link(conn, 1, 3, "supersedes", "Confirmed")
+    _insert_link(conn, 3, 1, "depends_on", "Confirmed")
     _insert_link(conn, 1, 3, "depends_on", "Confirmed")
-    _insert_link(conn, 1, 2, "answers", "Confirmed")
-    _insert_link(conn, 1, 4, "answers", "Confirmed")
+    _insert_link(conn, 1, 2, "supersedes", "Confirmed")
+    _insert_link(conn, 1, 4, "supersedes", "Confirmed")
 
     assert SqliteLinkContext(conn).neighbors_of(1) == [2, 3, 4]
 
@@ -94,7 +94,7 @@ def test_neighbors_are_sorted_and_deduplicated(db_path) -> None:
 def test_the_item_itself_is_never_a_neighbor(db_path) -> None:
     conn = open_database(db_path)
     _seed_items(conn, 3)
-    _insert_link(conn, 1, 3, "supports", "Confirmed")
+    _insert_link(conn, 1, 3, "depends_on", "Confirmed")
     lookup = SqliteLinkContext(conn)
 
     assert lookup.neighbors_of(1) == [3]
@@ -106,8 +106,8 @@ def test_the_item_itself_is_never_a_neighbor(db_path) -> None:
 def test_neighbors_stop_after_one_hop(db_path) -> None:
     conn = open_database(db_path)
     _seed_items(conn, 3)
-    _insert_link(conn, 1, 2, "supports", "Confirmed")
-    _insert_link(conn, 2, 3, "supports", "Confirmed")
+    _insert_link(conn, 1, 2, "depends_on", "Confirmed")
+    _insert_link(conn, 2, 3, "depends_on", "Confirmed")
 
     assert SqliteLinkContext(conn).neighbors_of(1) == [2]
 

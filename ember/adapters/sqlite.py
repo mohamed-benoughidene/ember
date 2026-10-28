@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import sqlite3
 import sys
 import urllib.parse
@@ -52,6 +53,8 @@ from ember.relate.errors import (
 from ember.relate.rows import ChangeLogEntry, Link, NewItem
 
 _MIGRATIONS_MODULE = "ember.adapters.migrations"
+
+_BACKUPS_TO_KEEP = 3
 
 
 def _connect(db_path: str) -> sqlite3.Connection:
@@ -103,7 +106,7 @@ def open_relate_database(db_path: str) -> sqlite3.Connection:
         raise DbOpenFailed("db open fail", db_path=db_path) from exc
     try:
         _apply_migrations(conn)
-    except (sqlite3.Error, ValueError) as exc:
+    except (sqlite3.Error, ValueError, OSError) as exc:
         conn.close()
         raise DbMigrationFailed("migration fail", db_path=db_path) from exc
     try:
@@ -118,15 +121,15 @@ def ensure_relate_schema(conn: sqlite3.Connection) -> None:
     """Check the applied schema version is new enough for the relate engine.
 
     Raise `DbOpenFailed` (RELATE-012) if the version cannot be read, and
-    `SchemaOutdated` (RELATE-014) if the version is below the required 9.
+    `SchemaOutdated` (RELATE-014) if the version is below the required 11.
     """
     try:
         row = conn.execute("SELECT version FROM schema_version").fetchone()
         version = 0 if row is None else int(row["version"])
     except (sqlite3.Error, ValueError, TypeError) as exc:
         raise DbOpenFailed("schema version read fail") from exc
-    if version < 9:
-        raise SchemaOutdated("schema version too old", version=version, required=9)
+    if version < 11:
+        raise SchemaOutdated("schema version too old", version=version, required=11)
 
 
 def open_maintain_database(db_path: str) -> sqlite3.Connection:
@@ -149,7 +152,7 @@ def open_maintain_database(db_path: str) -> sqlite3.Connection:
         raise MaintainDbOpenFailed("db open fail", db_path=db_path) from exc
     try:
         _apply_migrations(conn)
-    except (sqlite3.Error, ValueError) as exc:
+    except (sqlite3.Error, ValueError, OSError) as exc:
         conn.close()
         raise MaintainDbMigrationFailed("migration fail", db_path=db_path) from exc
     try:
@@ -164,16 +167,16 @@ def ensure_maintain_schema(conn: sqlite3.Connection) -> None:
     """Check the applied schema version is new enough for the maintain engine.
 
     Raise `DbOpenFailed` (MAINTAIN-007) if the version cannot be read, and
-    `SchemaOutdated` (MAINTAIN-009) if the version is below the required 10.
+    `SchemaOutdated` (MAINTAIN-009) if the version is below the required 11.
     """
     try:
         row = conn.execute("SELECT version FROM schema_version").fetchone()
         version = 0 if row is None else int(row["version"])
     except (sqlite3.Error, ValueError, TypeError) as exc:
         raise MaintainDbOpenFailed("schema version read fail") from exc
-    if version < 10:
+    if version < 11:
         raise MaintainSchemaOutdated(
-            "schema version too old", version=version, required=10
+            "schema version too old", version=version, required=11
         )
 
 
@@ -224,6 +227,49 @@ def ensure_query_schema(
         )
 
 
+def _database_file(conn: sqlite3.Connection) -> str | None:
+    """Return the on-disk path of the connection's main database, or None.
+
+    An in-memory or temporary database has no file, so there is nothing to
+    back up.
+    """
+    rows = conn.execute("PRAGMA database_list").fetchall()
+    for row in rows:
+        if row[1] == "main" and row[2]:
+            return str(row[2])
+    return None
+
+
+def _backup_database(conn: sqlite3.Connection, current: int) -> None:
+    """Copy the database file once before any above-version script runs.
+
+    The copy is `<db>.bak-v<current>` (D7), taken with `copy2` so metadata
+    survives. Retention: keep the newest 3 `<db>.bak-v*` files, delete older.
+    Raise the raw `OSError` on failure; per-engine boot call sites wrap it.
+    """
+    db_path = _database_file(conn)
+    if db_path is None:
+        return
+    shutil.copy2(db_path, f"{db_path}.bak-v{current}")
+    _prune_backups(db_path)
+
+
+def _prune_backups(db_path: str) -> None:
+    """Keep the newest 3 `<db>.bak-v*` files next to `db_path`, delete older."""
+    directory = os.path.dirname(os.path.abspath(db_path))
+    prefix = os.path.basename(os.path.abspath(db_path)) + ".bak-v"
+    backups: list[tuple[int, str]] = []
+    for name in os.listdir(directory):
+        if not name.startswith(prefix):
+            continue
+        suffix = name[len(prefix):]
+        if suffix.isdigit():
+            backups.append((int(suffix), name))
+    backups.sort(reverse=True)
+    for _, name in backups[_BACKUPS_TO_KEEP:]:
+        os.remove(os.path.join(directory, name))
+
+
 def _apply_migrations(conn: sqlite3.Connection) -> None:
     conn.execute(
         "CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL)"
@@ -232,11 +278,17 @@ def _apply_migrations(conn: sqlite3.Connection) -> None:
         conn.execute("INSERT INTO schema_version (version) VALUES (0)")
     conn.commit()
     current = conn.execute("SELECT version FROM schema_version").fetchone()[0]
+    pending = [
+        (number, script) for number, script in _migration_scripts() if number > current
+    ]
+    # One backup per run, before the first above-version script: a no-op open
+    # must not churn the retention window (L2 §5.0).
+    if pending:
+        _backup_database(conn, int(current))
     conn.execute("PRAGMA foreign_keys = OFF")
     try:
-        for number, script in _migration_scripts():
-            if number > current:
-                _apply_migration(conn, number, script)
+        for number, script in pending:
+            _apply_migration(conn, number, script)
     finally:
         conn.execute("PRAGMA foreign_keys = ON")
 

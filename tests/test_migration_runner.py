@@ -80,7 +80,7 @@ def test_successful_runner_commits_version_with_schema(db_path) -> None:
     conn = open_database(db_path)
 
     version = conn.execute("SELECT version FROM schema_version").fetchone()[0]
-    assert version == 10
+    assert version == 11
     assert {"links", "item_embeddings"} <= _table_names(conn)
     assert conn.execute("PRAGMA foreign_keys").fetchone()[0] == 1
     conn.close()

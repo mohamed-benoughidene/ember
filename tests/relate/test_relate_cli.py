@@ -108,9 +108,17 @@ def _seed_item(
     *,
     status: str = "Active",
 ) -> None:
+    if status == "Closed":
+        # The items trigger (migration 011) forbids Closed with no reason.
+        insert_item(
+            conn,
+            source_id=source_id,
+            item_id=item_id,
+            status="Closed",
+            close_reason="expired",
+        )
+        return
     insert_item(conn, source_id=source_id, item_id=item_id)
-    if status != "Active":
-        conn.execute("UPDATE items SET status = ? WHERE id = ?", (status, item_id))
 
 
 def _error_text(result) -> str:
@@ -183,7 +191,7 @@ def test_relate_latest_soft_exit_when_nothing_eligible(db_path, monkeypatch) -> 
         source_id = insert_source(conn)
         _seed_item(conn, source_id, 1)
         _seed_item(conn, source_id, 2, status="Closed")
-        _insert_link(conn, 1, 2, "supports", "Confirmed")
+        _insert_link(conn, 1, 2, "depends_on", "Confirmed")
         conn.commit()
     finally:
         conn.close()

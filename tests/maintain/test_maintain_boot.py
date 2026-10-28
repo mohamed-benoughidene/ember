@@ -102,14 +102,14 @@ def test_ensure_maintain_schema_rejects_version_9(tmp_path) -> None:
         ensure_maintain_schema(conn)
 
     assert exc.value.code == "MAINTAIN-009"
-    assert exc.value.context["required"] == 10
+    assert exc.value.context["required"] == 11
 
 
-def test_ensure_maintain_schema_accepts_version_10(tmp_path) -> None:
+def test_ensure_maintain_schema_accepts_version_11(tmp_path) -> None:
     conn = sqlite3.connect(str(tmp_path / "raw.db"))
     conn.row_factory = sqlite3.Row
     conn.execute("CREATE TABLE schema_version (version INTEGER NOT NULL)")
-    conn.execute("INSERT INTO schema_version (version) VALUES (10)")
+    conn.execute("INSERT INTO schema_version (version) VALUES (11)")
 
     ensure_maintain_schema(conn)
 
@@ -119,4 +119,4 @@ def test_open_maintain_database_applies_all_migrations(db_path) -> None:
     conn = open_maintain_database(db_path)
 
     version = conn.execute("SELECT version FROM schema_version").fetchone()["version"]
-    assert version == 10
+    assert version == 11

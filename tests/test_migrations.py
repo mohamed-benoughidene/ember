@@ -53,6 +53,7 @@ def test_links_table_has_expected_columns(db_path) -> None:
         "link_type",
         "status",
         "created_at",
+        "reversed_at",
     ]
 
 
@@ -137,10 +138,12 @@ def test_links_enforce_unique_triple(db_path) -> None:
     source_id = insert_source(conn)
     insert_item(conn, source_id=source_id, item_id=1)
     insert_item(conn, source_id=source_id, item_id=2)
+    # Decision depends_on Decision is compat-legal, so the UNIQUE triple (not
+    # the compat trigger) is what rejects the duplicate here.
     conn.execute(
         "INSERT INTO links"
         " (source_item_id, target_item_id, link_type, status, created_at)"
-        " VALUES (1, 2, 'supports', 'Confirmed', ?)",
+        " VALUES (1, 2, 'depends_on', 'Confirmed', ?)",
         (FIXED_TIME,),
     )
 
@@ -148,7 +151,7 @@ def test_links_enforce_unique_triple(db_path) -> None:
         conn.execute(
             "INSERT INTO links"
             " (source_item_id, target_item_id, link_type, status, created_at)"
-            " VALUES (1, 2, 'supports', 'Confirmed', ?)",
+            " VALUES (1, 2, 'depends_on', 'Confirmed', ?)",
             (FIXED_TIME,),
         )
 
@@ -209,7 +212,7 @@ def test_migrations_008_009_preserve_existing_rows(db_path) -> None:
 
     conn = open_database(db_path)
 
-    assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == 10
+    assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == 11
     assert conn.execute(
         "SELECT COUNT(*) FROM change_log WHERE id = 7"
     ).fetchone()[0] == 1
