@@ -509,7 +509,7 @@ Master plan rule 7 says historical items are immutable. #19 records that text ed
 > **Option A — text edits forbidden.** `edit_item` writes ONLY `items.rationale` (on `Decision`) and `items.source` (on `Finding`) — master plan §5's designated slots — and nothing else on the item. Rule 7 scoped, not softened: it protects `items.statement` and every raw table. Typos keep the existing fix path — a new item + `supersedes` + `ember maintain` (master plan §2, L1:53; this plan §1). Re-linking needs no new machinery here: links are Relate's write path, and `edit_item` never writes links.
 > **Option B — text edits allowed.** `--field statement` is legal too; every old→new lands in `change_log`. Cost: the statement is extracted from `sources.full_text` (its `source_quote` must be a substring of it — master plan §2), so editing severs the item from its raw source (D1) and rule 7 needs its widest amendment.
 > **Recommendation: A.** Rationale is human authorial context with no raw counterpart; the statement's source-tie is the whole point of Capture.
-> **Decision: PENDING (maintainer).**
+> **Decision: Option A — text edits forbidden (maintainer, 2026-10-28).** Gate 1 closed.
 > The filled line is the artifact that unblocks implementation (gate 1 closes).
 
 ### 12.1 Gate 2 — the #15 ruling lands before `remove_link` builds
