@@ -48,7 +48,7 @@ From the port (`LinkLookupPort`, L2 §4.5 + this step's amendments):
 
 1. Resolve the new item id:
    - `--item ID`: read the item. If `item_exists` returns false, raise `RELATE-001` and print the `--item ID` and the DB path the user pointed at (so they can spot a wrong `--db`).
-   - `--latest`: call `link_lookup.find_latest_unlinked_active()`. The implementation runs `WHERE status='Active' AND id NOT IN (SELECT source_item_id FROM links) ORDER BY id DESC LIMIT 1` (per L2 §4 Phase 1 line 154: any link status disqualifies — B6 fix from a previous draft that narrowed to `status='Confirmed'`). If `None` is returned, **print "no unrelated items" to STDOUT and exit 0** — this is a soft exit per L2 §4 Phase 1 line 153 and L2 §6 line 385. No code is raised; the case is not an error.
+   - `--latest`: call `link_lookup.find_latest_unlinked_active()`. The implementation runs `WHERE status='Active' AND id NOT IN (SELECT source_item_id FROM links) ORDER BY id DESC LIMIT 1` (per L2 §4 Phase 1 line 154: any link status disqualifies — B6 fix from a previous draft that narrowed to `status='Confirmed'`). If `None` is returned, **print "no unrelated items" to STDOUT and exit 0** — this is a soft exit per L2 §4 Phase 1 line 153 and L2 §6 lines 390-394. No code is raised; the case is not an error.
 2. Read the new item row via `LinkLookupPort` (`item_type`, `item_statement`, plus the existing fields). Build the `NewItem` object.
 3. Call `link_lookup.list_other_items(new_item.id)` to get the raw candidate pool. Build the initial universe.
 4. **Filter #1 — drop pairs.** Call `existing_link_types(new_item.id)` once. It returns, per target id, the set of link types already present from the new item (any status: `Confirmed` or `Rejected`). The dropped pairs are not tracked separately — Phase 4 re-checks via `find_existing` against the live DB.
@@ -62,9 +62,9 @@ From the port (`LinkLookupPort`, L2 §4.5 + this step's amendments):
 - `RELATE-012` — DB open fail (DB file corrupt, permission denied, disk full at open). New in Step 1's §5 (M1).
 - `RELATE-013` — migration 006/007/008/009 crashed during apply. New in Step 1's §5 (M1).
 - `RELATE-014` — `schema_version.version` < 9 (migrations 006-009 not applied). (B5 fix: source of truth is the `schema_version` **table** per `ember/adapters/sqlite.py:35-43`, not `PRAGMA user_version`. L2 §3 line 23 was wrong; Step 1 reads `SELECT version FROM schema_version`. The gate is defensive because `open_relate_database` applies migrations before checking.)
-- `RELATE-016` — Phase 1 read failed (covers `items` and `links` table reads: `item_exists`, `list_other_items`, `find_latest_unlinked_active`, `find_existing`). Per L2 amendment log entry recorded by this step, the L2 §6 line 359 trigger text is widened from "Reading items table failed" to "Phase 1 read failed (items or links table)". Replaces the previously-misattributed `RELATE-005` (M1).
+- `RELATE-016` — Phase 1 read failed (covers `items` and `links` table reads: `item_exists`, `list_other_items`, `find_latest_unlinked_active`, `find_existing`). Per L2 amendment log entry recorded by this step, the L2 §6 line 369 trigger text is widened from "Reading items table failed" to "Phase 1 read failed (items or links table)". Replaces the previously-misattributed `RELATE-005` (M1).
 
-**No `RELATE-002`.** L2 §6 line 380 removed it. The `--latest` no-eligible-items case is a soft exit 0 per L2 §4 Phase 1 line 153 (B4 fix). Likewise no `RELATE-020` or `RELATE-034` (L2 §6 lines 382-383 remove both).
+**No `RELATE-002`.** L2 §6 line 391 removed it. The `--latest` no-eligible-items case is a soft exit 0 per L2 §4 Phase 1 line 153 (B4 fix). Likewise no `RELATE-020` or `RELATE-034` (L2 §6 lines 393-394 remove both).
 
 ## 6. Test Targets
 

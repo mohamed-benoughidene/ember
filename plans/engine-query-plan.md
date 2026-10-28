@@ -71,7 +71,7 @@ Only `Confirmed` links count; a `Rejected` link is a link the human said no to (
 
 ### 2.4 `Decision.rationale` is written by nobody — today
 
-Migration 004 added `items.rationale` and `items.source`. **Nothing writes either column** (issue #1): Capture's AI returns only `type`, `statement`, `source_quote`, `confidence` (`ember/capture/item_proposal.py:66-68`), and Relate's `rationale` belongs to the *link*, not the item (`ember/relate/rows.py:47,54`; `links` has no `rationale` column).
+Migration 004 added `items.rationale` and `items.source`. **Nothing writes either column** (issue #1): Capture's AI returns only `type`, `statement`, `source_quote`, `confidence` (`ember/capture/item_proposal.py:65-68`), and Relate's `rationale` belongs to the *link*, not the item (`ember/relate/link_gatekeeper.py:47,54`; `links` has no `rationale` column).
 
 So `why` reads a column that is NULL on every row it will ever see in V1.
 
@@ -181,7 +181,7 @@ k1 = 1.2    b = 0.75
 - A query that contains no tokens at all (empty, or only punctuation) → **QUERY-002**, raised by the gatekeeper (§4.7).
 - `k1` and `b` are fixed here. L3 may tune them (§9), but a change to either changes every expected score in §7.1.
 
-**Why hand-rolled and not SQLite FTS5?** FTS5 is available in this repo's SQLite (3.45.1) and is the obvious alternative. It is the wrong tool here for two measured reasons: FTS5's `bm25()` uses `idf = log((N−n+0.5)/(n+0.5))`, which is **0** for a term present in half the corpus — exactly the failure the `ln(1+…)` form above exists to prevent; and FTS5 needs a virtual table plus sync triggers, which means a migration and writes, contradicting §3's no-migration read-only boot. `rank_bm25` is rejected by L1 §0 ("Engine core imports only stdlib + Pydantic + Click + pytest").
+**Why hand-rolled and not SQLite FTS5?** FTS5 is available in this repo's SQLite (3.46.1 at review time) and is the obvious alternative. It is the wrong tool here for one structural reason: FTS5 needs a virtual table plus sync triggers, which means a migration and writes, contradicting §3's no-migration read-only boot. That is the whole argument, and it does not rest on a claim about FTS5's ranking. (FTS5 does **not** return `idf = 0` for a common term — it clamps a non-positive `idf` to `1e-6`, verified live at review — so the `ln(1 + …)` form above is *this plan's* fixed, transparent formula, not a repair of an FTS5 defect.) `rank_bm25` is rejected by L1 §0 ("Engine core imports only stdlib + Pydantic + Click + pytest").
 
 #### `why` traversal rules
 
@@ -234,7 +234,7 @@ One rule comes straight from L1 line 64: **"Sorting by `Challenged` first happen
 
 One Click command per mode (§5). Each command calls exactly one `run_*` function (§4.7). No command has a `--mode` flag and no function takes a mode argument — the mode is the entry point, not a runtime switch (Rule I2).
 
-The four commands are **flat on the root group**, like all nine existing commands (`ember/cli.py:103-497`). The house never names a CLI command after an L1 action — `add_item` ships as `ember capture`, `add_link` as `ember relate` — so L1 line 118's `query` action maps to a family of four read commands the same way.
+The four commands are **flat on the root group**, like all nine existing commands (`ember/cli.py:103-545`). The house never names a CLI command after an L1 action — `add_item` ships as `ember capture`, `add_link` as `ember relate` — so L1 line 118's `query` action maps to a family of four read commands the same way.
 
 ### 4.5 Ports + Data Models
 
@@ -320,6 +320,8 @@ Each one: validate (§4.7 gatekeeper) → load (Phase 1) → derive (Phase 2) �
 - `validate_query_text(text: str) -> str` — pure. Normalises the text and raises **QUERY-002** if it has no tokens. Uses the shared tokenizer (`ember/query/tokenize.py`), so the gate and the scorer agree on what a token is.
 - `validate_query_item(lookup: QueryLookupPort, item_id: int) -> None` — raises **QUERY-001** if the item does not exist.
 
+**When the item check runs:** `run_why` always calls `validate_query_item`. `run_history` calls it **only when an explicit `--item` is given** — `history --item <unknown-id>` is **QUERY-001**, because the user named a specific item, exactly as `why` does. The **global** view (`history` with no `--item`, i.e. `item_id = None`) validates nothing and never raises QUERY-001. (Decided at review, 2026-10-28: the alternative — return `"count": 0` for an unknown id — was rejected, because it would make `history` disagree with `why` about what a named-but-missing item means. I8's "design error away" applies to *unfiltered* reads, where there is nothing to name.)
+
 **Each error code has exactly one owner.** The gatekeeper owns QUERY-001 and QUERY-002; the pure core assumes valid input and never re-raises them (I9: validate at the edge, trust inside). A bad request therefore never reaches the core — and the pure core's unit tests do not duplicate the gate's checks.
 
 **The gatekeeper also fixes what a read may touch:** Engine D reads `items`, `links` and `change_log` **only**. It never reads `sources` (raw source text) or `ai_responses` (raw model output). `query` is the one command an AI may run against the user's database, and those two tables hold the most sensitive bytes in it.
@@ -334,7 +336,7 @@ ember history [--item <id>] [--db PATH]
 ```
 
 - `--db` defaults to `ember.db` — the module-level `DEFAULT_DB_PATH` in `ember/cli.py:64`. The commands live in `ember/cli.py` and use that constant directly; **no module imports it from `ember.cli`** (that would be a circular import, Constitution B6's first warning sign).
-- `--item` is `type=int`. **Required** for `why`. **Optional** for `history`: with no `--item` the mode returns the **global** ledger, every row in `(timestamp, id)` order — which is the literal spec reading ("Reads the change log", AI spec 3.8:140) and the only way Capture's NULL-subject `proposed` rows are reachable at all. With `--item <id>` it returns that item's rows by the union rule (§4 Phase 2).
+- `--item` is `type=int`. **Required** for `why`. **Optional** for `history`: with no `--item` the mode returns the **global** ledger, every row in `(timestamp, id)` order — which is the literal spec reading ("Reads the change log", AI spec 3.8:140) and the only way Capture's NULL-subject `proposed` rows are reachable at all. With `--item <id>` it returns that item's rows by the union rule (§4 Phase 2). **A `--item` id that is not in `items` raises QUERY-001** (see §4.7), the same as `why`; the global view never raises it.
 - `--query` is **required** for `topic-search`.
 - **Exit codes:** 0 success (including an empty result), 1 on any `QUERY-*` error, 2 on a Click usage error. No exit 2 for abort — this engine has no prompt, so there is no `UserAbort`.
 - **Output:** one JSON document on stdout (§4 Phase 3). Nothing else goes to stdout. Errors go to stderr as `error: {exc.log_line()}` (house format, `ember/cli.py:131`).
@@ -353,7 +355,7 @@ ember history [--item <id>] [--db PATH]
 | `QUERY-004` | `SchemaOutdated` | `schema_version` is below the required 10. | `version`, `required` |
 | `QUERY-005` | `ItemsReadFailed` | an `items`, `links` or `change_log` read failed (disk error, lock, corrupt page). | `table` |
 
-**Codes are contiguous, 000–005, with no gaps and no removals** (I17) — the same shape as Maintain's 000–012. Six raisable codes is the right size for a read-only engine with one read port: Maintain has 12 with a write path, Relate 31, Capture 17.
+**Codes are contiguous, 000–005, with no gaps and no removals** (I17) — the same shape as Maintain's 000–012. Six raisable codes is the right size for a read-only engine with one read port: Maintain has 12 raised codes (plus the `MAINTAIN-000` base), Relate 31, Capture 16.
 
 **Name collisions are house style.** `DbOpenFailed` is also RELATE-012 and MAINTAIN-007; `SchemaOutdated` is RELATE-014 and MAINTAIN-009; `ItemsReadFailed` is RELATE-016 and MAINTAIN-010. The house resolves this with an import alias (`from ember.relate.errors import DbOpenFailed as MaintainDbOpenFailed`, `ember/adapters/sqlite.py:24-31`). Engine D follows it: `from ember.query.errors import DbOpenFailed as QueryDbOpenFailed` in the adapter. The `QUERY-` prefix makes the **code** unique (I17); the shared name makes it readable, and `name` is the bare class name, exactly as Maintain does it (`name = "DbOpenFailed"`).
 
@@ -414,6 +416,7 @@ Test pyramid per L1 §7 + Constitution T1–T6, T9, T10. No T7 / T8 — no AI in
 - **the gatekeeper** (L1 line 82 names it, so it gets its own tests):
   - an empty or punctuation-only query raises QUERY-002; a query with tokens passes.
   - a missing item id raises QUERY-001; an existing one passes.
+  - the item check runs for `why` and for `history --item`; the global `history` (no `--item`) makes **no** lookup call and never raises QUERY-001.
   - a valid request returns without touching the core.
 - **the renderer** (the display layer):
   - `current_state` puts `Challenged` first and `Active` second, each group in `item_id` order — from a scrambled input list.
@@ -445,6 +448,8 @@ Extend `tests/test_architecture.py` with `test_query_core_does_not_import_adapte
 - `ember current-state --db <fixture>` exits 0 and prints one JSON document whose `items` array lists the `Challenged` item **first**.
 - `ember topic-search --query sqlite --db <fixture>` exits 0 and prints a JSON document with `results`.
 - `ember why --item 99 --db <fixture>` exits 1 and prints `error: QUERY-001 ...` to stderr.
+- `ember history --item 99 --db <fixture>` exits 1 and prints `error: QUERY-001 ...` to stderr.
+- `ember history --db <fixture>` **with no `--item`** exits 0 (the global view; item 99 exists or not, it does not matter).
 - `ember history --db <fixture>` exits 0 and prints the global ledger.
 - `ember current-state --item abc` exits 2 (a Click usage error).
 - stdout is valid JSON on every success path — parse it with `json.loads` in the test, do not match strings.
@@ -453,7 +458,7 @@ Extend `tests/test_architecture.py` with `test_query_core_does_not_import_adapte
 
 | Code | Test target |
 |---|---|
-| 001 `QueryItemNotFound` | §7.1 (gatekeeper) + §7.4 (`--item 99`) |
+| 001 `QueryItemNotFound` | §7.1 (gatekeeper) + §7.4 (`why --item 99`, `history --item 99`) |
 | 002 `QueryTextEmpty` | §7.1 (gatekeeper, empty and punctuation-only) |
 | 003 `DbOpenFailed` | §7.2 (missing file, non-SQLite file) |
 | 004 `SchemaOutdated` | §7.2 (real v9 database) |
@@ -469,7 +474,7 @@ T4 caps E2E at 1–2 per engine; Relate and Maintain each ship one.
 
 **None.** No AI call, no embedder, no network. Second engine with no live tier.
 
-**Pyramid (T4):** ~24 unit, ~10 integration, 6 CLI, 1 E2E, 0 live, 1 architecture.
+**Pyramid (T4):** ~25 unit, ~10 integration, 8 CLI, 1 E2E, 0 live, 1 architecture.
 
 ## 8. Out of Scope (this L2 plan)
 
@@ -490,6 +495,7 @@ L3 step plans (in `plans/steps/query/`) will resolve these. Recorded so the L3 a
 3. **Status and type filters** on `topic_search` (§2.2's `Closed` decision is about search *scope*, not filters).
 4. **Whether `history` needs pagination or a limit** once the ledger is large.
 5. **The `unknown` `kind` fallback.** L2 defines it; L3 may decide a future vocabulary deserves its own kind instead.
+6. **Plan length (housekeeping).** This L2 runs past the framework's 500-line guidance (§1 L2) even though it has none of the named exceptions (few codes, no migrations, one port). Nothing is wrong today; if the plan grows, split an appendix: §A error codes, §B the `change_log` vocabulary contract (§4.6).
 
 ## 10. Next Step (L3 step plans)
 
@@ -497,7 +503,7 @@ Human approves this L2 plan. Then 3 L3 step plans in `plans/steps/query/`:
 
 - **`01-load-and-current-state.md`** — `errors.py`; `rows.py`; `lookup.py` (`QueryLookupPort`); `query_gatekeeper.py` (`validate_query_text`, `validate_query_item`); `tokenize.py`; `SqliteQueryContext`; `open_query_database` (read-only) + `ensure_query_schema`; the pure `current_state` derivation; `render.py` (the display layer, including the `Challenged`-first sort); the `ember current-state` command; the architecture-test extension; `tests/query/fakes.py` (`FakeQueryLookup`). **CLI check:** `ember current-state --db <fixture>` → JSON with the `Challenged` item first, exit 0. (**Ships a runnable CLI** — Rule S1.)
 - **`02-topic-search-and-why.md`** — the BM25 scorer (tokenizer, IDF, scoring, tie-break, the zero-token guard); the pure `why` traversal (both link directions, the visited set, the transitive closure); their renderers; the `ember topic-search` and `ember why` commands; the golden BM25 fixture. **CLI check:** each command on a fixture DB.
-- **`03-history-and-closeout.md`** — the `change_log` classifier (§4.6, all nine kinds); the pure `history` derivation (the `item_id` ∪ `link_id` union, the global view); its renderer; the `ember history` command; the cross-plan amendments (§11); the issue closures (#7, #22, #24). **CLI check:** `ember history --item 1 --db <fixture>` → JSON, exit 0.
+- **`03-history-and-closeout.md`** — the `change_log` classifier (§4.6, all nine kinds); the pure `history` derivation (the `item_id` ∪ `link_id` union, the global view); the QUERY-001 item check for `history --item` (§4.7); its renderer; the `ember history` command; the cross-plan amendments (§11); the issue closures (#7, #22, #24). **CLI check:** `ember history --item 1 --db <fixture>` → JSON, exit 0.
 
 ## 11. Amendments to Other Plans
 
@@ -568,35 +574,37 @@ All four are read-only and never write to the database. Each prints one JSON doc
 | B2 public calls only | §4.5 — the core reads only through `QueryLookupPort`; it never touches another module's tables. The tables it reads are the L1 §3 shared contract, mediated by the single SQLite boundary. |
 | B3 depend on stable things | §4.5 — the core depends on the port and on Pydantic row models, not on SQLite. |
 | B4 hide volatile decision | §4.5 — the DB is behind the port; the pure core never sees a connection. |
-| B5 deep module | §4.5 — three coarse port methods cover the whole world, and BM25 needs the whole corpus anyway, so the interface stays small while the work stays inside. |
+| B5 deep module | §4.5 — four coarse port methods cover the whole world, and BM25 needs the whole corpus anyway, so the interface stays small while the work stays inside. |
 | D1 raw data immutable | §1 — this engine writes nothing, not even at boot (§2.6). |
 | D2 derived rebuildable | §4 Phase 2 — the BM25 score is derived from raw statements and recomputed on every run; nothing is cached. |
 | D3 single source of truth | §4.6 — `change_log` is the ledger of record for status history; `items.status` / `close_reason` / `status_origin` are derived caches owned by Engine C. Engine D reads both and reconciles nothing: a divergence between them is observable in `history` but is not repaired here. |
-| D4 outside data untrusted | §5 — the `--query` and `--item` flags are validated in the command body and in the gatekeeper before the core sees them. |
+| D4 outside data untrusted | §4.7, §5 — the `--query` and `--item` flags are validated in the command body and by the gatekeeper before the core sees them. |
 | D5 prefer new optional fields | §3 — no schema change at all. |
 | D6 numbered migrations | §3 — this engine ships no migration and applies none; it reads the version the runner maintains. |
+| P1 pattern solves a concrete problem | §4 Phase 2 — the FTS5 and `rank_bm25` rejections, and the dead-`QueryStorePort` rejection (§4.5), are all "no decorative architecture" calls. |
+| P3 pipeline | §4 — four fixed phases in one direction: Load → Derive (pure) → Render → CLI. Data is passed explicitly between phases; there is no hidden shared state. |
+| P4 ports & adapters | §4.5 — `QueryLookupPort` is the port; `SqliteQueryContext` fits the volatile tool (SQLite) to it. |
 | I1 name by job | §4 Phase 2, §4.7 — `topic_search`, `why`, `history`, `run_why`, `validate_query_item`. |
 | I2 no boolean behaviour flags | §4, §5 — one command per mode; no `--mode` flag, no mode argument in any function, no boolean reaches a function. |
-| I3 max 4 inputs | §4.7 — `run_*(lookup, ...)`, 2 inputs each. |
+| I3 max 4 inputs | §4.7 — `run_current_state(lookup)` takes 1 input; the other three take 2. All are at most 4. |
 | I4 named object, no tuples | §4.5 — every return value is a Pydantic model or a list of them; an empty result is an empty list. |
-| I5 split failure modes | §6 — each code is one failure site (§6 table). |
 | I6 one base error | §6 — `QueryError(EmberError)`. |
 | I7 fail fast, handle at edge | §4.7, §5 — the gatekeeper runs before the core; the CLI is the only catcher. |
-| I8 design error away | §5 — an empty result is a success with `count: 0`, not an error. Only a *missing item* is an error, because the user asked about a specific id. |
+| I8 design error away | §5, §6 — an empty result is a success with `count: 0`, not an error (§6, "An empty result is not an error"). Only a *missing item* is an error, because the user asked about a specific id. |
 | I9 validate at edge | §4.7, §5 — flags validated in the command body, existence and text validated by the gatekeeper; the core trusts them. |
 | I10 stable interface | §4.5 — the row models and the §4 Phase 3 envelope are the contract L3 implements. |
 | I11 function contract | §4.5, §4.7 — every port method lists the code it raises; §6 lists the raising site of every code. |
-| I12 CLI contract | §5 — explicit flags, 0/1/2 exit codes, JSON on stdout, `error: {log_line()}` on stderr. |
+| I12 CLI contract | §5 — explicit flags, 0/1/2 exit codes, JSON on stdout, `error: {log_line()}` on stderr. Exit 2 is Click usage errors only: this engine has no prompt, so no user abort and no `UserAbort` code. I12 needs only a non-zero fail, so this is satisfied, not a deviation. |
 | I13 config at boot | §5 — the DB path is the only configuration and it is read once at boot; there is no env var, no API key and no model name. |
 | I17 stable codes | §6 — `QUERY-000` … `QUERY-005`, contiguous, no gaps, no reuse. |
 | I18 module.function injected | §6 — inherited from `EmberError`; no subclass defines `__init__`, so the location is the raiser. |
 | I19 entity IDs in errors | §6 — `item_id` for a missing item, `version` / `required` for an outdated schema, `table` for a read failure, `db_path` for an unopenable file, `query_length` for an empty query. The path is carried only where the raising function has it. |
-| I20 one-line logging | §5 — `error: {exc.log_line()}` to stderr. QUERY-002 carries a length, not the user's text, so the line cannot be broken by a newline in the query. |
+| I20 one-line logging | §5, §6 — `error: {exc.log_line()}` to stderr. QUERY-002 carries a length, not the user's text (§6), so the line cannot be broken by a newline in the query. |
 | I21 codes + tests | §6 + §7.5 — every code has a named raising site and a test target. |
 | T1 pure core | §4 Phase 2 — no I/O, no clock, no DB, no printing. |
 | T2 push side effects to edges | §4.5 — the DB is the only side effect and it sits behind the port; stdout belongs to the CLI. |
-| T3 prefer fakes | §7.1, §7.6 — `FakeQueryLookup` for the unit tests; the house fakes for the E2E chain. |
-| T4 test pyramid | §7 — ~24 unit, ~10 integration, 6 CLI, 1 E2E, 0 live. |
+| T3 prefer fakes | §7.1, §7.6, §10 — `FakeQueryLookup` (named in §10, step 01) for the unit tests; the house fakes for the E2E chain. |
+| T4 test pyramid | §7 — ~25 unit, ~10 integration, 8 CLI, 1 E2E, 0 live. |
 | T5 test boundaries | §7 — asserts on JSON output and raised codes, not on internals. |
 | T6 good targets | §7 — contract promises, edge cases, expected codes. |
 | T9 architecture test | §7.3 — `ember/query/*.py` must not mention `sqlite3` or `ember.adapters`. |
@@ -604,7 +612,7 @@ All four are read-only and never write to the database. Each prints one JSON doc
 | S1 run alone | §5 — each of the four commands runs the whole path on a fixture DB. |
 | S2 dedicated suite | §10 — `tests/query/`. |
 | S3 document input/output | §4.5 — every row model and the §4 Phase 3 envelope are specified. |
-| S4 explicit data transfer | §3 — the SQLite file is the transfer mechanism. |
+| S4 explicit data transfer | §1, §4.5 — the SQLite file is the transfer mechanism (the input tables in §1, read through the port in §4.5). |
 
 **(b) N/A, with reason:**
 
@@ -622,11 +630,10 @@ All four are read-only and never write to the database. Each prints one JSON doc
 
 | Rule | Deviation | Justification |
 |---|---|---|
-| B6 warning signs | `ember/adapters/sqlite.py` grows a 5th context class plus a boot pair; `ember/cli.py` grows 4 commands. | The file is already the house's single SQLite boundary. The warning sign to watch is **splitting** it, not growing it. The `import` list is long, but each name is a stable public error or row model. |
+| B6 warning signs | `ember/adapters/sqlite.py` grows a 4th context class plus a boot pair; `ember/cli.py` grows 4 commands. | The file is already the house's single SQLite boundary. The warning sign to watch is **splitting** it, not growing it. The `import` list is long, but each name is a stable public error or row model. |
 | D3 single source of truth | `ChangeRow` is a second shape for the `change_log` table. | `ChangeLogEntry` is a **write** model whose `item_id` is non-nullable; Capture writes `proposed` rows with a NULL `item_id` (`sqlite.py:860-875`). The read side needs the nullable shape, so the two differ by design, not by accident. `Link` has no such difference and **is** imported, not copied. |
 | P2 layered | The CLI → core → adapter layering is kept even though P2 says avoid it for one-way flows. | This is a one-way read flow. The layering stays because **T9's architecture test requires the core/adapter seam** — without it, the engine core would import `sqlite3` and the whole boundary would be unenforceable. |
 | I5 split failure modes | `DbOpenFailed` covers several triggers (missing file, not a SQLite file, version read failed, hot journal). | House-consistent: `RELATE-012` and `MAINTAIN-007` do exactly the same. One code per failure *site*, not per prose sub-case. |
 | I19 entity IDs | `SchemaOutdated` carries no path, and `DbOpenFailed` carries no version. | The raising function has what it has: `open_query_database` knows the path, `ensure_query_schema` knows the version. This matches the house's `SchemaOutdated` (`sqlite.py:151-155`). |
-| I12 exit codes | Exit 2 covers Click usage errors only. | There is no prompt in this engine, so there is no user abort and no `UserAbort` code. I12 requires only "non-zero fail"; exit 2 satisfies it. **Recorded for clarity — not a deviation.** |
 | — | The boot path never migrates, so a database behind version 10 is refused rather than upgraded. | §2.6 — a read command that rewrites the ledger is not a read, and L1 rule 1 forbids an AI-callable write. The cost is one command for the user to run first. |
 | — | `topic_search` returns `Closed` items; `current_state` does not. | L1 line 60 states the Closed omission for `current_state` and line 61 does not state it for `topic_search`. The contrast is read as deliberate (§2.2), and the fix is one filter if that reading is wrong. |
