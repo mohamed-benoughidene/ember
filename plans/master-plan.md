@@ -158,6 +158,8 @@ Human approves L1. Then 4 L2 engine master plans: `capture`, `relate`, `maintain
 
 **Ordering constraint on `query`: satisfied.** Engine C's step 03 landed on 2026-10-25, and the L1 amendments it deferred are applied: `close_item` has moved from the AI-callable list (rule 3, line 117) to the human-only list, and `validate_close_item` + `validate_reverse_supersedes` have joined the human-only gatekeepers (lines 81, 83). Engine D's L2 may now be written — line 117 no longer claims an AI-callable `close_item` exists. The Engine D L2 is now written (`plans/engine-query-plan.md`); its four modes are `current_state`, `topic_search`, `why`, `history`.
 
+**V1.x hardening phase:** V1 is built. The next phase is hardening: its L1-level plan is `plans/hardening-plan.md`, which resolves the 16 open tracker issues in 4 clusters. The L2s are declared there (§7).
+
 ## 9. Deferred to L2 (Reminder)
 
 - Embedding table name and metadata table name.
