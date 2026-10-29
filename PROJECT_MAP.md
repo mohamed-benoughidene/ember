@@ -75,7 +75,7 @@ Earlier logo and character images, kept for history.
 - `pyproject.toml`: Package metadata, locked stack deps (click, openai, pydantic; pytest is a dev dep), the optional `relate` extra (`sentence-transformers`), pytest config.
 - `ember/__init__.py`: Package version.
 - `ember/__main__.py`: Runs the CLI via `python -m ember`.
-- `ember/cli.py`: Click CLI. `capture` runs the full 4-phase pipeline; `capture-source` is the Phase 1 standalone command; `relate` runs all 4 Relate phases (Phase 3 AI propose, Phase 3.5 raw-answer save, Phase 4 gatekeeper + confirm + atomic write) and defines `RelateTerminalConfirm` (raises the relate `UserAbort` on end of input); `set-validated` / `clear-validated` write the Assumption flag; `maintain` runs the Maintain sweep (load + derive + atomic write + report; `--dry-run` prints the plan and writes nothing); `close-item` / `set-status` / `reverse-supersedes` are the Maintain human-only mutations (close an item by hand, move it between `Active` and `Challenged`, and undo a `supersedes`); `db-check` prints the read-only database health report (exit 0 healthy, 1 on `DRIFT` / `UNREADABLE`).
+- `ember/cli.py`: Click CLI. `capture` runs the full 4-phase pipeline; `capture-source` is the Phase 1 standalone command; `relate` runs all 4 Relate phases (Phase 3 AI propose, Phase 3.5 raw-answer save, Phase 4 gatekeeper + confirm + atomic write, printing one `relate rejected: CODE | detail` line per gatekeeper rejection before the summary) and defines `RelateTerminalConfirm` (raises the relate `UserAbort` on end of input); `set-validated` / `clear-validated` write the Assumption flag; `maintain` runs the Maintain sweep (load + derive + atomic write + report; `--dry-run` prints the plan and writes nothing); `close-item` / `set-status` / `reverse-supersedes` are the Maintain human-only mutations (close an item by hand, move it between `Active` and `Challenged`, and undo a `supersedes`); `db-check` prints the read-only database health report (exit 0 healthy, 1 on `DRIFT` / `UNREADABLE`).
 - `ember/errors.py`: Base `EmberError`. Carries a stable code and the raising module.function, no secrets.
 - `ember/capture/__init__.py`: Marks the capture engine folder as a package.
 - `ember/capture/errors.py`: Capture error codes `CAPTURE-001` to `CAPTURE-016`.
@@ -86,8 +86,8 @@ Earlier logo and character images, kept for history.
 - `ember/capture/confirm_write.py`: Phase 4 core. The `y/n/e/q` confirm loop and the confirm/commit ports.
 - `ember/relate/__init__.py`: Marks the relate engine folder as a package.
 - `ember/relate/errors.py`: Relate error codes `RELATE-001` to `RELATE-037` (with the documented gaps).
-- `ember/relate/rows.py`: Pydantic row models `NewItem`, `CandidateUniverse`, `Link`, `SignalKind`, `RankedCandidate`, `ChangeLogEntry`, and `Pool`.
-- `ember/relate/link_lookup.py`: The `LinkLookupPort` protocol (item reads, per-triple and batch link reads, 1-hop neighbors, and Step 3 status/cycle reads).
+- `ember/relate/rows.py`: Pydantic row models `NewItem`, `CandidateUniverse`, `Link` (carries the optional `reversed_at` reversal timestamp from migration 011), `SignalKind`, `RankedCandidate`, `ChangeLogEntry`, and `Pool`.
+- `ember/relate/link_lookup.py`: The `LinkLookupPort` protocol (item reads, per-triple and batch link reads, 1-hop neighbors, Step 3 status/cycle reads, and `supersedes_blocking_link` for cycle-rejection detail, raising `RELATE-021`).
 - `ember/relate/compat.py`: The 5 link types and the V1 spec 3.3 type-compatibility table.
 - `ember/relate/load_filter.py`: Relate Phase 1 core. Loads by id (`load_item_candidates`) or latest (`load_latest_candidates`) and builds the candidate universe.
 - `ember/relate/embedder.py`: The `EmbedderPort` protocol (embed, dim, model name).
@@ -95,8 +95,8 @@ Earlier logo and character images, kept for history.
 - `ember/relate/candidate_pool.py`: Relate Phase 2 core. Runs the content, graph, and metadata signals, merges them by highest cosine, and returns a ranked `Pool` with counts and the model-change warning.
 - `ember/relate/ai_response_store.py`: The `AiResponseStorePort` protocol for the Phase 3.5 raw-answer save.
 - `ember/relate/link_proposal.py`: Relate Phase 3 core. The AI port, the strict-JSON boundary parser, the transport-only retry, and the target/source checks.
-- `ember/relate/link_gatekeeper.py`: Relate Phase 4 pure gatekeeper. `validate_add_link` runs the 9 rules and returns `ValidatedLink` or `RejectedLink`.
-- `ember/relate/confirm_write.py`: Relate Phase 4 core. The `y/n/s/q` confirm loop, `format_link_block`, and `ConfirmResult`.
+- `ember/relate/link_gatekeeper.py`: Relate Phase 4 pure gatekeeper. `validate_add_link` runs the 9 rules and returns `ValidatedLink` or `RejectedLink` (rules 8/9 carry a `detail` naming the blocking link id plus endpoints, and the duplicate's reversal state).
+- `ember/relate/confirm_write.py`: Relate Phase 4 core. The `y/n/s/q` confirm loop, `format_link_block`, and `ConfirmResult` (which also carries the gatekeeper `RejectedLink`s for the CLI to print, in `gatekeeper_rejections`).
 - `ember/relate/run_relate.py`: Relate engine-core entry point. `RelatePorts`, `RelateRequest`, `run_relate` tie Phases 3 + 3.5 + 4 together behind ports.
 - `ember/maintain/__init__.py`: Marks the maintain engine folder as a package.
 - `ember/maintain/errors.py`: Maintain error codes `MAINTAIN-000` to `MAINTAIN-012`.
@@ -120,7 +120,7 @@ Earlier logo and character images, kept for history.
 - `ember/query/render.py`: The display layer: `render_current_state` (Challenged first), `render_topic_search`, `render_why`, `render_history`, all `json.dumps` only.
 - `ember/query/run_query.py`: The four engine entry points `run_current_state`, `run_topic_search`, `run_why`, `run_history` (validate, load, derive, render).
 - `ember/adapters/__init__.py`: Marks the adapters layer folder as a package.
-- `ember/adapters/sqlite.py`: SQLite connection, numbered migrations with a pre-migration file backup (`<db>.bak-v<N>` taken once per run when scripts are pending, newest 3 kept; boot call sites wrap a failed copy as RELATE-013 / MAINTAIN-008), `SqliteSourceStore` and `SqliteItemGatekeeper` (writes are the gatekeeper boundary), `SqliteItemContext` (item reads), `SqliteAiResponseStore` (raw AI answers) and `build_ai_response_store`, `SqliteLinkContext` (relate item/link reads plus 1-hop neighbors, and the `item_status` / `supersedes_ancestors` reads), `SqliteLinkStore` (atomic `insert_link_with_log`), `SqliteEmbedderStore` (packed-vector cache; reads `RELATE-037`, writes `RELATE-019`), `build_embedding_store`, `open_relate_database` / `ensure_relate_schema` (relate boot checks, required version 11), `SqliteMaintainContext` (maintain item/link/reversed-link reads), `SqliteMaintainStore` (maintain atomic status + `change_log` writes, plus the reversal pairing write of `links.reversed_at` + the `link_reversed` marker in one transaction from one clock read), `open_maintain_database` / `ensure_maintain_schema` (maintain boot checks, required version 11), and `SqliteQueryContext` (the four query reads) with `open_query_database` / `ensure_query_schema` (read-only boot, required version 10, never migrates).
+- `ember/adapters/sqlite.py`: SQLite connection, numbered migrations with a pre-migration file backup (`<db>.bak-v<N>` taken once per run when scripts are pending, newest 3 kept; boot call sites wrap a failed copy as RELATE-013 / MAINTAIN-008), `SqliteSourceStore` and `SqliteItemGatekeeper` (writes are the gatekeeper boundary), `SqliteItemContext` (item reads), `SqliteAiResponseStore` (raw AI answers) and `build_ai_response_store`, `SqliteLinkContext` (relate item/link reads plus 1-hop neighbors, the `item_status` / `supersedes_ancestors` reads (rules 8 see `reversed_at IS NULL` so a reversed supersedes no longer blocks), and `supersedes_blocking_link` for the cycle-rejection detail (RELATE-021 on read failure)), `SqliteLinkStore` (atomic `insert_link_with_log`), `SqliteEmbedderStore` (packed-vector cache; reads `RELATE-037`, writes `RELATE-019`), `build_embedding_store`, `open_relate_database` / `ensure_relate_schema` (relate boot checks, required version 11), `SqliteMaintainContext` (maintain item/link/reversed-link reads), `SqliteMaintainStore` (maintain atomic status + `change_log` writes, plus the reversal pairing write of `links.reversed_at` + the `link_reversed` marker in one transaction from one clock read), `open_maintain_database` / `ensure_maintain_schema` (maintain boot checks, required version 11), and `SqliteQueryContext` (the four query reads) with `open_query_database` / `ensure_query_schema` (read-only boot, required version 10, never migrates).
 - `ember/adapters/link_replay.py`: `replay_reversals`, the pure D3 replay step (hardening 02): ledger rows in, `dict[int, str | None]` out, highest-id `link_reversed` marker wins, no clock, no I/O. Adapters-only by T9: no engine core imports it.
 - `ember/adapters/db_check.py`: `check_database`, the read-only health check behind `ember db-check` (hardening 02): reads version, floors (relate 11, maintain 11, query 10, capture none), the four enforcement triggers, `link_compat` vs `TYPE_COMPAT`, `PRAGMA foreign_key_check`, and the reversal replay against the live `reversed_at` column. Reports `OK` / `DRIFT` / `UNREADABLE`, never migrates, never writes, no error codes.
 - `ember/adapters/llm.py`: `OpenAiItemProposer` (`ItemProposerPort` on the OpenAI SDK, OpenRouter base URL) and the env-driven factory; `OpenAiLinkProposer` (`LinkProposerPort`) and the `build_link_proposer` factory.
@@ -162,7 +162,7 @@ Earlier logo and character images, kept for history.
 - `tests/test_cli_validated.py`: CLI checks for `set-validated` / `clear-validated` and the Assumption-only rule.
 - `tests/test_capture_live.py`: Live AI round trip. Marked `live`, so a plain pytest run never calls the API; run it with `./.venv/bin/python -m pytest -m live`.
 - `tests/test_relate_live.py`: Live AI round trip for the relate link proposer. Marked `live`, so a plain pytest run never calls the API; run it with `./.venv/bin/python -m pytest -m live`.
-- `tests/test_architecture.py`: Asserts the capture, relate, maintain, and query engine cores never import an adapter.
+- `tests/test_architecture.py`: Asserts the capture, relate, maintain, and query engine cores never import an adapter, and that no engine core module references the `link_replay` replay step (hardening 03).
 - `tests/test_relate_db_open.py`: Relate DB open checks: missing/corrupt file, migration fail, schema version 5/8/11 gate, and all migrations applied.
 - `tests/test_relate_read_failures.py`: Every `SqliteLinkContext` read maps a `sqlite3` failure to `RELATE-016`; also covers `item_status` and `supersedes_ancestors`.
 - `tests/test_migration_runner.py`: Each migration and its version bump are one transaction; failures roll back.
@@ -195,12 +195,13 @@ Earlier logo and character images, kept for history.
 - `tests/relate/test_embedding_store_integration.py`: `SqliteEmbedderStore` tests on a real temp DB: float32 round-trip, model names, wipe, read (`RELATE-037`) / write (`RELATE-019`) failures.
 - `tests/relate/test_neighbors_integration.py`: `SqliteLinkContext.neighbors_of` tests: Confirmed both directions, Rejected excluded, 1-hop, failure code.
 - `tests/relate/test_embedder_adapter_unit.py`: `SentenceTransformerEmbedder` and `validate_embedder_config` tests with a fake model module; no network, no real model.
-- `tests/relate/test_relate_cli.py`: `ember relate` CLI checks (boot validation, Phase 2 output, warning to stderr) and exit codes.
-- `tests/relate/test_link_gatekeeper_unit.py`: Phase 4 unit tests for the 9 gatekeeper rules.
+- `tests/relate/test_relate_cli.py`: `ember relate` CLI checks (boot validation, Phase 2 output, warning to stderr, one `relate rejected: CODE | detail` line per gatekeeper rejection, accepted corrective inverse after a reversal) and exit codes.
+- `tests/relate/test_link_gatekeeper_unit.py`: Phase 4 unit tests for the 9 gatekeeper rules, including the rules 8/9 rejection details (blocking link id + endpoints, reversed-duplicate state) on the fake port.
+- `tests/relate/test_blocking_link_integration.py`: `SqliteLinkContext.supersedes_blocking_link` tests (hardening 03) on a real temp DB: first connecting edge in id order, both walk directions, reversed and Rejected rows never block, no-path `None`, and `RELATE-021` on a read failure.
 - `tests/relate/test_link_proposal_unit.py`: Phase 3 unit tests for parse, retry and the target/source checks.
 - `tests/relate/test_run_relate_unit.py`: `run_relate` unit tests on fake ports.
 - `tests/relate/test_confirm_write_unit.py`: Phase 4 confirm-loop unit tests.
-- `tests/relate/test_relate_integration.py`: Phases 3 + 3.5 + 4 end-to-end on a real SQLite temp DB.
+- `tests/relate/test_relate_integration.py`: Phases 3 + 3.5 + 4 end-to-end on a real SQLite temp DB, plus the corrective-inverse test (hardening 03): after `apply_reversal`, the inverse supersedes passes rule 8 and commits, and the reversed triple stays blocked as `RELATE-009` naming its reversed state.
 - `tests/relate/test_link_proposer_adapter_unit.py`: `OpenAiLinkProposer` adapter tests on a fake client, no network.
 
 ### AI Answer Fixtures (`tests/fixtures/ai_responses/`)
@@ -236,7 +237,7 @@ Saved AI answers for parser tests. Each pair is `case_NN.raw_text.txt` (the sour
 - `items`: Confirmed typed items. Columns `id`, `type`, `statement`, `source_id` (foreign key to `sources.id`), `status`, `created_at`, `validated` (set only on Assumption rows), `rationale` (Decision text), `source` (Finding evidence text), `close_reason` (why closed; one of 5 reasons, NULL when open), `status_origin` (`derived` or `manual`).
 - `change_log`: Append-only ledger. Columns `id`, `item_id`, `link_id` (foreign key to `links.id`), `field_changed`, `old_value`, `new_value`, `timestamp`, `trigger_cause`. Maintain writes `field_changed` values `status`, `status_origin`, and `link_reversed`.
 - `ai_responses`: Raw AI answers, stored verbatim. Columns `id`, `source_id` (nullable foreign key to `sources.id`), `item_id` (nullable foreign key to `items.id`), `response_text`, `timestamp`.
-- `links`: Typed directional edges. Columns `id`, `source_item_id`, `target_item_id`, `link_type`, `status` (`Confirmed` or `Rejected`), `created_at`. Unique per source/target/type.
+- `links`: Typed directional edges. Columns `id`, `source_item_id`, `target_item_id`, `link_type`, `status` (`Confirmed` or `Rejected`), `created_at`, and `reversed_at` (NULL live, non-NULL reversal timestamp, migration 011; written only by maintain's paired reversal write). Unique per source/target/type.
 - `item_embeddings`: Rebuildable vector cache. Columns `item_id`, `vector`, `model_name`, `embedded_at`.
 
 ## Empty Folders

@@ -83,4 +83,36 @@ After this step: the module runs, the relate suite is green, and the full suite 
 
 ## 9. Build Notes
 
-(to be filled after implementation)
+Built on `feat/hardening` (no push). All six §2 steps landed as planned. T3/T5 honored: the cycle decision still runs on `supersedes_ancestors`, `supersedes_blocking_link` feeds `detail` text only.
+
+Test counts: before **632 passed, 4 deselected in 3.17s**, after **646 passed, 4 deselected in 2.82s** (14 new tests, all watched red first). New test files: `tests/relate/test_blocking_link_integration.py` (5 tests). Extended: `test_link_gatekeeper_unit.py` (+4: the three L2 §13 named tests plus `detail is None outside rules 8/9`), `test_run_relate_unit.py` (+1), `test_relate_integration.py` (+1 corrective inverse through the real maintain store + sqlite ports), `test_relate_cli.py` (+2), `tests/test_architecture.py` (+1 `test_engine_core_does_not_reference_link_replay`, which passed on its first run because no core named `link_replay` before — a guard test, no red state possible).
+
+CLI check (§5, real run, faked AI/embedder per the CLI-test route):
+
+```
+=== case 1: relate --item 11 (live supersedes chain 11 -> 33 -> 22) ===
+relate rejected: RELATE-028 | blocked by link 2 (33 -> 22)
+relate rejected: RELATE-028 | blocked by link 1 (11 -> 33)
+accepted: 0, rejected: 2, skipped: 0, aborted: false
+exit code: 0
+
+=== case 2 step 1: reverse-supersedes --item 2 --link 1 ===
+exit code: 0
+=== case 2 step 2: relate --item 2 (corrective inverse 2 -> supersedes -> 1) ===
+- link_id: 2
+  source_item_id: 2
+  ...
+accepted: 1, rejected: 0, skipped: 0, aborted: false
+exit code: 0
+```
+
+Deviations and deltas (plan intent kept, shapes recorded):
+
+1. **Exit code (§5's "Exit 1" sketch) not implemented.** The pinned CLI contract (engine-relate-plan and the `relate` docstring) is exit 0 when every proposal is handled, 1 on a phase error, 2 on quit. A gatekeeper rejection is a handled proposal (counted, not raised), so the run above exits 0. The coordinator's check pins only exit 0 for the accepted corrective inverse, which holds.
+2. **The rejection objects ride `ConfirmResult.gatekeeper_rejections`** (new optional field in `confirm_write.py`, default empty, I10-conformant) because `run_relate` returns `ConfirmResult`. `_gatekeep` now returns `list[RejectedLink]` and the CLI prints one `relate rejected: CODE | detail` line per rejection, exactly §2.5's print path.
+3. **The duplicate CLI proposal is caught by rule 8, not rule 9.** In the seeded chain 11 -> 33 -> 22, re-proposing 11 -> 33 is both a duplicate and a cycle hit (33 is in 11's ancestors), and rule 8 runs first. So the CLI fixture prints two RELATE-028 lines and none for RELATE-009. Rule-9 detail coverage lives in the gatekeeper unit test and the integration test (duplicate reversed triple -> `link {id} exists (reversed)`), as §4 planned.
+4. **Fake parity:** `FakeLinkLookup.supersedes_ancestors` gained the same `reversed_at is None` filter the adapter has (needed for `test_reversed_supersedes_not_cycle` to exercise rule 8 on the fake). Fake links carry ids here because `detail` names the blocking id.
+5. **Integration test ordering:** the reversed-duplicate check must run BEFORE the corrective inverse is written, otherwise the corrective edge (2 -> 1) makes the duplicate a genuine 2-cycle and rule 8 (correctly) fires before rule 9.
+6. **`supersedes_ancestors` keeps RELATE-016** at its site per §3 (`tests/test_relate_read_failures.py` still green). The new walk raises RELATE-021 like `neighbors_of`, with `source_id`/`target_id` context. BFS in id order (`ORDER BY id` per node, edges grouped by source) implements the §14 tie-break: first edge in id order.
+
+Untouched (per the ruling and scope): the UNIQUE triple, rules 8/9 decision logic, all write paths, migration/scripts, db-check (its tests still pass), maintain human actions, topic/history filters.
