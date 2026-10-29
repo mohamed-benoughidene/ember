@@ -823,3 +823,117 @@ The rule only READS timestamps; it writes no schema and backfills nothing. Every
 | T10 painful test setup | The atomicity test needs FK enforcement ON, so it must use `open_maintain_database` / `_connect`, not a bare `sqlite3.connect`. | Documented as a trap in §7.2, with the reason. |
 | — | The sweep writes `items` + `change_log` with **no gatekeeper script**. | **Phase 2's `merge_and_filter` IS the gatekeeper for machine writes** — it is the deterministic rule set the spec calls "gatekeeper scripts" (L1:81). Stated here because L1:116 ("All mutations pass gatekeeper validation scripts") would otherwise read as violated. |
 | — | `close_item` does **not** prompt. Spec 3.7:126 says "User confirms." | The human invoking `ember close-item` **is** the confirmation. An L1 amendment records this (§11). |
+
+## 14. V1.x Amendment (hardening phase): AI-proposed closes, pre-filtered (ticket 13, #16)
+
+Implements the Decision line of `plans/hardening-decisions.md` #16, pinned verbatim: **"build, pre-filtered (maintainer, 2026-10-29). The sweep pre-filters stale candidates with deterministic rules (example: Active Questions with an old confirmed answers link), the AI sees only that shortlist (typically 0-3 cards, never a full-corpus scan), proposes close with reason, the human confirms through the existing validate path, one ledger row. Maintain gains its first AI port."** L3: `plans/steps/hardening/07-ai-close-proposals.md`. Ticket: `.scratch/hardening/issues/13-ai-close-proposals.md` (closes #16). Blocked by ticket 12 (step 06) — sequential, one maintain module moving at a time. No migration.
+
+### 14.1 Amended lines (text this section replaces; not yet applied)
+
+- **Header (line 5)** — from "Maintain adds **no dependency** — no AI, no embedder, no network (first engine with no live tier)." to: "Maintain adds **one AI proposal port** (§14): no embedder, no new package. The AI proposes only; every write is a human-confirmed path."
+- **§4.0** — its claim "Maintain calls no AI" narrows to: "**Maintain's four derived triggers call no AI** (deterministic rules, spec 3.5 unchanged). Maintain gains ONE AI surface, the §14 pre-filtered close proposal: the AI judges a bounded shortlist and proposes; the human confirms; `validate_close_item` writes. The spec-3.7:126 'User confirms' for AI proposals is satisfied by the y/n confirm loop, not by invocation alone."
+- **§4 pipeline** — gains a **Phase 5** box after Phase 4: `Phase 5: Propose (AI on the stale shortlist, human confirm, write via the human path)`. It is a separate entry point (`run_close_proposals`), NOT merged into `run_sweep` — see 14.4 for the placement ruling.
+- **§5 "No environment variables"** — amended: "`ember maintain` reads the AI env vars ONLY when its stale shortlist is non-empty: `EMBER_AI_API_KEY` (or `OPENROUTER_API_KEY`), `EMBER_AI_MODEL`, `EMBER_AI_BASE_URL` (same keys as capture/relate). An empty shortlist needs no key and builds no adapter."
+- **§5 exit codes** — the sentence "Maintain has **no user-abort exit 2** — there is no confirm loop" is amended: "the four human commands keep no abort exit; `ember maintain` exits **2 when the close-proposal confirm loop aborts** (a `q` answer or end of input), exactly like `capture`/`relate`."
+- **§7.7 Live** — from "**None.**" to "**None required, one available.** The AI tier means a live check is possible; none ships. Tests use fixtures (T7)."
+- **§8** — the bullet "AI-proposed `close_item` (V1 uses a human-invoked command)" is closed by this amendment; `ember close-item` itself is untouched.
+- **§Z** — rows **D8, I16, T7, I15** move from (b) "no AI call" to (a), satisfied by this section; **T8** stays (b): no benchmark set ships this step ("no path to measure yet, deferred until real proposals accumulate").
+
+### 14.2 The pre-filter (pinned)
+
+Pure, free, deterministic: `stale_close_candidates(snapshot: MaintainSnapshot, *, now: datetime) -> StaleShortlist` in `ember/maintain/close_proposer.py`. No clock, no I/O, no second read (T1) — `now` is injected as a parameter. **One rule, not two** (P1):
+
+> A candidate is an item that is `type == "Question"`, `status == "Active"`, and whose **newest** Confirmed `answers` link (by `links.created_at`) is confirmed at least `STALE_DAYS` before `now`.
+
+Constants, pinned: `STALE_DAYS = 30` and `MAX_CLOSE_PROPOSALS = 10` (both in `close_proposer.py`).
+
+- **`STALE_DAYS = 30`** — the repo's only existing window precedent (`candidate_pool.py` `METADATA_WINDOW`, ±30 days); the #16 trigger text (≥3 real closes/week, decisions brief) makes any longer window noise at current scale.
+- **Cap** — the shortlist takes the first `MAX_CLOSE_PROPOSALS` candidates by `item_id` ascending and sets `truncated=True` when it had to drop any; the CLI prints one truncation note. No path can trigger per-item calls across the whole corpus.
+- **Fail-closed totality:** a `created_at` that cannot be parsed (`fromisoformat`), or every comparison failure, means **not a candidate** — the rule never raises on a snapshot (the step-06 totality precedent). Today's store timestamps are UTC `isoformat()` with `+00:00` (`sqlite.py:335-336`), lexicographically and chronologically sortable.
+- **Why only ONE rule, and why this one (verified against real reads):** Maintain's snapshot (`SqliteMaintainContext.list_items`, `:712`) carries **no `items.created_at`** — any "age of the item" rule is NOT computable from existing reads without a schema read change. The only age data the engine already holds is `links.created_at` (`list_confirmed_links`, `:739`). The second rule is pinned to NONE for exactly that reason.
+- **Honest scope note (contradiction found and ruled, not hidden):** `derive.py` rule 2 already closes EVERY non-shielded Question with a Confirmed `answers` link (`answered`, `:190-198`) — so a literal reading of the decision's example ("Active Questions with an old confirmed answers link") yields candidates **only among `status_origin='manual'` (shielded) questions**, whose answers evidence predates their clear and lost the §13.4 tie. That is the real shortlist this feature serves: the cards a manual clear deliberately held open, re-examined when their answer went stale. The rule is pinned AS the decision line states it; the emergence of the shield-only scope is a documented consequence, and an accepted close on a shielded item goes through validate_close_item's exempt path — the explicit human `y` outranks the shield (rule 6, same mechanism as today's close-item). This is also why Phase 5 reads a **fresh post-apply snapshot** (14.4): without that, the same run would propose closing a card the sweep itself already closed `answered`, in one run, twice.
+
+### 14.3 The port + adapter (shapes at the boundary, S3)
+
+**Engine core: `ember/maintain/close_proposer.py`** (new module; mirrors `link_proposal.py`'s stage layout; imports stdlib + pydantic only — T9 architecture test already globs `ember/maintain/*.py`):
+
+- `STALE_DAYS = 30`, `MAX_CLOSE_PROPOSALS = 10`.
+- `StaleCandidate(item_id: int, item_type: str, statement: str | None, newest_answers_link_id: int, answered_by_item_id: int, newest_answer_created_at: str)` — the display and prompt slice of one candidate. **`ItemState` gains `statement: str | None = None`** (additive, I10; `SqliteMaintainContext.list_items` SELECT gains the column at `:721`) — without the statement the AI judges a card it cannot see, so the Phase-1 read widens once.
+- `StaleShortlist(candidates: list[StaleCandidate], truncated: bool)` (I4: named, never a bare list).
+- `stale_close_candidates(snapshot, *, now: datetime) -> StaleShortlist` (pure).
+- `CloseProposal(reason: str, confidence: float, rationale: str | None = None)` — `reason` is bounded to `HUMAN_SETTABLE_REASONS` (`{invalidated, expired}`, **imported as the existing constant from `ember/maintain/human_actions.py`** — D3: one fact, one place; the AI can never propose a reason the validate path would refuse because the parser checks the same frozenset).
+- `CloseProposalResponse(raw_response: str, proposal: CloseProposal | None)` — `proposal is None` = the model declines to propose (close=false).
+- `CloseProposerPort` (typing.Protocol): `propose_close(self, candidate: StaleCandidate) -> CloseProposalResponse`. Raise `MAINTAIN-018` on a call failure and `MAINTAIN-019` on an unreadable answer (the adapter checks the raw answer at this boundary, I9 — the capture pattern).
+- `SYSTEM_PROMPT` (pinned text in the step plan §2) — proposes ONLY `{invalidated, expired}` or decline; strict JSON object, no fence.
+- `parse_close_proposal(ai_response: str) -> CloseProposal | None` — whole answer must be a JSON object; `close` must be boolean; false → `None`; true requires `reason` in the set, `confidence` in [0.0, 1.0], `rationale` string-or-null; any deviation raises `MAINTAIN-019`.
+- `propose_close_with_retry(proposer, *, candidate) -> CloseProposalResponse` — **retry ONCE on `CloseAiCallFailed` OR `CloseAiSchemaInvalid`**; the second failure propagates. Divergence from relate pinned deliberately: relate does not retry a schema failure (RELATE-033), but ticket 13's checklist requires "empty/failed AI response retries per the pinned policy" — an empty answer is a schema failure — so maintain retries both, following capture's `propose_items` precedent (`AiError` base retried, `item_proposal.py:172-185`).
+
+**Adapter: `ember/adapters/llm.py`** gains a third section (the file already hosts both other proposers): `OpenAiCloseProposer` and `build_close_proposer(env=None) -> OpenAiCloseProposer`. Same client spine as `build_link_proposer`: key from `EMBER_AI_API_KEY`/`OPENROUTER_API_KEY` (missing → **`MAINTAIN-020 CloseAiConfigMissing`**, fail fast), `base_url=EMBER_AI_BASE_URL` default `DEFAULT_BASE_URL` (OpenRouter), `timeout=REQUEST_TIMEOUT_SECONDS` (60.0), `max_retries=0` (the ONE retry is the engine's), `temperature=0.0`, default model `DEFAULT_MODEL`. Raw answer parsed by `parse_close_proposal` inside the adapter (I9 boundary, capture shape). The adapter imports the maintain error classes from `ember.maintain.errors`; names are close-prefixed so **no alias needed** anywhere (verified against every name in `ember/relate/errors.py` and `ember/capture/errors.py`).
+
+### 14.4 Loop mechanics + placement (pinned)
+
+- **Placement decision (author's, replacing the brief's parenthetical "between derive and apply"):** Phase 5 runs the pre-filter on a **fresh post-apply snapshot** and is a separate entry point — `run_sweep` is untouched (zero churn to every existing sweep test; I2: no mode switch). Verified reason: `derive` rule 2 closes stale answered questions in the same run; a pre-apply propose phase would race its own apply, double-write a card, or need exclusion logic re-deriving rule 2. Fresh load gives the exclusion for free (a just-closed card is `Closed`, not `Active`) at the cost of one extra read of tables the engine already owns. Dry-run honesty: `--dry-run` computes the shortlist PRE-apply, so it may name a question the real run would machine-close `answered` an instant later. The dry-run list is deliberately the unfiltered-by-apply view (the human sees every candidate before committing to a run); the real run's list is the post-apply view. Pinned here so the two outputs are never confused. (Review fix 3.)
+
+- `@dataclass(frozen=True) class CloseProposalPorts(MaintainPorts)`: adds `close_proposer: CloseProposerPort`, `ai_response_store: AiResponseStorePort`, `confirm: ConfirmPort`. (**`AiResponseStorePort` is imported from `ember.relate.ai_response_store`** — public port, one shape (D3, the `Link`-rows precedent, documented B2); its `save(*, item_id=..., raw_response=...)` signature verified at `ai_response_store.py:13`.)
+- `run_close_proposals(ports: CloseProposalPorts, now: datetime) -> ProposalOutcome` in `run_maintain.py` — 2 inputs (I3). Owns the loop end-to-end (B5: deep module): fresh `_load` → `stale_close_candidates` → per candidate (≤10): one AI call → **save raw verbatim keyed by `item_id` BEFORE anything is judged** (D8, run_relate's `_save_raw_response` pattern; mapping: `ValueError` propagates raw because the owner pair is engine-constructed — a code bug crashes loudly, I5; storage failure → `MAINTAIN-021`) → proposal None → decline, counted; proposal → display block → `confirm.ask(PROMPT)`.
+- `ConfirmPort` is a maintain-local protocol (ask/write), the third sibling of capture's and relate's (house pattern); `parse_choice`-style answers `y/yes, n/no, q/quit`; unknown input re-asks; end of input raises **`MAINTAIN-022 UserAbort`** → `aborted=True`.
+- **`y` (accept) = the existing human close command path, zero new write code:** `run_close_item(MaintainPorts(lookup, store), MaintainRequest(item_id=<candidate>, reason=<proposed reason>))`. That single call reuses the whole existing chain — `validate_close_item` (its `MAINTAIN-001/002/003/004` checks, the dependent fan-out, `merge_and_filter` with `exempt=primary`, the §13 timestamp shield) and `SqliteMaintainStore.apply_status_changes` (one transaction, rollback on failure). **One ledger row** per accepted close primary, `trigger_cause='user_closed'` — the existing vocabulary row, no §4.6 change. The loop prints the returned `format_report` lines through the port's `write` (the CLI injects the terminal port — no `print` in the core).
+- **`n` (reject) = logged only in the outcome, no DB write at all.** DECIDED (the brief's open question, decided simply): rejected proposals write **no** ledger row. Relate's `n` writes a rejected LINK row because the insert itself blocks re-proposing; a rejected close has nothing to block — only `ai_responses` records that the proposal happened (D8), and the summary line counts it. No new `trigger_cause` string is minted (it would be ledger vocabulary for a non-event).
+- **`q` (quit)** stops the loop; remaining candidates get no AI call and nothing is written; `aborted=True`; exit 2 (the §5 amendment).
+- **Preview display** (pure helper `format_proposal_block` in `close_proposer.py`): `Proposal i/N: item <id> [Question] <statement>` / `  newest answers link <id>, confirmed <timestamp>` / `  reason: <reason>, confidence <c>` / `  rationale: <r or '-'>`, then the prompt `[y]es / [n]o / [q]uit`. A decline prints the preview header plus `  no close proposed`. Exact blocks pinned in the step plan §6.
+- `ProposalOutcome(stale: int, proposed: int, accepted: int, rejected: int, aborted: bool = False)` (I4) lives in `close_proposer.py`.
+- **Dry-run (CLI-only, I2):** `--dry-run` loads, derives, prints the normal report, then loads the fresh snapshot, runs the free pre-filter, prints one line per candidate and the outcome line — **no adapter is built, no key is needed, no AI call, nothing written, exit 0.** Non-dry-run with an **empty** shortlist: the normal report plus `stale: 0, proposed: 0, accepted: 0, rejected: 0, aborted: false`, no key, no call (proven by test).
+- **The unattended-run cost is stated, not hedged:** the confirm loop always runs when a proposal exists (capture precedent, and CliRunner tests must be able to drive it). An unattended `ember maintain` over a non-empty shortlist makes the AI calls (bounded by the cap), then hits EOF → `aborted=True`, exit 2, with all raw answers stored (D8) and nothing closed. No `--no-ai` flag ships this step (out of scope; the shortlist cap bounds waste).
+
+### 14.5 D8 keying + what lands where
+
+One fact, one place (D3): the **proposal evidence** is the verbatim raw answer in `ai_responses` (`item_id` keyed; migration 009's `item_id REFERENCES items(id)` + exactly-one-of owner check verified in `save`, `sqlite.py:1439-1463`); the **close itself** is the existing `user_closed` ledger rows written by the reused validate path; the **counts** live only in the run's stdout. Nothing new is written for a decline or a reject. D8/I16 therefore hold for Maintain exactly as for capture/relate: verbatim, stored before judging, schema-checked at the boundary.
+
+### 14.6 Floors, migration, cost
+
+- **No migration. No floor move.** The engine reads its own tables plus one column it does not yet select (`items.statement`) and writes through entirely existing paths. `ember db-check` unchanged; `tests/maintain/test_maintain_boot.py`'s `required == 11` pin does not move (verified: nobody bumped it for §13, nobody bumps it here). Schema version at build time = 12 (set by step 05a).
+- **Cost, pinned against L1 §0 numbers:** one call per candidate, ≤ `MAX_CLOSE_PROPOSALS` calls per sweep, prompt far below capture's (no 50-item context window — one question + one link line), on `claude-haiku-5.5` (~$0.0003 per full capture run). Worst case per sweep is an order of magnitude below one capture run; the #16 trigger volume makes the typical case zero calls. Empty shortlist = zero cost, proven by test.
+
+### 14.7 The L1 amendments (word-for-word; the step plan owns the build-time edit)
+
+Applied to `plans/master-plan.md` ONLY at build time by step 07 — not edited now.
+
+- **Rule 3, line 117** — from:
+
+  `3. AI-callable mutations (each requires user confirm): `add_item`, `add_link`.`
+
+  to:
+
+  `3. AI-callable mutations (each requires user confirm): `add_item`, `add_link`, `propose_close`. A `propose_close` proposal writes nothing: the human confirms it in `ember maintain`'s confirm loop and the close is written only through the human validate path (`validate_close_item`).`
+
+- **§5, line 131** — from:
+
+  `AI-proposed `close_item` deferred to V1.x (issue #16). V1 ships `ember close-item` human-invoked; the human running the command is the confirmation.`
+
+  to:
+
+  `AI-proposed `close_item` (issue #16) ships pre-filtered (V1.x, 2026-10-29): a deterministic pre-filter names stale candidates (capped at 10), the AI proposes a close with reason `invalidated` or `expired` for that shortlist only, and the human confirms through the existing `ember close-item` validate path (`validate_close_item`) inside `ember maintain`'s confirm loop. The AI never writes a close itself; raw answers are stored in `ai_responses` keyed by `item_id` (D8).`
+
+- **Lines intentionally NOT amended:** §3 line 81 ("For AI mutations: `validate_add_item`, `validate_add_link`.") stays — `propose_close` produces no mutation; its only write rides `validate_close_item`, already listed under human-only (line 83). §8's step-03 note stays true: it says `close_item` the *write* left the AI-callable list, which remains correct (`propose_close` is the new AI-callable operation; the write is still human-only). Rationale per §11.1: L1 §4 is the global-invariant list; a rule-3 line listing fewer AI-callable operations than exist poisons later plans (the §11.1 precedent, applied in reverse).
+
+### 14.8 Errors (continue family from MAINTAIN-017)
+
+`ember/maintain/errors.py`. Five codes, contiguous, no reserved-but-unused numbers (I17). Name audit: the four close-prefixed names collide with nothing in `ember/capture/errors.py`, `ember/relate/errors.py`, or the existing `sqlite.py` maintain aliases (verified) — **`UserAbort` deliberately reuses the shared name** (capture CAPTURE-014, relate RELATE-031): the CLI imports it aliased (`MaintainUserAbort`, the §6 house pattern, since capture's `UserAbort` is already imported there); nothing else in the codebase imports it, so no other alias exists.
+
+| Code | Name | Trigger |
+|---|---|---|
+| `MAINTAIN-018` | `CloseAiCallFailed` | the provider call failed (adapter), retried once, second failure propagates. Carries `item_id` + provider status. |
+| `MAINTAIN-019` | `CloseAiSchemaInvalid` | the answer is not strict JSON / not an object / non-boolean close / reason outside `{invalidated, expired}` / confidence out of range / rationale wrong type — retried once, second failure propagates. Carries `item_id`. |
+| `MAINTAIN-020` | `CloseAiConfigMissing` | a non-empty shortlist needs the AI but no API key is configured (`build_close_proposer`, fail fast). Carries nothing but the message (no secrets, I19). |
+| `MAINTAIN-021` | `CloseAiStoreFailed` | the `ai_responses` INSERT failed (storage error mapped at the engine boundary, roll-nothing: the save is single-statement autocommitted per `save()`). Carries `item_id`. |
+| `MAINTAIN-022` | `UserAbort` | end of input in the confirm loop → `aborted=True`, exit 2 (never printed as an error). |
+
+Error-code audit at write time: `git log -p ember/maintain/errors.py` is the receipt that 018-022 are the next free numbers (§12.8 precedent). `MAINTAIN-010/011/012/001/002/003/004` all reused honestly on the accept path (same failures, same codes).
+
+### 14.9 T7 fixture policy
+
+Raw AI answers are **recorded fixtures**, never live calls in tests: `tests/fixtures/maintain/close_proposal_*.json` (valid proposal, decline, bad reason, malformed JSON, empty). Parser and retry tests assert schema/types and raised codes, never prose (T7). The CLI check (S1) runs without any API key: the proposers are fakes injected at the same seam tests use (the `build_close_proposer` import in `ember/cli.py`, monkeypatched — the `tests/test_cli_capture.py` runner pattern); the empty-shortlist case also runs as a real-binary `.venv/bin/ember` run proving NO adapter construction happens without a key.
+
+### 14.10 §Z — Constitution compliance (this amendment)
+
+**(a) Touched & satisfied:** B3 (§14.3 — provider SDK behind the port, engine imports no adapter; `AiResponseStorePort` is a public interface, B2) · B4 (the volatile judgment hides inside `close_proposer.py` + the adapter) · B5/B1 (one module, one job: AI-proposed closes; one deep entry point over the shared pipeline) · D1 (raw answers verbatim, D8) · D3 (reasons read from `HUMAN_SETTABLE_REASONS`, one frozenset; proposal evidence in `ai_responses`, close evidence in `change_log`) · D4/I9 (parse at the boundary, twice — once inside the adapter, once in `parse_close_proposal`) · D5/I10 (additive only: `ItemState.statement` default None, three optional port fields on a subclass, no renames, no schema) · P3 (load → derive → apply → report → propose) · P4 (new port + adapter) · I1/I4 (`StaleShortlist`, `ProposalOutcome`) · I3 (`run_close_proposals` = 2 inputs) · I2 (separate entry point; dry-run never crosses a function) · I15 (timeout + the one retry + port) · I16 (schema check + verbatim log) · I17/I21 (§14.8 codes + per-code tests) · T1 (pre-filter and parser pure, `now` injected) · T2 (side effects at the adapter edge) · T3 (fakes, no mocks) · T7 (§14.9). **(b) Untouched:** D6/D7 (no migration, no production data), T8 (no benchmark this step), B6 watch (`run_maintain.py` grows a second orchestrator — the warning sign is splitting, not growing). **(c) Knowingly deviated:** §Z's old (b) rows for D8/I16/T7/I15 are superseded by (a) — the engine's first live tier, ruled with the pre-filter cap as the cost argument. P1 held: only the ruled scope (one rule, one cap, one port, one loop), nothing else.
