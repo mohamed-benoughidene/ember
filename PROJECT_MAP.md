@@ -258,6 +258,9 @@ Saved AI answers for parser tests. Each pair is `case_NN.raw_text.txt` (the sour
 - `tests/fixtures/query/bm25_golden.json`: The hand-computed BM25 corpus, query and expected scores, with the derivation notes.
 - `tests/fixtures/query/no_flags_golden.json`: Raw stdout captured from the pre-amendment build (item filtering), for the three no-flag commands (`topic-search --query sqlite`, `history`, `history --item 1`) on a temp v10 DB seeded with fixed clock stamps and named ids. The history lines are asserted by `tests/query/test_history_window_cli.py` (hardening 07), the topic-search line by `tests/query/test_topic_filter_cli.py` (hardening 06).
 
+## Scripts (`scripts/`)
+- `scripts/measure_model_change.py`: Throwaway measurement asset for issue #12 (not product code). Seeds a synthetic database through the real schema and `tests/fakes.py` helpers, builds the real `bge-base-en-v1.5` embedder, warms the relate Phase-2 vector cache, re-points the cached model name at `all-MiniLM-L6-v2`, then times the real wipe + re-encode + total Phase-2 wall clock with `time.perf_counter`. Args `--items N` (default 500), `--db PATH` (default under `/tmp/opencode/measure14/`). Prints a dated number block the maintainer records on the issue; asserts `MODEL_CHANGED_LINE` on stderr; deletes its throwaway database on every path.
+
 ## Database Tables (SQLite)
 - `schema_version`: Holds the applied migration number.
 - `sources`: Immutable raw input texts. Columns `id`, `title`, `full_text`, `timestamp`, `content_hash` (unique, the dedup key).
