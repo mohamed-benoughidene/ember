@@ -6,7 +6,7 @@ import pytest
 
 from ember.maintain.derive import derive_status_changes, merge_and_filter
 from ember.maintain.rows import ItemState, MaintainSnapshot, StatusChange
-from ember.relate.rows import Link
+from ember.relate.rows import ChangeLogEntry, Link
 from tests.maintain.fakes import FakeMaintainLookup
 
 FIXED_TIME = "2026-01-01T00:00:00+00:00"
@@ -34,6 +34,7 @@ def _link(
     target_id: int,
     link_type: str,
     status: str = "Confirmed",
+    created_at: str = FIXED_TIME,
 ) -> Link:
     return Link(
         id=link_id,
@@ -41,7 +42,7 @@ def _link(
         target_item_id=target_id,
         link_type=link_type,
         status=status,
-        created_at=FIXED_TIME,
+        created_at=created_at,
     )
 
 
@@ -296,6 +297,9 @@ def test_escalation_only_never_recloses_and_keeps_human_reason() -> None:
 
 
 def test_manual_shield_skips_derived_change() -> None:
+    # Still passes byte-for-byte under the timestamp-scoped shield: the
+    # snapshot carries no `shield_log`, so this is the fail-closed branch
+    # (no clear row visible), not the old blanket veto.
     snapshot = _snap(
         [
             _item(1, "Decision"),
@@ -347,3 +351,249 @@ def test_exempt_change_bypasses_ladder_and_manual_shield() -> None:
 
     assert merge_and_filter([primary], snapshot) == []
     assert merge_and_filter([primary], snapshot, exempt=primary) == [primary]
+
+
+# --- Timestamp-scoped manual shield (L2 maintain plan §13, step 06) ---
+#
+# The snapshot's default `shield_log` is empty, so the old blanket-shield
+# tests above now exercise the fail-closed branch (no clear row visible).
+
+T1 = "2026-01-01T00:00:00+00:00"
+T2 = "2027-01-01T00:00:00+00:00"
+T3 = "2028-01-01T00:00:00+00:00"
+
+
+def _snap_shielded(
+    items: list[ItemState],
+    links: list[Link] | None = None,
+    shield_log: list[ChangeLogEntry] | None = None,
+) -> MaintainSnapshot:
+    """A snapshot that carries the Phase-1 `shield_log` ledger slice."""
+    lookup = FakeMaintainLookup(
+        items=items, links=links, shield_log=shield_log
+    )
+    return MaintainSnapshot(
+        items=lookup.list_items(),
+        links=lookup.list_confirmed_links(),
+        reversed_link_ids=lookup.list_reversed_link_ids(),
+        shield_log=lookup.list_shield_log(),
+    )
+
+
+def _clear_row(item_id: int, timestamp: str, row_id: int) -> ChangeLogEntry:
+    """A manual-clear ledger row, the shape `apply_status_origin` writes."""
+    return ChangeLogEntry(
+        id=row_id,
+        item_id=item_id,
+        link_id=None,
+        field_changed="status_origin",
+        old_value="manual",
+        new_value="manual",
+        timestamp=timestamp,
+        trigger_cause="user_set_status",
+    )
+
+
+def _evidence_row(
+    link_id: int, item_id: int, timestamp: str, row_id: int
+) -> ChangeLogEntry:
+    """A link-confirmation ledger row, the shape the relate gatekeeper
+    writes at confirm time (new_value typed to the contradicts case)."""
+    return ChangeLogEntry(
+        id=row_id,
+        item_id=item_id,
+        link_id=link_id,
+        field_changed="link_confirmed",
+        old_value=None,
+        new_value=f"contradicts:{item_id}",
+        timestamp=timestamp,
+        trigger_cause="user_confirmed",
+    )
+
+
+def _evidence_row_for(
+    link_type: str, link_id: int, item_id: int, timestamp: str, row_id: int
+) -> ChangeLogEntry:
+    """Same as `_evidence_row` with a different `new_value` link type."""
+    return _evidence_row(
+        link_id, item_id, timestamp, row_id
+    ).model_copy(update={"new_value": f"{link_type}:{item_id}"})
+
+
+def test_newer_contradicts_passes_manual_shield() -> None:
+    snapshot = _snap_shielded(
+        [_item(1, "Finding"), _item(2, "Decision", status_origin="manual")],
+        [_link(10, 1, 2, "contradicts", created_at=T2)],
+        [_clear_row(2, T1, 1), _evidence_row(10, 1, T2, 2)],
+    )
+
+    changes = derive_status_changes(snapshot)
+
+    assert len(changes) == 1
+    assert changes[0].item_id == 2
+    assert changes[0].new_status == "Challenged"
+    assert changes[0].trigger_cause == "contradicts_confirmed"
+
+
+def test_older_contradicts_stays_silent() -> None:
+    # Evidence predates the clear: silent whether the human saw it or not.
+    snapshot = _snap_shielded(
+        [_item(1, "Finding"), _item(2, "Decision", status_origin="manual")],
+        [_link(10, 1, 2, "contradicts", created_at=T1)],
+        [_clear_row(2, T2, 2), _evidence_row(10, 1, T1, 1)],
+    )
+
+    assert derive_status_changes(snapshot) == []
+
+
+def test_newer_supersedes_closes_shielded_item() -> None:
+    # Full scope: a derived close also fires on a shielded card.
+    snapshot = _snap_shielded(
+        [_item(1, "Decision"), _item(2, "Decision", status_origin="manual")],
+        [_link(10, 1, 2, "supersedes", created_at=T2)],
+        [
+            _clear_row(2, T1, 1),
+            _evidence_row_for("supersedes", 10, 1, T2, 2),
+        ],
+    )
+
+    changes = derive_status_changes(snapshot)
+
+    assert len(changes) == 1
+    assert changes[0].item_id == 2
+    assert changes[0].new_status == "Closed"
+    assert changes[0].close_reason == "superseded"
+
+
+def test_newer_answers_closes_shielded_question() -> None:
+    snapshot = _snap_shielded(
+        [_item(1, "Decision"), _item(2, "Question", status_origin="manual")],
+        [_link(10, 1, 2, "answers", created_at=T2)],
+        [
+            _clear_row(2, T1, 1),
+            _evidence_row_for("answers", 10, 1, T2, 2),
+        ],
+    )
+
+    changes = derive_status_changes(snapshot)
+
+    assert len(changes) == 1
+    assert changes[0].item_id == 2
+    assert changes[0].new_status == "Closed"
+    assert changes[0].close_reason == "answered"
+
+
+def test_same_timestamp_tie_older_evidence_id_stays_silent() -> None:
+    # Equal timestamps resolve by the higher change_log id. The evidence
+    # row lost the tie (id 2 < clear id 3), so it stays silent.
+    snapshot = _snap_shielded(
+        [_item(1, "Finding"), _item(2, "Decision", status_origin="manual")],
+        [_link(10, 1, 2, "contradicts", created_at=T1)],
+        [_clear_row(2, T1, 3), _evidence_row(10, 1, T1, 2)],
+    )
+
+    assert derive_status_changes(snapshot) == []
+
+
+def test_same_timestamp_tie_newer_evidence_id_passes() -> None:
+    snapshot = _snap_shielded(
+        [_item(1, "Finding"), _item(2, "Decision", status_origin="manual")],
+        [_link(10, 1, 2, "contradicts", created_at=T1)],
+        [_clear_row(2, T1, 2), _evidence_row(10, 1, T1, 3)],
+    )
+
+    changes = derive_status_changes(snapshot)
+
+    assert len(changes) == 1
+    assert changes[0].item_id == 2
+    assert changes[0].new_status == "Challenged"
+
+
+def test_newest_clear_sets_the_boundary() -> None:
+    # Clear T1, evidence T2, clear T3: the newest clear is THE boundary.
+    snapshot = _snap_shielded(
+        [_item(1, "Finding"), _item(2, "Decision", status_origin="manual")],
+        [_link(10, 1, 2, "contradicts", created_at=T2)],
+        [
+            _clear_row(2, T1, 1),
+            _evidence_row(10, 1, T2, 2),
+            _clear_row(2, T3, 3),
+        ],
+    )
+
+    assert derive_status_changes(snapshot) == []
+
+
+def test_newest_clear_wins_on_equal_timestamps() -> None:
+    # Two clears at the same timestamp: the higher id is the boundary. If
+    # the older clear (id 1) won, the evidence (id 2) would pass.
+    snapshot = _snap_shielded(
+        [_item(1, "Finding"), _item(2, "Decision", status_origin="manual")],
+        [_link(10, 1, 2, "contradicts", created_at=T1)],
+        [
+            _clear_row(2, T1, 1),
+            _evidence_row(10, 1, T1, 2),
+            _clear_row(2, T1, 3),
+        ],
+    )
+
+    assert derive_status_changes(snapshot) == []
+
+
+def test_rearm_is_stamped_on_passing_shield_changes() -> None:
+    snapshot = _snap_shielded(
+        [_item(1, "Finding"), _item(2, "Decision", status_origin="manual")],
+        [_link(10, 1, 2, "contradicts", created_at=T2)],
+        [_clear_row(2, T1, 1), _evidence_row(10, 1, T2, 2)],
+    )
+
+    changes = derive_status_changes(snapshot)
+
+    assert changes == [
+        StatusChange(
+            item_id=2,
+            old_status="Active",
+            new_status="Challenged",
+            close_reason=None,
+            old_close_reason=None,
+            trigger_cause="contradicts_confirmed",
+            link_id=10,
+            rearm=True,
+        )
+    ]
+
+
+def test_exempt_change_does_not_rearm() -> None:
+    # The human path is exempt: the shield check is bypassed and rearm is
+    # never stamped, even when the shield_log would let evidence pass.
+    snapshot = _snap_shielded(
+        [_item(1, "Decision", status="Challenged", status_origin="manual")],
+        shield_log=[_clear_row(1, T1, 1)],
+    )
+    primary = StatusChange(
+        item_id=1,
+        old_status="Challenged",
+        new_status="Active",
+        close_reason=None,
+        trigger_cause="user_set_status",
+        link_id=None,
+    )
+
+    result = merge_and_filter([primary], snapshot, exempt=primary)
+
+    assert result == [primary]
+    assert result[0].rearm is False
+
+
+def test_links_created_at_is_not_the_evidence_clock() -> None:
+    # The pinned evidence source is the `link_confirmed` ledger row, not
+    # `links.created_at`: here created_at (T3) says the link is newer than
+    # the clear (T2), but the ledger row (T1) says older, and the ledger
+    # row decides: silent.
+    snapshot = _snap_shielded(
+        [_item(1, "Finding"), _item(2, "Decision", status_origin="manual")],
+        [_link(10, 1, 2, "contradicts", created_at=T3)],
+        [_clear_row(2, T2, 2), _evidence_row(10, 1, T1, 1)],
+    )
+
+    assert derive_status_changes(snapshot) == []

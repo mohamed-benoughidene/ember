@@ -168,6 +168,39 @@ def insert_link(
     return int(cursor.lastrowid)
 
 
+def insert_link_with_confirmation(
+    conn: sqlite3.Connection,
+    source_item_id: int,
+    target_item_id: int,
+    link_type: str,
+    *,
+    created_at: str = FIXED_TIME,
+) -> int:
+    """Insert one `links` row AND its production-shaped `link_confirmed`
+    ledger row (the `SqliteLinkStore.insert_link_with_log` pair) and return
+    the new link id.
+
+    Row shape mirrors `link_gatekeeper.py`: the ledger row's `item_id` is the
+    link's source, `old_value` NULL, `new_value`
+    `f"{link_type}:{target_item_id}"`, `trigger_cause='user_confirmed'`.
+    Both rows carry the same `created_at` clock read, as production does.
+    """
+    cursor = conn.execute(
+        "INSERT INTO links (source_item_id, target_item_id, link_type, status,"
+        " created_at) VALUES (?, ?, ?, 'Confirmed', ?)",
+        (source_item_id, target_item_id, link_type, created_at),
+    )
+    link_id = int(cursor.lastrowid)
+    conn.execute(
+        "INSERT INTO change_log"
+        " (item_id, link_id, field_changed, old_value, new_value,"
+        " timestamp, trigger_cause) VALUES (?, ?, 'link_confirmed',"
+        " NULL, ?, ?, 'user_confirmed')",
+        (source_item_id, link_id, f"{link_type}:{target_item_id}", created_at),
+    )
+    return link_id
+
+
 def insert_link_reversed(
     conn: sqlite3.Connection, link_id: int, item_id: int
 ) -> None:

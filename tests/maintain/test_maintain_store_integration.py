@@ -17,7 +17,7 @@ from ember.maintain.errors import (
     StatusWriteFailed as MaintainStatusWriteFailed,
 )
 from ember.maintain.rows import StatusChange
-from tests.fakes import FIXED_TIME, insert_item, insert_source
+from tests.fakes import FIXED_TIME, insert_item, insert_link, insert_source
 
 
 def _open_v10(db_path: str):
@@ -243,4 +243,80 @@ def test_apply_status_origin_reclear_logs_observed_manual_old_value(db_path) -> 
     assert only["new_value"] == "manual"
     assert only["trigger_cause"] == "user_set_status"
     assert only["timestamp"] == FIXED_TIME
+    conn.close()
+
+
+# --- Re-arm branch of `apply_status_changes` (L2 §13.4, step 06) ---
+
+
+def test_apply_status_changes_rearm_writes_origin_and_log_row(db_path) -> None:
+    conn = _open_v10(db_path)
+    source_id = insert_source(conn)
+    insert_item(
+        conn,
+        source_id=source_id,
+        item_id=1,
+        status="Active",
+        status_origin="manual",
+    )
+    insert_item(conn, source_id=source_id, item_id=2, status="Active",
+                item_type="Finding")
+    conn.commit()
+    # `contradicts` must be Finding -> Decision (link_compat, migration 011).
+    link_id = insert_link(conn, 2, 1, "contradicts")
+    conn.commit()
+    store = SqliteMaintainStore(conn, clock=lambda: FIXED_TIME)
+    change = _change(1, new_status="Challenged", link_id=link_id)
+    change = change.model_copy(update={"rearm": True})
+
+    applied = store.apply_status_changes([change])
+
+    assert applied == 1
+    row = conn.execute(
+        "SELECT status, status_origin FROM items WHERE id = 1"
+    ).fetchone()
+    assert row["status"] == "Challenged"
+    assert row["status_origin"] == "derived"
+    log = conn.execute("SELECT * FROM change_log ORDER BY id").fetchall()
+    assert len(log) == 2
+    status_row, rearm_row = log[0], log[1]
+    assert status_row["item_id"] == 1
+    assert status_row["field_changed"] == "status"
+    assert status_row["new_value"] == "Challenged"
+    assert status_row["trigger_cause"] == "contradicts_confirmed"
+    assert status_row["timestamp"] == FIXED_TIME
+    assert rearm_row["item_id"] == 1
+    assert rearm_row["link_id"] == link_id
+    assert rearm_row["field_changed"] == "status_origin"
+    assert rearm_row["old_value"] == "manual"
+    assert rearm_row["new_value"] == "derived"
+    assert rearm_row["trigger_cause"] == "sweep_rearm"
+    assert rearm_row["timestamp"] == FIXED_TIME
+    conn.close()
+
+
+def test_apply_status_changes_without_rearm_leaves_origin(db_path) -> None:
+    conn = _open_v10(db_path)
+    source_id = insert_source(conn)
+    insert_item(
+        conn,
+        source_id=source_id,
+        item_id=1,
+        status="Active",
+        status_origin="derived",
+    )
+    conn.commit()
+    store = SqliteMaintainStore(conn, clock=lambda: FIXED_TIME)
+
+    store.apply_status_changes([_change(1, new_status="Challenged")])
+
+    row = conn.execute(
+        "SELECT status, status_origin FROM items WHERE id = 1"
+    ).fetchone()
+    assert row["status"] == "Challenged"
+    assert row["status_origin"] == "derived"
+    log = conn.execute("SELECT * FROM change_log").fetchall()
+    assert len(log) == 1
+    assert log[0]["field_changed"] == "status"
+    assert log[0]["trigger_cause"] == "contradicts_confirmed"
     conn.close()

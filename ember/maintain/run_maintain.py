@@ -69,13 +69,15 @@ class MaintainResult:
 def _load(ports: MaintainLookupPort) -> MaintainSnapshot:
     """Read the whole world the Phase-2 derivation needs (Phase 1).
 
-    Raises `MAINTAIN-010 ItemsReadFailed` when any of the three port reads
-    fails. The engine core trusts what the port returns (I9).
+    Raises `MAINTAIN-010 ItemsReadFailed` when any of the four port reads
+    fails (items, confirmed links, reversed link ids, shield log). The
+    engine core trusts what the port returns (I9).
     """
     return MaintainSnapshot(
         items=ports.list_items(),
         links=ports.list_confirmed_links(),
         reversed_link_ids=ports.list_reversed_link_ids(),
+        shield_log=ports.list_shield_log(),
     )
 
 

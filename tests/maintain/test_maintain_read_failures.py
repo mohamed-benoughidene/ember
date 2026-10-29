@@ -20,6 +20,7 @@ _READS = [
     ("list_items", lambda ctx: ctx.list_items()),
     ("list_confirmed_links", lambda ctx: ctx.list_confirmed_links()),
     ("list_reversed_link_ids", lambda ctx: ctx.list_reversed_link_ids()),
+    ("list_shield_log", lambda ctx: ctx.list_shield_log()),
 ]
 
 

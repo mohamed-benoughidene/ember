@@ -12,10 +12,12 @@ class FakeMaintainLookup:
         items: list[ItemState] | None = None,
         links: list[Link] | None = None,
         reversed_link_ids: set[int] | None = None,
+        shield_log: list[ChangeLogEntry] | None = None,
     ) -> None:
         self._items = list(items or [])
         self._links = list(links or [])
         self._reversed = set(reversed_link_ids or set())
+        self._shield = list(shield_log or [])
 
     def list_items(self) -> list[ItemState]:
         return list(self._items)
@@ -25,6 +27,9 @@ class FakeMaintainLookup:
 
     def list_reversed_link_ids(self) -> set[int]:
         return set(self._reversed)
+
+    def list_shield_log(self) -> list[ChangeLogEntry]:
+        return list(self._shield)
 
 
 class FakeMaintainStore:

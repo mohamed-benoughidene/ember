@@ -24,7 +24,13 @@ from ember.maintain.run_maintain import (
     run_set_status,
     run_sweep,
 )
-from tests.fakes import FIXED_TIME, insert_item, insert_link, insert_source
+from tests.fakes import (
+    FIXED_TIME,
+    insert_item,
+    insert_link,
+    insert_link_with_confirmation,
+    insert_source,
+)
 
 
 def _open(db_path: str):
@@ -279,5 +285,123 @@ def test_reversal_does_not_veto_a_new_supersedes_close(db_path) -> None:
 
         assert result.applied == 1
         assert _status(conn, 1) == ("Closed", "superseded", "derived")
+    finally:
+        conn.close()
+
+
+# --- Timestamp-scoped manual shield through `run_sweep` (L2 §13, step 06) ---
+#
+# The store clock is FIXED_TIME, so a human clear lands at 2026-01-01. Links
+# carry their own explicit `created_at` on both the `links` row and the
+# `link_confirmed` ledger row.
+
+T_PRECLEAR = "2025-06-01T00:00:00+00:00"
+T_LATER = "2027-06-01T00:00:00+00:00"
+T_FINAL_CLEAR = "2029-06-01T00:00:00+00:00"
+
+
+def _seed_shielded_pair(conn, *, link_time: str) -> int:
+    """Item 1 Finding contradicts item 2 Finding (Challenged). Item 2 gets
+    its manual clear below. Return the link id."""
+    source_id = insert_source(conn)
+    insert_item(conn, source_id=source_id, item_id=1, item_type="Finding",
+                statement="Source")
+    insert_item(conn, source_id=source_id, item_id=2, item_type="Finding",
+                statement="Contradicted", status="Challenged")
+    link_id = insert_link_with_confirmation(
+        conn, 1, 2, "contradicts", created_at=link_time
+    )
+    conn.commit()
+    return link_id
+
+
+def test_sweep_reflags_shielded_item_on_newer_evidence(db_path) -> None:
+    conn = _open(db_path)
+    try:
+        link_id = _seed_shielded_pair(conn, link_time=T_LATER)
+
+        clear = run_set_status(
+            _ports(conn), MaintainRequest(item_id=2, to_status="Active")
+        )
+        assert clear.applied == 1
+        assert _status(conn, 2) == ("Active", None, "manual")
+
+        result = run_sweep(_ports(conn), MaintainRequest())
+
+        assert result.applied == 1
+        assert _status(conn, 2) == ("Challenged", None, "derived")
+        logs = _log(conn)
+        assert (2, link_id, "status", "Active", "Challenged",
+                "contradicts_confirmed", FIXED_TIME) in logs
+        assert (2, link_id, "status_origin", "manual", "derived",
+                "sweep_rearm", FIXED_TIME) in logs
+    finally:
+        conn.close()
+
+
+def test_sweep_stays_silent_on_preclear_evidence(db_path) -> None:
+    # The link and its ledger row both predate the clear: the sweep must
+    # prove the timestamp compare, not a fail-closed gap.
+    conn = _open(db_path)
+    try:
+        _seed_shielded_pair(conn, link_time=T_PRECLEAR)
+
+        clear = run_set_status(
+            _ports(conn), MaintainRequest(item_id=2, to_status="Active")
+        )
+        assert clear.applied == 1
+
+        result = run_sweep(_ports(conn), MaintainRequest())
+
+        assert result.applied == 0
+        assert _status(conn, 2) == ("Active", None, "manual")
+    finally:
+        conn.close()
+
+
+def test_sweep_tie_resolved_by_change_log_id(db_path) -> None:
+    # Evidence and clear share a timestamp, and the evidence row was inserted
+    # first, so it carries the lower id and loses the tie.
+    conn = _open(db_path)
+    try:
+        _seed_shielded_pair(conn, link_time=FIXED_TIME)
+
+        clear = run_set_status(
+            _ports(conn), MaintainRequest(item_id=2, to_status="Active")
+        )
+        assert clear.applied == 1
+
+        result = run_sweep(_ports(conn), MaintainRequest())
+
+        assert result.applied == 0
+        assert _status(conn, 2) == ("Active", None, "manual")
+    finally:
+        conn.close()
+
+
+def test_second_clear_silences_passed_evidence_again(db_path) -> None:
+    # Rule 6: the human still outranks the sweep. The re-flag passes, a
+    # second manual clear at a later clock re-arms the shield and the same
+    # evidence goes silent again.
+    conn = _open(db_path)
+    try:
+        _seed_shielded_pair(conn, link_time=T_LATER)
+        run_set_status(_ports(conn), MaintainRequest(item_id=2, to_status="Active"))
+        reflag = run_sweep(_ports(conn), MaintainRequest())
+        assert reflag.applied == 1
+        assert _status(conn, 2) == ("Challenged", None, "derived")
+
+        later_ports = MaintainPorts(
+            lookup=SqliteMaintainContext(conn),
+            store=SqliteMaintainStore(conn, clock=lambda: T_FINAL_CLEAR),
+        )
+        second_clear = run_set_status(later_ports, MaintainRequest(item_id=2, to_status="Active"))
+        assert second_clear.applied == 1
+        assert _status(conn, 2) == ("Active", None, "manual")
+
+        result = run_sweep(_ports(conn), MaintainRequest())
+
+        assert result.applied == 0
+        assert _status(conn, 2) == ("Active", None, "manual")
     finally:
         conn.close()

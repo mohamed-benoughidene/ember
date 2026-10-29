@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from pydantic import BaseModel
 
-from ember.relate.rows import Link
+from ember.relate.rows import ChangeLogEntry, Link
 
 
 class ItemState(BaseModel):
@@ -29,11 +29,19 @@ class ItemState(BaseModel):
 
 
 class MaintainSnapshot(BaseModel):
-    """The whole world the pure derivation reads (Phase 1 output)."""
+    """The whole world the pure derivation reads (Phase 1 output).
+
+    `shield_log` is the additive Phase-1 ledger slice the timestamp-scoped
+    manual shield reads (L2 §13.5): the manual-clear rows and the
+    `link_confirmed` rows, in id order. The default keeps every constructor
+    that predates it valid, and makes a snapshot without the slice
+    fail-closed silent (no clear row visible).
+    """
 
     items: list[ItemState]
     links: list[Link]
     reversed_link_ids: set[int]
+    shield_log: list[ChangeLogEntry] = []
 
 
 class StatusChange(BaseModel):
@@ -51,6 +59,11 @@ class StatusChange(BaseModel):
     old_close_reason: str | None = None
     trigger_cause: str
     link_id: int | None
+    # Set by `merge_and_filter` on a shielded item's winning change whose
+    # evidence passed the timestamp rule (L2 §13.4): the adapter executes
+    # the re-arm, returning `status_origin` to `'derived'` in the same
+    # batch. Never stamped on exempt (human) changes.
+    rearm: bool = False
 
 
 class EditChange(BaseModel):

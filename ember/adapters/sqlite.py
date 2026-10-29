@@ -774,6 +774,42 @@ class SqliteMaintainContext:
             raise MaintainItemsReadFailed("change_log read fail") from exc
         return {int(row["link_id"]) for row in rows}
 
+    def list_shield_log(self) -> list[ChangeLogEntry]:
+        """Return the ledger slice the timestamp-scoped manual shield reads
+        (L2 §13.5), in id order: the manual-clear rows (written by
+        `apply_status_origin`) and the `link_confirmed` rows (written by the
+        relate gatekeeper). One query over `change_log`, which the engine
+        already owns (no migration, L2 §13.6).
+
+        Raise `ItemsReadFailed` (MAINTAIN-010) on a read failure.
+        """
+        try:
+            rows = self._conn.execute(
+                "SELECT id, item_id, link_id, field_changed, old_value,"
+                " new_value, timestamp, trigger_cause"
+                " FROM change_log"
+                " WHERE (field_changed = 'status_origin'"
+                "        AND trigger_cause = 'user_set_status'"
+                "        AND new_value = 'manual')"
+                "    OR field_changed = 'link_confirmed'"
+                " ORDER BY id"
+            ).fetchall()
+        except sqlite3.Error as exc:
+            raise MaintainItemsReadFailed("change_log read fail") from exc
+        return [
+            ChangeLogEntry(
+                id=row["id"],
+                item_id=row["item_id"],
+                link_id=row["link_id"],
+                field_changed=row["field_changed"],
+                old_value=row["old_value"],
+                new_value=row["new_value"],
+                timestamp=row["timestamp"],
+                trigger_cause=row["trigger_cause"],
+            )
+            for row in rows
+        ]
+
 
 class SqliteQueryContext:
     """`QueryLookupPort` on SQLite: the whole world Engine D may read.
@@ -902,16 +938,42 @@ class SqliteMaintainStore:
     def apply_status_changes(self, changes: list[StatusChange]) -> int:
         """Write every change's status and its `change_log` row in one batch.
 
+        A `rearm` change (the timestamp-scoped shield's re-arm, L2 §13.4)
+        also returns `items.status_origin` to `'derived'` in the same batch
+        UPDATE and appends one `status_origin` ledger row — `old_value` the
+        observed prior origin (read, never hardcoded), `new_value`
+        `'derived'`, `trigger_cause='sweep_rearm'`, `link_id` the causing
+        link — from the same ONE clock read, inside the same transaction.
+
         Return `len(changes)`. Raise `StatusWriteFailed` (MAINTAIN-011) when an
         `items` UPDATE fails, and `ChangeLogWriteFailed` (MAINTAIN-012) when a
         `change_log` INSERT fails. Either failure rolls the whole batch back.
         """
+        rearm_old_values: dict[int, str | None] = {}
         for change in changes:
             try:
-                self._conn.execute(
-                    "UPDATE items SET status = ?, close_reason = ? WHERE id = ?",
-                    (change.new_status, change.close_reason, change.item_id),
-                )
+                if change.rearm:
+                    row = self._conn.execute(
+                        "SELECT status_origin FROM items WHERE id = ?",
+                        (change.item_id,),
+                    ).fetchone()
+                    rearm_old_values[change.item_id] = (
+                        row["status_origin"] if row is not None else None
+                    )
+                    self._conn.execute(
+                        "UPDATE items SET status = ?, close_reason = ?,"
+                        " status_origin = 'derived' WHERE id = ?",
+                        (
+                            change.new_status,
+                            change.close_reason,
+                            change.item_id,
+                        ),
+                    )
+                else:
+                    self._conn.execute(
+                        "UPDATE items SET status = ?, close_reason = ? WHERE id = ?",
+                        (change.new_status, change.close_reason, change.item_id),
+                    )
             except sqlite3.Error as exc:
                 self._conn.rollback()
                 raise MaintainStatusWriteFailed(
@@ -933,6 +995,20 @@ class SqliteMaintainStore:
                         change.trigger_cause,
                     ),
                 )
+                if change.rearm:
+                    self._conn.execute(
+                        "INSERT INTO change_log"
+                        " (item_id, link_id, field_changed, old_value, new_value,"
+                        " timestamp, trigger_cause)"
+                        " VALUES (?, ?, 'status_origin', ?, 'derived', ?,"
+                        " 'sweep_rearm')",
+                        (
+                            change.item_id,
+                            change.link_id,
+                            rearm_old_values.get(change.item_id),
+                            timestamp,
+                        ),
+                    )
             except sqlite3.Error as exc:
                 self._conn.rollback()
                 raise MaintainChangeLogWriteFailed(

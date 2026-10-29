@@ -138,7 +138,28 @@ No blanket veto command, no per-cause acknowledgment state, no new column, no UI
 
 ## 10. Build Notes
 
-(to be filled after implementation: what landed § by §, TDD red-then-green numbers, §6 outputs pasted, deviations from the pin)
+Landed § by §: rows.py (`StatusChange.rearm: bool = False`, `MaintainSnapshot.shield_log: list[ChangeLogEntry] = []`) / maintain_lookup.py + `SqliteMaintainContext.list_shield_log` (the pinned SELECT, `MAINTAIN-010` on failure) / `run_maintain._load` (four port reads) / derive.py (`_shield_passes` + `_latest_clear` + `_evidence_row` + `_maybe_rearm`, the shield skip made per-candidate and timestamped at the one choke point) / apply_status.py port docstring + `SqliteMaintainStore.apply_status_changes` re-arm branch (observed `old_value` read before the batch UPDATE sets `status_origin='derived'`, one extra ledger row from the same ONE clock read, same transaction and MAINTAIN-011/012 rollback) / history.py `_KIND_BY_PAIR` line / tests/maintain/fakes.py (`shield_log` param + `list_shield_log()`) and tests/fakes.py (`insert_link_with_confirmation`).
+
+TDD: red first on all 21 owned test items, then green.
+
+- Before: **772 passed, 4 deselected** in 3.75s (baseline re-run, real numbers).
+- After: **793 passed, 4 deselected** in 3.83s. The +21 = 11 pure + 2 store + 4 pipeline + 2 CLI + 1 history param row + 1 read-failure param row.
+- No existing test needed an assertion edit. Declared churn applied exactly as the plan predicted: one comment line on `test_manual_shield_skips_derived_change`, one additive param row in `tests/query/test_history_unit.py`, additive fake updates. Grep found no `len(_KIND_BY_PAIR)`-style count pins.
+
+§6 CLI checks, run for real with `.venv/bin/ember` on `/tmp` DBs (`T_OLD = 2026-01-01`, `T_NEW = 2031-01-01`, clear at the real clock 2026-10-29):
+
+- Silent case: `set-status` → `item 2: Challenged -> Active` / `closed: 0, challenged: 0, reopened: 1, unchanged: 1`, exit 0. `maintain` → `closed: 0, challenged: 0, reopened: 0, unchanged: 2`, exit 0. `items.status_origin` for item 2 = `manual` (boundary held).
+- Re-flag case: `set-status` exit 0, then a newer `contradicts` pair at `T_NEW`, `--dry-run` → `item 2: Active -> Challenged` / `closed: 0, challenged: 1, reopened: 0, unchanged: 2`, exit 0, and the row count is unchanged (4 rows before, 4 after). `maintain` → `item 2: Active -> Challenged` / `closed: 0, challenged: 1, reopened: 0, unchanged: 2`, exit 0. After: item 2 `Challenged`, `status_origin='derived'`; ledger rows 5 and 6 = the `status` / `contradicts_confirmed` row (`link_id=2`) and the re-arm row (`status_origin`, `manual` -> `derived`, `sweep_rearm`, `link_id=2`), both stamped from the same clock read (`12:21:05.255623+00:00`).
+- `db-check` on the temp DB: `floors: relate 12 ok, maintain 11 ok, query 10 ok, capture none`, `result: OK` (no floor moved, §13.6).
+- `ember history --item 2` renders the re-arm row as `kind: "status_origin_changed"`, `cause: "sweep_rearm"` (not `unknown`).
+
+Deviations from the pin (none touches the rule, the read, or the write pattern):
+
+1. §6's re-flag seed says "insert link id 2 contradicts 1→2 at T_NEW". That is impossible: migration 006 has `UNIQUE (source_item_id, target_item_id, link_type)`, so a second `contradicts` link between the same pair can never exist (I hit the real `IntegrityError` doing it). The legal shape used instead: a new source item 3, link 3→2 `contradicts` at `T_NEW`. Identical rule coverage (newer evidence from a different source).
+2. One test beyond the owned list: `tests/maintain/test_maintain_read_failures.py` gains a one-row param for `list_shield_log` (same additive shape as the history param row). That file's docstring promises `MAINTAIN-010` coverage for **every** `SqliteMaintainContext` read, and the new read would have made the promise stale.
+3. `_shield_sort_key` maps a missing `change_log.id` (none in the store, possible on synthetic snapshots) to 0, so the tuple compare never raises: the step invariant "the rule is total" holds, and the fail-closed gaps are unchanged.
+
+Minor red-phase note for honesty: the first red run reported a `UNIQUE constraint` error inside the re-flag CLI test, caused by deviation 1's original seed shape. It was a test-seed bug (fixed by deviation 1), not a product bug, and it never masked a green.
 
 ## 11. Issue closure
 

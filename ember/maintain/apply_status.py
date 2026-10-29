@@ -17,6 +17,13 @@ class MaintainStorePort(Protocol):
     def apply_status_changes(self, changes: list[StatusChange]) -> int:
         """One transaction, all-or-nothing; returns the number applied.
 
+        A `rearm` change (the timestamp-scoped shield's re-arm) also returns
+        `items.status_origin` to `'derived'` in the same batch UPDATE and
+        appends one `status_origin` ledger row (`trigger_cause='sweep_rearm'`,
+        `old_value` the observed prior origin, `link_id` the causing link)
+        from the same ONE clock read. Exempt (human) changes are never
+        stamped rearm.
+
         Raises MAINTAIN-011 on the items UPDATE, MAINTAIN-012 on the change_log
         INSERT (both roll the batch back).
         """

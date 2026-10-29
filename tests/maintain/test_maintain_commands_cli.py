@@ -13,7 +13,12 @@ from click.testing import CliRunner
 
 from ember.adapters.sqlite import open_maintain_database
 from ember.cli import main
-from tests.fakes import insert_item, insert_link, insert_source
+from tests.fakes import (
+    insert_item,
+    insert_link,
+    insert_link_with_confirmation,
+    insert_source,
+)
 
 
 def _seed(db_path: str) -> None:
@@ -245,3 +250,104 @@ def test_reverse_supersedes_happy_path_restores_item_and_marks_link(db_path) -> 
     finally:
         conn.close()
     assert reversed_rows == 1
+
+
+# --- Timestamp-scoped manual shield through the CLI (L2 §13, step 06) ---
+#
+# `set-status` and `maintain` run on the real clock, so the clear lands at
+# today's date. The seeded link pairs sit at T_OLD (before the clear) and
+# T_NEW (after it), fixed years so the test never goes stale.
+
+T_OLD = "2026-01-01T00:00:00+00:00"
+T_NEW = "2031-01-01T00:00:00+00:00"
+
+
+def _seed_contradicted_pair(db_path: str, *, link_time: str) -> None:
+    """Item 1 Finding contradicts item 2 Finding (Challenged), with the
+    production-shaped `link_confirmed` ledger row."""
+    conn = open_maintain_database(db_path)
+    try:
+        source_id = insert_source(conn)
+        insert_item(conn, source_id=source_id, item_id=1, item_type="Finding",
+                    statement="Source")
+        insert_item(conn, source_id=source_id, item_id=2, item_type="Finding",
+                    statement="Contradicted", status="Challenged")
+        insert_link_with_confirmation(
+            conn, 1, 2, "contradicts", created_at=link_time
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def test_maintain_cli_reflags_shielded_item(db_path) -> None:
+    Path(db_path).touch()
+    _seed_contradicted_pair(db_path, link_time=T_OLD)
+
+    clear = _invoke(["set-status", "--item", "2", "--to", "Active", "--db", db_path])
+    assert clear.exit_code == 0
+
+    # A newer link confirmed after the clear (2031). A second contradicts
+    # link between the same pair is impossible (migration 006 UNIQUE), so
+    # the new evidence comes from a new source, item 3.
+    conn = sqlite3.connect(db_path)
+    insert_item(conn, source_id=1, item_id=3, item_type="Finding",
+                statement="New Source")
+    insert_link_with_confirmation(conn, 3, 2, "contradicts", created_at=T_NEW)
+    conn.commit()
+    before = conn.execute("SELECT COUNT(*) FROM change_log").fetchone()[0]
+    conn.close()
+
+    planned = _invoke(["maintain", "--dry-run", "--db", db_path])
+    assert planned.exit_code == 0
+    assert "item 2: Active -> Challenged" in planned.output
+    conn = sqlite3.connect(db_path)
+    after_dry = conn.execute("SELECT COUNT(*) FROM change_log").fetchone()[0]
+    conn.close()
+    assert after_dry == before  # the dry run writes nothing
+
+    result = _invoke(["maintain", "--db", db_path])
+
+    assert result.exit_code == 0
+    assert "item 2: Active -> Challenged" in result.output
+    assert "closed: 0, challenged: 1, reopened: 0, unchanged: 2" in result.output
+    conn = sqlite3.connect(db_path)
+    try:
+        row = conn.execute(
+            "SELECT status, status_origin FROM items WHERE id = 2"
+        ).fetchone()
+        log = conn.execute(
+            "SELECT item_id, link_id, field_changed, old_value, new_value,"
+            " trigger_cause FROM change_log ORDER BY id"
+        ).fetchall()
+    finally:
+        conn.close()
+    assert row[0] == "Challenged"
+    assert row[1] == "derived"
+    assert (2, 2, "status", "Active", "Challenged",
+            "contradicts_confirmed") in [tuple(r) for r in log]
+    rearm = [tuple(r) for r in log if r[2] == "status_origin" and r[5] == "sweep_rearm"]
+    assert rearm == [(2, 2, "status_origin", "manual", "derived", "sweep_rearm")]
+
+
+def test_maintain_cli_silent_on_preclear_evidence(db_path) -> None:
+    Path(db_path).touch()
+    _seed_contradicted_pair(db_path, link_time=T_OLD)
+
+    clear = _invoke(["set-status", "--item", "2", "--to", "Active", "--db", db_path])
+    assert clear.exit_code == 0
+    assert "closed: 0, challenged: 0, reopened: 1, unchanged: 1" in clear.output
+
+    result = _invoke(["maintain", "--db", db_path])
+
+    assert result.exit_code == 0
+    assert "closed: 0, challenged: 0, reopened: 0, unchanged: 2" in result.output
+    conn = sqlite3.connect(db_path)
+    try:
+        row = conn.execute(
+            "SELECT status, status_origin FROM items WHERE id = 2"
+        ).fetchone()
+    finally:
+        conn.close()
+    assert row[0] == "Active"
+    assert row[1] == "manual"

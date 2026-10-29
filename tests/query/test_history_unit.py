@@ -22,6 +22,7 @@ PAIR_CASES = [
     (("status", "user_set_status"), "status_changed"),
     (("status", "reversal"), "status_changed"),
     (("status_origin", "user_set_status"), "status_origin_changed"),
+    (("status_origin", "sweep_rearm"), "status_origin_changed"),
     (("link_reversed", "reversal"), "link_reversed"),
 ]
 
