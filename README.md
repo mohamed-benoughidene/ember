@@ -148,3 +148,13 @@ pytest
 # Run the live AI round-trip test (requires EMBER_AI_API_KEY)
 pytest -m live
 ```
+
+## API key wizard
+
+For any command that needs a real OpenRouter key (capture, relate, or the live tests), run:
+
+```
+bash scripts/ember-key-wizard.sh
+```
+
+It walks you through getting the key from openrouter.ai, writes it to `/tmp/opencode/ember.env` (mode 600, outside the repo, never committed), verifies the file, and reminds you to delete it after a real run.

@@ -260,6 +260,7 @@ Saved AI answers for parser tests. Each pair is `case_NN.raw_text.txt` (the sour
 
 ## Scripts (`scripts/`)
 - `scripts/measure_model_change.py`: Throwaway measurement asset for issue #12 (not product code). Seeds a synthetic database through the real schema and `tests/fakes.py` helpers, builds the real `bge-base-en-v1.5` embedder, warms the relate Phase-2 vector cache, re-points the cached model name at `all-MiniLM-L6-v2`, then times the real wipe + re-encode + total Phase-2 wall clock with `time.perf_counter`. Args `--items N` (default 500), `--db PATH` (default under `/tmp/opencode/measure14/`). Prints a dated number block the maintainer records on the issue; asserts `MODEL_CHANGED_LINE` on stderr; deletes its throwaway database on the measured paths (the abort paths before the run leave the file for the next run to reset).
+- `scripts/ember-key-wizard.sh`: interactive key setup. Walks the human through openrouter.ai and writes `/tmp/opencode/ember.env` (mode 600, outside the repo, deleted after real runs). Run it whenever a real-key command needs the key.
 
 ## Database Tables (SQLite)
 - `schema_version`: Holds the applied migration number.
