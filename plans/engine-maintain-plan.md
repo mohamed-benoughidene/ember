@@ -670,10 +670,11 @@ Implements the Decision line of `plans/hardening-decisions.md` #14, pinned verba
 - **§4.6 bullet amended:** the sentence "`status_origin` is **NOT** written by the sweep" since this amendment reads "...written by the sweep only once per shielded change whose evidence passed the timestamp rule — the re-arm row of §13.4. Every human clear still writes it via `apply_status_origin`."
 - **§4.6 vocabulary table gains one row**, the re-arm (shape pinned in §13.4).
 - **Gap C's "the one `change_log` read in Phase 1" claim widens:** Phase 1 now reads a second ledger slice, `shield_log` (§13.5), next to `list_reversed_link_ids`. Still state lookup of facts the engines wrote, not an event bus.
+- **§4 Phase 3 bullet amended:** its line "No `status_origin` in the UPDATE. The sweep only writes items whose `status_origin` is `'derived'`, so writing it is a no-op that invites 'can the sweep un-manual an item?' (it must not)." now reads: "No `status_origin` in the UPDATE **except the re-arm branch of §13.4**." (Review fix 1.)
 
 ### 13.2 Evidence timestamp — Decision per derived cause family
 
-Every derived cause is link-caused. For all four families the evidence event is the **triggering link's confirmation**, and the pinned source is its **ledger row** — not the `links` column:
+Every derived cause is link-caused. For all four families the evidence event is the **triggering link's confirmation**, and the pinned source is its **ledger row** — not the `links` column. A consequence ruled in with this choice: a `dependency_closed` candidate's evidence is its own `depends_on` link's confirmation, so a dependent stays silent when its target is closed after the clear via an *older* `depends_on` link. The ruled sentence ("evidence older than the clear is silenced") intends exactly this; the chain-tracing alternative was rejected for complexity. (Review fix 2, ruled.)
 
 | Candidate change (cause on its `status` row) | Evidence event | Pinned evidence timestamp | Pinned evidence row for the tie |
 |---|---|---|---|
@@ -686,7 +687,7 @@ Why the ledger row and not `links.created_at`: the two values are equal by const
 
 ### 13.3 Clear timestamp — Decision
 
-A manual clear is attested by exactly the rows `apply_status_origin` writes (`ember/adapters/sqlite.py:944-979`, cause hardcoded at `:970-971`): `field_changed='status_origin'` AND `trigger_cause='user_set_status'` AND `new_value='manual'` (spelling verified against the writer). **Clear timestamp for an item = the latest such row for that item, latest = max `(timestamp, change_log.id)`.**
+A manual clear is attested by exactly the rows `apply_status_origin` writes (`ember/adapters/sqlite.py:944-979`, cause hardcoded at `:970-971`): `field_changed='status_origin'` AND `trigger_cause='user_set_status'` AND `new_value='manual'` (spelling verified against the writer). **Clear timestamp for an item = the latest such row for that item, latest = max `(timestamp, change_log.id)`.** Multiple clears: newest is THE boundary. Only clears set the boundary: a human `set-status --to Challenged` write does not touch `status_origin` (verified: the shield arms on Challenged-to-Active clears only, `run_maintain.py`), so evidence newer than the last clear but older than a later human challenge may still escalate the item. Rule 6 holds for clears; stated honestly. (Review fix 3.)
 
 - **Multiple clears:** the newest clear is THE boundary; older clears are inert. Clear-after-clear moves the boundary forward (ticket checklist), and a second manual clear silences again the evidence that just passed (rule 6, human outranks sweep).
 - The `new_value='manual'` predicate is pinned so this amendment's own re-arm rows (§13.4: `new_value='derived'`, different cause) can never read back as a clear and poison the boundary.
@@ -702,6 +703,7 @@ A manual clear is attested by exactly the rows `apply_status_origin` writes (`em
 **Re-arm (what happens when the change applies).** A derived change that passes the shield MUST return the item to `status_origin='derived'` so a later clear can re-arm (ticket checklist). The migration 010 CHECK `status_origin IN ('derived','manual')` allows writing `'derived'` — verified. Pinned pattern, one write call, one transaction:
 
 - `StatusChange` gains `rearm: bool = False` (I10 additive default; the `exempt` value-equality match is unaffected — exempt changes are never stamped, the human path keeps its own `apply_status_origin(item_id, 'manual')`).
+- The re-arm ledger row's `old_value` is the **observed** prior origin, read the way `apply_status_origin` reads it in the adapter (always `'manual'` by the stamp rule today, never hardcoded, review fix 5).
 - `merge_and_filter` stamps `rearm=True` on a winning candidate whose item is shielded and whose evidence passed (a model copy; the pure core decides, the adapter executes — T1/T2 unchanged).
 - `SqliteMaintainStore.apply_status_changes`, for a `rearm` change: the same batch UPDATE also sets `status_origin='derived'`, and one extra `change_log` row is appended in the same loop, from the same ONE clock read, inside the same transaction and rollback contract (MAINTAIN-011/012). Row shape (§4.6 table row):
 
