@@ -57,6 +57,18 @@ class ChangeRow(BaseModel):
     trigger_cause: str
 
 
+class TopicFilter(BaseModel):
+    """What `topic_search` may narrow before it scores (V1.x amendment D).
+
+    `None` means no restriction on that axis. `limit` crops the ranked list
+    behind the sort, so `limit` 0 is an explicit empty result, never an error.
+    """
+
+    status: str | None = None
+    type: str | None = None
+    limit: int | None = None
+
+
 class SearchHit(BaseModel):
     """One `topic_search` result: the score plus enough to read the item.
 

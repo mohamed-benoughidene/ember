@@ -8,13 +8,18 @@ from __future__ import annotations
 from ember.query.current_state import current_state
 from ember.query.history import history
 from ember.query.lookup import QueryLookupPort
-from ember.query.query_gatekeeper import validate_query_item, validate_query_text
+from ember.query.query_gatekeeper import (
+    validate_query_item,
+    validate_query_text,
+    validate_topic_filter,
+)
 from ember.query.render import (
     render_current_state,
     render_history,
     render_topic_search,
     render_why,
 )
+from ember.query.rows import TopicFilter
 from ember.query.topic_search import topic_search
 from ember.query.why import why
 
@@ -24,10 +29,21 @@ def run_current_state(lookup: QueryLookupPort) -> str:
     return render_current_state(current_state(lookup.list_items()))
 
 
-def run_topic_search(lookup: QueryLookupPort, query: str) -> str:
-    """Gate the query text, load every item, rank, render the JSON document."""
+def run_topic_search(
+    lookup: QueryLookupPort,
+    query: str,
+    topic_filter: TopicFilter = TopicFilter(),
+) -> str:
+    """Gate the text and the filter, load every item, rank, render.
+
+    The pipeline order is validate text (QUERY-002) then validate the filter
+    (QUERY-006), both before any load, then load, derive, render.
+    """
     normalised = validate_query_text(query)
-    return render_topic_search(topic_search(lookup.list_items(), normalised), normalised)
+    validate_topic_filter(topic_filter)
+    return render_topic_search(
+        topic_search(lookup.list_items(), normalised, topic_filter), normalised
+    )
 
 
 def run_why(lookup: QueryLookupPort, item_id: int) -> str:

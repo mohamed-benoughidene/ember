@@ -45,3 +45,10 @@ class ItemsReadFailed(QueryError):
 
     code = "QUERY-005"
     name = "ItemsReadFailed"
+
+
+class QueryFilterInvalid(QueryError):
+    """A filter value is outside its legal set, or a limit is negative."""
+
+    code = "QUERY-006"
+    name = "QueryFilterInvalid"

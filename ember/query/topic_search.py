@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import math
 
-from ember.query.rows import QueryItem, SearchHit
+from ember.query.rows import QueryItem, SearchHit, TopicFilter
 from ember.query.tokenize import tokenize
 
 K1 = 1.2
@@ -28,23 +28,41 @@ def _idf(corpus_size: int, document_frequency: int) -> float:
     )
 
 
-def topic_search(items: list[QueryItem], query: str) -> list[SearchHit]:
+def topic_search(
+    items: list[QueryItem],
+    query: str,
+    topic_filter: TopicFilter = TopicFilter(),
+) -> list[SearchHit]:
     """Return the items holding at least one query token, best score first.
+
+    A non-`None` `topic_filter.status` or `topic_filter.type` narrows the items
+    handed to the scorer, and the filtered subset IS the corpus: `N`, `df` and
+    `avgdl` recompute over it, so the remaining scores differ from an
+    unfiltered run of the same query. `topic_filter.limit` crops the ranked
+    top N behind the final sort, `0` gives an explicit empty result. The
+    default filter restricts nothing, so a call without it behaves exactly as
+    before.
 
     An item scores only on the query terms it contains, so an item with no
     query token is never a result. Order is score descending, then `item_id`
     ascending, so equal scores always come out in the same order.
     """
+    selected = [
+        item
+        for item in items
+        if (topic_filter.status is None or item.status == topic_filter.status)
+        and (topic_filter.type is None or item.type == topic_filter.type)
+    ]
     query_terms = list(dict.fromkeys(tokenize(query)))
-    tokens_per_item = [tokenize(item.statement) for item in items]
-    if not query_terms or not items:
+    tokens_per_item = [tokenize(item.statement) for item in selected]
+    if not query_terms or not selected:
         return []
-    average_length = sum(len(tokens) for tokens in tokens_per_item) / len(items)
+    average_length = sum(len(tokens) for tokens in tokens_per_item) / len(selected)
     if average_length == 0:
         return []
 
     hits: list[SearchHit] = []
-    for item, tokens in zip(items, tokens_per_item):
+    for item, tokens in zip(selected, tokens_per_item):
         score = 0.0
         for term in query_terms:
             frequency = tokens.count(term)
@@ -55,7 +73,7 @@ def topic_search(items: list[QueryItem], query: str) -> list[SearchHit]:
             )
             length_ratio = len(tokens) / average_length
             denominator = frequency + K1 * (1 - B + B * length_ratio)
-            score += _idf(len(items), document_frequency) * (
+            score += _idf(len(selected), document_frequency) * (
                 frequency * (K1 + 1) / denominator
             )
         if score > 0:
@@ -68,4 +86,7 @@ def topic_search(items: list[QueryItem], query: str) -> list[SearchHit]:
                     status=item.status,
                 )
             )
-    return sorted(hits, key=lambda hit: (-hit.score, hit.item_id))
+    ranked = sorted(hits, key=lambda hit: (-hit.score, hit.item_id))
+    if topic_filter.limit is not None:
+        ranked = ranked[: topic_filter.limit]
+    return ranked

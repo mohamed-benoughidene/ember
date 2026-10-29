@@ -133,4 +133,24 @@ No rollback — the step writes no rows; the read-only contract is proven by the
 
 ## 12. Build Notes
 
-(Empty — filled in after implementation.)
+Done as planned, on `feat/hardening`, suite green before and after.
+
+**Counts:** suite before 690 passed / 4 deselected, after **719 passed / 4 deselected** (29 new: 3 core unit, 16 validator unit (5 raising + 11 legal), 10 CLI/integration including the byte-identical golden test, the hash test (7 flag sets), and the exit 1 / exit 2 paths).
+
+**Capture procedure (actually used):** before any filter code existed, a one-off script (`/tmp/opencode/capture_golden.py`, not committed) seeded a temp v10 DB via `make_v10` + `insert_source` / `insert_item` / `insert_link` (source 1, items 1-3 Active/Challenged/Closed, one `depends_on` link, two `change_log` rows, all timestamps `tests.fakes.FIXED_TIME`) and ran the three no-flag commands through `CliRunner` against the unfiltered build (Click 8.5, stdout only). Raw stdout strings went into `tests/fixtures/query/no_flags_golden.json` as `{"topic_search", "history", "history_item_1"}`, committed (d6cdf78) before the amendment commit. The test's `_seed` is the same seed byte for byte, so a seed drift would fail the compare loudly.
+
+**Code:** `QueryFilterInvalid` (QUERY-006, `field`, no `__init__`) in `ember/query/errors.py`; `TopicFilter` in `ember/query/rows.py`; `ACCEPTED_STATUSES` / `ACCEPTED_TYPES` + the module-private shared `_require_non_negative` + `validate_topic_filter` (returns `None`) in `ember/query/query_gatekeeper.py` (no circular import risk: the gatekeeper imports only errors, port and rows, so step 05 can reuse the helper); `topic_search(items, query, topic_filter=TopicFilter())` filters before tokenizing and crops `ranked[: limit]` after the sort; `run_topic_search` validates text then filter, both before load; CLI gains `--status` / `--type` (`item_type` in Python, so the builtin is never shadowed) and `--limit` (`type=int`).
+
+**Deviations / rulings:**
+- Plan step 4 mentions only the pre-scoring filter, while §3/§C put the `--limit` crop behind the sort. Implemented the crop inside `topic_search` after the existing sort (the §C order and the core-level `test_limit_windows_after_ranking` both require it). No other conflict found.
+- The three named core unit tests live in a new `tests/query/test_topic_filter_unit.py` (the plan pins only the CLI file name); house style keeps one unit file per feature (`test_history_unit.py` precedent). The validator test joined the existing `tests/query/test_query_gatekeeper_unit.py`.
+- The parent instruction's `--status Open` mapped to `--status Active` (no `Open` status exists here, `Active` is the open status) against a 4-item all-Active seed, so the combined case crops 4 matching rows to 2 and `count` shows 2.
+- QUERY-007 was **not** added (still ticket 07's), so codes stand contiguous 000-006.
+
+**CLI check (§7, real `.venv/bin/ember` on temp DBs, exit codes as printed):** `--status Closed` exit 0 count 1 (item 3, score recomputes to 0.28768207245178085 vs 0.13353139262452257 unfiltered, corpus-of-1 proof); `--type Decision` exit 0 count 3; both flags exit 0 count 1 (item 1); `--limit 0` exit 0 `{"count": 0, "results": []}`; 4-Active seed: no flags count 4, `--status Active --limit 2` exit 0 count 2; `--status bogus` exit 1 `error: QUERY-006 QueryFilterInvalid | ember.query.query_gatekeeper.validate_topic_filter | status is not a stored item status | field=status`; `--limit -1` exit 1 `field=limit` (raising site shared `_require_non_negative`); `--limit abc` exit 2 Click usage, no house `error:` line; `--pagesize 2` exit 2.
+
+**Byte-identical + hash proof (real CLI, fresh seeded DB):** all three no-flag commands byte-identical to the fixture (412 / 651 / 348 bytes) before and after flag traffic; sha256 before `d6aff278…4bc` == after 10 commands, unchanged. The existing `test_query_leaves_the_database_byte_identical` and the `mode=ro` write-attempt test stay green untouched, and the golden BM25 fixture test is untouched and green.
+
+**#18 non-absorption, one line:** plain-text export stays with its separate utility plan and its `EXPORT-*` codes (L2 §8) — this step does not absorb #18.
+
+**Issue closure evidence for the comments (#26, #27):** the `--limit` / `--status` / `--type` cases above stand as the §7 evidence; `total_matching` stays rejected (§G.3), so a windowed caller sees `count` = rows returned only.

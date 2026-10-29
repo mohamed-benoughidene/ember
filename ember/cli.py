@@ -64,6 +64,7 @@ from ember.maintain.run_maintain import (
     run_set_status,
     run_sweep,
 )
+from ember.query.rows import TopicFilter
 from ember.query.run_query import (
     run_current_state,
     run_history,
@@ -699,20 +700,48 @@ def current_state_command(db_path: str) -> None:
     help="Search text: one or more words, matched as whole tokens.",
 )
 @click.option(
+    "--status",
+    "status",
+    default=None,
+    help="Only score items with this status: Active, Challenged or Closed.",
+)
+@click.option(
+    "--type",
+    "item_type",
+    default=None,
+    help="Only score items of this type: Decision, Assumption, Finding or Question.",
+)
+@click.option(
+    "--limit",
+    "limit",
+    type=int,
+    default=None,
+    help="Keep only the top N ranked results. 0 prints an empty result list.",
+)
+@click.option(
     "--db",
     "db_path",
     default=DEFAULT_DB_PATH,
     help="SQLite database path.",
 )
-def topic_search_command(query: str, db_path: str) -> None:
+def topic_search_command(
+    query: str,
+    status: str | None,
+    item_type: str | None,
+    limit: int | None,
+    db_path: str,
+) -> None:
     """Rank items by BM25 over their statements, as JSON.
 
     Every item is searched, `Closed` ones included, and each result carries its
-    status. Read-only, like every query command.
+    status. `--status` and `--type` narrow what is scored (the filtered subset
+    is the corpus, so counts recompute) and `--limit` crops the ranked list.
+    Read-only, like every query command.
     """
     try:
+        topic_filter = TopicFilter(status=status, type=item_type, limit=limit)
         conn = open_query_database(db_path)
-        output = run_topic_search(SqliteQueryContext(conn), query)
+        output = run_topic_search(SqliteQueryContext(conn), query, topic_filter)
     except EmberError as exc:
         click.echo(f"error: {exc.log_line()}", err=True)
         raise SystemExit(1)
