@@ -148,5 +148,6 @@ No `--no-ai` flag, no TTY-only gating (capture precedent: the loop always runs; 
 
 - **Build-time plan edits owned by THIS step (not pre-applied):** `plans/master-plan.md` rule 3 (line 117) and §5 (line 131), the word-for-word from/to lines are pinned in L2 §14.7 — apply them in the same commit series as the code so L1 is never stale against a landed feature. Also one §8 sentence in `plans/engine-maintain-plan.md`'s own preamble/§4.0 apply-at-build: the §14.1 amended lines move from "recorded" to "applied" when §3 lands (the §12.2 pattern of recording-then-applying).
 - Closes #16 via ticket 13: comment with §6 evidence and the test count. The #16 trigger line in `plans/hardening-decisions.md` goes stale on the landed decision line — the Decision is the record.
+- Ticket-wording note (review fix 6): the ticket says "Human reject logs and moves on, exactly like relate's confirm loop". L2 §14.4 rules the reject path deliberately DIVERGES from relate: no rejected-proposal ledger row is written, the rejection lives in `ai_responses` and the outcome count only. Read the checklist with this ruling, not the relate wording.
 - #18 untouched: plain-text export stays with its separate plan.
 - Update `PROJECT_MAP.md` rows for `ember/maintain/close_proposer.py`, the `llm.py` third section, and the amended `ember maintain` command line (one line each, per AGENTS.md).
