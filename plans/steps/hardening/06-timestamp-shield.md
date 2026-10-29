@@ -166,3 +166,11 @@ Minor red-phase note for honesty: the first red run reported a `UNIQUE constrain
 - Closes #14 (sticky manual clear) via ticket 12; comment with the §6 evidence and the tied number of new tests. The #14 trigger line in `plans/hardening-decisions.md` goes stale: the decision line (option c) is the record, and §13.1's B4 rewrite is the spec sentence.
 - #18 untouched: plain-text export stays with its separate plan.
 - Update `PROJECT_MAP.md` rows for `ember/maintain/derive.py`, `ember/maintain/rows.py`, `ember/maintain/maintain_lookup.py` (one line each, per AGENTS.md) at closure.
+
+### Implementation review (ticket 15, 2026-10-29)
+
+Adjudications from the round-2 review (all ruled KEPT as built: judgement calls, none a violation):
+
+- `_latest_clear` and `_evidence_row` are two best-tracking loops with different filter predicates. Deliberately separate: one predicate per fact, each readable in isolation.
+- `apply_status_changes` has two UPDATE branches differing only by `status_origin = 'derived'` (the re-arm branch). Deliberate: merging them behind a flag would hide the one branch that writes schema-adjacent state.
+- `rearm_old_values` maps a momentarily-missing row to `None` inside `old_value`. Safe by the one-change-per-item precedence (the row was just UPDATEd in the same batch). A vanished row mid-batch is not a reachable state.

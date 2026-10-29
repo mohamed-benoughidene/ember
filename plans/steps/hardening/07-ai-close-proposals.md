@@ -181,3 +181,12 @@ Filled 2026-10-29, after the build (agent, ticket 13).
 - Ticket-wording note (review fix 6): the ticket says "Human reject logs and moves on, exactly like relate's confirm loop". L2 §14.4 rules the reject path deliberately DIVERGES from relate: no rejected-proposal ledger row is written, the rejection lives in `ai_responses` and the outcome count only. Read the checklist with this ruling, not the relate wording.
 - #18 untouched: plain-text export stays with its separate plan.
 - Update `PROJECT_MAP.md` rows for `ember/maintain/close_proposer.py`, the `llm.py` third section, and the amended `ember maintain` command line (one line each, per AGENTS.md).
+
+### Implementation review (ticket 15, 2026-10-29)
+
+Applied: `parse_close_proposal` type-checks `reason` (`isinstance(str)`) before the set-membership test. The old code crashed with a bare `TypeError` (unhashable list in a frozenset) instead of the coded MAINTAIN-019 when the model returned a JSON array. Found by the round-2 review, fixed the same day.
+
+Adjudications (ruled KEPT, recorded honestly):
+
+- `ember/cli.py` computes `stale_close_candidates` once just to learn emptiness and truncation, then `run_close_proposals` recomputes on its own fresh load. Accepted: the pre-check is what lets the CLI refuse to construct the proposer without a key, and the recompute is one pure call. The hardcoded phrase "capped at 10 items" duplicates `MAX_CLOSE_PROPOSALS` (cosmetic debt).
+- The `ask_metadata` prompt says "new metadata?", naming the storage column rather than the project label the user sees elsewhere. Accepted wording debt: changing it would churn the pinned CLI tests for zero behavior gain.
