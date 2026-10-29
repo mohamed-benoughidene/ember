@@ -9,6 +9,7 @@ with a scripted `FakeConfirm` standing in for the user.
 from __future__ import annotations
 
 import sqlite3
+from pathlib import Path
 
 import pytest
 
@@ -16,18 +17,33 @@ from ember.adapters.sqlite import (
     SqliteAiResponseStore,
     SqliteLinkContext,
     SqliteLinkStore,
+    SqliteMaintainStore,
     open_database,
+    open_maintain_database,
 )
+from ember.maintain.rows import StatusChange
 from ember.relate.ai_response_store import AiResponseStorePort
 from ember.relate.errors import (
     AiResponseWriteFailed,
     ChangeLogWriteFailed,
     LinkWriteFailed,
 )
+from ember.relate.link_gatekeeper import (
+    LinkDraft,
+    RejectedLink,
+    ValidatedLink,
+    validate_add_link,
+)
 from ember.relate.link_proposal import LinkProposal, LinkProposalResponse
 from ember.relate.rows import ChangeLogEntry, Link, NewItem, RankedCandidate, SignalKind
 from ember.relate.run_relate import RelatePorts, RelateRequest, run_relate
-from tests.fakes import FIXED_TIME, FakeConfirm, insert_item, insert_source
+from tests.fakes import (
+    FIXED_TIME,
+    FakeConfirm,
+    insert_item,
+    insert_link,
+    insert_source,
+)
 from tests.relate.fakes import FakeAiResponseStore, FakeLinkProposer
 
 
@@ -288,5 +304,73 @@ def test_atomic_write_rolls_back_on_log_failure(db_path) -> None:
             run_relate(ports, _request(1, 2, 3))
 
         assert conn.execute("SELECT COUNT(*) FROM links").fetchone()[0] == 0
+    finally:
+        conn.close()
+
+
+def test_corrective_inverse_commits_after_reversal(db_path) -> None:
+    Path(db_path).touch()  # open_maintain_database requires an existing file
+    conn = open_maintain_database(db_path)
+    try:
+        source_id = insert_source(conn)
+        insert_item(conn, source_id=source_id, item_id=1, item_type="Decision")
+        insert_item(
+            conn,
+            source_id=source_id,
+            item_id=2,
+            item_type="Decision",
+            status="Closed",
+            close_reason="superseded",
+        )
+        reversed_id = insert_link(conn, 1, 2, "supersedes")
+        conn.commit()
+
+        # The write half (step 02): undo the supersedes through the maintain
+        # store, which pairs the item restore with the `reversed_at` column.
+        SqliteMaintainStore(conn, clock=lambda: FIXED_TIME).apply_reversal(
+            StatusChange(
+                item_id=2,
+                old_status="Closed",
+                new_status="Active",
+                close_reason=None,
+                old_close_reason="superseded",
+                trigger_cause="reversal",
+                link_id=reversed_id,
+            ),
+            ChangeLogEntry(
+                item_id=2,
+                link_id=reversed_id,
+                field_changed="link_reversed",
+                old_value="Confirmed",
+                new_value="Reversed",
+                timestamp="",
+                trigger_cause="reversal",
+            ),
+        )
+        conn.commit()
+
+        lookup = SqliteLinkContext(conn)
+
+        # The UNIQUE triple still stands (#15 keep the block): re-proposing
+        # the reversed triple is a RELATE-009 duplicate that names the state.
+        duplicate = validate_add_link(
+            LinkDraft(source_item_id=1, target_item_id=2, link_type="supersedes"),
+            lookup,
+        )
+        assert isinstance(duplicate, RejectedLink)
+        assert duplicate.code == "RELATE-009"
+        assert duplicate.detail is not None
+        assert str(reversed_id) in duplicate.detail
+        assert "reversed" in duplicate.detail
+
+        corrective = validate_add_link(
+            LinkDraft(source_item_id=2, target_item_id=1, link_type="supersedes"),
+            lookup,
+        )
+        assert isinstance(corrective, ValidatedLink)
+        # The write commits where it was rejected before step 3.
+        assert SqliteLinkStore(conn).insert_link_with_log(
+            corrective.link_row, corrective.change_log_row
+        ) == reversed_id + 1
     finally:
         conn.close()

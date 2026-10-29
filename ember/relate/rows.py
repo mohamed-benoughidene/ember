@@ -31,6 +31,9 @@ class Link(BaseModel):
     link_type: str
     status: str
     created_at: str
+    # Reversal timestamp from the paired maintain write (L2 hardening §6/§9).
+    # NULL means the row is live and readers (rules 8/9) walk it.
+    reversed_at: str | None = None
 
 
 class ChangeLogEntry(BaseModel):

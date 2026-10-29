@@ -9,6 +9,7 @@ import sqlite3
 import sys
 import urllib.parse
 from array import array
+from collections import deque
 from datetime import datetime, timezone
 from importlib import resources
 from typing import Callable
@@ -419,7 +420,8 @@ class SqliteLinkContext:
     """`LinkLookupPort` on SQLite. Read-only item and link lookups for relate.
 
     Every item and link read raises `ItemsReadFailed` (RELATE-016) on a read
-    failure, except `neighbors_of`, which raises `GraphReadFailed` (RELATE-021).
+    failure, except `neighbors_of` and `supersedes_blocking_link`, which raise
+    `GraphReadFailed` (RELATE-021).
     """
 
     def __init__(self, conn: sqlite3.Connection) -> None:
@@ -475,7 +477,7 @@ class SqliteLinkContext:
         try:
             row = self._conn.execute(
                 "SELECT id, source_item_id, target_item_id, link_type, status,"
-                " created_at FROM links"
+                " created_at, reversed_at FROM links"
                 " WHERE source_item_id = ? AND target_item_id = ? AND link_type = ?",
                 (source_id, target_id, link_type),
             ).fetchone()
@@ -495,6 +497,7 @@ class SqliteLinkContext:
             link_type=row["link_type"],
             status=row["status"],
             created_at=row["created_at"],
+            reversed_at=row["reversed_at"],
         )
 
     def existing_link_types(self, source_item_id: int) -> dict[int, set[str]]:
@@ -591,11 +594,14 @@ class SqliteLinkContext:
         return None if row is None else row["status"]
 
     def supersedes_ancestors(self, item_id: int) -> set[int]:
-        """Return every item reachable upstream via Confirmed supersedes links.
+        """Return every item reachable upstream via live Confirmed supersedes links.
 
         Breadth-first over `links` rows where `source_item_id` is the current
-        node and `link_type = 'supersedes'`. The seed is not included unless a
-        cycle walks back to it (cycles are forbidden at write time).
+        node and `link_type = 'supersedes'`. Only live rows are walked
+        (`status = 'Confirmed' AND reversed_at IS NULL`), so a reversed
+        supersedes no longer closes a cycle for the corrective inverse
+        (L2 hardening §9, rule 8). The seed is not included unless a cycle
+        walks back to it (cycles are forbidden at write time).
         """
         ancestors: set[int] = set()
         frontier: list[int] = [item_id]
@@ -605,7 +611,7 @@ class SqliteLinkContext:
                 rows = self._conn.execute(
                     "SELECT target_item_id FROM links"
                     " WHERE source_item_id = ? AND link_type = 'supersedes'"
-                    " AND status = 'Confirmed'",
+                    " AND status = 'Confirmed' AND reversed_at IS NULL",
                     (current,),
                 ).fetchall()
                 for row in rows:
@@ -616,6 +622,58 @@ class SqliteLinkContext:
         except sqlite3.Error as exc:
             raise ItemsReadFailed("link read fail", item_id=item_id) from exc
         return ancestors
+
+    def supersedes_blocking_link(self, source_id: int, target_id: int) -> Link | None:
+        """Return the live Confirmed supersedes link joining the two items.
+
+        Walks the same edges `supersedes_ancestors` walks (`status =
+        'Confirmed' AND reversed_at IS NULL`), tried in link-id order (the
+        L2 §14 tie-break: first edge in id order). Walk 1 starts at
+        `target_id` and looks for a path to `source_id`. Walk 2 starts at
+        `source_id` and looks for a path to `target_id` (the two rule-8
+        directions). Returns the first edge that reaches the goal, else None.
+        Used only for cycle-rejection detail text, never the decision (the
+        cycle decision stays `supersedes_ancestors`).
+
+        Raise `GraphReadFailed` (RELATE-021) on a read failure.
+        """
+        by_source: dict[int, list[Link]] = {}
+        try:
+            rows = self._conn.execute(
+                "SELECT id, source_item_id, target_item_id, link_type, status,"
+                " created_at, reversed_at FROM links"
+                " WHERE link_type = 'supersedes'"
+                " AND status = 'Confirmed' AND reversed_at IS NULL"
+                " ORDER BY id"
+            ).fetchall()
+        except sqlite3.Error as exc:
+            raise GraphReadFailed(
+                "graph read fail", source_id=source_id, target_id=target_id
+            ) from exc
+        for row in rows:
+            link = Link(
+                id=row["id"],
+                source_item_id=row["source_item_id"],
+                target_item_id=row["target_item_id"],
+                link_type=row["link_type"],
+                status=row["status"],
+                created_at=row["created_at"],
+                reversed_at=row["reversed_at"],
+            )
+            by_source.setdefault(int(row["source_item_id"]), []).append(link)
+        for start, goal in ((target_id, source_id), (source_id, target_id)):
+            seen = {start}
+            frontier: deque[int] = deque([start])
+            while frontier:
+                current = frontier.popleft()
+                for link in by_source.get(current, []):
+                    nxt = link.target_item_id
+                    if nxt == goal:
+                        return link
+                    if nxt not in seen:
+                        seen.add(nxt)
+                        frontier.append(nxt)
+        return None
 
 
 class SqliteMaintainContext:

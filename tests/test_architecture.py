@@ -55,3 +55,15 @@ def test_query_core_does_not_import_adapters() -> None:
         text = path.read_text(encoding="utf-8")
         for token in FORBIDDEN_RELATE:
             assert token not in text, f"{path} references {token}"
+
+
+def test_engine_core_does_not_reference_link_replay() -> None:
+    """The replay step lives in the adapters. No engine core may name it (T9)."""
+    paths = []
+    for name in ("relate", "maintain", "query", "capture"):
+        core_dir = Path(__file__).resolve().parents[1] / "ember" / name
+        paths.extend(sorted(core_dir.glob("*.py")))
+    assert paths
+    for path in paths:
+        text = path.read_text(encoding="utf-8")
+        assert "link_replay" not in text, f"{path} references link_replay"

@@ -57,6 +57,9 @@ class ValidatedLink:
 @dataclass(frozen=True)
 class RejectedLink:
     code: str
+    # Human-readable cause for rules 8/9 (which link blocked, its reversal
+    # state). None for every other rejection. Data only, never a decision.
+    detail: str | None = None
 
 
 def validate_add_link(
@@ -111,11 +114,22 @@ def validate_add_link(
     if source in lookup.supersedes_ancestors(target) or target in lookup.supersedes_ancestors(
         source
     ):
-        return RejectedLink(code=SupersedesCycle.code)
+        blocker = lookup.supersedes_blocking_link(source, target)
+        detail = None
+        if blocker is not None:
+            detail = (
+                f"blocked by link {blocker.id} "
+                f"({blocker.source_item_id} -> {blocker.target_item_id})"
+            )
+        return RejectedLink(code=SupersedesCycle.code, detail=detail)
 
     # 9. No duplicate link.
-    if lookup.find_existing(source, target, draft.link_type) is not None:
-        return RejectedLink(code=DuplicateLink.code)
+    duplicate = lookup.find_existing(source, target, draft.link_type)
+    if duplicate is not None:
+        detail = f"link {duplicate.id} exists"
+        if duplicate.reversed_at is not None:
+            detail += " (reversed)"
+        return RejectedLink(code=DuplicateLink.code, detail=detail)
 
     now = clock()
     new_value = f"{draft.link_type}:{draft.target_item_id}"

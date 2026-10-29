@@ -258,9 +258,10 @@ def clear_validated(item_id: int, db_path: str) -> None:
 def relate(item_id: int | None, latest: bool, db_path: str) -> None:
     """Run all 4 relate phases: load, pool, AI propose, confirm, write.
 
-    Exit 0 when every proposal is handled, 1 on a phase error, and 2 when the
-    user quits mid-prompt. An empty candidate pool prints the Phase 2 JSON and
-    exits 0 without an AI call.
+    Prints one `relate rejected: CODE | detail` line per gatekeeper rejection,
+    then the summary. Exit 0 when every proposal is handled, 1 on a phase
+    error, and 2 when the user quits mid-prompt. An empty candidate pool
+    prints the Phase 2 JSON and exits 0 without an AI call.
     """
     if item_id is not None and latest:
         raise click.UsageError("use either --item or --latest, not both")
@@ -310,6 +311,13 @@ def relate(item_id: int | None, latest: bool, db_path: str) -> None:
             new_item=result.new_item, ranked=pool.ranked, env=os.environ
         )
         outcome = run_relate(ports, request)
+        for rejection in outcome.gatekeeper_rejections:
+            if rejection.detail:
+                click.echo(
+                    f"relate rejected: {rejection.code} | {rejection.detail}"
+                )
+            else:
+                click.echo(f"relate rejected: {rejection.code}")
         click.echo(
             f"accepted: {len(outcome.accepted)}"
             f", rejected: {outcome.rejected}"

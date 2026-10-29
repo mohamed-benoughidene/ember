@@ -8,12 +8,12 @@ a database.
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 from typing import Protocol
 
 from ember.relate.errors import UserAbort
-from ember.relate.link_gatekeeper import ValidatedLink
+from ember.relate.link_gatekeeper import RejectedLink, ValidatedLink
 from ember.relate.rows import ChangeLogEntry, Link
 
 PROMPT = "[y]es / [n]o / [s]kip / [q]uit"
@@ -74,12 +74,18 @@ class LinkStorePort(Protocol):
 
 @dataclass(frozen=True)
 class ConfirmResult:
-    """Phase 4 output: what the user accepted, rejected or skipped."""
+    """Phase 4 output: what the user accepted, rejected or skipped.
+
+    `gatekeeper_rejections` carries the rule-failure `RejectedLink`s (code and
+    detail) so the CLI can print one line per rejection. The `rejected` count
+    includes them plus the user's explicit `no` answers.
+    """
 
     accepted: list[int]
     rejected: int
     skipped: int
     aborted: bool
+    gatekeeper_rejections: list[RejectedLink] = field(default_factory=list)
 
 
 def parse_choice(raw: str) -> Choice | None:

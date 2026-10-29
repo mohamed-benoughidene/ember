@@ -41,3 +41,15 @@ class LinkLookupPort(Protocol):
     def supersedes_ancestors(self, item_id: int) -> set[int]:
         """BFS through Confirmed supersedes links upstream. Step 3 (cycle check)."""
         ...
+
+    def supersedes_blocking_link(self, source_id: int, target_id: int) -> Link | None:
+        """Return the live Confirmed supersedes link joining the two sides.
+
+        Walks the supersede graph in both rule-8 directions and returns the
+        first link row connecting the `source_id` and `target_id` sides, else
+        None. Used only for cycle-rejection detail text, never the decision
+        (the cycle decision stays with `supersedes_ancestors`). Reversed and
+        non-Confirmed supersedes rows never count. Raise `RELATE-021
+        GraphReadFailed` on a read failure.
+        """
+        ...

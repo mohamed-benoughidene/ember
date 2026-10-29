@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 from pathlib import Path
 
@@ -15,7 +16,7 @@ from ember.adapters.sqlite import SqliteEmbedderStore, open_database
 from ember.cli import main
 from ember.relate.errors import EmbedderLoadFailed
 from ember.relate.rows import Pool
-from tests.fakes import FIXED_TIME, insert_item, insert_source
+from tests.fakes import FIXED_TIME, insert_item, insert_link, insert_source
 from tests.relate.fakes import FakeEmbedder
 
 
@@ -63,10 +64,10 @@ class _FakeLinkProposer:
         return LinkProposalResponse(raw_response="canned", proposals=proposals)
 
 
-def _patch_phase34_ports(monkeypatch) -> None:
+def _patch_phase34_ports(monkeypatch, *, link_type: str = "depends_on") -> None:
     """Stub the relate AI with a canned proposer (a real temp DB backs the rest)."""
     monkeypatch.setattr(
-        "ember.cli.build_link_proposer", lambda env: _FakeLinkProposer()
+        "ember.cli.build_link_proposer", lambda env: _FakeLinkProposer(link_type)
     )
 
 
@@ -139,6 +140,94 @@ def test_relate_item_runs_phases_3_and_4(db_path, monkeypatch) -> None:
     assert result.output.count("- link_id:") == 3
     assert (
         "accepted: 3, rejected: 0, skipped: 0, aborted: false" in result.output
+    )
+
+
+def test_relate_prints_one_rejection_line_per_gatekeeper_rejection(
+    db_path, monkeypatch
+) -> None:
+    conn = open_database(db_path)
+    try:
+        source_id = insert_source(conn)
+        _seed_item(conn, source_id, 11)
+        _seed_item(conn, source_id, 22)
+        _seed_item(conn, source_id, 33)
+        # A live supersedes chain 11 -> 33 -> 22: proposing 11 -> 22 closes a
+        # cycle, and proposing 11 -> 33 duplicates the first chain edge.
+        insert_link(conn, 11, 33, "supersedes")
+        blocking_id = insert_link(conn, 33, 22, "supersedes")
+        conn.commit()
+    finally:
+        conn.close()
+    _patch_phase2_ports(monkeypatch)
+    _patch_phase34_ports(monkeypatch, link_type="supersedes")
+
+    result = CliRunner().invoke(main, ["relate", "--item", "11", "--db", db_path])
+
+    assert result.exit_code == 0
+    lines = [
+        line
+        for line in result.output.splitlines()
+        if line.startswith("relate rejected:")
+    ]
+    assert len(lines) == 2
+    # Code first, then detail. The data (blocking link id + both endpoints),
+    # never the free wording, is what the assertions pin down (I21). Both
+    # proposals are rule-8 rejects: 11 -> 22 closes the chain cycle and the
+    # duplicate 11 -> 33 is a cycle hit too (33 is in 11's ancestors).
+    chain_line = next(line for line in lines if "(33 -> 22)" in line)
+    assert str(blocking_id) in chain_line
+    # The duplicate proposal names the first chain edge as its blocker.
+    next(line for line in lines if "(11 -> 33)" in line)
+    assert (
+        "accepted: 0, rejected: 2, skipped: 0, aborted: false" in result.output
+    )
+
+
+def test_relate_accepts_corrective_inverse_after_reversal(db_path, monkeypatch) -> None:
+    conn = open_database(db_path)
+    try:
+        source_id = insert_source(conn)
+        _seed_item(conn, source_id, 1)
+        insert_item(
+            conn,
+            source_id=source_id,
+            item_id=2,
+            item_type="Decision",
+            status="Closed",
+            close_reason="superseded",
+        )
+        reversed_id = insert_link(conn, 1, 2, "supersedes")
+        conn.commit()
+    finally:
+        conn.close()
+
+    reversal = CliRunner().invoke(
+        main,
+        [
+            "reverse-supersedes",
+            "--item",
+            "2",
+            "--link",
+            str(reversed_id),
+            "--db",
+            db_path,
+        ],
+    )
+    assert reversal.exit_code == 0
+
+    _patch_phase2_ports(monkeypatch)
+    _patch_phase34_ports(monkeypatch, link_type="supersedes")
+
+    result = CliRunner().invoke(
+        main, ["relate", "--item", "2", "--db", db_path], input="y\n"
+    )
+
+    assert result.exit_code == 0
+    assert "relate rejected:" not in result.output
+    assert result.output.count("- link_id:") == 1
+    assert (
+        "accepted: 1, rejected: 0, skipped: 0, aborted: false" in result.output
     )
 
 
