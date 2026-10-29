@@ -17,7 +17,7 @@ The script drives the REAL production path, no shortcuts:
   mismatch, wipes the cache, and every item is re-encoded for real.
 - Timing: `time.perf_counter` wall clock. Wipe time is clocked by a thin
   wrapper at the `EmbeddingStorePort` boundary, re-encode time by one at the
-  `EmbedderPort` boundary; both delegate unchanged to the real adapters, and
+  `EmbedderPort` boundary. Both delegate unchanged to the real adapters, and
   the total is the whole Phase 2 call.
 
 No paid API is touched: Phase 2 needs no LLM, and `EMBER_AI_API_KEY` is
@@ -39,6 +39,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
 from ember.adapters.embedder import (  # noqa: E402
+    EmbeddingStorePort,
     SentenceTransformerEmbedder,
 )
 from ember.adapters.sqlite import (  # noqa: E402
@@ -69,32 +70,32 @@ class TimedEmbeddingStore:
     real database.
     """
 
-    def __init__(self, inner: object) -> None:
+    def __init__(self, inner: EmbeddingStorePort) -> None:
         self._inner = inner
         self.wipe_seconds = 0.0
 
-    def get(self, item_id: int):
+    def get(self, item_id: int) -> object:
         return self._inner.get(item_id)
 
     def upsert(self, item_id: int, vector: list[float], model_name: str) -> None:
         self._inner.upsert(item_id, vector, model_name)
 
-    def model_name_of(self, item_id: int):
+    def model_name_of(self, item_id: int) -> str | None:
         return self._inner.model_name_of(item_id)
 
-    def first_model_name(self):
+    def first_model_name(self) -> str | None:
         return self._inner.first_model_name()
 
     def wipe(self) -> None:
         start = time.perf_counter()
         self._inner.wipe()
-        self.wipe_seconds = time.perf_counter() - start
+        self.wipe_seconds += time.perf_counter() - start
 
 
 class TimedEmbedder:
     """Thin timing wrapper at the `EmbedderPort` boundary.
 
-    `embed()` delegates unchanged to the real adapter; the accumulated wall
+    `embed()` delegates unchanged to the real adapter. The accumulated wall
     time of the real model calls is the re-encode time.
     """
 
@@ -144,7 +145,7 @@ def seed_database(conn, *, items: int) -> int:
     # A handful of confirmed links + change_log ledger rows among early
     # universe items. None touches the new item, so it stays the latest
     # unlinked one. Link type must fit the actual type pair (triggers
-    # enforce the compatibility table); pairs with no allowed type are skipped.
+    # enforce the compatibility table). Pairs with no allowed type are skipped.
     link_count = min(items - 2, 10)
     for index in range(1, link_count + 1):
         source_type = ITEM_TYPES[index % len(ITEM_TYPES)]
@@ -187,7 +188,7 @@ def main() -> int:
     else:
         db_file = DEFAULT_DB_DIR / f"model-change-{args.items}.db"
     db_file.parent.mkdir(parents=True, exist_ok=True)
-    delete_database(db_file)  # start fresh; the seed helpers assume an empty file
+    delete_database(db_file)  # start fresh. The seed helpers assume an empty file
 
     conn = open_database(str(db_file))
     lookup = SqliteLinkContext(conn)
@@ -237,15 +238,17 @@ def main() -> int:
         embedder=timed_embedder,
     )
     phase2_seconds = time.perf_counter() - phase2_start
-    conn.close()
-    delete_database(db_file)
 
-    # The CLI prints `pool.warning` to stderr (cli.py `click.echo(..., err=True)`);
-    # mirror that exact path here and fail hard if the line is not the real one.
-    print(pool.warning if pool.warning is not None else "(no warning)", file=sys.stderr)
-    if pool.warning != MODEL_CHANGED_LINE:
-        print(f"ERROR: expected MODEL_CHANGED_LINE, got {pool.warning!r}", file=sys.stderr)
-        return 2
+    try:
+        # The CLI prints `pool.warning` to stderr (cli.py `click.echo(..., err=True)`).
+        # Mirror that exact path here and fail hard if the line is not the real one.
+        print(pool.warning if pool.warning is not None else "(no warning)", file=sys.stderr)
+        if pool.warning != MODEL_CHANGED_LINE:
+            print(f"ERROR: expected MODEL_CHANGED_LINE, got {pool.warning!r}", file=sys.stderr)
+            return 2
+    finally:
+        conn.close()
+        delete_database(db_file)
 
     encode_speed = timed_embedder.texts / timed_embedder.encode_seconds if timed_embedder.encode_seconds else 0.0
     end_to_end_speed = timed_embedder.texts / phase2_seconds if phase2_seconds else 0.0

@@ -942,10 +942,10 @@ class SqliteMaintainStore:
 
         A `rearm` change (the timestamp-scoped shield's re-arm, L2 §13.4)
         also returns `items.status_origin` to `'derived'` in the same batch
-        UPDATE and appends one `status_origin` ledger row — `old_value` the
-        observed prior origin (read, never hardcoded), `new_value`
+        UPDATE and appends one `status_origin` ledger row, with `old_value`
+        the observed prior origin (read, never hardcoded), `new_value`
         `'derived'`, `trigger_cause='sweep_rearm'`, `link_id` the causing
-        link — from the same ONE clock read, inside the same transaction.
+        link, all from the same ONE clock read, inside the same transaction.
 
         Return `len(changes)`. Raise `StatusWriteFailed` (MAINTAIN-011) when an
         `items` UPDATE fails, and `ChangeLogWriteFailed` (MAINTAIN-012) when a

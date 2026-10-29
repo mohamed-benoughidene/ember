@@ -182,7 +182,7 @@ def _graph_signal(
 
 
 def _normalize_label(value: str | None) -> str | None:
-    """Normalize a label as `strip().casefold()`; the blank text is unlabeled."""
+    """Normalize a label as `strip().casefold()`. Blank text is unlabeled."""
     if value is None:
         return None
     normalized = value.strip().casefold()

@@ -199,7 +199,7 @@ def parse_close_proposal(ai_response: str) -> CloseProposal | None:
     if close is False:
         return None
     reason = data.get("reason")
-    if reason not in HUMAN_SETTABLE_REASONS:
+    if not isinstance(reason, str) or reason not in HUMAN_SETTABLE_REASONS:
         raise CloseAiSchemaInvalid("reason not human settable")
     confidence = data.get("confidence")
     if isinstance(confidence, bool) or not isinstance(confidence, (int, float)):
