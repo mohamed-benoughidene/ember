@@ -12,13 +12,20 @@ from ember.relate.rows import Link
 
 
 class ItemState(BaseModel):
-    """One item's lifecycle state, as read from `items` (Phase 1)."""
+    """One item's lifecycle state, as read from `items` (Phase 1).
+
+    `rationale` / `source` carry the item's two human authorial columns
+    (migration 004): the observed old values `validate_edit_item` reads.
+    Defaults are `None`, so every constructor that predates them holds.
+    """
 
     id: int
     type: str
     status: str
     close_reason: str | None
     status_origin: str
+    rationale: str | None = None
+    source: str | None = None
 
 
 class MaintainSnapshot(BaseModel):
@@ -44,3 +51,18 @@ class StatusChange(BaseModel):
     old_close_reason: str | None = None
     trigger_cause: str
     link_id: int | None
+
+
+class EditChange(BaseModel):
+    """One item's intended rationale or source edit (Phase 2 output).
+
+    `old_value` is the observed prior value read in Phase 1 (NULL stays
+    NULL) and is what the store writes to `change_log.old_value`. `field` is
+    a column name the validator whitelisted (`rationale` or `source`).
+    """
+
+    item_id: int
+    field: str
+    old_value: str | None
+    new_value: str
+    trigger_cause: str

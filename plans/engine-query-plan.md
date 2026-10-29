@@ -13,7 +13,7 @@ Engine D. Read-only. Returns context views.
 | #16 | AI-proposed `close_item` | Maintain | not ours — L1 §5 defers it to V1.x. |
 | #17 | DB-level compat-table enforcement | — | not ours — needs a `links` rebuild or triggers. No step plan owns it yet. |
 | #18 | plain-text export | — | not ours — a separate utility plan (approved in a prior planning session, **not yet written to `plans/`**). See §8. |
-| #19 | `edit_item` + `remove_link` | — | not ours — human-only writes. No plan owns them. |
+| #19 | `edit_item` + `remove_link` | Maintain §12 | human-only writes, owned by `plans/engine-maintain-plan.md` §12. `edit_item` landed there (step 04); `remove_link` waits on Gate 2 (§12.1). |
 | #20 | `links` rows have no lifecycle | note | not ours — but `history` is where a reversal becomes visible (§4.6). |
 | #23 | `Closed ⇒ close_reason` not enforced in schema | note | not ours — but `history` must tolerate a NULL `close_reason` (§4.6). |
 

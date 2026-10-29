@@ -47,13 +47,14 @@ from ember.capture.item_proposal import (
 from ember.capture.source_storage import StoredSource, store_source
 from ember.errors import EmberError
 from ember.maintain.derive import derive_status_changes
-from ember.maintain.human_actions import validate_close_item
+from ember.maintain.human_actions import validate_close_item, validate_edit_item
 from ember.maintain.report import format_report
 from ember.maintain.run_maintain import (
     MaintainPorts,
     MaintainRequest,
     _load,
     run_close_item,
+    run_edit_item,
     run_reverse_supersedes,
     run_set_status,
     run_sweep,
@@ -513,6 +514,76 @@ def reverse_supersedes(item_id: int, link_id: int, db_path: str) -> None:
         raise SystemExit(1)
     for line in report:
         click.echo(line)
+
+
+@main.command("edit-item")
+@click.option(
+    "--item",
+    "item_id",
+    type=int,
+    required=True,
+    help="Item id to edit.",
+)
+@click.option(
+    "--field",
+    "field",
+    required=True,
+    help="Field to edit: rationale (on a Decision) or source (on a Finding).",
+)
+@click.option(
+    "--value",
+    "value",
+    required=True,
+    help="New text for the field. An empty string blanks it.",
+)
+@click.option(
+    "--dry-run",
+    is_flag=True,
+    default=False,
+    help="Print the planned old -> new change and write nothing.",
+)
+@click.option(
+    "--db",
+    "db_path",
+    default=DEFAULT_DB_PATH,
+    help="SQLite database path.",
+)
+def edit_item(
+    item_id: int, field: str, value: str, dry_run: bool, db_path: str
+) -> None:
+    """Edit an item's rationale or source by hand, ledger row always.
+
+    Under the rule-7 ADR the item text (`statement`) and all raw tables stay
+    immutable: `rationale` is writable on a Decision, `source` on a Finding.
+    A same-value edit is a no-op (exit 0, nothing written). The human invoking
+    the command IS the confirmation and no AI runs in this path.
+    """
+    try:
+        conn = open_maintain_database(db_path)
+        ports = MaintainPorts(
+            lookup=SqliteMaintainContext(conn),
+            store=SqliteMaintainStore(conn),
+        )
+        if dry_run:
+            snapshot = _load(ports.lookup)
+            changes = validate_edit_item(snapshot, item_id, field, value)
+        else:
+            changes = run_edit_item(
+                ports,
+                MaintainRequest(item_id=item_id, field=field, value=value),
+            )
+    except EmberError as exc:
+        click.echo(f"error: {exc.log_line()}", err=True)
+        raise SystemExit(1)
+    for change in changes:
+        if dry_run:
+            old = change.old_value if change.old_value is not None else "<null>"
+            click.echo(
+                f"item {change.item_id}: {change.field}:"
+                f" {old} -> {change.new_value} (dry-run)"
+            )
+        else:
+            click.echo(f"item {change.item_id}: {change.field} edited")
 
 
 @main.command("current-state")

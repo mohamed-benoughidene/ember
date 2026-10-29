@@ -254,13 +254,15 @@ The dispatch table the L2 Relate plan asked for:
 | Human `set-status` (the shield) | **`status_origin`** | `<observed>` | `manual` | `user_set_status` | NULL | the item |
 | Reversal (the item) | `status` | `Closed:superseded` | `Active` | `reversal` | the `supersedes` link id | the restored item |
 | Reversal (the marker) | **`link_reversed`** | `Confirmed` | `Reversed` | `reversal` | the `supersedes` link id | the restored item |
+| Human `edit-item` (rationale) | **`rationale`** | the observed prior rationale (NULL stays NULL) | the new text | `user_edit_item` | NULL | the edited item |
+| Human `edit-item` (source) | **`source`** | the observed prior source (NULL stays NULL) | the new text | `user_edit_item` | NULL | the edited item |
 
 - **`item_id` = the item whose status changed.** **This diverges from Relate's convention** (Relate: `item_id` = the link's *source*). For rules 1/3/4 the changed item is the link's *target*. **Deliberate and documented:** the row describes a *status field* change on an item, and the item is the subject. `link_id` still points at the triggering link, so Engine D's `history` can join either way. (`item_id` is populated, not NULL as in Capture's `log_rejected` at `sqlite.py:565`, because the restored item is the subject of the marker.) **The `trigger_cause` — not `field_changed` — is the column Engine D should filter on**, because `field_changed='status'` appears in both engines' vocabularies.
 - **`old_value` is the OBSERVED prior status**, read from the snapshot — not a constant. A `Challenged` target closed by rule 1 records `old_value='Challenged'`. A reversal records `old_value='Closed:superseded'` (prior status **and** reason).
 - **`new_value` encoding is decided:** `<new_status>` alone, or `<new_status>:<close_reason>` for a close.
 - **The `link_reversed` row is the reversal marker** (Gap C). It is what makes the reversal visible to readers of `links` and to the sweep's rule 1. It satisfies human spec 3.6:113 ("every change to a note **or link** adds a row to an audit ledger") — the link's change **is** logged.
 - **The `status_origin` row** makes the shield change auditable — same spec clause, same reason. `status_origin` is **NOT** written by the sweep — only by `set-status`, and only when the shield is set. Its `old_value` is the **observed** prior `status_origin`, read before the UPDATE (a manual item re-cleared records `old_value='manual'`, not a constant `'derived'`).
-- Every `trigger_cause` string is unique; every `field_changed` value is `status`, `status_origin`, or `link_reversed`.
+- Every `trigger_cause` string is unique; every `field_changed` value is `status`, `status_origin`, `link_reversed`, and (since step 04 of the hardening amendment) `rationale` / `source`, written only by `apply_item_edit`. The `link_removed` row joins only when step 05 (`remove_link`, Gate 2) builds.
 
 ### 4.7 Orchestration
 

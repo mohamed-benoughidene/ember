@@ -118,7 +118,7 @@ Dependency order, not runtime order. Each engine invoked independently.
 4. AI-callable reads (no confirm needed, raw data only): `query`.
 5. Human-only operations: `edit_item`, `set_status` (only `Active` <-> `Challenged`), `set_validated`, `remove_link`.
 6. `Challenged` resolution: human only via `set_status` (Spec 3.5, 3.2).
-7. Raw input immutable. Historical items immutable (Spec 3.2 + 3.6).
+7. Raw input immutable. Historical items immutable (Spec 3.2 + 3.6). Scoped by the rule-7 ADR (2026-10-28, engine-maintain-plan §12.0, Option A): `items.rationale` (on a `Decision`) and `items.source` (on a `Finding`) are the designated human-writable authorial slots, always ledger-trailed via `ember edit-item`; the `statement` and every raw table stay immutable.
 
 ## 5. Out of Scope (V1)
 

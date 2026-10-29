@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import Protocol
 
-from ember.maintain.rows import StatusChange
+from ember.maintain.rows import EditChange, StatusChange
 from ember.relate.rows import ChangeLogEntry
 
 
@@ -31,5 +31,13 @@ class MaintainStorePort(Protocol):
     def apply_reversal(self, change: StatusChange, marker: ChangeLogEntry) -> int:
         """Write the item restore, its `status` log row, AND the `link_reversed`
         marker row in ONE transaction. Raises MAINTAIN-011 / MAINTAIN-012.
+        """
+        ...
+
+    def apply_item_edit(self, change: EditChange) -> int:
+        """Write one item's rationale or source column AND its `change_log`
+        row in ONE transaction (the `apply_status_origin` pattern). Returns 1.
+        Raises MAINTAIN-016 on the items UPDATE, MAINTAIN-012 on the
+        change_log INSERT (both roll the whole write back).
         """
         ...

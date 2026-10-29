@@ -28,11 +28,12 @@ from ember.maintain.errors import (
     ChangeLogWriteFailed as MaintainChangeLogWriteFailed,
     DbMigrationFailed as MaintainDbMigrationFailed,
     DbOpenFailed as MaintainDbOpenFailed,
+    ItemEditWriteFailed as MaintainItemEditWriteFailed,
     ItemsReadFailed as MaintainItemsReadFailed,
     SchemaOutdated as MaintainSchemaOutdated,
     StatusWriteFailed as MaintainStatusWriteFailed,
 )
-from ember.maintain.rows import ItemState, StatusChange
+from ember.maintain.rows import EditChange, ItemState, StatusChange
 from ember.query.errors import (
     DbOpenFailed as QueryDbOpenFailed,
     ItemsReadFailed as QueryItemsReadFailed,
@@ -686,13 +687,16 @@ class SqliteMaintainContext:
         self._conn = conn
 
     def list_items(self) -> list[ItemState]:
-        """Return every item: id, type, status, close_reason, status_origin.
+        """Return every item: id, type, status, close_reason, status_origin,
+        plus the two authorial columns `rationale` / `source` (migration 004)
+        that `edit-item` reads its observed old values from.
 
         Raise `ItemsReadFailed` (MAINTAIN-010) on a read failure.
         """
         try:
             rows = self._conn.execute(
-                "SELECT id, type, status, close_reason, status_origin FROM items"
+                "SELECT id, type, status, close_reason, status_origin,"
+                " rationale, source FROM items"
             ).fetchall()
         except sqlite3.Error as exc:
             raise MaintainItemsReadFailed("item read fail") from exc
@@ -703,6 +707,8 @@ class SqliteMaintainContext:
                 status=row["status"],
                 close_reason=row["close_reason"],
                 status_origin=row["status_origin"],
+                rationale=row["rationale"],
+                source=row["source"],
             )
             for row in rows
         ]
@@ -1031,11 +1037,72 @@ class SqliteMaintainStore:
         self._conn.commit()
         return 1
 
+    def apply_item_edit(self, change: EditChange) -> int:
+        """Write one item's authorial column and its `change_log` row atomically.
+
+        One implicit transaction, one `commit()` at the end: the `items`
+        UPDATE and the ledger INSERT (field_changed = `change.field`,
+        `old_value` = the observed prior value, NULL stays NULL,
+        trigger_cause from the change) are all-or-nothing, so the ledger row
+        and the column can never diverge.
+
+        Return `1`. Raise `ItemEditWriteFailed` (MAINTAIN-016) when the
+        `items` UPDATE fails, and `ChangeLogWriteFailed` (MAINTAIN-012) when
+        the `change_log` INSERT fails. Either failure rolls the whole write
+        back.
+        """
+        column = _EDIT_COLUMNS.get(change.field)
+        if column is None:
+            raise MaintainItemEditWriteFailed(
+                "item edit column unknown",
+                item_id=change.item_id,
+                field=change.field,
+            )
+        try:
+            self._conn.execute(
+                f"UPDATE items SET {column} = ? WHERE id = ?",
+                (change.new_value, change.item_id),
+            )
+        except sqlite3.Error as exc:
+            self._conn.rollback()
+            raise MaintainItemEditWriteFailed(
+                "item edit update fail",
+                item_id=change.item_id,
+                field=change.field,
+            ) from exc
+        try:
+            self._conn.execute(
+                "INSERT INTO change_log"
+                " (item_id, link_id, field_changed, old_value, new_value,"
+                " timestamp, trigger_cause) VALUES (?, NULL, ?, ?, ?, ?, ?)",
+                (
+                    change.item_id,
+                    change.field,
+                    change.old_value,
+                    change.new_value,
+                    self._clock(),
+                    change.trigger_cause,
+                ),
+            )
+        except sqlite3.Error as exc:
+            self._conn.rollback()
+            raise MaintainChangeLogWriteFailed(
+                "change_log insert fail", item_id=change.item_id
+            ) from exc
+        self._conn.commit()
+        return 1
+
 
 def _status_old_value(change: StatusChange) -> str:
     if change.old_status == "Closed":
         return f"{change.old_status}:{change.old_close_reason}"
     return change.old_status
+
+
+_EDIT_COLUMNS: dict[str, str] = {"rationale": "rationale", "source": "source"}
+"""The only `items` columns `apply_item_edit` may write. The validator
+whitelists the field name first, and this keeps the f-string UPDATE honest
+even if a future caller forgets."""
 
 
 def _status_new_value(change: StatusChange) -> str:

@@ -2,7 +2,9 @@
 
 Step 02 adds `MaintainPorts` / `MaintainRequest` / `MaintainResult` and the
 `run_sweep` entry point here (it owns the store port). Step 03 adds the three
-validators and their human entry points. This module owns the read step.
+validators and their human entry points. Step 04 adds `run_edit_item`, which
+returns the edit changes directly (`MaintainResult` stays the sweep's shape).
+This module owns the read step.
 """
 
 from __future__ import annotations
@@ -13,11 +15,12 @@ from ember.maintain.apply_status import MaintainStorePort
 from ember.maintain.derive import derive_status_changes
 from ember.maintain.human_actions import (
     validate_close_item,
+    validate_edit_item,
     validate_reverse_supersedes,
     validate_set_status,
 )
 from ember.maintain.maintain_lookup import MaintainLookupPort
-from ember.maintain.rows import ItemState, MaintainSnapshot, StatusChange
+from ember.maintain.rows import EditChange, ItemState, MaintainSnapshot, StatusChange
 from ember.relate.rows import ChangeLogEntry
 
 
@@ -37,6 +40,8 @@ class MaintainRequest:
     reason: str | None = None
     to_status: str | None = None
     link_id: int | None = None
+    field: str | None = None
+    value: str | None = None
 
 
 @dataclass(frozen=True)
@@ -191,3 +196,25 @@ def run_reverse_supersedes(
     )
     applied = ports.store.apply_reversal(change, marker)
     return _build_result(changes, applied, snapshot)
+
+
+def run_edit_item(
+    ports: MaintainPorts, request: MaintainRequest
+) -> list[EditChange]:
+    """Write one item's rationale or source by hand, then return the changes.
+
+    Reads `request.item_id`, `request.field`, `request.value`. Returns the
+    single-element change list, or an **empty** list on a same-value no-op
+    (nothing applied, nothing reported, and `MaintainResult` stays the
+    sweep's shape, not stretched to carry this). Raises `MAINTAIN-001` /
+    `013` / `014` from the validator, `MAINTAIN-010` on a read failure,
+    `MAINTAIN-016` / `012` from the store.
+    """
+    snapshot = _load(ports.lookup)
+    changes = validate_edit_item(
+        snapshot, request.item_id, request.field, request.value
+    )
+    if not changes:
+        return []
+    ports.store.apply_item_edit(changes[0])
+    return changes

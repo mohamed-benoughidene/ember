@@ -10,7 +10,8 @@ from ember.relate.rows import Link
 
 class MaintainLookupPort(Protocol):
     def list_items(self) -> list[ItemState]:
-        """Return every item: id, type, status, close_reason, status_origin.
+        """Return every item: id, type, status, close_reason, status_origin,
+        plus the `rationale`/`source` authorial columns.
 
         Raise `MAINTAIN-010 ItemsReadFailed` on a read failure.
         """

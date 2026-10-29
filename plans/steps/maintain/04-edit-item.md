@@ -148,4 +148,48 @@ One in-place `items` column UPDATE + one append-only `change_log` INSERT, one tr
 
 ## 12. Build Notes (post-implementation)
 
-_Not started. Planned only; Gate 1 is open (`Decision: PENDING (maintainer)`)._
+Built 2026-10-29 on `feat/hardening`. Gate 1 was CLOSED before any code: the §12.0 ADR reads "Option A — text edits forbidden (maintainer, 2026-10-28)". **Option A only; no Option-B conditional was built.**
+
+**What landed** (one commit):
+
+- `ember/maintain/human_actions.py` — `validate_edit_item(snapshot, item_id, field, value) -> list[EditChange]`, the 4-input ceiling (I3). Order: `MAINTAIN-001` (item missing) -> `MAINTAIN-013` (field not in `rationale`/`source`/`statement`) -> `MAINTAIN-014` (writability gate `EDITABLE = {"rationale": "Decision", "source": "Finding"}`, which catches `statement` too). Same-value -> `[]`. `old_value` is the observed Phase-1 value, NULL stays NULL.
+- `ember/maintain/rows.py` — `ItemState` gains `rationale` / `source` (`str | None = None` defaults, I10), `EditChange` model added. `FakeMaintainLookup` needed no shape change, as planned.
+- `ember/maintain/run_maintain.py` — `MaintainRequest` gains `field` / `value`; `run_edit_item(ports, request) -> list[EditChange]` (`[]` = no-op, per the recorded §10 L2 §12.6 amendment).
+- `ember/maintain/apply_status.py` — the `MaintainStorePort` gains `apply_item_edit(change) -> int`.
+- `ember/adapters/sqlite.py` — the Phase-1 `list_items` SELECT grows `rationale`, `source`. `SqliteMaintainStore.apply_item_edit` follows the `apply_status_origin` pattern: one `items` UPDATE + one `change_log` INSERT (`field_changed` = the change's field, `old_value` = observed, `trigger_cause` from the change, `link_id` NULL), one `commit()`, `rollback()` in every `except`. `MAINTAIN-016` on the UPDATE, `MAINTAIN-012` on the INSERT. A module-level `_EDIT_COLUMNS` whitelist guards the f-string column name (the validator is the primary gate).
+- `ember/cli.py` — `ember edit-item --item N --field F --value V [--dry-run] [--db P]`. `--field`/`--value` are plain `required=True` `str`, not `click.Choice` — 013/014 fire from the command body. Success prints `item N: <field> edited`. Dry-run prints the pinned `item N: <field>: <old> -> <new> (dry-run)` and writes nothing. A no-op prints nothing, exit 0.
+- `ember/maintain/errors.py` — `EditFieldUnknown` (`MAINTAIN-013`), `EditTargetMismatch` (`MAINTAIN-014`), `ItemEditWriteFailed` (`MAINTAIN-016`). `MAINTAIN-001` reused; `MAINTAIN-012` reused. `015` / `017` left for step 05.
+
+**Option-B conditionals skipped** (Gate 1 landed Option A): §2's `statement` read growth, §4's `statement` writability, §6's `test_validate_edit_item_statement_happy_path_writes_ledger_row` and `test_014_narrows_to_type_mismatch_only_under_option_b` (both are step-05-conditional, never authored), §10's option-B widening. The `test_validate_edit_item_statement_under_option_a_raises_014` test exists in its Option-A form as planned.
+
+**Deviations / decisions recorded:**
+
+- `errors.py` is non-contiguous this step: it ends `...012, 013, 014, 016`. `015` (`RemoveLinkNotConfirmed`) and `017` (`RemoveLinkWriteFailed`) arrive with step 05 per §12.7. Error-code audit receipt: `git log -p ember/maintain/errors.py` shows nothing beyond 012 existed before this commit.
+- The dry-run rendering of a NULL `old_value` was not pinned by L2 §12.3 — chose `<null>` (`item 3: rationale: <null> -> x (dry-run)`). `""` (a prior blanking) renders as an empty string between the colons.
+- `tests/fakes.py::insert_item` was NOT extended (kept shared-seed-helper churn at zero): integration/CLI seeds set `rationale`/`source` with a direct `UPDATE` after `insert_item`.
+- The store raises `MAINTAIN-016` (not a bare `ValueError`) from the `_EDIT_COLUMNS` guard, so an unvalidated field can never surface as a non-`MAINTAIN-*` error at the CLI edge.
+
+**Plan amendments applied in this commit (per §10):** the rule-7 scoping line in `plans/master-plan.md` rule 7 (Option A wording); `plans/engine-query-plan.md` §0's `#19` owner cell -> Maintain §12 (`edit_item` landed, `remove_link` on Gate 2); the two writer-side `rationale`/`source` rows appended to the frozen §4.6 vocabulary table (the `link_removed` row waits for step 05). The §10 recorded L2 amendments (split into 04/05, return types, §12.8 combined-E2E ownership, gates rule) stay recorded here until an L2 amendment pass folds them in.
+
+**Test counts:** before 646 passed / 4 deselected. After: 668 passed / 4 deselected in 3.19s — 22 named tests added, all watched red at collection (`ImportError: cannot import name 'ItemEditWriteFailed'`) then green: 9 in `tests/maintain/test_edit_item.py` (8 unit + the step-local E2E), 5 in `tests/maintain/test_edit_item_integration.py`, 8 in `tests/maintain/test_edit_item_cli.py`. Integration failure vehicle exactly as §12.8 dictates: a test-local `DelegatingConnection` proxy that raises `sqlite3.Error` only on the target SQL and delegates everything else, including `rollback()`, to the real connection — a fake per T3, both injection tests assert the full rollback (column unchanged, zero `change_log` rows) **plus** the code (`016`, `012`).
+
+**CLI check (Rule S1, real run, real temp DB):**
+
+```
+$ ember edit-item --item 1 --field rationale --value "SQLite chosen - 5000-item ceiling, local file" --db cli-check.db
+item 1: rationale edited                     exit 0
+$ ember edit-item --item 1 --field bogus --value x ...
+error: MAINTAIN-013 EditFieldUnknown | ... | item_id=1 field=bogus    exit 1
+$ ember edit-item --item 1 --field statement --value x ...
+error: MAINTAIN-014 EditTargetMismatch | ... | item_id=1 field=statement   exit 1   (Option A)
+$ ember edit-item --item 1 --field rationale  (no --value)
+Error: Missing option '--value'.             exit 2
+$ ember edit-item --item 1 --field rationale --value "a brand new why" --dry-run ...
+item 1: rationale: SQLite chosen - 5000-item ceiling, local file -> a brand new why (dry-run)   exit 0, change_log count unchanged
+$ ember edit-item --item 1 --field rationale --value "SQLite chosen - ..." (the current value)
+                                             exit 0, no output, change_log count unchanged (zero rows)
+```
+
+**Ledger proof (real `ember history --item 1` after the real edit):** the new row renders `kind='unknown'`, `cause='user_edit_item'`, `field_changed='rationale'`, `old_value='old why'` (the prior text survives), `new_value='SQLite chosen - 5000-item ceiling, local file'`, and `items.rationale` itself carries the new text. Nothing crashed and no value was hidden — the unknown rendering IS the contract until Engine D's classifier extension (§12.9 item 4). Combined both-CLIs E2E owned by step 05 per §10.
+
+**Not done here:** `remove_link` and everything with it (step 05, Gate 2); the Query classifier extension; any migration (both writes land on migration 004's existing columns).

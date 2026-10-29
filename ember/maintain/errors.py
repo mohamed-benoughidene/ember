@@ -68,3 +68,18 @@ class StatusWriteFailed(MaintainError):
 class ChangeLogWriteFailed(MaintainError):
     code = "MAINTAIN-012"
     name = "ChangeLogWriteFailed"
+
+
+class EditFieldUnknown(MaintainError):
+    code = "MAINTAIN-013"
+    name = "EditFieldUnknown"
+
+
+class EditTargetMismatch(MaintainError):
+    code = "MAINTAIN-014"
+    name = "EditTargetMismatch"
+
+
+class ItemEditWriteFailed(MaintainError):
+    code = "MAINTAIN-016"
+    name = "ItemEditWriteFailed"
