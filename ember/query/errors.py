@@ -52,3 +52,10 @@ class QueryFilterInvalid(QueryError):
 
     code = "QUERY-006"
     name = "QueryFilterInvalid"
+
+
+class QuerySinceInvalid(QueryError):
+    """A `--since` value does not parse as an ISO-8601 datetime with an offset."""
+
+    code = "QUERY-007"
+    name = "QuerySinceInvalid"

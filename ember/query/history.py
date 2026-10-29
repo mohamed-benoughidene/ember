@@ -7,7 +7,7 @@ documents the writer's encoding, so the two cannot disagree.
 
 from __future__ import annotations
 
-from ember.query.rows import ChangeRow, HistoryEvent
+from ember.query.rows import ChangeRow, HistoryEvent, HistoryPage
 from ember.relate.rows import Link
 
 UNKNOWN_KIND = "unknown"
@@ -93,13 +93,23 @@ def history(
     rows: list[ChangeRow],
     links: list[Link],
     item_id: int | None,
+    page: HistoryPage = HistoryPage(),
 ) -> list[HistoryEvent]:
     """Return the ledger events for `item_id`, or the whole ledger.
 
     A row belongs to an item when its `item_id` is that item **or** its
     `link_id` names a link touching that item. A row matching both appears
     once. A row with no subject and no link belongs to no item and appears in
-    the global view only. Order is `(timestamp, id)`.
+    the global view only. Order is `(timestamp, id)`, unchanged.
+
+    The window composes strictly after that union and sort: `page.since`
+    keeps rows with `timestamp >= since` as opaque ISO text (the exact
+    comparison the sort already uses, the validator has normalised it to
+    UTC), then `page.offset` skips, then `page.limit` caps. `None` on an
+    axis means no cut, so the default page crops nothing and the no-page
+    call behaves exactly as before. A stored timestamp that cannot parse
+    renders everywhere today but is invisible to a `--since` view (a
+    hand-edited row, recorded here, not hidden).
     """
     links_by_id = {int(link.id): link for link in links if link.id is not None}
     selected: list[tuple[ChangeRow, HistoryEvent]] = []
@@ -108,4 +118,11 @@ def history(
             continue
         selected.append((row, _to_event(row, links_by_id.get(row.link_id))))
     selected.sort(key=lambda pair: (pair[0].timestamp, pair[0].id))
-    return [event for _, event in selected]
+    events = [event for _, event in selected]
+    if page.since is not None:
+        events = [event for event in events if event.timestamp >= page.since]
+    if page.offset is not None:
+        events = events[page.offset :]
+    if page.limit is not None:
+        events = events[: page.limit]
+    return events

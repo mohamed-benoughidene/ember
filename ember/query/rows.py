@@ -69,6 +69,21 @@ class TopicFilter(BaseModel):
     limit: int | None = None
 
 
+class HistoryPage(BaseModel):
+    """What `history` may crop after the sort (V1.x amendment D).
+
+    `None` means no restriction on that axis: no cap, no skip, no time cut.
+    `limit` 0 is an explicit empty result, never an error. `since` is the
+    normalised (UTC, `isoformat`) ISO-8601 boundary the validator writes back,
+    so the core compares opaque ISO text the same way the sort already does.
+    The item scope never lives here: it stays the raw `item_id` parameter (D3).
+    """
+
+    limit: int | None = None
+    offset: int | None = None
+    since: str | None = None
+
+
 class SearchHit(BaseModel):
     """One `topic_search` result: the score plus enough to read the item.
 

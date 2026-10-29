@@ -9,6 +9,7 @@ from ember.query.current_state import current_state
 from ember.query.history import history
 from ember.query.lookup import QueryLookupPort
 from ember.query.query_gatekeeper import (
+    validate_history_page,
     validate_query_item,
     validate_query_text,
     validate_topic_filter,
@@ -19,7 +20,7 @@ from ember.query.render import (
     render_topic_search,
     render_why,
 )
-from ember.query.rows import TopicFilter
+from ember.query.rows import HistoryPage, TopicFilter
 from ember.query.topic_search import topic_search
 from ember.query.why import why
 
@@ -52,13 +53,20 @@ def run_why(lookup: QueryLookupPort, item_id: int) -> str:
     return render_why(why(lookup.list_items(), lookup.list_links(), item_id))
 
 
-def run_history(lookup: QueryLookupPort, item_id: int | None) -> str:
+def run_history(
+    lookup: QueryLookupPort,
+    item_id: int | None,
+    page: HistoryPage = HistoryPage(),
+) -> str:
     """Show one item's ledger events, or the whole ledger when id is `None`.
 
-    The item check runs **only** when the user named an item: the global view
-    makes no existence lookup and can never raise QUERY-001.
+    The pipeline order is validate the page (QUERY-006 / QUERY-007) before
+    any load, then the item check **only** when the user named an item (the
+    global view makes no existence lookup and can never raise QUERY-001),
+    then load, derive (window inside), render.
     """
+    page = validate_history_page(page)
     if item_id is not None:
         validate_query_item(lookup, item_id)
-    events = history(lookup.list_change_log(), lookup.list_links(), item_id)
+    events = history(lookup.list_change_log(), lookup.list_links(), item_id, page)
     return render_history(events, item_id)

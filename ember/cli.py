@@ -64,7 +64,7 @@ from ember.maintain.run_maintain import (
     run_set_status,
     run_sweep,
 )
-from ember.query.rows import TopicFilter
+from ember.query.rows import HistoryPage, TopicFilter
 from ember.query.run_query import (
     run_current_state,
     run_history,
@@ -782,21 +782,50 @@ def why_command(item_id: int, db_path: str) -> None:
     help="Item id to show. Omit it for the whole ledger.",
 )
 @click.option(
+    "--limit",
+    "limit",
+    type=int,
+    default=None,
+    help="Show at most N events after the cut. Omit it for no cap.",
+)
+@click.option(
+    "--offset",
+    "offset",
+    type=int,
+    default=None,
+    help="Skip N events after the cut. Omit it to skip none.",
+)
+@click.option(
+    "--since",
+    "since",
+    default=None,
+    help=(
+        "Keep events at or after this ISO-8601 datetime. The value must name"
+        " an offset (for example 2026-01-15T00:00:00+00:00) and is normalised"
+        " to UTC."
+    ),
+)
+@click.option(
     "--db",
     "db_path",
     default=DEFAULT_DB_PATH,
     help="SQLite database path.",
 )
-def history_command(item_id: int | None, db_path: str) -> None:
+def history_command(
+    item_id: int | None, limit: int | None, offset: int | None, since: str | None, db_path: str
+) -> None:
     """Show the change ledger: one item's events, or the whole ledger.
 
     Each event carries what changed and why. With no `--item` every row is
-    shown, including the rejected-proposal rows that belong to no item.
+    shown, including the rejected-proposal rows that belong to no item. The
+    window composes on both views: `--since` cuts by time first, then
+    `--offset` skips, then `--limit` caps, always behind the ledger order.
     Read-only, like every query command.
     """
     try:
         conn = open_query_database(db_path)
-        output = run_history(SqliteQueryContext(conn), item_id)
+        page = HistoryPage(limit=limit, offset=offset, since=since)
+        output = run_history(SqliteQueryContext(conn), item_id, page)
     except EmberError as exc:
         click.echo(f"error: {exc.log_line()}", err=True)
         raise SystemExit(1)
