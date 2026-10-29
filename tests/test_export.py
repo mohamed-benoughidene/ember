@@ -603,3 +603,18 @@ def test_cli_empty_db_exports_with_zero_counts_i8(db_path) -> None:
     assert "# as of (latest ledger event): (no ledger rows)" in result.output
     assert "== items (0) ==" in result.output
     assert "== ledger (0) ==" in result.output
+
+
+def test_export_help_ends_with_restorable_warning() -> None:
+    result = CliRunner().invoke(main, ["export", "--help"])
+
+    assert result.exit_code == 0
+    # Click wraps the help text at the terminal width, so compare it
+    # whitespace-normalized. The description paragraph ends with the
+    # pinned not-restorable warning, before the Options section.
+    text = " ".join(result.output.split())
+    description, _, _ = text.partition("Options:")
+    assert description.rstrip().endswith(
+        "This file is for reading without Ember. It is not restorable into"
+        " Ember; that is the backup's job (GLOSSARY)."
+    )

@@ -1,4 +1,4 @@
-"""`ember export`: one readable text dump of the whole knowledge base (L2 §5.2).
+"""`ember export`: one readable text rendering of the whole knowledge base (L2 §5.2).
 
 The whole job is a B1 rendering: gather every `items`, `links`, `sources`
 and `change_log` row, render them as human-first plain text, emit to a
@@ -47,6 +47,7 @@ import sqlite3
 from pydantic import BaseModel
 
 from ember.adapters.errors import OverwriteRefused, OutputWriteFailed
+from ember.adapters.paths import same_path
 from ember.query.rows import ChangeRow
 from ember.relate.rows import Link
 
@@ -206,7 +207,7 @@ def refuse_self_overwrite(db_path: str, out_path: str) -> None:
     resolved absolute paths otherwise. Side effects: none, the check never
     touches either file. Raised codes: EXPORT-002 OverwriteRefused.
     """
-    if _same_file(db_path, out_path):
+    if same_path(db_path, out_path):
         raise OverwriteRefused(
             "output path is the knowledge base file",
             db_path=db_path,
@@ -228,16 +229,6 @@ def write_export(text: str, out_path: str) -> None:
             handle.write(text)
     except OSError as exc:
         raise OutputWriteFailed("output write failed", out=out_path) from exc
-
-
-def _same_file(first: str, second: str) -> bool:
-    """True when both paths name one existing file, or one canonical path."""
-    if os.path.exists(first) and os.path.exists(second):
-        try:
-            return os.path.samefile(first, second)
-        except OSError:
-            return False
-    return os.path.abspath(first) == os.path.abspath(second)
 
 
 def _header_lines(data: ExportData) -> list[str]:

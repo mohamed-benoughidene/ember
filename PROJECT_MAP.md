@@ -56,8 +56,11 @@ Earlier logo and character images, kept for history.
 - `archive/assets/Molten Ember Shard Emblem.png`
 
 ## Planning Documents (`plans/`)
-- `plans/master-plan.md`: L1 System Master Plan. 4 engines (Capture, Relate, Maintain, Query), shared SQLite storage, global rules, test strategy, L1 §0 stack decisions.
+- `plans/master-plan.md`: L1 System Master Plan. 4 engines (Capture, Relate, Maintain, Query), shared SQLite storage, global rules, test strategy, L1 §0 stack decisions. §8 now also holds the approved Engine E amendment (Utility: backup, export).
 - `plans/engine-capture-plan.md`: L2 Capture engine master plan. Pipeline phases 1-4 (source storage, AI proposal, gatekeeper, user confirm + write).
+- `plans/engine-utility-plan.md`: L2 Engine E (Utility) master plan, APPROVED 2026-10-29 after a 4-axis review panel. `ember backup` (online-API snapshot, `.old` rotation, verified read-back) and `ember export` (deterministic readable text, not restorable). §9 holds the 16-finding review log.
+- `plans/steps/utility/step-01-backup.md`: L3 Utility Step 1 plan. Backup: precheck+rotate, open read-only, snapshot, verify, report.
+- `plans/steps/utility/step-02-export.md`: L3 Utility Step 2 plan. Export: gather, pure render, guarded emit (EXPORT-002 self-overwrite refusal).
 - `plans/engine-relate-plan.md`: L2 Relate engine master plan. Pipeline phases 1-4 (load + filter, candidate pool, AI proposal, confirm + write).
 - `plans/steps/capture/01-source-storage.md`: L3 Step 1 plan. Phase 1, source dedup by content hash.
 - `plans/steps/capture/02-ai-port-call.md`: L3 Step 2 plan. Phase 2, AI proposal via `ItemProposerPort`.

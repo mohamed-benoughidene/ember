@@ -24,6 +24,7 @@ from ember.adapters.errors import (
     TargetWriteFailed,
     VerifyFailed,
 )
+from ember.adapters.paths import same_path
 from ember.adapters.sqlite import _connect_readonly
 
 _BACKUPS_TO_KEEP = 3
@@ -71,7 +72,7 @@ def _precheck_and_rotate(source_path: str, target_path: str) -> str | None:
     the target is a directory, is the knowledge base itself, or cannot be
     renamed aside.
     """
-    if _same_file(source_path, target_path):
+    if same_path(source_path, target_path):
         raise TargetWriteFailed(
             "target is the knowledge base itself", target_path=target_path
         )
@@ -174,16 +175,6 @@ def _verify(target_path: str) -> tuple[int, int]:
             "copy does not read back", target_path=target_path
         ) from exc
     return schema_version, item_count
-
-
-def _same_file(first: str, second: str) -> bool:
-    """True when both paths name one existing file, or one canonical path."""
-    if os.path.exists(first) and os.path.exists(second):
-        try:
-            return os.path.samefile(first, second)
-        except OSError:
-            return False
-    return os.path.abspath(first) == os.path.abspath(second)
 
 
 def _delete_quiet(path: str) -> None:

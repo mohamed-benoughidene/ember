@@ -966,7 +966,7 @@ def backup(target_path: str, db_path: str) -> None:
     help="SQLite database path.",
 )
 def export(out_path: str | None, db_path: str) -> None:
-    """Dump the whole knowledge base as one readable UTF-8 text file.
+    """Render the whole knowledge base as one readable UTF-8 text file.
 
     Deterministic: the same database renders byte-identical every time,
     because the header's time line is the newest ledger event, never the
@@ -974,7 +974,7 @@ def export(out_path: str | None, db_path: str) -> None:
     data and are excluded. Raw source text is preserved verbatim.
 
     This file is for reading without Ember. It is not restorable into
-    Ember because restoring is the backup's job (GLOSSARY).
+    Ember; that is the backup's job (GLOSSARY).
     """
     try:
         conn = open_query_database(db_path)
