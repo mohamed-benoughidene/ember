@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import Protocol
 
-from ember.maintain.rows import EditChange, StatusChange
+from ember.maintain.rows import EditChange, LinkChange, StatusChange
 from ember.relate.rows import ChangeLogEntry
 
 
@@ -39,5 +39,14 @@ class MaintainStorePort(Protocol):
         row in ONE transaction (the `apply_status_origin` pattern). Returns 1.
         Raises MAINTAIN-016 on the items UPDATE, MAINTAIN-012 on the
         change_log INSERT (both roll the whole write back).
+        """
+        ...
+
+    def apply_remove_link(self, change: LinkChange) -> int:
+        """Write the ONE removal (`UPDATE links SET status='Rejected'`) AND
+        its `link_removed` change_log row in ONE transaction. Never INSERT,
+        DELETE, or flip back. Returns 1. Raises MAINTAIN-017 on the links
+        UPDATE, MAINTAIN-012 on the change_log INSERT (both roll the whole
+        write back).
         """
         ...

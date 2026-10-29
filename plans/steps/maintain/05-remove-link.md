@@ -161,4 +161,51 @@ One in-place `links.status` UPDATE + one append-only `change_log` INSERT, one tr
 
 ## 12. Build Notes (post-implementation)
 
-_Not started. Planned only; Gate 2 is open (no #15 ruling recorded per hardening-schema-plan §10)._
+Built 2026-10-29 on `feat/hardening`. **Gate 2 was CLOSED before any code:** the #15 ruling is "keep the block" (recorded per `plans/hardening-schema-plan.md` §10, GitHub #15 closed). Consequence implemented: a removed pair stays reserved forever (`find_existing` reads any status, gatekeeper rule 9 keeps blocking), and the removal is the ONE `UPDATE links SET status='Confirmed' -> 'Rejected'`. INSERT, DELETE, flip-back, and any `reversed_at` write are all absent by construction. The Gate-1 check was done: the filled ADR text touches only item text and never reaches the links clause, so no extra Gate-1 constraint applied.
+
+**Cluster-1 dependency resolved:** `reversed_at` HAS landed on this branch (migration 010-era work, `apply_reversal` in `ember/adapters/sqlite.py:958`), so the §1 clause amendment applies **in full** (both named writes) and the db-check replay test was authored, not skipped.
+
+**What landed** (one commit):
+
+- `ember/maintain/human_actions.py` — `validate_remove_link(snapshot, link_id) -> list[LinkChange]`, 2 inputs. One Confirmed-row lookup; a reversed-but-Confirmed link passes (orthogonal to reversal); missing-or-not-Confirmed is ONE code, `MAINTAIN-015` with `link_id` in context (the Phase-1 Confirmed-only read cannot split the shapes, same conflation as `MAINTAIN-005`). A no-op is impossible by design (the recorded §12.10c I8 deviation: error, not silent success).
+- `ember/maintain/rows.py` — `LinkChange(link_id, old_status, new_status, trigger_cause, item_id)`, the exact §12.6 shape, `item_id` = the link's source.
+- `ember/maintain/run_maintain.py` — `run_remove_link(ports, request) -> list[LinkChange]` (always exactly 1 or raise; `request.link_id` already on `MaintainRequest`).
+- `ember/maintain/apply_status.py` — `MaintainStorePort` gains `apply_remove_link(change) -> int`.
+- `ember/adapters/sqlite.py` — `SqliteMaintainStore.apply_remove_link`: the ONE `UPDATE links SET status = ? WHERE id = ?` + one `change_log` INSERT (`field_changed='link_removed'`, `old_value` = the observed `Confirmed`, `item_id` = the link's source, `trigger_cause='user_remove_link'`, `link_id` = the id), one `commit()`, `rollback()` in every `except`. `MAINTAIN-017` on the UPDATE (carries `link_id`), `MAINTAIN-012` on the INSERT.
+- `ember/maintain/errors.py` — `RemoveLinkNotConfirmed` (`MAINTAIN-015`), `RemoveLinkWriteFailed` (`MAINTAIN-017`). The family is contiguous again: 012, 013, 014, 015, 016, 017. Error-code audit receipt: `git log -p ember/maintain/errors.py` at build time ended at 016, with 015/017 held free by step 04.
+- `ember/cli.py` — `ember remove-link --link N [--dry-run] [--db P]`. Success prints the §12.3 sample line verbatim, e.g. `link 1: supersedes 2 -> 1 removed (Confirmed -> Rejected)`. `--dry-run` prints the pinned `link N: Confirmed -> Rejected (dry-run)` and writes nothing, exit 0. Non-integer `--link` is Click exit 2; `MAINTAIN-*` is exit 1; boot path unchanged (`MAINTAIN-007`/`008`/`009`/`010`).
+
+**How the LinkChange display fields were resolved (§10's review amendment):** `LinkChange` keeps the 5-field §12.6 shape — no display fields added. The success line's `link_type source -> target` are read at the CLI edge from the SAME Phase-1 snapshot the command validates against, BEFORE the flip (step plan §3: "display only"; a removed link leaves the Confirmed-only read, so no post-flip read is possible). Cost stated: in the real-run path the CLI loads the snapshot once for display and `run_remove_link` loads it again inside; two Phase-1 reads per removal, accepted for shape honesty over cleverness. The dry-run path uses one load.
+
+**Deviations / deltas recorded:**
+
+- Combined-E2E file location: the orchestrating ticket summary said "the CLI test file"; the step plan (source of truth) pins it in §6 and §10 to `tests/maintain/test_remove_link.py` ("the ONE combined test lives here"). The plan was followed; the E2E lives in `test_remove_link.py`.
+- The reversed-then-removed marker assertion had to match reality: `apply_reversal` writes THREE rows carrying the link id (the item `status` restore, then the `link_reversed` marker), so the ledger for that link id is `["status", "link_reversed", "link_removed"]` — both markers present, order proven.
+- The §4.2 parameterized test asserts per-type seeded states are EXACTLY preserved after removal + sweep (zero rows written, `applied == 0`, `changed == []`), one param per link type with legal TYPE_COMPAT seeds, `supports` trivially true as planned.
+
+**Plan amendments applied in this commit (per §10):** `plans/engine-maintain-plan.md` §1's "Maintain never writes `links`" clause now names the TWO writes (this step's status UPDATE, and — cluster 1 having landed — `apply_reversal`'s `reversed_at` UPDATE); the `link_removed` writer-side row was appended to the frozen §4.6 vocabulary table, and the §4.6 note that held the seat for it was updated. The §12.9/§12.8 recorded L2 amendments (step split, E2E ownership, return types) stay recorded in §10 here until an L2 amendment pass folds them in, as in step 04.
+
+**Test counts:** before 668 passed / 4 deselected. After: **690 passed / 4 deselected** in ~3s — 22 named tests added, all watched red at collection (`ImportError: cannot import name 'RemoveLinkWriteFailed'`) then green: 4 in `tests/maintain/test_remove_link.py` (3 unit + the ONE combined E2E), 12 in `tests/maintain/test_remove_link_integration.py` (3 store tests, the 5-param sweep sweep, 2 named regressions, the FK-join proof, the db-check replay), 6 in `tests/maintain/test_remove_link_cli.py` (unknown, already-rejected, success, second removal, dry-run, non-integer). Injection vehicle exactly as §6 dictates: a test-local `DelegatingConnection` delegating proxy; both injection tests assert the full rollback (link still `Confirmed`, zero ledger rows) plus the code (`017`, `012`). `tests/test_architecture.py` passes unchanged (no new modules, T9).
+
+**CLI check (Rule S1, real run, real temp DB, items 1/2/3 = Decision/Decision/Question, link 1 = supersedes 2 -> 1 Confirmed, link 2 = answers 2 -> 3 Rejected):**
+
+```
+$ ember remove-link --link 1 --db cli-check.db
+link 1: supersedes 2 -> 1 removed (Confirmed -> Rejected)                  exit 0
+$ ember remove-link --link 1 --db cli-check.db        # again
+error: MAINTAIN-015 RemoveLinkNotConfirmed | ... | link_id=1               exit 1  (error, not no-op)
+$ ember remove-link --link 99 --db cli-check.db
+error: MAINTAIN-015 RemoveLinkNotConfirmed | ... | link_id=99              exit 1
+$ ember remove-link --link 2 --db cli-check.db        # a Rejected proposal
+error: MAINTAIN-015 RemoveLinkNotConfirmed | ... | link_id=2               exit 1
+$ ember remove-link --link abc --db cli-check.db
+Error: Invalid value for '--link': 'abc' is not a valid integer.           exit 2
+$ ember remove-link --link 1 --dry-run --db fresh.db
+link 1: Confirmed -> Rejected (dry-run)                                    exit 0; links unchanged (1 row, still Confirmed), change_log 0 rows
+$ ember db-check --db fresh.db         # after a REAL removal of link 1
+result: OK                                                                 exit 0 (0 FK violations, replay column == ledger)
+```
+
+**Combined E2E proof (real CLIs, one fresh DB):** `ember edit-item --item 1 --field rationale --value "chosen for the ceiling"` (exit 0) -> `ember remove-link --link 1` printing `link 1: depends_on 1 -> 2 removed (Confirmed -> Rejected)` (exit 0) -> `ember history --item 1` renders BOTH new rows `kind='unknown'` with raw values visible (`rationale: null -> chosen for the ceiling`; `link_removed: Confirmed -> Rejected`, `item 1`, `link 1`), then `ember db-check` exits 0. The same sequence is pinned as the ONE combined test `test_e2e_edit_item_then_remove_link_then_history_renders_unknown_kind`.
+
+**Not done here:** any link INSERT/DELETE path, any rule change to the relate gatekeeper (rule 9 stays "keep the block" per #15), any migration, any query change (the `link_removed` row renders `unknown` by design until the Engine D classifier work), `edit_item` rework. No linter exists in this repo (CI runs pytest only, which includes the architecture test and passed).

@@ -30,10 +30,11 @@ from ember.maintain.errors import (
     DbOpenFailed as MaintainDbOpenFailed,
     ItemEditWriteFailed as MaintainItemEditWriteFailed,
     ItemsReadFailed as MaintainItemsReadFailed,
+    RemoveLinkWriteFailed as MaintainRemoveLinkWriteFailed,
     SchemaOutdated as MaintainSchemaOutdated,
     StatusWriteFailed as MaintainStatusWriteFailed,
 )
-from ember.maintain.rows import EditChange, ItemState, StatusChange
+from ember.maintain.rows import EditChange, ItemState, LinkChange, StatusChange
 from ember.query.errors import (
     DbOpenFailed as QueryDbOpenFailed,
     ItemsReadFailed as QueryItemsReadFailed,
@@ -1088,6 +1089,56 @@ class SqliteMaintainStore:
             self._conn.rollback()
             raise MaintainChangeLogWriteFailed(
                 "change_log insert fail", item_id=change.item_id
+            ) from exc
+        self._conn.commit()
+        return 1
+
+    def apply_remove_link(self, change: LinkChange) -> int:
+        """Write the ONE removal and its `link_removed` ledger row atomically.
+
+        One implicit transaction, one `commit()` at the end: the `links`
+        status UPDATE (`Confirmed -> Rejected`, never an INSERT, never a
+        DELETE, never flipped back, `reversed_at` untouched) and the ledger
+        INSERT (`field_changed='link_removed'`, `item_id` = the link's
+        source, the `insert_link_with_log` discipline) are all-or-nothing,
+        so the row can never flip without its ledger row (Constitution D3).
+
+        Return `1`. Raise `RemoveLinkWriteFailed` (MAINTAIN-017) when the
+        `links` UPDATE fails, and `ChangeLogWriteFailed` (MAINTAIN-012) when
+        the `change_log` INSERT fails. Either failure rolls the whole write
+        back.
+        """
+        try:
+            self._conn.execute(
+                "UPDATE links SET status = ? WHERE id = ?",
+                (change.new_status, change.link_id),
+            )
+        except sqlite3.Error as exc:
+            self._conn.rollback()
+            raise MaintainRemoveLinkWriteFailed(
+                "link removal update fail", link_id=change.link_id
+            ) from exc
+        try:
+            self._conn.execute(
+                "INSERT INTO change_log"
+                " (item_id, link_id, field_changed, old_value, new_value,"
+                " timestamp, trigger_cause) VALUES (?, ?, 'link_removed', ?,"
+                " ?, ?, ?)",
+                (
+                    change.item_id,
+                    change.link_id,
+                    change.old_status,
+                    change.new_status,
+                    self._clock(),
+                    change.trigger_cause,
+                ),
+            )
+        except sqlite3.Error as exc:
+            self._conn.rollback()
+            raise MaintainChangeLogWriteFailed(
+                "change_log insert fail",
+                item_id=change.item_id,
+                link_id=change.link_id,
             ) from exc
         self._conn.commit()
         return 1

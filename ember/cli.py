@@ -47,7 +47,11 @@ from ember.capture.item_proposal import (
 from ember.capture.source_storage import StoredSource, store_source
 from ember.errors import EmberError
 from ember.maintain.derive import derive_status_changes
-from ember.maintain.human_actions import validate_close_item, validate_edit_item
+from ember.maintain.human_actions import (
+    validate_close_item,
+    validate_edit_item,
+    validate_remove_link,
+)
 from ember.maintain.report import format_report
 from ember.maintain.run_maintain import (
     MaintainPorts,
@@ -55,6 +59,7 @@ from ember.maintain.run_maintain import (
     _load,
     run_close_item,
     run_edit_item,
+    run_remove_link,
     run_reverse_supersedes,
     run_set_status,
     run_sweep,
@@ -584,6 +589,84 @@ def edit_item(
             )
         else:
             click.echo(f"item {change.item_id}: {change.field} edited")
+
+
+@main.command("remove-link")
+@click.option(
+    "--link",
+    "link_id",
+    type=int,
+    required=True,
+    help="Link id to remove.",
+)
+@click.option(
+    "--dry-run",
+    is_flag=True,
+    default=False,
+    help="Print the planned status flip and write nothing.",
+)
+@click.option(
+    "--db",
+    "db_path",
+    default=DEFAULT_DB_PATH,
+    help="SQLite database path.",
+)
+def remove_link(link_id: int, dry_run: bool, db_path: str) -> None:
+    """Remove one confirmed relationship edge, ledger row always.
+
+    The removal is ONE status flip (`Confirmed -> Rejected`) plus its
+    `link_removed` ledger row in one transaction: the row is never deleted
+    (the ledger's foreign key refuses that) and never flipped back, so a
+    removed pair stays blocked forever (the #15 ruling). A second removal of
+    the same link is an error (MAINTAIN-015), not a silent no-op. The human
+    invoking the command IS the confirmation and no AI runs in this path.
+    """
+    try:
+        conn = open_maintain_database(db_path)
+        ports = MaintainPorts(
+            lookup=SqliteMaintainContext(conn),
+            store=SqliteMaintainStore(conn),
+        )
+        # The display-only link line is read from the same Phase-1 snapshot
+        # the command writes from, BEFORE the flip (a removed link leaves
+        # the Confirmed-only read). Step plan 05 §2/§3: display fields are
+        # not carried on LinkChange.
+        snapshot = _load(ports.lookup)
+        link = _confirmed_link(snapshot, link_id)
+        if dry_run:
+            changes = validate_remove_link(snapshot, link_id)
+        else:
+            changes = run_remove_link(
+                ports, MaintainRequest(link_id=link_id)
+            )
+    except EmberError as exc:
+        click.echo(f"error: {exc.log_line()}", err=True)
+        raise SystemExit(1)
+    for change in changes:
+        if dry_run:
+            click.echo(
+                f"link {change.link_id}: {change.old_status} ->"
+                f" {change.new_status} (dry-run)"
+            )
+        elif link is not None:
+            click.echo(
+                f"link {change.link_id}: {link.link_type}"
+                f" {link.source_item_id} -> {link.target_item_id} removed"
+                f" ({change.old_status} -> {change.new_status})"
+            )
+        else:
+            click.echo(
+                f"link {change.link_id}: {change.old_status} ->"
+                f" {change.new_status} removed"
+            )
+
+
+def _confirmed_link(snapshot, link_id: int):
+    """Find one confirmed link in the snapshot, or None (display-only read)."""
+    for link in snapshot.links:
+        if link.id == link_id and link.status == "Confirmed":
+            return link
+    return None
 
 
 @main.command("current-state")

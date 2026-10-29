@@ -80,6 +80,16 @@ class EditTargetMismatch(MaintainError):
     name = "EditTargetMismatch"
 
 
+class RemoveLinkNotConfirmed(MaintainError):
+    code = "MAINTAIN-015"
+    name = "RemoveLinkNotConfirmed"
+
+
 class ItemEditWriteFailed(MaintainError):
     code = "MAINTAIN-016"
     name = "ItemEditWriteFailed"
+
+
+class RemoveLinkWriteFailed(MaintainError):
+    code = "MAINTAIN-017"
+    name = "RemoveLinkWriteFailed"

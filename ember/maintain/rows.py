@@ -66,3 +66,22 @@ class EditChange(BaseModel):
     old_value: str | None
     new_value: str
     trigger_cause: str
+
+
+class LinkChange(BaseModel):
+    """One link's intended removal (Phase 2 output).
+
+    The ONE write it describes is `UPDATE links SET status='Rejected'`. It
+    never INSERTs, DELETEs, or flips `Rejected` back. `old_status` is the
+    observed Phase-1 value, and `item_id` is the link's **source** (Relate's
+    convention, stated so Query guesses nothing, engine-query-plan §4.6).
+    The link's type/target for the report line are display-only and are read
+    from the Phase-1 snapshot at the CLI edge (step plan 05 §3), never
+    carried here.
+    """
+
+    link_id: int
+    old_status: str
+    new_status: str
+    trigger_cause: str
+    item_id: int

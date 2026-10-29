@@ -1,12 +1,12 @@
-"""Pure validators for the four human Maintain commands.
+"""Pure validators for the human Maintain commands.
 
 Each validator reads a `MaintainSnapshot` and returns the list of changes
-(`StatusChange` / `EditChange`) the store should apply. No I/O, no clock, no
-DB (T1): the snapshot is the whole world, and the store port does the writing
-(B3, T2).
+(`StatusChange` / `EditChange` / `LinkChange`) the store should apply. No
+I/O, no clock, no DB (T1): the snapshot is the whole world, and the store
+port does the writing (B3, T2).
 
-The three are the authoritative primary changes of their commands, so each
-passes its primary change to `merge_and_filter(..., exempt=primary)` — a human
+The first three are the authoritative primary changes of their commands, so
+each passes its primary change to `merge_and_filter(..., exempt=primary)` — a human
 may move an item down (`Challenged -> Active`, `Closed -> Active`) or sideways
 (`Challenged -> Closed`), bypassing the escalation-only ladder and the manual
 shield. The rule-2 fan-out is *not* exempt: a dependent already `Challenged`
@@ -23,10 +23,17 @@ from ember.maintain.errors import (
     EditTargetMismatch,
     ItemAlreadyClosed,
     MaintainItemNotFound,
+    RemoveLinkNotConfirmed,
     ReversalPreconditionFailed,
     StatusTransitionInvalid,
 )
-from ember.maintain.rows import EditChange, ItemState, MaintainSnapshot, StatusChange
+from ember.maintain.rows import (
+    EditChange,
+    ItemState,
+    LinkChange,
+    MaintainSnapshot,
+    StatusChange,
+)
 
 CLOSE_REASONS: frozenset[str] = frozenset(
     {"answered", "invalidated", "superseded", "reversed", "expired"}
@@ -305,5 +312,51 @@ def validate_edit_item(
             old_value=old_value,
             new_value=value,
             trigger_cause="user_edit_item",
+        )
+    ]
+
+
+def validate_remove_link(
+    snapshot: MaintainSnapshot, link_id: int
+) -> list[LinkChange]:
+    """Validate a `remove-link` command and return the change to apply.
+
+    Input: the snapshot, the `--link` id. Output: a single-element list with
+    the removal (`Confirmed -> Rejected`, `trigger_cause='user_remove_link'`,
+    `item_id` = the link's source). A no-op is impossible by design: a
+    missing-or-not-Confirmed link is ONE failure (MAINTAIN-015), so there is
+    no silent-success shape (the recorded I8 deviation, the MAINTAIN-004
+    precedent).
+
+    A reversed-but-Confirmed link is ACCEPTED (orthogonal to reversal, Gap C):
+    it is still a Confirmed row, and the ledger ends with both a
+    `link_reversed` and a `link_removed` row.
+
+    Raises: `MAINTAIN-015` (no Confirmed link with that id, a Phase-1
+    Confirmed-only read cannot distinguish "no such row" from "not
+    Confirmed", same conflation as MAINTAIN-005, carries `link_id`).
+    Side effects: none (pure). The one `links` UPDATE is the store's job,
+    never here (B1/B3).
+    """
+    link = next(
+        (
+            link
+            for link in snapshot.links
+            if link.id == link_id and link.status == "Confirmed"
+        ),
+        None,
+    )
+    if link is None:
+        raise RemoveLinkNotConfirmed(
+            "remove-link: no Confirmed link with that id", link_id=link_id
+        )
+
+    return [
+        LinkChange(
+            link_id=link.id,
+            old_status=link.status,
+            new_status="Rejected",
+            trigger_cause="user_remove_link",
+            item_id=link.source_item_id,
         )
     ]

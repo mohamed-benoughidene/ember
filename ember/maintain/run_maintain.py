@@ -4,7 +4,8 @@ Step 02 adds `MaintainPorts` / `MaintainRequest` / `MaintainResult` and the
 `run_sweep` entry point here (it owns the store port). Step 03 adds the three
 validators and their human entry points. Step 04 adds `run_edit_item`, which
 returns the edit changes directly (`MaintainResult` stays the sweep's shape).
-This module owns the read step.
+Step 05 adds `run_remove_link`, the same single-element shape. This module
+owns the read step.
 """
 
 from __future__ import annotations
@@ -16,11 +17,18 @@ from ember.maintain.derive import derive_status_changes
 from ember.maintain.human_actions import (
     validate_close_item,
     validate_edit_item,
+    validate_remove_link,
     validate_reverse_supersedes,
     validate_set_status,
 )
 from ember.maintain.maintain_lookup import MaintainLookupPort
-from ember.maintain.rows import EditChange, ItemState, MaintainSnapshot, StatusChange
+from ember.maintain.rows import (
+    EditChange,
+    ItemState,
+    LinkChange,
+    MaintainSnapshot,
+    StatusChange,
+)
 from ember.relate.rows import ChangeLogEntry
 
 
@@ -217,4 +225,22 @@ def run_edit_item(
     if not changes:
         return []
     ports.store.apply_item_edit(changes[0])
+    return changes
+
+
+def run_remove_link(
+    ports: MaintainPorts, request: MaintainRequest
+) -> list[LinkChange]:
+    """Remove one confirmed link by hand: load, validate, apply the ONE flip.
+
+    Reads `request.link_id`. Returns the single-element change list. A no-op
+    is impossible by design (MAINTAIN-015 eats it, an error not a silent
+    success). Raises `MAINTAIN-015` from the validator, `MAINTAIN-010` on a
+    read failure, `MAINTAIN-017` / `012` from the store. The store writes the
+    one `links` status UPDATE and its `link_removed` ledger row in one
+    transaction, and never touches `reversed_at` (step-05 §4.1).
+    """
+    snapshot = _load(ports.lookup)
+    changes = validate_remove_link(snapshot, request.link_id)
+    ports.store.apply_remove_link(changes[0])
     return changes
