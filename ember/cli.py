@@ -53,6 +53,7 @@ from ember.maintain.human_actions import (
     validate_remove_link,
 )
 from ember.maintain.report import format_report
+from ember.maintain.rows import MaintainSnapshot
 from ember.maintain.run_maintain import (
     MaintainPorts,
     MaintainRequest,
@@ -74,6 +75,7 @@ from ember.query.run_query import (
 from ember.relate.candidate_pool import build_candidate_pool
 from ember.relate.errors import UserAbort as RelateUserAbort
 from ember.relate.load_filter import load_item_candidates, load_latest_candidates
+from ember.relate.rows import Link
 from ember.relate.rows import Pool
 from ember.relate.run_relate import RelatePorts, RelateRequest, run_relate
 
@@ -662,7 +664,7 @@ def remove_link(link_id: int, dry_run: bool, db_path: str) -> None:
             )
 
 
-def _confirmed_link(snapshot, link_id: int):
+def _confirmed_link(snapshot: MaintainSnapshot, link_id: int) -> Link | None:
     """Find one confirmed link in the snapshot, or None (display-only read)."""
     for link in snapshot.links:
         if link.id == link_id and link.status == "Confirmed":

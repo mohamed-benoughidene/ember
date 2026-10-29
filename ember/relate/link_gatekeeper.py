@@ -126,7 +126,10 @@ def validate_add_link(
     # 9. No duplicate link.
     duplicate = lookup.find_existing(source, target, draft.link_type)
     if duplicate is not None:
-        detail = f"link {duplicate.id} exists"
+        detail = (
+            f"link {duplicate.id} exists "
+            f"({duplicate.source_item_id} -> {duplicate.target_item_id})"
+        )
         if duplicate.reversed_at is not None:
             detail += " (reversed)"
         return RejectedLink(code=DuplicateLink.code, detail=detail)

@@ -140,7 +140,7 @@ def test_apply_reversal_rolls_back_on_marker_fk_violation(db_path) -> None:
 class _ColumnUpdateFails:
     """Connection proxy whose `reversed_at` UPDATE is injected to fail.
 
-    Only the pairing column statement raises; every other call is forwarded to
+    Only the pairing column statement raises. Every other call is forwarded to
     the real connection. This is the fault injection for the first half of the
     pairing rule (L2 §6): the failure must undo the whole write.
     """

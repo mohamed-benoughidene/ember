@@ -169,7 +169,9 @@ def test_gatekeeper_rejections_carry_codes_and_detail():
     assert result.accepted == []
     assert result.rejected == 1
     assert result.gatekeeper_rejections == [
-        RejectedLink(code="RELATE-009", detail="link 9 exists")
+        RejectedLink(
+            code="RELATE-009", detail="link 9 exists (1 -> 2)"
+        )
     ]
 
 

@@ -44,7 +44,7 @@ INSERT INTO link_compat (source_type, target_type, link_type) VALUES
     ('Question', 'Question', 'supersedes');
 
 -- §8 symmetric pre-assertion for links (decision closed as option B): migration
--- dies if any existing links row violates TYPE_COMPAT — a pre-existing illegal
+-- dies if any existing links row violates TYPE_COMPAT. A pre-existing illegal
 -- pair must not migrate silently. Same throwaway-guard pattern as above.
 CREATE TABLE _guard_011_links (bad INTEGER NOT NULL CHECK (bad = 0));
 INSERT INTO _guard_011_links (bad)

@@ -185,7 +185,7 @@ def run_reverse_supersedes(
     `005` from the validator, `MAINTAIN-010` on a read failure, `MAINTAIN-011` /
     `012` from the store. The reversal writes the item restore, the `status`
     row, the `reversed_at` column on the `links` row, and the `link_reversed`
-    marker row in one transaction from one clock read (L2 §6 pairing rule); it
+    marker row in one transaction from one clock read (L2 §6 pairing rule). It
     never sets the shield (step-03 §4.3).
     """
     snapshot = _load(ports.lookup)

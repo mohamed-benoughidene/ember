@@ -62,37 +62,41 @@ def check_database(db_path: str) -> DbCheckReport:
         )
     try:
         conn = _connect_readonly(db_path)
-        try:
-            lines = []
-            version = _read_version(conn)
-            lines.append(f"version: {version}")
-            unmet = [f"{name} needs {floor}" for name, floor in FLOORS if version < floor]
-            if unmet:
-                lines.append("floors: unmet - " + ", ".join(unmet))
-                lines.append(f"result: {DRIFT}")
-                return DbCheckReport(lines, DRIFT)
-            drifted = False
-            lines.append(_floors_line())
-            line, hit = _triggers_line(conn)
-            lines.append(line)
-            drifted = drifted or hit
-            line, hit = _link_compat_line(conn)
-            lines.append(line)
-            drifted = drifted or hit
-            line, hit = _foreign_key_line(conn)
-            lines.append(line)
-            drifted = drifted or hit
-            line, hit = _replay_line(conn)
-            lines.append(line)
-            drifted = drifted or hit
-            lines.append(f"result: {DRIFT if drifted else OK}")
-            return DbCheckReport(lines, DRIFT if drifted else OK)
-        finally:
-            conn.close()
     except sqlite3.Error as exc:
         return DbCheckReport(
             [f"result: {UNREADABLE}"], UNREADABLE, detail=f"db open fail: {exc}"
         )
+    try:
+        lines = []
+        version = _read_version(conn)
+        lines.append(f"version: {version}")
+        unmet = [f"{name} needs {floor}" for name, floor in FLOORS if version < floor]
+        if unmet:
+            lines.append("floors: unmet - " + ", ".join(unmet))
+            lines.append(f"result: {DRIFT}")
+            return DbCheckReport(lines, DRIFT)
+        drifted = False
+        lines.append(_floors_line())
+        line, hit = _triggers_line(conn)
+        lines.append(line)
+        drifted = drifted or hit
+        line, hit = _link_compat_line(conn)
+        lines.append(line)
+        drifted = drifted or hit
+        line, hit = _foreign_key_line(conn)
+        lines.append(line)
+        drifted = drifted or hit
+        line, hit = _replay_line(conn)
+        lines.append(line)
+        drifted = drifted or hit
+        lines.append(f"result: {DRIFT if drifted else OK}")
+        return DbCheckReport(lines, DRIFT if drifted else OK)
+    except sqlite3.Error as exc:
+        return DbCheckReport(
+            [f"result: {UNREADABLE}"], UNREADABLE, detail=f"db read fail: {exc}"
+        )
+    finally:
+        conn.close()
 
 
 def _read_version(conn: sqlite3.Connection) -> int:

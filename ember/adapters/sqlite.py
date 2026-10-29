@@ -59,6 +59,11 @@ _MIGRATIONS_MODULE = "ember.adapters.migrations"
 
 _BACKUPS_TO_KEEP = 3
 
+# One definition for "a supersedes edge the cycle rules walk" (rule 8/9): the
+# row is Confirmed and was never reversed. Shared by supersedes_ancestors and
+# supersedes_blocking_link so the two walks can never diverge.
+LIVE_SUPERSEDES_EDGE = "status = 'Confirmed' AND reversed_at IS NULL"
+
 
 def _connect(db_path: str) -> sqlite3.Connection:
     """Open a raw SQLite connection with row access by name and foreign keys on."""
@@ -248,7 +253,7 @@ def _backup_database(conn: sqlite3.Connection, current: int) -> None:
 
     The copy is `<db>.bak-v<current>` (D7), taken with `copy2` so metadata
     survives. Retention: keep the newest 3 `<db>.bak-v*` files, delete older.
-    Raise the raw `OSError` on failure; per-engine boot call sites wrap it.
+    Raise the raw `OSError` on failure. Per-engine boot call sites wrap it.
     """
     db_path = _database_file(conn)
     if db_path is None:
@@ -613,7 +618,7 @@ class SqliteLinkContext:
                 rows = self._conn.execute(
                     "SELECT target_item_id FROM links"
                     " WHERE source_item_id = ? AND link_type = 'supersedes'"
-                    " AND status = 'Confirmed' AND reversed_at IS NULL",
+                    f" AND {LIVE_SUPERSEDES_EDGE}",
                     (current,),
                 ).fetchall()
                 for row in rows:
@@ -645,7 +650,7 @@ class SqliteLinkContext:
                 "SELECT id, source_item_id, target_item_id, link_type, status,"
                 " created_at, reversed_at FROM links"
                 " WHERE link_type = 'supersedes'"
-                " AND status = 'Confirmed' AND reversed_at IS NULL"
+                f" AND {LIVE_SUPERSEDES_EDGE}"
                 " ORDER BY id"
             ).fetchall()
         except sqlite3.Error as exc:
@@ -966,9 +971,9 @@ class SqliteMaintainStore:
 
         The adapter owns time: it stamps all three writes from ONE
         `self._clock()` read and **overwrites** the passed `marker.timestamp`
-        (the marker's timestamp is a placeholder, not trusted). One read is
-        what keeps `links.reversed_at` == the marker's `timestamp` by
-        construction; a second read would break the db-check replay rule.
+        (the marker's timestamp is a placeholder, not trusted). One read keeps
+        `links.reversed_at` == the marker's `timestamp` by construction:
+        a second read would break the db-check replay rule.
 
         Return `1`. Raise `StatusWriteFailed` (MAINTAIN-011) when the `items`
         UPDATE or the `reversed_at` UPDATE fails, and

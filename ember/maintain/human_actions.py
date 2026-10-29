@@ -6,8 +6,8 @@ I/O, no clock, no DB (T1): the snapshot is the whole world, and the store
 port does the writing (B3, T2).
 
 The first three are the authoritative primary changes of their commands, so
-each passes its primary change to `merge_and_filter(..., exempt=primary)` — a human
-may move an item down (`Challenged -> Active`, `Closed -> Active`) or sideways
+each passes its primary change to `merge_and_filter(..., exempt=primary)` because a
+human may move an item down (`Challenged -> Active`, `Closed -> Active`) or sideways
 (`Challenged -> Closed`), bypassing the escalation-only ladder and the manual
 shield. The rule-2 fan-out is *not* exempt: a dependent already `Challenged`
 or `Closed` is not re-challenged (step-03 §4.4).
