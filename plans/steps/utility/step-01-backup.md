@@ -48,3 +48,74 @@ No rollback — the command writes nothing to the source; its only artifacts are
 ## Build Notes
 
 *(post-implementation: what landed, suite numbers, deviations)*
+
+What landed (2026-10-29, branch `feat/data-safety`, one commit):
+
+- `ember/adapters/errors.py`: `BackupError` (`BACKUP-000`, never raised directly)
+  plus the four leaves `SourceOpenFailed` (`BACKUP-001`), `SourceInvalid`
+  (`BACKUP-002`), `TargetWriteFailed` (`BACKUP-003`), `VerifyFailed`
+  (`BACKUP-004`), subclassing `ember.errors.EmberError` after the
+  `ember/query/errors.py` base-class pattern.
+- `ember/adapters/backup.py`: `create_backup(source_path, target_path) ->
+  BackupReport` (frozen-shape dataclass: `path`, `schema_version`, `item_count`,
+  `rotated`), five phases pinned as in §5.1. Snapshot uses
+  `sqlite3.Connection.backup` only, source opened with the existing
+  `_connect_readonly` (no engine floors). Verify re-opens the target read-only
+  and reads the `schema_version` table (the `db_check` read pattern) plus
+  `COUNT(*) FROM items`. Rotation mirrors `_prune_backups`: shift
+  `.old-2 -> .old-3` after deleting the oldest, then `.old-1 -> .old-2`, then
+  the old target becomes `.old-1`, keep newest 3.
+- `ember/cli.py`: `ember backup TARGET_PATH --db PATH`, one
+  `except EmberError` -> `error: <log_line()>` on stderr, exit 1. Success line
+  `backup written: <path> (schema v12, N items)` on stdout, `rotated to
+  <path>` on stderr when rotation happened. Help text ends with the restore
+  warning verbatim.
+- `tests/test_backup.py`: 16 tests over the 6 test targets, all seeded through
+  the real migration runner and the shared `tests/fakes.py` helpers, no mocks.
+
+TDD numbers: red run first (`ModuleNotFoundError: No module named
+'ember.adapters.backup'`, 0 tests pass), then green: `tests/test_backup.py` +
+`tests/test_architecture.py` = 22 passed. Full suite: **852 passed, 4
+deselected** (baseline 836 + 16 new). CLI check on `/tmp/opencode/u2cli`:
+
+```
+$ ember backup /tmp/opencode/u2cli/b1.db --db /tmp/opencode/u2cli/seed.db
+backup written: /tmp/opencode/u2cli/b1.db (schema v12, 3 items)      [exit 0]
+$ ember backup /tmp/opencode/u2cli/b1.db --db /tmp/opencode/u2cli/seed.db
+rotated to /tmp/opencode/u2cli/b1.db.old-1                (stderr)
+backup written: /tmp/opencode/u2cli/b1.db (schema v12, 3 items)      [exit 0]
+$ ember backup /tmp/opencode/u2cli/b1.db --db /tmp/opencode/u2cli/missing.db
+error: BACKUP-001 SourceOpenFailed | ember.adapters.backup._open_source |
+db file missing | db_path=/tmp/opencode/u2cli/missing.db             [exit 1]
+$ ember backup /tmp/opencode/u2cli/dir --db /tmp/opencode/u2cli/seed.db
+error: BACKUP-003 TargetWriteFailed | ... | target path is a directory [exit 1]
+```
+
+Undo path (prose, per the target list): after any rotation `mv
+/tmp/opencode/u2cli/b1.db.old-1 /tmp/opencode/u2cli/b1.db` puts the previous
+snapshot back in place of the newest one.
+
+Deviations (each one line):
+
+1. **Self-backup guard** (addition, D4/finding-9 spirit): the target
+   normalizing to the source path is refused `BACKUP-003` *before* rotation,
+   otherwise `ember backup ember.db --db ember.db` would first rename the live
+   file to `.old-1` and then fail on the now-missing source.
+2. **BACKUP-002 raise site**: the source gate reads the `schema_version`
+   table after the open, so a valid-SQLite-but-not-Ember file (no
+   `schema_version`) raises `BACKUP-002` at phase 2, and a source whose
+   `items` table is unreadable surfaces at phase 4 as `BACKUP-004` on the
+   target. This split keeps the verify-failure test constructible without
+   mocks (a real file with a stamp but no `items` table).
+3. **Rotation depth wording**: the target list says "four backups -> oldest
+   gone". With keep-newest-3 on the `.old-` chain (mirroring `.bak-v`, which
+   counts backup files, not the live file), the first snapshot is deleted by
+   the *fifth* run, after the chain `target + .old-1..3` first overflows. The
+   test asserts `.old-2`/`.old-3` exist after four backups and the oldest is
+   gone after the fifth, all exit 0.
+4. The §4 sample shows the rotation on stdout as a `(previous copy now at
+   ...)` line. This step's contract phrase ("an extra stderr line `rotated to
+   <path>`") was followed, which also matches the L2 §5.1 ruling that "the
+   report names the rotation" on the error channel, keeping stdout one line.
+   The ticket U1 bullet "refuses to overwrite" is superseded by the panel
+   rotation ruling (L2 §9 finding 14, maintainer option A).

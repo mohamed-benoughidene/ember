@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 
 import click
 
+from ember.adapters.backup import create_backup
 from ember.adapters.db_check import check_database
 from ember.adapters.embedder import build_embedder, validate_embedder_config
 from ember.adapters.llm import (
@@ -910,6 +911,38 @@ def history_command(
         click.echo(f"error: {exc.log_line()}", err=True)
         raise SystemExit(1)
     click.echo(output)
+
+
+@main.command("backup")
+@click.argument("target_path")
+@click.option(
+    "--db",
+    "db_path",
+    default=DEFAULT_DB_PATH,
+    help="SQLite database path.",
+)
+def backup(target_path: str, db_path: str) -> None:
+    """Copy the knowledge base to a restorable snapshot file.
+
+    Uses SQLite's online backup API, so the copy is consistent even while
+    another command writes. The source is opened read-only and never
+    migrated. An existing target is rotated aside into `.old-1` (with the
+    newest 3 kept), never destroyed.
+
+    Restore: copy the file back, or point Ember at it with `--db`. There is
+    deliberately no restore command (GLOSSARY).
+    """
+    try:
+        report = create_backup(db_path, target_path)
+    except EmberError as exc:
+        click.echo(f"error: {exc.log_line()}", err=True)
+        raise SystemExit(1)
+    if report.rotated:
+        click.echo(f"rotated to {report.rotated}", err=True)
+    click.echo(
+        f"backup written: {report.path}"
+        f" (schema v{report.schema_version}, {report.item_count} items)"
+    )
 
 
 @main.command("db-check")
