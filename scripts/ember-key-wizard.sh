@@ -203,17 +203,21 @@ run_wizard() {
 # BUGFIX vs the previous wizard: this is a HARD assignment, not a default.
 # The library already set ENV_FILE=".env" at load time, so a default-style
 # override here was dead code and the last run wrote a plain .env instead.
-# The key file lives OUTSIDE the repo by design (ticket 16 key handling).
-ENV_FILE="/tmp/opencode/ember.env"
+# Key file location (maintainer decision 2026-10-29): the repo root `.env`,
+# gitignored (the existing `.gitignore` rules `.env` and `*.env` cover it),
+# so it works for any machine or setup, not one specific editor.
+# shellcheck disable=SC2034
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ENV_FILE="$REPO_ROOT/.env"
 
 TOTAL_STAGES=3
 
-banner "Ember: OpenRouter key for the end-to-end run"
+banner "Ember: OpenRouter key setup"
 
 # ── Stage 1: the API key (secret) ─────────────────────────────────────────
 stage "OpenRouter: API key"
-say "The key file is /tmp/opencode/ember.env (mode 600, outside the repo)."
-say "It will be deleted again right after the end-to-end run finishes."
+say "The key file is .env in the repository root (mode 600, gitignored)."
+say "It is never committed; git cannot see it."
 open_url "https://openrouter.ai/settings/keys"
 step "If you still have an existing key, copy it (starts sk-or-v1-)."
 step "Otherwise click 'Create key', name it (e.g. ember-e2e), and copy it."
@@ -245,8 +249,10 @@ if [[ -f "$ENV_FILE" ]] && grep -q "^EMBER_AI_API_KEY=" "$ENV_FILE"; then
     warn "permissions are not 600, fixing with chmod 600"
     chmod 600 "$ENV_FILE"
   fi
-  if ! git -C /home/mo/lab/ember check-ignore -q "$ENV_FILE"; then
-    warn "the file is outside the repo, so git can never commit it"
+  if git -C "$REPO_ROOT" check-ignore -q "$ENV_FILE"; then
+    printf '  %s✓ gitignored:%s git can never commit %s\n' "$GREEN" "$RESET" "$ENV_FILE"
+  else
+    warn "$ENV_FILE is NOT gitignored. It must never be committed: add it to .gitignore first."
   fi
 else
   warn "verification failed: $ENV_FILE with an EMBER_AI_API_KEY line does not exist"

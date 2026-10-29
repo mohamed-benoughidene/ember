@@ -25,9 +25,10 @@ Ember is a system for maintaining that durable context. It does not store the pr
 ## Repository Structure
 
 - `Constitution.md`: Architectural rules for standalone modules, clean boundaries, and reliable tests.
+- [`GLOSSARY.md`](GLOSSARY.md): The project's vocabulary: knowledge base, ledger, item, link, and the backup/export/restore language.
 - `PROJECT_MAP.md`: Index of every file and directory in this project.
 - `Personal guidelines.md`: Working guidelines on accuracy, plain language, and critical thinking.
-- `docs/`: System documentation, brand philosophy, and architecture diagrams.
+- `docs/`: System documentation, brand philosophy, and architecture diagrams. The full command inventory (every command with its flags, writes, and error codes) is in [`docs/commands.md`](docs/commands.md).
   - `docs/ai version/`: Compressed specifications optimized for AI readers.
   - `docs/humen version/`: Plain-English specifications written for human builders.
   - `docs/Graphs/`: Visual diagrams and example runs.
@@ -37,10 +38,11 @@ Ember is a system for maintaining that durable context. It does not store the pr
 
 ## Status
 
-- **Engine A (Capture):** Built and verified. Implements raw input storage, hash deduplication, AI item proposals, gatekeeper validation, user confirm loop, and the assumption validation flag.
-- **Engine B (Relate):** Built and verified (finding candidate typed links between items).
-- **Engine C (Maintain):** Built and verified.
-- **Engine D (Query):** Built and verified.
+- **Engine A (Capture):** Built and verified. Stores raw source text with SHA-256 dedup, asks AI for typed `Decision` / `Assumption` / `Finding` / `Question` proposals, validates them with gatekeeper checks, and writes only what you confirm key by key (`y` accept, `n` reject, `e` edit, `q` quit).
+- **Engine B (Relate):** Built and verified. Ranks link candidates for one item with three signals (embedding content, graph neighbors, project labels), asks AI for typed link proposals, runs 9 gatekeeper rules (duplicates, `supersedes` cycles, compatibility), and writes links only after your per-proposal check (`y` accept, `n` reject, `s` skip, `q` quit).
+- **Engine C (Maintain):** Built and verified. A deterministic, zero-AI sweep derives item statuses from confirmed links and writes only the difference to the ledger, plus an optional AI close-proposal loop for `Question` items whose newest answer link is at least 30 days old. Five human-only commands (`close-item`, `set-status`, `reverse-supersedes`, `edit-item`, `remove-link`) write through the same ledger, each with a `--dry-run`.
+- **Engine D (Query):** Built and verified. Four read-only JSON commands over the local database: current state, BM25 topic search, the `why` reason walk, and the `history` ledger view. It refuses an older database instead of migrating it.
+- **Engine E (Utility):** Built and verified. Human-only safety commands outside the pipeline: `backup` (verified snapshot with rotation) and `export` (deterministic readable text file).
 
 ---
 
@@ -89,7 +91,7 @@ ember capture-source --file note.txt
 ember capture --file note.txt
 ```
 
-Ember stores the raw text, generates typed item proposals (`Decision`, `Assumption`, `Finding`, `Question`), runs gatekeeper checks, and prompts you to confirm (`y`), reject (`n`), edit (`e`), or quit (`q`).
+Ember stores the raw text, generates typed item proposals (`Decision`, `Assumption`, `Finding`, `Question`), runs gatekeeper checks, and prompts you to confirm (`y`), reject (`n`), edit (`e`), or quit (`q`). Editing re-asks the type, the statement, and the optional project label, then revalidates before the write. Sources are deduplicated by content hash (the same text twice reuses the stored source), file input is capped at 5 MiB, and by default the AI sees the newest 50 items as context (`EMBER_CAPTURE_CONTEXT_MODE`).
 
 **3. Manage Assumption validation flag:**
 
@@ -108,7 +110,7 @@ ember relate --item <id> [--db PATH]
 ember relate --latest [--db PATH]
 ```
 
-Phase 1 loads the item, drops pairs that already have a link (any status), and prints `{"phase": 1, "new_item_id": <id>, "candidates": <count>}` (or `no unrelated items`). `--db` must point to an existing database.
+Phase 1 loads the item, drops pairs that already have a link (any status), and prints `{"phase": 1, "new_item_id": <id>, "candidates": <count>}` (or `no unrelated items`). `--db` must point to an existing database. Confirm each proposal with `y` (accept), `n` (reject), `s` (skip, the candidate is not written and may resurface later), or `q` (quit, exit 2). Ranking uses three signals: embedding content, one-hop graph neighbors, and the project label written by capture. The content signal needs the optional extra installed once (```pip install -e ".[relate]"```); if the embedding model ever changes, the vector cache is wiped and rebuilt (a one-time, minutes-long cost, a warning prints). Gatekeeper rejections print one `relate rejected: CODE | detail` line each before the summary.
 
 **5. Maintain the graph (Engine C):**
 
@@ -124,20 +126,26 @@ ember set-status --item <id> --to Active [--db PATH]
 
 # Undo a supersedes (restores the closed item to Active)
 ember reverse-supersedes --item <id> --link <id> [--db PATH]
+
+# Change an authorial field by hand (rationale on a Decision, source on a Finding)
+ember edit-item --item <id> --field rationale --value "new text" [--dry-run] [--db PATH]
+
+# Remove one confirmed link (a status flip to Rejected, never a delete)
+ember remove-link --link <id> [--dry-run] [--db PATH]
 ```
 
-The sweep reads `items` + Confirmed `links`, derives each item's status, and writes the difference with a `change_log` row per change. `close-item`, `set-status`, and `reverse-supersedes` are the human-only mutations; all four render through the same report format.
+The sweep reads `items` + Confirmed `links`, derives each item's status (a confirmed `supersedes` or `answers` closes the target, a `contradicts` challenges it, and an invalidated dependency challenges the dependent), and writes only the difference, one `change_log` row per change. `close-item`, `set-status`, `reverse-supersedes`, `edit-item`, and `remove-link` are the human-only mutations; all render through the same report format. After a real sweep applies its changes, Ember may offer AI close proposals for `Question` items whose newest answer link is at least 30 days old (at most 10 per run), each confirmed with `[y]es / [n]o / [q]uit`; an accepted close goes through the same human `close-item` path. An empty shortlist calls no AI and needs no key.
 
 **6. Query the project context (Engine D):**
 
 ```bash
 ember current-state [--db PATH]
-ember topic-search --query TEXT [--db PATH]
+ember topic-search --query TEXT [--status Active] [--type Question] [--limit 10] [--db PATH]
 ember why --item <id> [--db PATH]
-ember history [--item <id>] [--db PATH]
+ember history [--item <id>] [--limit 20] [--offset 0] [--since 2026-01-01T00:00:00+00:00] [--db PATH]
 ```
 
-All four are read-only and never write to the database. Each prints one JSON document on stdout. `current-state` lists the `Active` and `Challenged` items with the `Challenged` ones first. `topic-search` ranks by BM25 over item statements. `why` walks the `depends_on` and `supports` links behind an item. `history` shows that item's `change_log` rows with the cause of each change, or the whole ledger with no `--item`.
+All four are read-only and never write to the database. Each prints one JSON document on stdout. `current-state` lists the `Active` and `Challenged` items with the `Challenged` ones first. `topic-search` ranks by BM25 over item statements; `--limit 0` means an explicitly empty result. `why` walks the `depends_on` and `supports` links behind an item (Confirmed links only, transitively). `history` shows that item's `change_log` rows with the cause of each change, or the whole ledger with no `--item`; `--since` must carry a UTC offset. An older database is refused (`QUERY-004`), never migrated.
 
 **7. Keep the knowledge safe (Engine E):**
 
@@ -156,7 +164,7 @@ ember export [--db PATH] [--out PATH]
 ### Running Tests
 
 ```bash
-# Run all offline tests (598 tests)
+# Run all offline tests (873 tests)
 pytest
 
 # Run the live AI round-trip test (requires EMBER_AI_API_KEY)
@@ -181,4 +189,8 @@ For any command that needs a real OpenRouter key (capture, relate, or the live t
 bash scripts/ember-key-wizard.sh
 ```
 
-It walks you through getting the key from openrouter.ai, writes it to `/tmp/opencode/ember.env` (mode 600, outside the repo, never committed), verifies the file, and reminds you to delete it after a real run.
+It walks you through getting the key from openrouter.ai, writes it to `.env` in the repository root (mode 600, gitignored, so it is never committed), verifies the file, and never prints the key. Load it into your shell before a real run:
+
+```bash
+set -a; source .env; set +a
+```
