@@ -179,4 +179,8 @@ For any command that needs a real OpenRouter key (capture, relate, or the live t
 bash scripts/ember-key-wizard.sh
 ```
 
-It walks you through getting the key from openrouter.ai, writes it to `/tmp/opencode/ember.env` (mode 600, outside the repo, never committed), verifies the file, and reminds you to delete it after a real run.
+It walks you through getting the key from openrouter.ai, writes it to `.env` in the repository root (mode 600, gitignored, so it is never committed), verifies the file, and never prints the key. Load it into your shell before a real run:
+
+```bash
+set -a; source .env; set +a
+```
