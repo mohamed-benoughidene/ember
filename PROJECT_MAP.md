@@ -20,6 +20,7 @@ This file lists every file and its purpose in the repository. Update it when fil
 - `.github/ISSUE_TEMPLATE/feature_request.md`: Issue template for suggesting improvements.
 
 ## Documentation (`docs/`)
+- `docs/commands.md`: Command inventory. Every `ember` CLI command with its flags, what it reads and writes, API key needs, exit codes, and error codes.
 - `docs/brand-philosophy.md`: Brand meaning behind the name Ember, the logo, and the Lantern Keeper character.
 - `docs/pain statment.md`: The problem the product solves, written as a pain statement.
 
