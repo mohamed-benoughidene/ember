@@ -17,7 +17,11 @@ from datetime import datetime, timedelta
 
 import pytest
 
-from ember.relate.candidate_pool import MODEL_CHANGED_LINE, build_candidate_pool
+from ember.relate.candidate_pool import (
+    MODEL_CHANGED_LINE,
+    Signals,
+    build_candidate_pool,
+)
 from ember.relate.errors import (
     CosineComputeFailed,
     EmbedderEncodeFailed,
@@ -922,3 +926,19 @@ def test_naive_and_aware_created_at_mix_maps_to_relate_023() -> None:
 
     assert excinfo.value.code == "RELATE-023"
     assert excinfo.value.context["item_id"] == 2
+
+
+def test_signals_holds_exactly_three_fields() -> None:
+    """The wrapper type holds exactly the three pinned fields (L2 §12).
+
+    The field trap is frozen here too: the content field is named `content`
+    while the counts key for it stays `dense`, so neither name may drift.
+    """
+    assert set(Signals.model_fields) == {"content", "graph", "metadata"}
+    assert Signals.model_fields["content"].annotation == dict[int, float]
+    assert Signals.model_fields["graph"].annotation == set[int]
+    assert Signals.model_fields["metadata"].annotation == set[int]
+    wrapper = Signals(content={1: 0.5}, graph={1, 2}, metadata=set())
+    assert wrapper.content == {1: 0.5}
+    assert wrapper.graph == {1, 2}
+    assert wrapper.metadata == set()

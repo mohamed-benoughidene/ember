@@ -94,7 +94,7 @@ Earlier logo and character images, kept for history.
 - `ember/relate/load_filter.py`: Relate Phase 1 core. Loads by id (`load_item_candidates`) or latest (`load_latest_candidates`) and builds the candidate universe.
 - `ember/relate/embedder.py`: The `EmbedderPort` protocol (embed, dim, model name).
 - `ember/relate/embedding_store.py`: The `EmbeddingStorePort` protocol for the `item_embeddings` cache (read, upsert, model name, wipe); reads raise `RELATE-037`, writes `RELATE-019`.
-- `ember/relate/candidate_pool.py`: Relate Phase 2 core. Runs the content, graph, and metadata signals, merges them by highest cosine, and returns a ranked `Pool` with counts and the model-change warning.
+- `ember/relate/candidate_pool.py`: Relate Phase 2 core. Runs the content, graph, and metadata signals, bundles the three results into the in-module `Signals` wrapper (L2 §12, ticket 10, no other module may name it), merges them by highest cosine, and returns a ranked `Pool` with counts and the model-change warning.
 - `ember/relate/ai_response_store.py`: The `AiResponseStorePort` protocol for the Phase 3.5 raw-answer save.
 - `ember/relate/link_proposal.py`: Relate Phase 3 core. The AI port, the strict-JSON boundary parser, the transport-only retry, and the target/source checks.
 - `ember/relate/link_gatekeeper.py`: Relate Phase 4 pure gatekeeper. `validate_add_link` runs the 9 rules and returns `ValidatedLink` or `RejectedLink` (rules 8/9 carry a `detail` naming the blocking link id plus endpoints, and the duplicate's reversal state).

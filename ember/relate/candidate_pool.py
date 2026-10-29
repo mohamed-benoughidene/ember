@@ -12,6 +12,8 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 from math import sqrt
 
+from pydantic import BaseModel
+
 from ember.relate.embedder import EmbedderPort
 from ember.relate.embedding_store import EmbeddingStorePort
 from ember.relate.errors import CosineComputeFailed, MetadataReadFailed
@@ -25,6 +27,22 @@ MODEL_CHANGED_LINE = (
 CONTENT_TOP_K = 10
 FLAT_COSINE = 0.5
 METADATA_WINDOW = timedelta(days=30)
+
+
+class Signals(BaseModel):
+    """The three Phase 2 signal results, bundled for one consumer.
+
+    Built inside `build_candidate_pool` after the three signal calls return
+    (Phase 2) and consumed only there, by `_merge` and the `counts` dict. No
+    other module may import or even name this class (architecture test).
+
+    Naming trap, frozen by L2 §12: the content field stays `content` while the
+    counts key for it stays `dense`.
+    """
+
+    content: dict[int, float]
+    graph: set[int]
+    metadata: set[int]
 
 
 def build_candidate_pool(
@@ -78,12 +96,13 @@ def build_candidate_pool(
     )
     graph = _graph_signal(link_lookup, items, new_item_id=new_item.id)
     metadata = _metadata_signal(items, new_item)
+    signals = Signals(content=content, graph=graph, metadata=metadata)
     return Pool(
-        ranked=_merge(items, content=content, graph=graph, metadata=metadata),
+        ranked=_merge(items, signals),
         counts={
-            "dense": len(content),
-            "graph": len(graph),
-            "metadata": len(metadata),
+            "dense": len(signals.content),
+            "graph": len(signals.graph),
+            "metadata": len(signals.metadata),
         },
         warning=warning,
     )
@@ -199,24 +218,18 @@ def _within_window(
     return distance <= METADATA_WINDOW
 
 
-def _merge(
-    items: list[NewItem],
-    *,
-    content: dict[int, float],
-    graph: set[int],
-    metadata: set[int],
-) -> list[RankedCandidate]:
-    """Union the signals: highest cosine wins, source is dense > graph > metadata."""
+def _merge(items: list[NewItem], signals: Signals) -> list[RankedCandidate]:
+    """Union the bundled signals: highest cosine wins, dense > graph > metadata."""
     by_id = {item.id: item for item in items}
     scores: dict[int, float] = {}
     sources: dict[int, SignalKind] = {}
-    for item_id, cosine in content.items():
+    for item_id, cosine in signals.content.items():
         scores[item_id] = cosine
         sources[item_id] = SignalKind.dense
-    for item_id in graph:
+    for item_id in signals.graph:
         scores[item_id] = max(scores.get(item_id, FLAT_COSINE), FLAT_COSINE)
         sources.setdefault(item_id, SignalKind.graph)
-    for item_id in metadata:
+    for item_id in signals.metadata:
         scores[item_id] = max(scores.get(item_id, FLAT_COSINE), FLAT_COSINE)
         sources.setdefault(item_id, SignalKind.metadata)
     order = sorted(scores, key=lambda item_id: (-scores[item_id], item_id))
