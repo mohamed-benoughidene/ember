@@ -26,6 +26,10 @@ class ItemState(BaseModel):
     status_origin: str
     rationale: str | None = None
     source: str | None = None
+    # Additive Phase-1 display column (L2 §14.3): the AI close proposal
+    # judges and the confirm block shows the item's own text. Defaults are
+    # None, so every constructor that predates it holds.
+    statement: str | None = None
 
 
 class MaintainSnapshot(BaseModel):

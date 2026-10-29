@@ -5,12 +5,17 @@ from __future__ import annotations
 import json
 import os
 import sys
+from datetime import datetime, timezone
 
 import click
 
 from ember.adapters.db_check import check_database
 from ember.adapters.embedder import build_embedder, validate_embedder_config
-from ember.adapters.llm import build_item_proposer, build_link_proposer
+from ember.adapters.llm import (
+    build_close_proposer,
+    build_item_proposer,
+    build_link_proposer,
+)
 from ember.adapters.sqlite import (
     SqliteAiResponseStore,
     SqliteItemContext,
@@ -46,7 +51,9 @@ from ember.capture.item_proposal import (
 )
 from ember.capture.source_storage import StoredSource, store_source
 from ember.errors import EmberError
+from ember.maintain.close_proposer import ProposalOutcome, stale_close_candidates
 from ember.maintain.derive import derive_status_changes
+from ember.maintain.errors import UserAbort as MaintainUserAbort
 from ember.maintain.human_actions import (
     validate_close_item,
     validate_edit_item,
@@ -55,10 +62,12 @@ from ember.maintain.human_actions import (
 from ember.maintain.report import format_report
 from ember.maintain.rows import MaintainSnapshot
 from ember.maintain.run_maintain import (
+    CloseProposalPorts,
     MaintainPorts,
     MaintainRequest,
     _load,
     run_close_item,
+    run_close_proposals,
     run_edit_item,
     run_remove_link,
     run_reverse_supersedes,
@@ -112,6 +121,26 @@ class RelateTerminalConfirm:
         except EOFError as exc:
             click.echo()
             raise RelateUserAbort("input ended") from exc
+        return answer
+
+    def write(self, text: str) -> None:
+        click.echo(text)
+
+
+class MaintainTerminalConfirm:
+    """`ConfirmPort` on the terminal for the maintain proposal loop.
+
+    Like `RelateTerminalConfirm`, but end of input raises the maintain
+    `UserAbort` (MAINTAIN-022) so the proposal loop maps it to `aborted=True`.
+    """
+
+    def ask(self, prompt: str) -> str:
+        click.echo(prompt, nl=False)
+        try:
+            answer = input()
+        except EOFError as exc:
+            click.echo()
+            raise MaintainUserAbort("input ended") from exc
         return answer
 
     def write(self, text: str) -> None:
@@ -355,12 +384,19 @@ def relate(item_id: int | None, latest: bool, db_path: str) -> None:
     help="SQLite database path.",
 )
 def maintain(dry_run: bool, db_path: str) -> None:
-    """Run the maintain sweep: load the graph, derive, apply, report.
+    """Run the maintain sweep, then propose AI closes for the stale shortlist.
 
     A plain run writes the derived status changes to `items` and appends one
-    `change_log` row per change. `--dry-run` loads, derives and prints only; it
-    writes no `items` or `change_log` row.
+    `change_log` row per change. `--dry-run` loads, derives and prints only, and it
+    writes no `items` or `change_log` row. Phase 5 (engine-maintain-plan §14)
+    runs the free pre-filter on a fresh snapshot: an empty shortlist prints the
+    `stale:` outcome line and builds no AI adapter (no key needed), a
+    non-empty one proposes close for each stale card and confirms with
+    `[y]es / [n]o / [q]uit`. An accepted close is written through the human
+    `close-item` validate path. The AI never closes anything itself. Exit 0
+    normally, 1 on an error, 2 when the user quits the proposal loop.
     """
+    outcome = ProposalOutcome(stale=0, proposed=0, accepted=0, rejected=0)
     try:
         conn = open_maintain_database(db_path)
         ports = MaintainPorts(
@@ -370,15 +406,57 @@ def maintain(dry_run: bool, db_path: str) -> None:
         if dry_run:
             snapshot = _load(ports.lookup)
             changes = derive_status_changes(snapshot)
-            report = format_report(changes, len(snapshot.items))
+            for line in format_report(changes, len(snapshot.items)):
+                click.echo(line)
+            # Nothing was applied, so this fresh load is still the pre-apply
+            # view: the dry-run list deliberately names every candidate
+            # before the human commits to a run (review fix 3).
+            shortlist = stale_close_candidates(
+                _load(ports.lookup), now=datetime.now(timezone.utc)
+            )
+            if shortlist.truncated:
+                click.echo("stale shortlist capped at 10 items (list truncated)")
+            for candidate in shortlist.candidates:
+                click.echo(
+                    f"item {candidate.item_id}: stale {candidate.item_type}"
+                    f" (newest answers link"
+                    f" {candidate.newest_answers_link_id},"
+                    f" confirmed {candidate.newest_answer_created_at})"
+                    " (dry-run)"
+                )
+            outcome = ProposalOutcome(
+                stale=len(shortlist.candidates), proposed=0, accepted=0, rejected=0
+            )
         else:
             result = run_sweep(ports, MaintainRequest())
-            report = format_report(result.changed, result.total_items)
+            for line in format_report(result.changed, result.total_items):
+                click.echo(line)
+            shortlist = stale_close_candidates(
+                _load(ports.lookup), now=datetime.now(timezone.utc)
+            )
+            if shortlist.truncated:
+                click.echo("stale shortlist capped at 10 items (list truncated)")
+            if shortlist.candidates:
+                outcome = run_close_proposals(
+                    CloseProposalPorts(
+                        lookup=ports.lookup,
+                        store=ports.store,
+                        close_proposer=build_close_proposer(os.environ),
+                        ai_response_store=SqliteAiResponseStore(conn),
+                        confirm=MaintainTerminalConfirm(),
+                    ),
+                    now=datetime.now(timezone.utc),
+                )
     except EmberError as exc:
         click.echo(f"error: {exc.log_line()}", err=True)
         raise SystemExit(1)
-    for line in report:
-        click.echo(line)
+    click.echo(
+        f"stale: {outcome.stale}, proposed: {outcome.proposed},"
+        f" accepted: {outcome.accepted}, rejected: {outcome.rejected},"
+        f" aborted: {str(outcome.aborted).lower()}"
+    )
+    if outcome.aborted:
+        sys.exit(2)
 
 
 @main.command("close-item")

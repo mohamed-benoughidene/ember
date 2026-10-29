@@ -93,3 +93,28 @@ class ItemEditWriteFailed(MaintainError):
 class RemoveLinkWriteFailed(MaintainError):
     code = "MAINTAIN-017"
     name = "RemoveLinkWriteFailed"
+
+
+class CloseAiCallFailed(MaintainError):
+    code = "MAINTAIN-018"
+    name = "CloseAiCallFailed"
+
+
+class CloseAiSchemaInvalid(MaintainError):
+    code = "MAINTAIN-019"
+    name = "CloseAiSchemaInvalid"
+
+
+class CloseAiConfigMissing(MaintainError):
+    code = "MAINTAIN-020"
+    name = "CloseAiConfigMissing"
+
+
+class CloseAiStoreFailed(MaintainError):
+    code = "MAINTAIN-021"
+    name = "CloseAiStoreFailed"
+
+
+class UserAbort(MaintainError):
+    code = "MAINTAIN-022"
+    name = "UserAbort"

@@ -11,9 +11,20 @@ owns the read step.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 
 from ember.maintain.apply_status import MaintainStorePort
+from ember.maintain.close_proposer import (
+    PROMPT,
+    CloseProposerPort,
+    ConfirmPort,
+    ProposalOutcome,
+    format_proposal_block,
+    propose_close_with_retry,
+    stale_close_candidates,
+)
 from ember.maintain.derive import derive_status_changes
+from ember.maintain.errors import CloseAiStoreFailed, UserAbort
 from ember.maintain.human_actions import (
     validate_close_item,
     validate_edit_item,
@@ -22,6 +33,7 @@ from ember.maintain.human_actions import (
     validate_set_status,
 )
 from ember.maintain.maintain_lookup import MaintainLookupPort
+from ember.maintain.report import format_report
 from ember.maintain.rows import (
     EditChange,
     ItemState,
@@ -29,6 +41,7 @@ from ember.maintain.rows import (
     MaintainSnapshot,
     StatusChange,
 )
+from ember.relate.ai_response_store import AiResponseStorePort
 from ember.relate.rows import ChangeLogEntry
 
 
@@ -246,3 +259,127 @@ def run_remove_link(
     changes = validate_remove_link(snapshot, request.link_id)
     ports.store.apply_remove_link(changes[0])
     return changes
+
+
+@dataclass(frozen=True)
+class CloseProposalPorts(MaintainPorts):
+    """The sweep ports plus the three Phase-5 ports: the AI boundary, the
+    raw-answer store (D8) and the user I/O edge."""
+
+    close_proposer: CloseProposerPort
+    ai_response_store: AiResponseStorePort
+    confirm: ConfirmPort
+
+
+_CLOSE_CHOICES = {
+    "y": "yes",
+    "yes": "yes",
+    "n": "no",
+    "no": "no",
+    "q": "quit",
+    "quit": "quit",
+}
+
+
+def run_close_proposals(ports: CloseProposalPorts, now: datetime) -> ProposalOutcome:
+    """Propose AI closes for the stale shortlist, confirm each, write accepts.
+
+    Phase 5 of the maintain pipeline (engine-maintain-plan §14). Runs the
+    free pre-filter on a FRESH post-apply snapshot (a card the sweep just
+    machine-closed is `Closed`, not `Active`, so it cannot be proposed twice
+    in one run). `run_sweep` is untouched: this is a separate entry point.
+
+    Per candidate: one AI call (`propose_close_with_retry`, retry ONCE, the
+    second failure propagates `MAINTAIN-018` / `MAINTAIN-019`), then the raw
+    answer saved verbatim in `ai_responses` keyed by `item_id` BEFORE
+    anything is judged (D8, storage failure maps to `MAINTAIN-021`). A decline
+    displays `no close proposed` and prompts nothing. A proposal displays its
+    block and asks `[y]es / [n]o / [q]uit` (unknown answers re-ask). `y`
+    writes through the existing `run_close_item` validate path (zero new
+    write code), raising `MAINTAIN-001/002/003/004` from the validator,
+    `MAINTAIN-010` on a read, `MAINTAIN-011`/`012` from the store, and prints
+    the close's report lines through the confirm port. `n` counts and writes
+    nothing. `q` or the end of input (`MAINTAIN-022 UserAbort`) stops the
+    loop: leftover candidates get no AI call, nothing more is written, and
+    the outcome reports `aborted=True`.
+    """
+    snapshot = _load(ports.lookup)
+    shortlist = stale_close_candidates(snapshot, now=now)
+    total = len(shortlist.candidates)
+    proposed = 0
+    accepted = 0
+    rejected = 0
+    try:
+        for index, candidate in enumerate(shortlist.candidates, start=1):
+            response = propose_close_with_retry(
+                ports.close_proposer, candidate=candidate
+            )
+            _save_close_raw_response(
+                ports.ai_response_store, candidate.item_id, response.raw_response
+            )
+            for line in format_proposal_block(
+                candidate, response.proposal, index=index, total=total
+            ):
+                ports.confirm.write(line)
+            if response.proposal is None:
+                continue
+            proposed += 1
+            choice = _CLOSE_CHOICES.get(ports.confirm.ask(PROMPT).strip().lower())
+            while choice is None:
+                choice = _CLOSE_CHOICES.get(
+                    ports.confirm.ask(PROMPT).strip().lower()
+                )
+            if choice == "quit":
+                return ProposalOutcome(
+                    stale=total,
+                    proposed=proposed,
+                    accepted=accepted,
+                    rejected=rejected,
+                    aborted=True,
+                )
+            if choice == "no":
+                rejected += 1
+                continue
+            result = run_close_item(
+                MaintainPorts(lookup=ports.lookup, store=ports.store),
+                MaintainRequest(
+                    item_id=candidate.item_id, reason=response.proposal.reason
+                ),
+            )
+            for line in format_report(result.changed, result.total_items):
+                ports.confirm.write(line)
+            accepted += 1
+    except UserAbort:
+        return ProposalOutcome(
+            stale=total,
+            proposed=proposed,
+            accepted=accepted,
+            rejected=rejected,
+            aborted=True,
+        )
+    return ProposalOutcome(
+        stale=total,
+        proposed=proposed,
+        accepted=accepted,
+        rejected=rejected,
+    )
+
+
+def _save_close_raw_response(
+    store: AiResponseStorePort, item_id: int, raw_response: str
+) -> None:
+    """D8: store the raw answer verbatim, keyed by `item_id`, before anything
+    is judged. `ValueError` (the exactly-one-of owner check) is
+    engine-constructed here - one owner, always - so it propagates raw: a
+    code bug crashes loudly (I5). Any storage failure maps to `MAINTAIN-021
+    CloseAiStoreFailed`."""
+    try:
+        store.save(item_id=item_id, raw_response=raw_response)
+    except ValueError:
+        raise
+    except CloseAiStoreFailed:
+        raise
+    except Exception as exc:  # noqa: BLE001 - boundary: any storage failure maps to 021
+        raise CloseAiStoreFailed(
+            "ai response save failed", item_id=item_id
+        ) from exc

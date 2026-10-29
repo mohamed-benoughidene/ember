@@ -114,7 +114,7 @@ Dependency order, not runtime order. Each engine invoked independently.
 
 1. AI direct DB write: PROHIBITED (Spec 3.7).
 2. All mutations pass gatekeeper validation scripts.
-3. AI-callable mutations (each requires user confirm): `add_item`, `add_link`.
+3. AI-callable mutations (each requires user confirm): `add_item`, `add_link`, `propose_close`. A `propose_close` proposal writes nothing: the human confirms it in `ember maintain`'s confirm loop and the close is written only through the human validate path (`validate_close_item`).
 4. AI-callable reads (no confirm needed, raw data only): `query`.
 5. Human-only operations: `edit_item`, `set_status` (only `Active` <-> `Challenged`), `set_validated`, `remove_link`.
 6. `Challenged` resolution: human only via `set_status` (Spec 3.5, 3.2).
@@ -128,7 +128,7 @@ Deferred item types: `Constraint`, `Issue`, `Evidence` standalone, `Rationale` s
 
 Deferred link types: `informs`, `constrained_by`, `invalidates`, `raises`, `derived_from`. Handling note: `invalidates` is achieved by creating a `contradicts` link plus closing the target as `Closed` reason `invalidated` (Spec 3.3).
 
-AI-proposed `close_item` deferred to V1.x (issue #16). V1 ships `ember close-item` human-invoked; the human running the command is the confirmation.
+AI-proposed `close_item` (issue #16) ships pre-filtered (V1.x, 2026-10-29): a deterministic pre-filter names stale candidates (capped at 10), the AI proposes a close with reason `invalidated` or `expired` for that shortlist only, and the human confirms through the existing `ember close-item` validate path (`validate_close_item`) inside `ember maintain`'s confirm loop. The AI never writes a close itself; raw answers are stored in `ai_responses` keyed by `item_id` (D8).
 
 ## 6. Live Measures (Post-Build)
 

@@ -2,7 +2,7 @@
 
 Terse caveman style. Source: L1 (`plans/master-plan.md`) + V1 spec 3.2/3.3/3.5/3.6/3.7. No invention.
 
-**Stack:** see L1 §0. Maintain-specific deviation: none. Maintain adds **no dependency** — no AI, no embedder, no network (first engine with no live tier). It reads `items` / `links` / `change_log` and writes `items` + `change_log`.
+**Stack:** see L1 §0. Maintain-specific deviation: none. Maintain adds **one AI proposal port** (§14): no embedder, no new package. The AI proposes only; every write is a human-confirmed path. It reads `items` / `links` / `change_log` and writes `items` + `change_log`. (Amended in hardening step 07 — see `plans/steps/hardening/07-ai-close-proposals.md` §10.)
 
 ## 0. Deferred Issues This Engine Owns
 
@@ -54,7 +54,7 @@ L1 §9 deferred 3 items, all to Engine B. **Nothing is deferred to Engine C at L
 - **Relate §9 #8** ("Engine C dispatch vocabulary … Engine C L2 author confirms the dispatch table") → **resolved.** Maintain does **not** listen to `change_log` for *events*. It reads the `links` table (`status='Confirmed'`) to know what is live. There is no dispatch table because there is no event bus — L1:70 "Engine-to-engine flow goes through DB rows, not direct function calls." Maintain's dispatch table is the `links` table + `items.status`. The vocabulary Maintain **writes** is fixed in §4.6. The one `change_log` read is a *state lookup* for links this engine itself reversed — not a dispatch.
 - **Relate §8** ("Engine C listens for the `trigger_cause='user_confirmed'` + `link_id` FK pattern (post-008) and writes the cascade `change_log` rows") → **superseded** by the above. Amendment to `plans/engine-relate-plan.md` §8 and §9 #8 (§11).
 
-Also recorded: **Maintain calls no AI** (§4.0).
+Also recorded: **Maintain's four derived triggers call no AI** (§4.0, amended by §14 — the one AI surface is the §14 pre-filtered close proposal).
 
 ### 2.1 The design gaps, and how they are closed
 
@@ -154,9 +154,14 @@ Phase 3: Apply    (atomic write: UPDATE items + INSERT change_log)
    |
    v
 Phase 4: Report   (print what changed)
+   |
+   v
+Phase 5: Propose  (AI on the stale shortlist, human confirm, write via the human path)
 ```
 
-**4.0 Maintain calls no AI.** The four triggers are deterministic (AI spec 3.5: "Maintain Rules (Deterministic, Zero AI)"). `close_item` is listed in AI spec 3.7:126 under "AI-callable proposals (Require user confirmation)". **V1 implements it as a human-invoked command** (`ember close-item --item N --reason R`) — the human running the command *is* the confirmation. **Corrected justification:** `close_item` is the **only** path that produces the `invalidated` and `expired` close reasons (no deterministic rule generates them; rules 1/4 produce `superseded`/`answered` only), so it cannot be dropped. The reason to keep it human-invoked is that an AI proposal would add a prompt, a parser, an `ai_responses` row, a retry policy, and a cost to produce a decision a human can make explicitly with one flag. **This needs an L1 amendment** (§11). A deferred issue records "AI-proposed close_item" for V1.x. Spec 3.7:126's "User confirms" is satisfied by the human invoking the command — recorded as a §Z(c) deviation.
+Phase 5 is a separate entry point (`run_close_proposals`), NOT merged into `run_sweep` — see §14.4 for the placement ruling. **(Amended in hardening step 07 — see `plans/steps/hardening/07-ai-close-proposals.md` §10.)**
+
+**4.0 Maintain's four derived triggers call no AI.** The four triggers are deterministic (AI spec 3.5: "Maintain Rules (Deterministic, Zero AI)"). `close_item` is listed in AI spec 3.7:126 under "AI-callable proposals (Require user confirmation)". **V1 implemented it as a human-invoked command** (`ember close-item --item N --reason R`) — the human running the command *is* the confirmation. **Corrected justification:** `close_item` is the **only** path that produces the `invalidated` and `expired` close reasons (no deterministic rule generates them; rules 1/4 produce `superseded`/`answered` only), so it cannot be dropped. The reason to keep it human-invoked is that an AI proposal would add a prompt, a parser, an `ai_responses` row, a retry policy, and a cost to produce a decision a human can make explicitly with one flag. **This needed an L1 amendment** (§11, applied by §14). A deferred issue recorded "AI-proposed close_item" for V1.x. **Amended (hardening step 07, §14): Maintain's four derived triggers still call no AI — deterministic rules, spec 3.5 unchanged — but Maintain now has ONE AI surface, the §14 pre-filtered close proposal: the AI judges a bounded shortlist and proposes; the human confirms; `validate_close_item` writes. The spec-3.7:126 "User confirms" for AI proposals is satisfied by the y/n confirm loop, not by invocation alone.**
 
 ### Phase 1 — Load
 
@@ -303,12 +308,12 @@ ember reverse-supersedes --item <id> --link <id> [--db <path>]
 - `--db` defaults to `DEFAULT_DB_PATH`, **defined in `ember/cli.py`** (all four commands live there).
 - `--reason` and `--to` are **plain `str` options, NOT `click.Choice`**. The domain codes (`MAINTAIN-002`, `MAINTAIN-006`) must fire from the command body; `click.Choice` would reject a bad value with exit 2 before the code could run. Written as `(plain str)` in this synopsis so L3 does not implement a Choice.
 - `--item` is `type=int`; a non-integer exits 2 (Click's own error). **Error precedence:** `MAINTAIN-001` (item not found) is checked **before** `MAINTAIN-004`/`005`/`006`. `reverse-supersedes --item 99` → `MAINTAIN-001`, never `005`.
-- **No environment variables.** Maintain needs no API key, no embedder, no model.
+- **No environment variables.** Maintain needs no API key, no embedder, no model. **Amended (hardening step 07, §14):** `ember maintain` reads the AI env vars ONLY when its stale shortlist is non-empty: `EMBER_AI_API_KEY` (or `OPENROUTER_API_KEY`), `EMBER_AI_MODEL`, `EMBER_AI_BASE_URL` (same keys as capture/relate). An empty shortlist needs no key and builds no adapter.
 - **Boot sequence** (I13, fail fast): `open_maintain_database(db_path)` (§3 — refuses a missing file, probes corruption, applies migrations, checks `schema_version >= 10`) → validate the command's flags → Phase 1.
 - `ember maintain` is **idempotent** — running it twice changes nothing the second time and exits 0.
 - `--dry-run` runs Phase 1 + Phase 2, prints the planned changes, writes **no `items` or `change_log` rows**. **The DB must already exist** — `open_maintain_database` refuses a missing file with `MAINTAIN-007`, so a dry run against a fresh path **fails**; there is no create path. The only writes a dry run can make are the migrations, when the DB is at version 9. The §7.4 test must assert "writes no `items` or `change_log` rows", not "touches no file".
 - `--dry-run` **still fails on Phase-2 domain errors** — but only for the commands that take such flags (`close-item`, `set-status`, `reverse-supersedes`). `ember maintain` takes no `--reason` / `--to` / `--link` and raises **no** domain code. The flag check happens **after** the validators, not before.
-- **Exit codes:** 0 success (including "nothing to change" and a no-op `set-status`); 1 phase error (a `MAINTAIN-*` code); **2 for Click usage errors** (missing `--item`, non-integer `--item`, unknown option). Maintain has **no user-abort exit 2** — there is no confirm loop, so no `aborted` flag to exit on. (The codebase's exit-2 comes from `aborted`, not from `UserAbort` reaching the CLI: `capture/confirm_write.py:158-159` and `relate/confirm_write.py:151-152` swallow `UserAbort` internally.)
+- **Exit codes:** 0 success (including "nothing to change" and a no-op `set-status`); 1 phase error (a `MAINTAIN-*` code); **2 for Click usage errors** (missing `--item`, non-integer `--item`, unknown option). The four human commands keep no abort exit; `ember maintain` exits **2 when the close-proposal confirm loop aborts** (a `q` answer or end of input), exactly like `capture`/`relate` (amended: §14). (The codebase's exit-2 comes from `aborted`, not from `UserAbort` reaching the CLI: `capture/confirm_write.py:158-159` and `relate/confirm_write.py:151-152` swallow `UserAbort` internally.)
 - `close-item --reason`: **human-settable reasons are `invalidated` and `expired`.** `superseded` and `answered` are **machine reasons** (produced by rules 1 and 4), and `reversed` is produced by the spec's reversal semantics, which *restore* an item rather than close it — so no v3 path produces a `Closed/reversed` item. A human passing any of those three → `MAINTAIN-003`.
 - **`reversed` has a defined meaning:** "closed because a supersedes link pointing at it was reversed." Under this plan a reversal *restores* the item to `Active` rather than closing it — so `reversed` is **not produced by any path here**. **Decision: a valid enum value (the spec requires it) but not settable by `close-item` in V1** → `MAINTAIN-003`. Settable only by the spec's own reversal semantics, which this plan implements as "restore to `Active`". Recorded in §8.
 - `set-status --to` accepts only `Active` or `Challenged` (L1:119). `--to` on a `Closed` item → `MAINTAIN-006`. `--to` equal to the current status → **no-op, exit 0, writes nothing**. **`--to Challenged` on an `Active` item does NOT set the shield** (B2) — only `--to Active` on a `Challenged` item does.
@@ -414,7 +419,7 @@ Every code in §6 has a test asserting the raised `code`, not message prose. Rel
 
 ### 7.7 Live
 
-**None.** No AI call, no embedder, no network. This is the first engine with no live test tier.
+**None required, one available.** The AI tier means a live check is possible; none ships. Tests use fixtures (T7). (Amended in hardening step 07 — see `plans/steps/hardening/07-ai-close-proposals.md` §10; the pre-step text was "None. No AI call, no embedder, no network. This is the first engine with no live test tier.")
 
 Pyramid (T4): ~18 unit, ~14 integration, 1 E2E, 0 live.
 
@@ -426,7 +431,7 @@ Pyramid (T4): ~18 unit, ~14 integration, 1 E2E, 0 live.
 - `edit_item` (human-only, spec 3.7) — a content edit. **No plan owns it (amended: §12)** — deferred issue (§0).
 - `remove_link` (human-only, spec 3.7) — deletes a link edge. **No plan owns it (amended: §12)** — deferred issue (§0). Note: removing a `supersedes` link does **not** reopen the old item.
 - `items.rationale` / `items.source` (issue #1) — Capture's write path. Engine D's `why` mode reads `rationale` (`plans/engine-query-plan.md` §2.4); the column has no writer yet.
-- AI-proposed `close_item` (V1 uses a human-invoked command).
+- AI-proposed `close_item` (V1 uses a human-invoked command). **Closed by the §14 amendment (hardening step 07): `propose_close` ships pre-filtered inside `ember maintain`; `ember close-item` itself is untouched.**
 - Re-challenge after a manual clear (Gap B / B4) — deferred issue.
 - **Re-superseding the same `(source, target)` pair after a reversal** — blocked by the UNIQUE constraint + gatekeeper rule 9. Deferred note.
 - **The corrective inverse after a reversal** (`B→supersedes→A` when `A→supersedes→B` exists) — rejected with `RELATE-028`. Deferred note.
@@ -797,17 +802,17 @@ The rule only READS timestamps; it writes no schema and backfills nothing. Every
 | S2 dedicated suite | §10 (`tests/maintain/`) |
 | S3 document input/output | §4.5 (data models) + §4.7 (`MaintainRequest`/`MaintainResult`) |
 | S4 explicit data transfer | §2 (the DB is the transfer mechanism) |
+| D8 save raw model response | §14 (§14.4/§14.5: the raw answer stored verbatim in `ai_responses` keyed by `item_id` before it is judged). **(Amended in hardening step 07.)** |
+| I15 bounded external dependence | §14 (timeout 60 s, `max_retries=0`, the ONE retry belongs to the engine). **(Amended in hardening step 07.)** |
+| I16 AI output schema | §14 (`parse_close_proposal` checks the raw answer at the boundary, MAINTAIN-019). **(Amended in hardening step 07.)** |
+| T7 AI fixture testing | §14 (T7 fixtures under `tests/fixtures/maintain/`, no live AI in the suite). **(Amended in hardening step 07.)** |
 
 **(b) N/A, with reason:**
 
 | Rule | Reason |
 |---|---|
-| D8 save raw model response | Maintain makes no AI call (§4.0). Re-arms if "AI-proposed close_item" ships. |
 | I14 web API | No web API in V1. |
-| I15 external services | No external service. |
-| I16 AI output schema | No AI call. |
-| T7 AI fixture testing | No AI parser. |
-| T8 AI eval benchmark | No AI. |
+| T8 AI eval benchmark | No benchmark this step: "no path to measure yet, deferred until real proposals accumulate" (§14). |
 
 **(c) Knowingly deviated, with justification:**
 
@@ -828,7 +833,9 @@ The rule only READS timestamps; it writes no schema and backfills nothing. Every
 
 Implements the Decision line of `plans/hardening-decisions.md` #16, pinned verbatim: **"build, pre-filtered (maintainer, 2026-10-29). The sweep pre-filters stale candidates with deterministic rules (example: Active Questions with an old confirmed answers link), the AI sees only that shortlist (typically 0-3 cards, never a full-corpus scan), proposes close with reason, the human confirms through the existing validate path, one ledger row. Maintain gains its first AI port."** L3: `plans/steps/hardening/07-ai-close-proposals.md`. Ticket: `.scratch/hardening/issues/13-ai-close-proposals.md` (closes #16). Blocked by ticket 12 (step 06) — sequential, one maintain module moving at a time. No migration.
 
-### 14.1 Amended lines (text this section replaces; not yet applied)
+### 14.1 Amended lines (text this section replaces; applied 2026-10-29 by step 07, ticket 13)
+
+- **Status: applied 2026-10-29 (step 07, ticket 13, `feat/hardening`).**
 
 - **Header (line 5)** — from "Maintain adds **no dependency** — no AI, no embedder, no network (first engine with no live tier)." to: "Maintain adds **one AI proposal port** (§14): no embedder, no new package. The AI proposes only; every write is a human-confirmed path."
 - **§4.0** — its claim "Maintain calls no AI" narrows to: "**Maintain's four derived triggers call no AI** (deterministic rules, spec 3.5 unchanged). Maintain gains ONE AI surface, the §14 pre-filtered close proposal: the AI judges a bounded shortlist and proposes; the human confirms; `validate_close_item` writes. The spec-3.7:126 'User confirms' for AI proposals is satisfied by the y/n confirm loop, not by invocation alone."

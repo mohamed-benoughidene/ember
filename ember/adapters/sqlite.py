@@ -711,15 +711,16 @@ class SqliteMaintainContext:
 
     def list_items(self) -> list[ItemState]:
         """Return every item: id, type, status, close_reason, status_origin,
-        plus the two authorial columns `rationale` / `source` (migration 004)
-        that `edit-item` reads its observed old values from.
+        the two authorial columns `rationale` / `source` (migration 004)
+        that `edit-item` reads its observed old values from, and `statement`
+        (the additive Phase-5 display column the AI proposal judges).
 
         Raise `ItemsReadFailed` (MAINTAIN-010) on a read failure.
         """
         try:
             rows = self._conn.execute(
                 "SELECT id, type, status, close_reason, status_origin,"
-                " rationale, source FROM items"
+                " rationale, source, statement FROM items"
             ).fetchall()
         except sqlite3.Error as exc:
             raise MaintainItemsReadFailed("item read fail") from exc
@@ -732,6 +733,7 @@ class SqliteMaintainContext:
                 status_origin=row["status_origin"],
                 rationale=row["rationale"],
                 source=row["source"],
+                statement=row["statement"],
             )
             for row in rows
         ]
