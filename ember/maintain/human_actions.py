@@ -1,12 +1,13 @@
-"""Pure validators for the three human Maintain commands.
+"""Pure validators for the human Maintain commands.
 
-Each validator reads a `MaintainSnapshot` and returns the `list[StatusChange]`
-the store should apply. No I/O, no clock, no DB (T1): the snapshot is the whole
-world, and the store port does the writing (B3, T2).
+Each validator reads a `MaintainSnapshot` and returns the list of changes
+(`StatusChange` / `EditChange` / `LinkChange`) the store should apply. No
+I/O, no clock, no DB (T1): the snapshot is the whole world, and the store
+port does the writing (B3, T2).
 
-The three are the authoritative primary changes of their commands, so each
-passes its primary change to `merge_and_filter(..., exempt=primary)` — a human
-may move an item down (`Challenged -> Active`, `Closed -> Active`) or sideways
+The first three are the authoritative primary changes of their commands, so
+each passes its primary change to `merge_and_filter(..., exempt=primary)` because a
+human may move an item down (`Challenged -> Active`, `Closed -> Active`) or sideways
 (`Challenged -> Closed`), bypassing the escalation-only ladder and the manual
 shield. The rule-2 fan-out is *not* exempt: a dependent already `Challenged`
 or `Closed` is not re-challenged (step-03 §4.4).
@@ -18,17 +19,35 @@ from ember.maintain.derive import FLAGGING_REASONS, merge_and_filter
 from ember.maintain.errors import (
     CloseReasonInvalid,
     CloseReasonMismatch,
+    EditFieldUnknown,
+    EditTargetMismatch,
     ItemAlreadyClosed,
     MaintainItemNotFound,
+    RemoveLinkNotConfirmed,
     ReversalPreconditionFailed,
     StatusTransitionInvalid,
 )
-from ember.maintain.rows import ItemState, MaintainSnapshot, StatusChange
+from ember.maintain.rows import (
+    EditChange,
+    ItemState,
+    LinkChange,
+    MaintainSnapshot,
+    StatusChange,
+)
 
 CLOSE_REASONS: frozenset[str] = frozenset(
     {"answered", "invalidated", "superseded", "reversed", "expired"}
 )
 """The 5 legal `--reason` values (L2 §6, `MAINTAIN-002` boundary)."""
+
+EDIT_FIELDS: frozenset[str] = frozenset({"rationale", "source", "statement"})
+"""The three field names `--field` may name. Under the ADR's Option A a
+`statement` edit is known-but-rejected (`MAINTAIN-014`) and only `rationale`
+on a `Decision` plus `source` on a `Finding` are writable."""
+
+EDITABLE: dict[str, str] = {"rationale": "Decision", "source": "Finding"}
+"""The Option-A writability gate (`MAINTAIN-014`), field -> item type that
+may carry it. `statement` is deliberately absent, so nobody may write it."""
 
 HUMAN_SETTABLE_REASONS: frozenset[str] = frozenset({"invalidated", "expired"})
 """Only these two reasons a human may pass to `close-item`; the rest are
@@ -242,3 +261,102 @@ def _supersedes_targets_link(
         and link.target_item_id == item_id
         for link in snapshot.links
     )
+
+
+def validate_edit_item(
+    snapshot: MaintainSnapshot, item_id: int, field: str, value: str
+) -> list[EditChange]:
+    """Validate an `edit-item` command and return the changes to apply.
+
+    Input: the snapshot, the `--item` id, the `--field` name, the `--value`
+    text. Output: a single-element list with the edit, or an **empty** list
+    when `value` equals the observed value (a no-op, the `set-status` B3
+    precedent).
+
+    Under the rule-7 ADR's Option A only `rationale` (on a `Decision`) and
+    `source` (on a `Finding`) are writable. `statement` and every raw table
+    stay immutable.
+
+    Raises: `MAINTAIN-001` (item missing, carries `item_id`),
+    `MAINTAIN-013` (`field` is not one of the three known names) and
+    `MAINTAIN-014` (the field is not writable on that item's type, which
+    under Option A includes `statement`, carries `item_id` + `field`).
+    Side effects: none (pure). The old value is the observed Phase-1 value,
+    never invented.
+    """
+    by_id = {item.id: item for item in snapshot.items}
+    item = by_id.get(item_id)
+    if item is None:
+        raise MaintainItemNotFound(
+            "edit-item: item does not exist", item_id=item_id
+        )
+    if field not in EDIT_FIELDS:
+        raise EditFieldUnknown(
+            "edit-item: unknown --field", item_id=item_id, field=field
+        )
+    if EDITABLE.get(field) != item.type:
+        raise EditTargetMismatch(
+            "edit-item: field is not writable on this item type",
+            item_id=item_id,
+            field=field,
+        )
+
+    old_value = item.rationale if field == "rationale" else item.source
+    if old_value == value:
+        return []
+
+    return [
+        EditChange(
+            item_id=item.id,
+            field=field,
+            old_value=old_value,
+            new_value=value,
+            trigger_cause="user_edit_item",
+        )
+    ]
+
+
+def validate_remove_link(
+    snapshot: MaintainSnapshot, link_id: int
+) -> list[LinkChange]:
+    """Validate a `remove-link` command and return the change to apply.
+
+    Input: the snapshot, the `--link` id. Output: a single-element list with
+    the removal (`Confirmed -> Rejected`, `trigger_cause='user_remove_link'`,
+    `item_id` = the link's source). A no-op is impossible by design: a
+    missing-or-not-Confirmed link is ONE failure (MAINTAIN-015), so there is
+    no silent-success shape (the recorded I8 deviation, the MAINTAIN-004
+    precedent).
+
+    A reversed-but-Confirmed link is ACCEPTED (orthogonal to reversal, Gap C):
+    it is still a Confirmed row, and the ledger ends with both a
+    `link_reversed` and a `link_removed` row.
+
+    Raises: `MAINTAIN-015` (no Confirmed link with that id, a Phase-1
+    Confirmed-only read cannot distinguish "no such row" from "not
+    Confirmed", same conflation as MAINTAIN-005, carries `link_id`).
+    Side effects: none (pure). The one `links` UPDATE is the store's job,
+    never here (B1/B3).
+    """
+    link = next(
+        (
+            link
+            for link in snapshot.links
+            if link.id == link_id and link.status == "Confirmed"
+        ),
+        None,
+    )
+    if link is None:
+        raise RemoveLinkNotConfirmed(
+            "remove-link: no Confirmed link with that id", link_id=link_id
+        )
+
+    return [
+        LinkChange(
+            link_id=link.id,
+            old_status=link.status,
+            new_status="Rejected",
+            trigger_cause="user_remove_link",
+            item_id=link.source_item_id,
+        )
+    ]

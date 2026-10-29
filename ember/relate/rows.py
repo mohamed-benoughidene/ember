@@ -18,6 +18,9 @@ class NewItem(BaseModel):
     type: str
     statement: str
     created_at: str
+    # Project label from `items.metadata` (ticket 11, step 05b). None means
+    # unlabeled; read-only here, capture is the only writer.
+    metadata: str | None = None
 
 
 class CandidateUniverse(BaseModel):
@@ -31,6 +34,9 @@ class Link(BaseModel):
     link_type: str
     status: str
     created_at: str
+    # Reversal timestamp from the paired maintain write (L2 hardening §6/§9).
+    # NULL means the row is live and readers (rules 8/9) walk it.
+    reversed_at: str | None = None
 
 
 class ChangeLogEntry(BaseModel):

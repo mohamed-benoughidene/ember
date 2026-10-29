@@ -5,11 +5,17 @@ from __future__ import annotations
 import json
 import os
 import sys
+from datetime import datetime, timezone
 
 import click
 
+from ember.adapters.db_check import check_database
 from ember.adapters.embedder import build_embedder, validate_embedder_config
-from ember.adapters.llm import build_item_proposer, build_link_proposer
+from ember.adapters.llm import (
+    build_close_proposer,
+    build_item_proposer,
+    build_link_proposer,
+)
 from ember.adapters.sqlite import (
     SqliteAiResponseStore,
     SqliteItemContext,
@@ -45,18 +51,30 @@ from ember.capture.item_proposal import (
 )
 from ember.capture.source_storage import StoredSource, store_source
 from ember.errors import EmberError
+from ember.maintain.close_proposer import ProposalOutcome, stale_close_candidates
 from ember.maintain.derive import derive_status_changes
-from ember.maintain.human_actions import validate_close_item
+from ember.maintain.errors import UserAbort as MaintainUserAbort
+from ember.maintain.human_actions import (
+    validate_close_item,
+    validate_edit_item,
+    validate_remove_link,
+)
 from ember.maintain.report import format_report
+from ember.maintain.rows import MaintainSnapshot
 from ember.maintain.run_maintain import (
+    CloseProposalPorts,
     MaintainPorts,
     MaintainRequest,
     _load,
     run_close_item,
+    run_close_proposals,
+    run_edit_item,
+    run_remove_link,
     run_reverse_supersedes,
     run_set_status,
     run_sweep,
 )
+from ember.query.rows import HistoryPage, TopicFilter
 from ember.query.run_query import (
     run_current_state,
     run_history,
@@ -66,6 +84,7 @@ from ember.query.run_query import (
 from ember.relate.candidate_pool import build_candidate_pool
 from ember.relate.errors import UserAbort as RelateUserAbort
 from ember.relate.load_filter import load_item_candidates, load_latest_candidates
+from ember.relate.rows import Link
 from ember.relate.rows import Pool
 from ember.relate.run_relate import RelatePorts, RelateRequest, run_relate
 
@@ -102,6 +121,26 @@ class RelateTerminalConfirm:
         except EOFError as exc:
             click.echo()
             raise RelateUserAbort("input ended") from exc
+        return answer
+
+    def write(self, text: str) -> None:
+        click.echo(text)
+
+
+class MaintainTerminalConfirm:
+    """`ConfirmPort` on the terminal for the maintain proposal loop.
+
+    Like `RelateTerminalConfirm`, but end of input raises the maintain
+    `UserAbort` (MAINTAIN-022) so the proposal loop maps it to `aborted=True`.
+    """
+
+    def ask(self, prompt: str) -> str:
+        click.echo(prompt, nl=False)
+        try:
+            answer = input()
+        except EOFError as exc:
+            click.echo()
+            raise MaintainUserAbort("input ended") from exc
         return answer
 
     def write(self, text: str) -> None:
@@ -257,9 +296,10 @@ def clear_validated(item_id: int, db_path: str) -> None:
 def relate(item_id: int | None, latest: bool, db_path: str) -> None:
     """Run all 4 relate phases: load, pool, AI propose, confirm, write.
 
-    Exit 0 when every proposal is handled, 1 on a phase error, and 2 when the
-    user quits mid-prompt. An empty candidate pool prints the Phase 2 JSON and
-    exits 0 without an AI call.
+    Prints one `relate rejected: CODE | detail` line per gatekeeper rejection,
+    then the summary. Exit 0 when every proposal is handled, 1 on a phase
+    error, and 2 when the user quits mid-prompt. An empty candidate pool
+    prints the Phase 2 JSON and exits 0 without an AI call.
     """
     if item_id is not None and latest:
         raise click.UsageError("use either --item or --latest, not both")
@@ -309,6 +349,13 @@ def relate(item_id: int | None, latest: bool, db_path: str) -> None:
             new_item=result.new_item, ranked=pool.ranked, env=os.environ
         )
         outcome = run_relate(ports, request)
+        for rejection in outcome.gatekeeper_rejections:
+            if rejection.detail:
+                click.echo(
+                    f"relate rejected: {rejection.code} | {rejection.detail}"
+                )
+            else:
+                click.echo(f"relate rejected: {rejection.code}")
         click.echo(
             f"accepted: {len(outcome.accepted)}"
             f", rejected: {outcome.rejected}"
@@ -337,12 +384,19 @@ def relate(item_id: int | None, latest: bool, db_path: str) -> None:
     help="SQLite database path.",
 )
 def maintain(dry_run: bool, db_path: str) -> None:
-    """Run the maintain sweep: load the graph, derive, apply, report.
+    """Run the maintain sweep, then propose AI closes for the stale shortlist.
 
     A plain run writes the derived status changes to `items` and appends one
-    `change_log` row per change. `--dry-run` loads, derives and prints only; it
-    writes no `items` or `change_log` row.
+    `change_log` row per change. `--dry-run` loads, derives and prints only, and it
+    writes no `items` or `change_log` row. Phase 5 (engine-maintain-plan §14)
+    runs the free pre-filter on a fresh snapshot: an empty shortlist prints the
+    `stale:` outcome line and builds no AI adapter (no key needed), a
+    non-empty one proposes close for each stale card and confirms with
+    `[y]es / [n]o / [q]uit`. An accepted close is written through the human
+    `close-item` validate path. The AI never closes anything itself. Exit 0
+    normally, 1 on an error, 2 when the user quits the proposal loop.
     """
+    outcome = ProposalOutcome(stale=0, proposed=0, accepted=0, rejected=0)
     try:
         conn = open_maintain_database(db_path)
         ports = MaintainPorts(
@@ -352,15 +406,57 @@ def maintain(dry_run: bool, db_path: str) -> None:
         if dry_run:
             snapshot = _load(ports.lookup)
             changes = derive_status_changes(snapshot)
-            report = format_report(changes, len(snapshot.items))
+            for line in format_report(changes, len(snapshot.items)):
+                click.echo(line)
+            # Nothing was applied, so this fresh load is still the pre-apply
+            # view: the dry-run list deliberately names every candidate
+            # before the human commits to a run (review fix 3).
+            shortlist = stale_close_candidates(
+                _load(ports.lookup), now=datetime.now(timezone.utc)
+            )
+            if shortlist.truncated:
+                click.echo("stale shortlist capped at 10 items (list truncated)")
+            for candidate in shortlist.candidates:
+                click.echo(
+                    f"item {candidate.item_id}: stale {candidate.item_type}"
+                    f" (newest answers link"
+                    f" {candidate.newest_answers_link_id},"
+                    f" confirmed {candidate.newest_answer_created_at})"
+                    " (dry-run)"
+                )
+            outcome = ProposalOutcome(
+                stale=len(shortlist.candidates), proposed=0, accepted=0, rejected=0
+            )
         else:
             result = run_sweep(ports, MaintainRequest())
-            report = format_report(result.changed, result.total_items)
+            for line in format_report(result.changed, result.total_items):
+                click.echo(line)
+            shortlist = stale_close_candidates(
+                _load(ports.lookup), now=datetime.now(timezone.utc)
+            )
+            if shortlist.truncated:
+                click.echo("stale shortlist capped at 10 items (list truncated)")
+            if shortlist.candidates:
+                outcome = run_close_proposals(
+                    CloseProposalPorts(
+                        lookup=ports.lookup,
+                        store=ports.store,
+                        close_proposer=build_close_proposer(os.environ),
+                        ai_response_store=SqliteAiResponseStore(conn),
+                        confirm=MaintainTerminalConfirm(),
+                    ),
+                    now=datetime.now(timezone.utc),
+                )
     except EmberError as exc:
         click.echo(f"error: {exc.log_line()}", err=True)
         raise SystemExit(1)
-    for line in report:
-        click.echo(line)
+    click.echo(
+        f"stale: {outcome.stale}, proposed: {outcome.proposed},"
+        f" accepted: {outcome.accepted}, rejected: {outcome.rejected},"
+        f" aborted: {str(outcome.aborted).lower()}"
+    )
+    if outcome.aborted:
+        sys.exit(2)
 
 
 @main.command("close-item")
@@ -485,8 +581,9 @@ def set_status(item_id: int, to_status: str, db_path: str) -> None:
 def reverse_supersedes(item_id: int, link_id: int, db_path: str) -> None:
     """Undo a supersedes: restore the item and mark the link reversed.
 
-    Writes no `links` row; the reversal is an item-status event logged in
-    `change_log`. Prints the same report as `maintain`.
+    Writes the `reversed_at` column on the `links` row, the item restore, and
+    the two `change_log` rows in one transaction from one clock read. Prints
+    the same report as `maintain`.
     """
     try:
         conn = open_maintain_database(db_path)
@@ -503,6 +600,154 @@ def reverse_supersedes(item_id: int, link_id: int, db_path: str) -> None:
         raise SystemExit(1)
     for line in report:
         click.echo(line)
+
+
+@main.command("edit-item")
+@click.option(
+    "--item",
+    "item_id",
+    type=int,
+    required=True,
+    help="Item id to edit.",
+)
+@click.option(
+    "--field",
+    "field",
+    required=True,
+    help="Field to edit: rationale (on a Decision) or source (on a Finding).",
+)
+@click.option(
+    "--value",
+    "value",
+    required=True,
+    help="New text for the field. An empty string blanks it.",
+)
+@click.option(
+    "--dry-run",
+    is_flag=True,
+    default=False,
+    help="Print the planned old -> new change and write nothing.",
+)
+@click.option(
+    "--db",
+    "db_path",
+    default=DEFAULT_DB_PATH,
+    help="SQLite database path.",
+)
+def edit_item(
+    item_id: int, field: str, value: str, dry_run: bool, db_path: str
+) -> None:
+    """Edit an item's rationale or source by hand, ledger row always.
+
+    Under the rule-7 ADR the item text (`statement`) and all raw tables stay
+    immutable: `rationale` is writable on a Decision, `source` on a Finding.
+    A same-value edit is a no-op (exit 0, nothing written). The human invoking
+    the command IS the confirmation and no AI runs in this path.
+    """
+    try:
+        conn = open_maintain_database(db_path)
+        ports = MaintainPorts(
+            lookup=SqliteMaintainContext(conn),
+            store=SqliteMaintainStore(conn),
+        )
+        if dry_run:
+            snapshot = _load(ports.lookup)
+            changes = validate_edit_item(snapshot, item_id, field, value)
+        else:
+            changes = run_edit_item(
+                ports,
+                MaintainRequest(item_id=item_id, field=field, value=value),
+            )
+    except EmberError as exc:
+        click.echo(f"error: {exc.log_line()}", err=True)
+        raise SystemExit(1)
+    for change in changes:
+        if dry_run:
+            old = change.old_value if change.old_value is not None else "<null>"
+            click.echo(
+                f"item {change.item_id}: {change.field}:"
+                f" {old} -> {change.new_value} (dry-run)"
+            )
+        else:
+            click.echo(f"item {change.item_id}: {change.field} edited")
+
+
+@main.command("remove-link")
+@click.option(
+    "--link",
+    "link_id",
+    type=int,
+    required=True,
+    help="Link id to remove.",
+)
+@click.option(
+    "--dry-run",
+    is_flag=True,
+    default=False,
+    help="Print the planned status flip and write nothing.",
+)
+@click.option(
+    "--db",
+    "db_path",
+    default=DEFAULT_DB_PATH,
+    help="SQLite database path.",
+)
+def remove_link(link_id: int, dry_run: bool, db_path: str) -> None:
+    """Remove one confirmed relationship edge, ledger row always.
+
+    The removal is ONE status flip (`Confirmed -> Rejected`) plus its
+    `link_removed` ledger row in one transaction: the row is never deleted
+    (the ledger's foreign key refuses that) and never flipped back, so a
+    removed pair stays blocked forever (the #15 ruling). A second removal of
+    the same link is an error (MAINTAIN-015), not a silent no-op. The human
+    invoking the command IS the confirmation and no AI runs in this path.
+    """
+    try:
+        conn = open_maintain_database(db_path)
+        ports = MaintainPorts(
+            lookup=SqliteMaintainContext(conn),
+            store=SqliteMaintainStore(conn),
+        )
+        # The display-only link line is read from the same Phase-1 snapshot
+        # the command writes from, BEFORE the flip (a removed link leaves
+        # the Confirmed-only read). Step plan 05 §2/§3: display fields are
+        # not carried on LinkChange.
+        snapshot = _load(ports.lookup)
+        link = _confirmed_link(snapshot, link_id)
+        if dry_run:
+            changes = validate_remove_link(snapshot, link_id)
+        else:
+            changes = run_remove_link(
+                ports, MaintainRequest(link_id=link_id)
+            )
+    except EmberError as exc:
+        click.echo(f"error: {exc.log_line()}", err=True)
+        raise SystemExit(1)
+    for change in changes:
+        if dry_run:
+            click.echo(
+                f"link {change.link_id}: {change.old_status} ->"
+                f" {change.new_status} (dry-run)"
+            )
+        elif link is not None:
+            click.echo(
+                f"link {change.link_id}: {link.link_type}"
+                f" {link.source_item_id} -> {link.target_item_id} removed"
+                f" ({change.old_status} -> {change.new_status})"
+            )
+        else:
+            click.echo(
+                f"link {change.link_id}: {change.old_status} ->"
+                f" {change.new_status} removed"
+            )
+
+
+def _confirmed_link(snapshot: MaintainSnapshot, link_id: int) -> Link | None:
+    """Find one confirmed link in the snapshot, or None (display-only read)."""
+    for link in snapshot.links:
+        if link.id == link_id and link.status == "Confirmed":
+            return link
+    return None
 
 
 @main.command("current-state")
@@ -535,20 +780,48 @@ def current_state_command(db_path: str) -> None:
     help="Search text: one or more words, matched as whole tokens.",
 )
 @click.option(
+    "--status",
+    "status",
+    default=None,
+    help="Only score items with this status: Active, Challenged or Closed.",
+)
+@click.option(
+    "--type",
+    "item_type",
+    default=None,
+    help="Only score items of this type: Decision, Assumption, Finding or Question.",
+)
+@click.option(
+    "--limit",
+    "limit",
+    type=int,
+    default=None,
+    help="Keep only the top N ranked results. 0 prints an empty result list.",
+)
+@click.option(
     "--db",
     "db_path",
     default=DEFAULT_DB_PATH,
     help="SQLite database path.",
 )
-def topic_search_command(query: str, db_path: str) -> None:
+def topic_search_command(
+    query: str,
+    status: str | None,
+    item_type: str | None,
+    limit: int | None,
+    db_path: str,
+) -> None:
     """Rank items by BM25 over their statements, as JSON.
 
     Every item is searched, `Closed` ones included, and each result carries its
-    status. Read-only, like every query command.
+    status. `--status` and `--type` narrow what is scored (the filtered subset
+    is the corpus, so counts recompute) and `--limit` crops the ranked list.
+    Read-only, like every query command.
     """
     try:
+        topic_filter = TopicFilter(status=status, type=item_type, limit=limit)
         conn = open_query_database(db_path)
-        output = run_topic_search(SqliteQueryContext(conn), query)
+        output = run_topic_search(SqliteQueryContext(conn), query, topic_filter)
     except EmberError as exc:
         click.echo(f"error: {exc.log_line()}", err=True)
         raise SystemExit(1)
@@ -589,25 +862,77 @@ def why_command(item_id: int, db_path: str) -> None:
     help="Item id to show. Omit it for the whole ledger.",
 )
 @click.option(
+    "--limit",
+    "limit",
+    type=int,
+    default=None,
+    help="Show at most N events after the cut. Omit it for no cap.",
+)
+@click.option(
+    "--offset",
+    "offset",
+    type=int,
+    default=None,
+    help="Skip N events after the cut. Omit it to skip none.",
+)
+@click.option(
+    "--since",
+    "since",
+    default=None,
+    help=(
+        "Keep events at or after this ISO-8601 datetime. The value must name"
+        " an offset (for example 2026-01-15T00:00:00+00:00) and is normalised"
+        " to UTC."
+    ),
+)
+@click.option(
     "--db",
     "db_path",
     default=DEFAULT_DB_PATH,
     help="SQLite database path.",
 )
-def history_command(item_id: int | None, db_path: str) -> None:
+def history_command(
+    item_id: int | None, limit: int | None, offset: int | None, since: str | None, db_path: str
+) -> None:
     """Show the change ledger: one item's events, or the whole ledger.
 
     Each event carries what changed and why. With no `--item` every row is
-    shown, including the rejected-proposal rows that belong to no item.
+    shown, including the rejected-proposal rows that belong to no item. The
+    window composes on both views: `--since` cuts by time first, then
+    `--offset` skips, then `--limit` caps, always behind the ledger order.
     Read-only, like every query command.
     """
     try:
         conn = open_query_database(db_path)
-        output = run_history(SqliteQueryContext(conn), item_id)
+        page = HistoryPage(limit=limit, offset=offset, since=since)
+        output = run_history(SqliteQueryContext(conn), item_id, page)
     except EmberError as exc:
         click.echo(f"error: {exc.log_line()}", err=True)
         raise SystemExit(1)
     click.echo(output)
+
+
+@main.command("db-check")
+@click.option(
+    "--db",
+    "db_path",
+    default=DEFAULT_DB_PATH,
+    help="SQLite database path.",
+)
+def db_check(db_path: str) -> None:
+    """Report database health: version, floors, triggers, drift, replay.
+
+    Read-only: the file is opened `mode=ro` and never migrated or written.
+    One command, one job, no mode flags. Exit 0 when the report ends
+    `result: OK`, 1 on `result: DRIFT` or `result: UNREADABLE`.
+    """
+    report = check_database(db_path)
+    if report.detail is not None:
+        click.echo(f"detail: {report.detail}", err=True)
+    for line in report.lines:
+        click.echo(line)
+    if report.result != "OK":
+        sys.exit(1)
 
 
 def _write_validated_flag(item_id: int, db_path: str, *, new_value: bool) -> None:

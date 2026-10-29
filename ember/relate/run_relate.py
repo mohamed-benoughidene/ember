@@ -69,7 +69,8 @@ def run_relate(ports: RelatePorts, request: RelateRequest) -> ConfirmResult:
     when the raw-response owner pair is invalid, `RELATE-036` when the raw
     response cannot be stored, `RELATE-032` after a failed retry, and
     `RELATE-033` on an unparseable first answer. Gatekeeper rule failures are
-    counted as `rejected`, not raised.
+    counted as `rejected` and returned on `ConfirmResult.gatekeeper_rejections`
+    (code plus detail) for the CLI to print, not raised.
     """
     candidates = [candidate.item for candidate in request.ranked]
     response = propose_links_with_retry(
@@ -79,15 +80,16 @@ def run_relate(ports: RelatePorts, request: RelateRequest) -> ConfirmResult:
     validate_proposals(
         response.proposals, candidates=candidates, new_item=request.new_item
     )
-    validated, gatekeeper_rejected = _gatekeep(
+    validated, gatekeeper_rejections = _gatekeep(
         response.proposals, request.new_item, ports.link_lookup
     )
     result = confirm_links(validated, store=ports.link_store, confirm=ports.confirm)
     return ConfirmResult(
         accepted=result.accepted,
-        rejected=result.rejected + gatekeeper_rejected,
+        rejected=result.rejected + len(gatekeeper_rejections),
         skipped=result.skipped,
         aborted=result.aborted,
+        gatekeeper_rejections=gatekeeper_rejections,
     )
 
 
@@ -119,10 +121,11 @@ def _gatekeep(
     proposals: list[LinkProposal],
     new_item: NewItem,
     lookup: LinkLookupPort,
-) -> tuple[list[ValidatedLink], int]:
-    """Run the pure gatekeeper per proposal; count the rejects."""
+) -> tuple[list[ValidatedLink], list[RejectedLink]]:
+    """Run the pure gatekeeper per proposal and return the rejects with their
+    codes and details."""
     validated: list[ValidatedLink] = []
-    rejected = 0
+    rejected: list[RejectedLink] = []
     for proposal in proposals:
         outcome = validate_add_link(
             LinkDraft(
@@ -134,7 +137,7 @@ def _gatekeep(
             lookup,
         )
         if isinstance(outcome, RejectedLink):
-            rejected += 1
+            rejected.append(outcome)
         else:
             validated.append(outcome)
     return validated, rejected

@@ -512,3 +512,66 @@ L3 deliverable checklists:
 - (i) Step 3 fakes + tests.
 
 (Five new ports across Step 2 + Step 3: `LinkProposerPort`, `EmbedderPort`, `LinkLookupPort` extended with `neighbors_of` / `item_status` / `supersedes_ancestors`, `LinkStorePort`, `EmbeddingStorePort`, `AiResponseStorePort`. The `AiResponseStorePort` is rarely faked — Capture's fakes pattern applies.)
+
+## 11. V1.x Amendment (hardening phase): links immutability narrowed
+
+Amended 2026-10-28, implementation pending. Source: `plans/hardening-schema-plan.md` (Cluster 1, issues #15 #17 #20 #21 #23).
+
+- **§3.1 immutability clause narrowed.** Migration 011 adds `links.reversed_at TEXT NULL` (NULL = live, non-NULL = reversal timestamp). `links` stays insert-only otherwise — `status`, `link_type`, endpoints never change. The column is derived from `change_log` (`link_reversed` markers) and rebuildable; the ledger stays the source (master plan rule 7 unchanged).
+- **Gatekeeper rules 8 and 9 will see the reversal column.** Rule 8: `supersedes_ancestors` walks only `Confirmed` links with `reversed_at IS NULL` — a corrective inverse after reversal no longer false-fires. Rule 9: `find_existing` still rejects the duplicate triple but reports the existing row's reversal state (the UNIQUE triple itself stands pending #15).
+- **RELATE-028 message improves.** The rejection gains a detail naming the blocking link (id, source -> target); the cycle decision logic is unchanged.
+- **UNIQUE-triple ruling (#15) pending.** Keep-block = spec 3.3 compliant, no schema work. Relax = partial unique index on live rows = `links` table rebuild + recorded spec 3.3 deviation. Decision is the maintainer's; it gates any rebuild — mechanics pinned in `plans/hardening-schema-plan.md` §10.
+- Boot floor: relate 9 → 11 (RELATE-014 required moves; the six `version == 10` test sites are declared churn points).
+- Maintain's floor moves 10 → 11 in the same migration (`MAINTAIN-009`); recorded here because both floors ship in one step.
+- The pairing UPDATE widens "Maintain never writes links" by one column; this L2 records that widening now (mirrored in `plans/hardening-schema-plan.md` §6) — it is not deferred to the cluster-2 amendment.
+- `RejectedLink` gains an optional `detail` field (the frozen "no reason field" clause, §5.5, is amended).
+- `LinkLookupPort` grows a 12th method, `supersedes_blocking_link` (the frozen 11-method protocol, §5.4, is amended).
+- Boot floors move with the immutability migration — see the two floor bullets above; both ship in one step.
+
+## 12. V1.x Amendment: Signals wrapper (ticket 10, #8 ruling)
+
+Added 2026-10-29. Source: `plans/hardening-decisions.md` #8 ("Decision: build", maintainer, 2026-10-29, against the defer recommendation — the recorded warning stands: structure without behavior change) and `.scratch/hardening/issues/10-signals-wrapper.md`. Implementer: `plans/steps/hardening/04-signals-wrapper.md`. Supersedes two lines of this plan: §2's "V1 has exactly 3, so no wrapper" bullet and §8's "A `Signals` object wrapper" out-of-scope bullet. §5.5 unchanged: `Signals` is not a shared row model and does not enter `rows.py`.
+
+**The pin (frozen by this amendment):**
+
+- Type name `Signals`, one Pydantic `BaseModel` (same base as `Pool`, §5.5), defined in `ember/relate/candidate_pool.py` — the module that builds it and its single consumer. Not `rows.py` (`rows.py` holds shapes shared across modules; `Signals` crosses no module line). No re-export, no `__init__` entry.
+- Exactly three fields, matching today's local signal results verbatim (`candidate_pool.py:71-89` composition block):
+  - `content: dict[int, float]` — the top-`CONTENT_TOP_K`(10) cosine scores from `_content_signal`
+  - `graph: set[int]` — universe-surviving 1-hop neighbor ids from `_graph_signal`
+  - `metadata: set[int]` — in-window item ids from `_metadata_signal`
+- Boundary: built inside `build_candidate_pool` after the three signal calls return; consumed in the same function by `_merge` and the `counts` construction. No other module imports or names it (architecture test enforces). The empty-universe path still returns `Pool.empty(warning=warning)` before any signal runs — no `Signals` is built there.
+- Naming trap, do not "fix" either side: `counts` keys stay `dense`/`graph`/`metadata` (frozen in the CLI JSON and the tests) while the content-signal field stays `content` (today's local variable name).
+
+**Guarantees (zero output change):**
+
+- `Pool(ranked, counts, warning)` unchanged: `rows.py::Pool` gains no field, `Pool.empty` untouched, `ranked` order and tie-break unchanged.
+- CLI unchanged: the empty-pool JSON `{"phase": 2, "pool_size": 0, "signals": pool.counts}` (`ember/cli.py:306-310`) byte-identical; the model-change warning to STDERR unchanged; the `relate rejected: CODE [| detail]` lines and the `accepted: N, rejected: N, skipped: N, aborted: <bool>` summary unchanged; exit codes 0/1/2 unchanged.
+- `build_candidate_pool` keeps its 4-input signature (I3) and raises exactly today's codes: RELATE-017, 018, 019, 021, 022, 023, 037. **Zero new error codes.**
+
+**Test accept list:**
+
+- Must pass unmodified: every test in `tests/relate/test_candidate_pool_unit.py` (34 test functions, two parametrized) and all four in `tests/relate/test_candidate_pool_integration.py` (`test_seeded_pool_ranks_by_cosine_then_id_and_counts_all_three_signals`, `test_prewarmed_cache_is_reused_on_the_second_run`, `test_preflight_model_mismatch_wipes_and_reencodes_every_item`, `test_graph_read_failure_surfaces_as_relate_021`). Reason: both files drive only `build_candidate_pool` and read the returned `Pool`; no test imports a private helper (the unit docstring pins this).
+- Pure-restructure churn: **none expected.** The ticket's "except pure-restructure churn" clause should stay unused. If a test must be edited, that is a bug in the restructure, not churn — stop and record why in Build Notes.
+- Adjacent, must stay green untouched: `tests/relate/test_relate_cli.py` (it patches `ember.cli.build_candidate_pool` at `:238-245` and constructs `Pool` directly — the wrapper changes nothing it sees) and `tests/test_architecture.py::test_relate_core_does_not_import_adapters`.
+
+**Out of scope (this amendment):** no 4th signal; no BM25 into the pool (master-plan §2 exclusion stands; an L1 amendment is still required before that); no `ember.query` import anywhere under `ember/relate/` (architecture test stays green); no `Pool`/`RankedCandidate`/`RelateRequest` field change; no `rows.py` entry; no module move; no behavior, output, ranking, or cache-write change of any kind.
+
+## 13. V1.x Amendment: metadata signal reads items.metadata (ticket 11, #5 build)
+
+Added 2026-10-29, implementation pending. Source: `plans/hardening-decisions.md` #5 ("Decision: build", maintainer, 2026-10-29: relate reads the column instead of the 30-day proxy) and `.scratch/hardening/issues/11-metadata-column.md`. Implementer: `plans/steps/hardening/05b-metadata-relate.md` (builds on `05a-metadata-capture.md`, where migration 012 and the capture writer live). Amends §12's `metadata` branch only: `content`, `graph`, `Signals`, `_merge`, `Pool` and the CLI stay as pinned there.
+
+**Read source.** Candidates' labels are `items.metadata` read by the SQLite adapter; read failures raise `RELATE-016 ItemsReadFailed` like sibling reads. `NewItem` (`rows.py`) gains `metadata: str | None = None`: additive field, I10-safe, every existing caller compiles unchanged. The new item's label comes from its own row: `LinkLookupPort` grows a 13th method `item_metadata(item_id) -> str | None` (the frozen 12-method protocol from §11 is amended, same precedent), used by `load_filter._read_item`. Unlabeled = NULL. A stored label is already trimmed (the capture write path normalizes), so no write-side assumption is needed here.
+
+**The pin (deterministic matrix, frozen by this amendment).** Compare labels case-insensitively: `value.strip().casefold()` on both sides at signal time. Let `new_label` be the new item's normalized label:
+- `new_label` set: a candidate is kept iff the candidate has a label and the two casefolded labels are equal. The 30-day window does NOT apply: a same-area item is a match at 5 days or 5 years old.
+- `new_label` None: a candidate is kept iff the candidate is unlabeled AND within `METADATA_WINDOW` (today's proxy, frozen, restricted to the both-NULL subset).
+- Mixed corpus legal by construction. A labeled new item never matches an unlabeled candidate, an unlabeled new item never matches a labeled candidate: no partial matching, no similarity scoring, no window rescue.
+- Timestamp parsing is unchanged for every row regardless of label branch: `_parse_created_at` still runs for labeled rows too, so the RELATE-023 surface stays exactly what it is today (review fix 9).
+
+**Frozen.** Counts key stays `metadata`, `SignalKind.metadata` stays, `_merge` unchanged (kept candidates enter at `FLAT_COSINE` exactly as today), `Pool(ranked, counts, warning)` unchanged, ranking and tie-break unchanged, `METADATA_WINDOW` stays (the proxy branch uses it).
+
+**Floors.** Relate boot floor moves 11 -> 12 (`RELATE-014` `required=12`): this engine now reads the column. Maintain stays 11 and query stays 10, neither reads `items.metadata`.
+
+**Errors.** Zero new codes. `MetadataReadFailed` (RELATE-023) stays a timestamp error only: despite the name it is never raised for a `items.metadata` read (NULL is legal, never missing).
+
+**Out of scope (this amendment):** no Maintain relabel or `edit-item` path (capture is the only writer in this ticket), no bulk labeling, no fuzzy label matching, no 4th signal.

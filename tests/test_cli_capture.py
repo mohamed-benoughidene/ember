@@ -21,10 +21,17 @@ RAW_ANSWER = "RAW-AI-ANSWER"
 
 
 def _proposal(
-    statement: str, quote: str, item_type: ItemType = ItemType.DECISION
+    statement: str,
+    quote: str,
+    item_type: ItemType = ItemType.DECISION,
+    metadata: str | None = None,
 ) -> ItemProposal:
     return ItemProposal(
-        type=item_type, statement=statement, source_quote=quote, confidence=0.9
+        type=item_type,
+        statement=statement,
+        source_quote=quote,
+        confidence=0.9,
+        metadata=metadata,
     )
 
 
@@ -154,7 +161,7 @@ def test_editing_writes_the_corrected_type(db_path, tmp_path, monkeypatch) -> No
     )
 
     result = _run(
-        tmp_path, db_path, batch, "e\nDecision\n\ny\n", monkeypatch
+        tmp_path, db_path, batch, "e\nDecision\n\n\ny\n", monkeypatch
     )
 
     assert result.exit_code == 0
@@ -163,6 +170,43 @@ def test_editing_writes_the_corrected_type(db_path, tmp_path, monkeypatch) -> No
         assert conn.execute("SELECT type FROM items").fetchone()[0] == "Decision"
     finally:
         conn.close()
+
+
+def test_label_block_and_summary_line(db_path, tmp_path, monkeypatch) -> None:
+    batch = ProposalBatch(
+        proposals=[_proposal("Use SQLite", "use SQLite", metadata="auth-network")],
+        dropped=[],
+    )
+
+    result = _run(tmp_path, db_path, batch, "y\n", monkeypatch)
+
+    assert result.exit_code == 0
+    assert 'metadata: "auth-network"' in result.output
+    assert "accepted: 1, rejected: 0, warnings: 0, aborted: false" in result.output
+    assert (
+        _count(db_path, "SELECT COUNT(*) FROM items WHERE metadata = 'auth-network'")
+        == 1
+    )
+
+
+def test_edit_sequence_relabels_metadata(db_path, tmp_path, monkeypatch) -> None:
+    batch = ProposalBatch(
+        proposals=[_proposal("Use SQLite", "use SQLite", metadata="wrong-label")],
+        dropped=[],
+    )
+
+    result = _run(
+        tmp_path, db_path, batch, "e\n\n\nauth-network\ny\n", monkeypatch
+    )
+
+    assert result.exit_code == 0
+    assert "new metadata? (default wrong-label)" in result.output
+    assert 'metadata: "auth-network"' in result.output
+    assert (
+        _count(db_path, "SELECT COUNT(*) FROM items WHERE metadata = 'auth-network'")
+        == 1
+    )
+    assert _count(db_path, "SELECT COUNT(*) FROM items") == 1
 
 
 def test_missing_api_key_exits_1(db_path, tmp_path, monkeypatch) -> None:

@@ -37,6 +37,22 @@ def test_relate_core_does_not_import_adapters() -> None:
             assert token not in text, f"{path} references {token}"
 
 
+def test_signals_wrapper_stays_inside_candidate_pool() -> None:
+    """The Signals wrapper lives and dies in candidate_pool.py (L2 §12, T9).
+
+    No `ember` file except candidate_pool.py may even name `Signals` (not just
+    import it), so the bundle cannot leak into rows.py, the CLI, or a port.
+    """
+    engine_dir = Path(__file__).resolve().parents[1] / "ember"
+    paths = sorted(engine_dir.rglob("*.py"))
+    assert len(paths) > 1
+    for path in paths:
+        if path.name == "candidate_pool.py":
+            continue
+        text = path.read_text(encoding="utf-8")
+        assert "Signals" not in text, f"{path} names Signals"
+
+
 def test_maintain_core_does_not_import_adapters() -> None:
     maintain_dir = Path(__file__).resolve().parents[1] / "ember" / "maintain"
     paths = sorted(maintain_dir.glob("*.py"))
@@ -55,3 +71,15 @@ def test_query_core_does_not_import_adapters() -> None:
         text = path.read_text(encoding="utf-8")
         for token in FORBIDDEN_RELATE:
             assert token not in text, f"{path} references {token}"
+
+
+def test_engine_core_does_not_reference_link_replay() -> None:
+    """The replay step lives in the adapters. No engine core may name it (T9)."""
+    paths = []
+    for name in ("relate", "maintain", "query", "capture"):
+        core_dir = Path(__file__).resolve().parents[1] / "ember" / name
+        paths.extend(sorted(core_dir.glob("*.py")))
+    assert paths
+    for path in paths:
+        text = path.read_text(encoding="utf-8")
+        assert "link_replay" not in text, f"{path} references link_replay"

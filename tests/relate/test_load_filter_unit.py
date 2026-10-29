@@ -139,6 +139,9 @@ class _VanishingLookup:
     def item_created_at(self, item_id: int) -> str | None:
         return None
 
+    def item_metadata(self, item_id: int) -> str | None:
+        return None
+
     def find_existing(
         self, source_id: int, target_id: int, link_type: str
     ) -> Link | None:

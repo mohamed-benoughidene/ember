@@ -40,7 +40,7 @@ def test_migration_010_preserves_existing_rows(db_path) -> None:
 
     conn = open_database(db_path)
 
-    assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == 10
+    assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == 12
     row = conn.execute(
         "SELECT close_reason, status_origin FROM items WHERE id = 1"
     ).fetchone()

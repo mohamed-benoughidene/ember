@@ -1,16 +1,19 @@
 """Phase 2 core: build the ranked candidate pool from three signals.
 
 Content (cached embeddings), graph (1-hop Confirmed neighbors), and metadata
-(`created_at` inside a 30-day window) each produce a candidate set; the merge
-unions them, scoring a candidate with the highest signal cosine it earned.
-Cosine math is stdlib `math` only and every cache, link, and model call goes
-through a port, so this module reads no database driver and knows no model.
+(project labels from `items.metadata`, with the frozen 30-day time proxy for
+unlabeled items) each produce a candidate set; the merge unions them, scoring
+a candidate with the highest signal cosine it earned. Cosine math is stdlib
+`math` only and every cache, link, and model call goes through a port, so
+this module reads no database driver and knows no model.
 """
 
 from __future__ import annotations
 
 from datetime import datetime, timedelta
 from math import sqrt
+
+from pydantic import BaseModel
 
 from ember.relate.embedder import EmbedderPort
 from ember.relate.embedding_store import EmbeddingStorePort
@@ -25,6 +28,22 @@ MODEL_CHANGED_LINE = (
 CONTENT_TOP_K = 10
 FLAT_COSINE = 0.5
 METADATA_WINDOW = timedelta(days=30)
+
+
+class Signals(BaseModel):
+    """The three Phase 2 signal results, bundled for one consumer.
+
+    Built inside `build_candidate_pool` after the three signal calls return
+    (Phase 2) and consumed only there, by `_merge` and the `counts` dict. No
+    other module may import or even name this class (architecture test).
+
+    Naming trap, frozen by L2 §12: the content field stays `content` while the
+    counts key for it stays `dense`.
+    """
+
+    content: dict[int, float]
+    graph: set[int]
+    metadata: set[int]
 
 
 def build_candidate_pool(
@@ -78,12 +97,13 @@ def build_candidate_pool(
     )
     graph = _graph_signal(link_lookup, items, new_item_id=new_item.id)
     metadata = _metadata_signal(items, new_item)
+    signals = Signals(content=content, graph=graph, metadata=metadata)
     return Pool(
-        ranked=_merge(items, content=content, graph=graph, metadata=metadata),
+        ranked=_merge(items, signals),
         counts={
-            "dense": len(content),
-            "graph": len(graph),
-            "metadata": len(metadata),
+            "dense": len(signals.content),
+            "graph": len(signals.graph),
+            "metadata": len(signals.metadata),
         },
         warning=warning,
     )
@@ -161,13 +181,35 @@ def _graph_signal(
     return {neighbor_id for neighbor_id in neighbors if neighbor_id in universe}
 
 
+def _normalize_label(value: str | None) -> str | None:
+    """Normalize a label as `strip().casefold()`. Blank text is unlabeled."""
+    if value is None:
+        return None
+    normalized = value.strip().casefold()
+    return normalized if normalized else None
+
+
 def _metadata_signal(items: list[NewItem], new_item: NewItem) -> set[int]:
-    """Return the universe items created within `METADATA_WINDOW` of the new item."""
+    """Return the metadata-signal members per the L2 §13 matrix.
+
+    A labeled new item keeps only candidates with an equal casefolded label;
+    the 30-day window does not apply. An unlabeled new item keeps unlabeled
+    candidates inside `METADATA_WINDOW` (the frozen time proxy, restricted to
+    the both-NULL subset). Mixed pairs never match. `_parse_created_at` and
+    `_within_window` run for every row either way, so RELATE-023 still fires
+    on a malformed, mixed-zone, or unparseable timestamp exactly as before.
+    """
     new_created_at = _parse_created_at(new_item.created_at, item_id=new_item.id)
+    new_label = _normalize_label(new_item.metadata)
     kept: set[int] = set()
     for item in items:
         created_at = _parse_created_at(item.created_at, item_id=item.id)
-        if _within_window(created_at, new_created_at, item_id=item.id):
+        inside = _within_window(created_at, new_created_at, item_id=item.id)
+        label = _normalize_label(item.metadata)
+        if new_label is not None:
+            if label is not None and label == new_label:
+                kept.add(item.id)
+        elif label is None and inside:
             kept.add(item.id)
     return kept
 
@@ -199,24 +241,18 @@ def _within_window(
     return distance <= METADATA_WINDOW
 
 
-def _merge(
-    items: list[NewItem],
-    *,
-    content: dict[int, float],
-    graph: set[int],
-    metadata: set[int],
-) -> list[RankedCandidate]:
-    """Union the signals: highest cosine wins, source is dense > graph > metadata."""
+def _merge(items: list[NewItem], signals: Signals) -> list[RankedCandidate]:
+    """Union the bundled signals: highest cosine wins, dense > graph > metadata."""
     by_id = {item.id: item for item in items}
     scores: dict[int, float] = {}
     sources: dict[int, SignalKind] = {}
-    for item_id, cosine in content.items():
+    for item_id, cosine in signals.content.items():
         scores[item_id] = cosine
         sources[item_id] = SignalKind.dense
-    for item_id in graph:
+    for item_id in signals.graph:
         scores[item_id] = max(scores.get(item_id, FLAT_COSINE), FLAT_COSINE)
         sources.setdefault(item_id, SignalKind.graph)
-    for item_id in metadata:
+    for item_id in signals.metadata:
         scores[item_id] = max(scores.get(item_id, FLAT_COSINE), FLAT_COSINE)
         sources.setdefault(item_id, SignalKind.metadata)
     order = sorted(scores, key=lambda item_id: (-scores[item_id], item_id))

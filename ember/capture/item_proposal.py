@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Mapping, Protocol
 
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, Field, ValidationError, field_validator
 
 from ember.capture.errors import AiError, AiSchemaError, ContextModeInvalid
 
@@ -26,11 +26,13 @@ SYSTEM_PROMPT = (
     "Pick each item's type from exactly these four: "
     "Decision, Assumption, Finding, Question. "
     "Return one item for each thing worth keeping, as a JSON list. "
-    "Each item has four keys: "
+    "Each item has these keys: "
     "type (one of the four), "
     "statement (the item in your own words), "
     "source_quote (an exact substring copied from the raw note), "
     "confidence (your own score from 0.0 to 1.0). "
+    "An item may also carry an optional fifth key, metadata: "
+    "one short project-area label. Omit the key when unsure. "
     "Return an empty list when the note holds nothing worth keeping."
 )
 
@@ -66,6 +68,15 @@ class ItemProposal(BaseModel):
     statement: str = Field(min_length=1)
     source_quote: str = Field(min_length=1)
     confidence: float = Field(ge=0.0, le=1.0)
+    metadata: str | None = Field(default=None)
+
+    @field_validator("metadata")
+    @classmethod
+    def _normalize_metadata(cls, value: str | None) -> str | None:
+        """Trim the label and collapse a blank answer to None (no label)."""
+        if value is None:
+            return None
+        return value.strip() or None
 
 
 @dataclass(frozen=True)
@@ -213,6 +224,6 @@ def _rule_for(exc: ValidationError) -> str:
     field = str(location[0]) if location else ""
     if field == "source_quote":
         return "quote"
-    if field in {"type", "statement", "confidence"}:
+    if field in {"type", "statement", "confidence", "metadata"}:
         return field
     return "shape"

@@ -131,3 +131,24 @@ Settings that L2 leaves for L3 to decide. Do NOT forget these when writing L3 st
 4. **`trigger_cause` vocabulary for confirm path** (Phase 4) — exact string for accepted items. L2 just says "value decided in L3."
 5. **Large-file rejection threshold** (§6) — file size limit. L2 just says "L3 sets exact threshold."
 6. **Phase 3 fold decision** (§7) — whether Phase 3 is its own L3 step plan or folded into Phase 4. L3 author decides.
+
+## 9. V1.x Amendment: capture proposes the project label (ticket 11, #5 build)
+
+Added 2026-10-29, implementation pending. Source: `plans/hardening-decisions.md` #5 ("Decision: build", maintainer, 2026-10-29: writer = capture AI proposes, human corrects inline in the [e]dit path) and `.scratch/hardening/issues/11-metadata-column.md`. Implementer: `plans/steps/hardening/05a-metadata-capture.md` (schema) and `plans/steps/hardening/05b-metadata-relate.md` (reader). Relate side: `plans/engine-relate-plan.md` §13.
+
+**Proposal schema.** `ItemProposal` gains `metadata: str | None = Field(default=None)`. The 4-key check becomes 4 required + 1 optional, pinned exactly:
+- absent key or JSON `null` -> None. No label proposed.
+- present must be a string. Any other type fails `model_validate`, `_rule_for` maps field `metadata` to drop rule `metadata`, the whole entry is dropped and logged like today's type/statement/confidence drops. Per-entry drop, never a whole-answer failure.
+- trimmed at the boundary. Blank (`""` or whitespace only) becomes None.
+- no length cap (pinned: none). `statement` already has `min_length=1` and no max (D4 checked at the boundary only).
+- a 6th unknown key keeps today's behavior, which is verified pydantic 2.14 default `extra='ignore'`: silently ignored. The old "exactly four keys" reading was never a reject in code; this amendment invents no new reject.
+
+**Prompt and L1 rule 3.** `SYSTEM_PROMPT`'s "Each item has four keys" becomes "Each item has these keys", and gains one sentence: `An item may also carry an optional fifth key, metadata: one short project-area label; omit the key when unsure.` L1 rule 3 amendment recorded here: the `add_item` proposal gains the optional `metadata` field; the AI-callable list itself (`add_item`, `add_link`) is unchanged and the call count does not change, the label rides the existing `propose_items` call. Raw answer still stored verbatim (D8).
+
+**Confirm loop.** `ValidatedItem` and `ProposalDraft` gain `metadata: str | None`. `format_block` gains a `  metadata:` line between `confidence` and `near_dup_warning`, JSON-quoted like `statement` (`metadata: "auth-network"` or `metadata: null`). `edit_item` re-asks it after `ask_statement` via a new `ask_metadata(confirm, default=item.metadata)` helper, the `ask_type`/`ask_statement` pattern: prompt `new metadata? (default <label|none>)`, blank input keeps the default, a lone `-` clears to None, no retry loop (every answer is valid, nothing to check). The AI-proposed label is shown in the block before the prompt, so a wrong label is correctable before confirm. Metadata never produces `RejectedProposal`.
+
+**Write path.** `SqliteItemGatekeeper.insert_item` adds `metadata` to its explicit column list, bound to `item.metadata`; NULL when absent or blank (already normalized to None in Phase 2), no forcing. `log_created` unchanged: exactly one `created` ledger row. Transaction pattern unchanged (verified reality: `insert_item` commits, then `log_created` commits; the ticket's "one transaction" line binds as "no new transaction machinery"). `_proposal_text` (the `proposed` ledger row on rejection) unchanged: the raw AI answer in `ai_responses` already carries any label verbatim (D8).
+
+**Zero new error codes.** `CAPTURE-009` for whole-answer failures unchanged; `metadata` is a drop rule, not a code; `CAPTURE-013` wraps write failures as today; `CAPTURE-014` abort behavior unchanged.
+
+- **Normalization asymmetry caution (round-2 review, ruled):** capture's write path normalizes with `strip()` only, relate's read path compares with `strip().casefold()`. The asymmetry is load-bearing and intentional: the write stores the human's casing, the read compares case-insensitively (D4). Any future second writer of `items.metadata` must keep storing the raw trimmed string, never a pre-casefolded one.

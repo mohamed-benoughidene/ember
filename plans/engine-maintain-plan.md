@@ -2,7 +2,7 @@
 
 Terse caveman style. Source: L1 (`plans/master-plan.md`) + V1 spec 3.2/3.3/3.5/3.6/3.7. No invention.
 
-**Stack:** see L1 §0. Maintain-specific deviation: none. Maintain adds **no dependency** — no AI, no embedder, no network (first engine with no live tier). It reads `items` / `links` / `change_log` and writes `items` + `change_log`.
+**Stack:** see L1 §0. Maintain-specific deviation: none. Maintain adds **one AI proposal port** (§14): no embedder, no new package. The AI proposes only; every write is a human-confirmed path. It reads `items` / `links` / `change_log` and writes `items` + `change_log`. (Amended in hardening step 07 — see `plans/steps/hardening/07-ai-close-proposals.md` §10.)
 
 ## 0. Deferred Issues This Engine Owns
 
@@ -10,7 +10,7 @@ Terse caveman style. Source: L1 (`plans/master-plan.md`) + V1 spec 3.2/3.3/3.5/3
 |---|---|---|---|
 | **#6** | status cascade propagation | **Engine C** | **this engine's core job.** The L2 names the cascade rules (§4). Close **when the Maintain engine merges**, with a comment: the cascade is expressed on `items.status`, not on `links`; link statuses stay `Confirmed`/`Rejected` by design (spec 3.3, migration 006's CHECK forbids a third value). |
 | **#9** | `supersedes` reversal | **Engine C** | **the reversal.** The L2 names the dispatch vocabulary (§4.6). Close **when the Maintain engine merges**, with a comment recording: the reversal is an item-status event — it writes **no** `links` row and does not change `links.status`; the marker is `field_changed='link_reversed'`; Engine C **sweeps** `links`, it does not listen for events; dependents stay `Challenged` (spec 3.5:111); the rule-2 vocabulary is `dependency_closed`. |
-| #1 | `items.rationale` / `items.source` | Capture | not ours (Engine D's `why` mode needs it — it reads `rationale`, and the column is NULL until a writer lands; Engine D L2 §2.4). Its Done-when implies an `edit_item` writer — §8. |
+| #1 | `items.rationale` / `items.source` | Maintain — `edit_item` (hardening cluster 2; §12 amends this row's Action note) | ours via §12's `edit_item`; until it is built the column stays NULL (`why` reads it — Engine D §2.4). Its Done-when implies an `edit_item` writer — §8. |
 | #5 | `items.metadata` | Relate | not ours. |
 | #4 | external vector DB | Relate | not ours. |
 | #7 | BM25 `topic_search` | Engine D — plans/engine-query-plan.md | **this engine's job.** The mode and its BM25 formula are specified in that plan (§2.2, §4 Phase 2). Close when the Engine D L2 lands. |
@@ -19,7 +19,7 @@ Terse caveman style. Source: L1 (`plans/master-plan.md`) + V1 spec 3.2/3.3/3.5/3
 
 **Closed 2026-10-25:** #6 and #9 are closed, each with the mechanism comment above; the engine landed in `7b4266d`. Closing them was **step 03's deliverable** (§10), not a planning task.
 
-**New `deferred` issues filed by this plan:** (1) re-challenge an item after a human clears it manually (§2 Gap B/B4); (2) re-supersede the same `(source, target)` pair after a reversal; (3) AI-proposed `close_item`; (4) enforce the link compatibility table at the database level (spec 3.6:115); (5) plain-text export command (spec 3.6:118) — **no engine owns it**; (6) `edit_item` + `remove_link` (spec 3.7:130, :133) — **no plan owns them** (`remove_link` is also the only way to delete a link; `edit_item` is the likely writer for issue #1's `items.rationale`/`source`).
+**New `deferred` issues filed by this plan:** (1) re-challenge an item after a human clears it manually (§2 Gap B/B4); (2) re-supersede the same `(source, target)` pair after a reversal; (3) AI-proposed `close_item`; (4) enforce the link compatibility table at the database level (spec 3.6:115); (5) plain-text export command (spec 3.6:118) — **no engine owns it**; (6) `edit_item` + `remove_link` (spec 3.7:130, :133) — **no plan owns them (amended: §12)** (`remove_link` is also the only way to delete a link; `edit_item` is the likely writer for issue #1's `items.rationale`/`source`).
 
 **New `note` issues:** (7) `links` rows have no lifecycle — a reversed supersedes stays `Confirmed` (§2 Gap C); (8) `supersedes_ancestors` false-rejects the corrective inverse after a reversal; (9) `items.close_reason` / `status_origin` need a matching Engine D `history` rendering (`plans/engine-query-plan.md` §4.6 — **issue #22**, now resolved); (10) the cross-column invariant `Closed ⇒ close_reason IS NOT NULL` is not enforced in the schema (spec 3.2:60).
 
@@ -43,7 +43,7 @@ Trigger directions — verified against `ember/relate/compat.py:13-25` (all 4 co
 - `Challenged` resolution is **human-only** via `set_status` (`Active` ↔ `Challenged` only).
 - Items are never deleted. `change_log` is append-only and never edited.
 - Maintain **does not delete or rewrite history**. It moves `items.status` forward and appends `change_log` rows.
-- **Links are immutable.** Maintain never writes `links`. A reversal is an **item event plus a `change_log` marker**, not a link mutation (§2 Gap C).
+- **Links are immutable.** Maintain never INSERTs a `links` row, never DELETEs one, and never flips `Rejected` back. Two named UPDATE writes are the only exceptions, both ledger-trailed in the same transaction: the human removal's one `UPDATE links SET status='Confirmed' -> 'Rejected'` (`remove_link`, §12.5), and `apply_reversal`'s one `UPDATE links SET reversed_at` (hardening schema plan §6). A reversal is an **item event plus a `change_log` marker**, not a link mutation (§2 Gap C). (Amended in hardening step 05 — see `plans/steps/maintain/05-remove-link.md` §10.)
 - **Content is immutable; status is the point.** Spec 3.2:62's "Historical items immutable" protects the item's *text*. `items.status` and `items.close_reason` are derived state, and mutating them is mandated by spec 3.2/3.5. Precedent: `set_validated` already mutates a column on an existing item (`sqlite.py:579`).
 - L1:53's **self-fix for typos** is named: the user creates a new item with a `supersedes` link to the typo'd one; the old typo gets `Closed` reason `superseded`; the new corrected item is live. **This journey works under this plan** — a reversal does not permanently veto future closes (that was v2's bug).
 
@@ -54,7 +54,7 @@ L1 §9 deferred 3 items, all to Engine B. **Nothing is deferred to Engine C at L
 - **Relate §9 #8** ("Engine C dispatch vocabulary … Engine C L2 author confirms the dispatch table") → **resolved.** Maintain does **not** listen to `change_log` for *events*. It reads the `links` table (`status='Confirmed'`) to know what is live. There is no dispatch table because there is no event bus — L1:70 "Engine-to-engine flow goes through DB rows, not direct function calls." Maintain's dispatch table is the `links` table + `items.status`. The vocabulary Maintain **writes** is fixed in §4.6. The one `change_log` read is a *state lookup* for links this engine itself reversed — not a dispatch.
 - **Relate §8** ("Engine C listens for the `trigger_cause='user_confirmed'` + `link_id` FK pattern (post-008) and writes the cascade `change_log` rows") → **superseded** by the above. Amendment to `plans/engine-relate-plan.md` §8 and §9 #8 (§11).
 
-Also recorded: **Maintain calls no AI** (§4.0).
+Also recorded: **Maintain's four derived triggers call no AI** (§4.0, amended by §14 — the one AI surface is the §14 pre-filtered close proposal).
 
 ### 2.1 The design gaps, and how they are closed
 
@@ -154,9 +154,14 @@ Phase 3: Apply    (atomic write: UPDATE items + INSERT change_log)
    |
    v
 Phase 4: Report   (print what changed)
+   |
+   v
+Phase 5: Propose  (AI on the stale shortlist, human confirm, write via the human path)
 ```
 
-**4.0 Maintain calls no AI.** The four triggers are deterministic (AI spec 3.5: "Maintain Rules (Deterministic, Zero AI)"). `close_item` is listed in AI spec 3.7:126 under "AI-callable proposals (Require user confirmation)". **V1 implements it as a human-invoked command** (`ember close-item --item N --reason R`) — the human running the command *is* the confirmation. **Corrected justification:** `close_item` is the **only** path that produces the `invalidated` and `expired` close reasons (no deterministic rule generates them; rules 1/4 produce `superseded`/`answered` only), so it cannot be dropped. The reason to keep it human-invoked is that an AI proposal would add a prompt, a parser, an `ai_responses` row, a retry policy, and a cost to produce a decision a human can make explicitly with one flag. **This needs an L1 amendment** (§11). A deferred issue records "AI-proposed close_item" for V1.x. Spec 3.7:126's "User confirms" is satisfied by the human invoking the command — recorded as a §Z(c) deviation.
+Phase 5 is a separate entry point (`run_close_proposals`), NOT merged into `run_sweep` — see §14.4 for the placement ruling. **(Amended in hardening step 07 — see `plans/steps/hardening/07-ai-close-proposals.md` §10.)**
+
+**4.0 Maintain's four derived triggers call no AI.** The four triggers are deterministic (AI spec 3.5: "Maintain Rules (Deterministic, Zero AI)"). `close_item` is listed in AI spec 3.7:126 under "AI-callable proposals (Require user confirmation)". **V1 implemented it as a human-invoked command** (`ember close-item --item N --reason R`) — the human running the command *is* the confirmation. **Corrected justification:** `close_item` is the **only** path that produces the `invalidated` and `expired` close reasons (no deterministic rule generates them; rules 1/4 produce `superseded`/`answered` only), so it cannot be dropped. The reason to keep it human-invoked is that an AI proposal would add a prompt, a parser, an `ai_responses` row, a retry policy, and a cost to produce a decision a human can make explicitly with one flag. **This needed an L1 amendment** (§11, applied by §14). A deferred issue recorded "AI-proposed close_item" for V1.x. **Amended (hardening step 07, §14): Maintain's four derived triggers still call no AI — deterministic rules, spec 3.5 unchanged — but Maintain now has ONE AI surface, the §14 pre-filtered close proposal: the AI judges a bounded shortlist and proposes; the human confirms; `validate_close_item` writes. The spec-3.7:126 "User confirms" for AI proposals is satisfied by the y/n confirm loop, not by invocation alone.**
 
 ### Phase 1 — Load
 
@@ -254,13 +259,16 @@ The dispatch table the L2 Relate plan asked for:
 | Human `set-status` (the shield) | **`status_origin`** | `<observed>` | `manual` | `user_set_status` | NULL | the item |
 | Reversal (the item) | `status` | `Closed:superseded` | `Active` | `reversal` | the `supersedes` link id | the restored item |
 | Reversal (the marker) | **`link_reversed`** | `Confirmed` | `Reversed` | `reversal` | the `supersedes` link id | the restored item |
+| Human `edit-item` (rationale) | **`rationale`** | the observed prior rationale (NULL stays NULL) | the new text | `user_edit_item` | NULL | the edited item |
+| Human `edit-item` (source) | **`source`** | the observed prior source (NULL stays NULL) | the new text | `user_edit_item` | NULL | the edited item |
+| Human `remove-link` | **`link_removed`** | `Confirmed` | `Rejected` | `user_remove_link` | the removed link id | the link's **source** |
 
 - **`item_id` = the item whose status changed.** **This diverges from Relate's convention** (Relate: `item_id` = the link's *source*). For rules 1/3/4 the changed item is the link's *target*. **Deliberate and documented:** the row describes a *status field* change on an item, and the item is the subject. `link_id` still points at the triggering link, so Engine D's `history` can join either way. (`item_id` is populated, not NULL as in Capture's `log_rejected` at `sqlite.py:565`, because the restored item is the subject of the marker.) **The `trigger_cause` — not `field_changed` — is the column Engine D should filter on**, because `field_changed='status'` appears in both engines' vocabularies.
 - **`old_value` is the OBSERVED prior status**, read from the snapshot — not a constant. A `Challenged` target closed by rule 1 records `old_value='Challenged'`. A reversal records `old_value='Closed:superseded'` (prior status **and** reason).
 - **`new_value` encoding is decided:** `<new_status>` alone, or `<new_status>:<close_reason>` for a close.
 - **The `link_reversed` row is the reversal marker** (Gap C). It is what makes the reversal visible to readers of `links` and to the sweep's rule 1. It satisfies human spec 3.6:113 ("every change to a note **or link** adds a row to an audit ledger") — the link's change **is** logged.
 - **The `status_origin` row** makes the shield change auditable — same spec clause, same reason. `status_origin` is **NOT** written by the sweep — only by `set-status`, and only when the shield is set. Its `old_value` is the **observed** prior `status_origin`, read before the UPDATE (a manual item re-cleared records `old_value='manual'`, not a constant `'derived'`).
-- Every `trigger_cause` string is unique; every `field_changed` value is `status`, `status_origin`, or `link_reversed`.
+- Every `trigger_cause` string is unique; every `field_changed` value is `status`, `status_origin`, `link_reversed`, and (since step 04 of the hardening amendment) `rationale` / `source`, written only by `apply_item_edit`. The `link_removed` row joined when step 05 of the hardening amendment landed (`remove_link`, Gate 2 closed): it is written only by `apply_remove_link`, which runs the ONE `links` status UPDATE named in §1's amended clause.
 
 ### 4.7 Orchestration
 
@@ -300,12 +308,12 @@ ember reverse-supersedes --item <id> --link <id> [--db <path>]
 - `--db` defaults to `DEFAULT_DB_PATH`, **defined in `ember/cli.py`** (all four commands live there).
 - `--reason` and `--to` are **plain `str` options, NOT `click.Choice`**. The domain codes (`MAINTAIN-002`, `MAINTAIN-006`) must fire from the command body; `click.Choice` would reject a bad value with exit 2 before the code could run. Written as `(plain str)` in this synopsis so L3 does not implement a Choice.
 - `--item` is `type=int`; a non-integer exits 2 (Click's own error). **Error precedence:** `MAINTAIN-001` (item not found) is checked **before** `MAINTAIN-004`/`005`/`006`. `reverse-supersedes --item 99` → `MAINTAIN-001`, never `005`.
-- **No environment variables.** Maintain needs no API key, no embedder, no model.
+- **No environment variables.** Maintain needs no API key, no embedder, no model. **Amended (hardening step 07, §14):** `ember maintain` reads the AI env vars ONLY when its stale shortlist is non-empty: `EMBER_AI_API_KEY` (or `OPENROUTER_API_KEY`), `EMBER_AI_MODEL`, `EMBER_AI_BASE_URL` (same keys as capture/relate). An empty shortlist needs no key and builds no adapter.
 - **Boot sequence** (I13, fail fast): `open_maintain_database(db_path)` (§3 — refuses a missing file, probes corruption, applies migrations, checks `schema_version >= 10`) → validate the command's flags → Phase 1.
 - `ember maintain` is **idempotent** — running it twice changes nothing the second time and exits 0.
 - `--dry-run` runs Phase 1 + Phase 2, prints the planned changes, writes **no `items` or `change_log` rows**. **The DB must already exist** — `open_maintain_database` refuses a missing file with `MAINTAIN-007`, so a dry run against a fresh path **fails**; there is no create path. The only writes a dry run can make are the migrations, when the DB is at version 9. The §7.4 test must assert "writes no `items` or `change_log` rows", not "touches no file".
 - `--dry-run` **still fails on Phase-2 domain errors** — but only for the commands that take such flags (`close-item`, `set-status`, `reverse-supersedes`). `ember maintain` takes no `--reason` / `--to` / `--link` and raises **no** domain code. The flag check happens **after** the validators, not before.
-- **Exit codes:** 0 success (including "nothing to change" and a no-op `set-status`); 1 phase error (a `MAINTAIN-*` code); **2 for Click usage errors** (missing `--item`, non-integer `--item`, unknown option). Maintain has **no user-abort exit 2** — there is no confirm loop, so no `aborted` flag to exit on. (The codebase's exit-2 comes from `aborted`, not from `UserAbort` reaching the CLI: `capture/confirm_write.py:158-159` and `relate/confirm_write.py:151-152` swallow `UserAbort` internally.)
+- **Exit codes:** 0 success (including "nothing to change" and a no-op `set-status`); 1 phase error (a `MAINTAIN-*` code); **2 for Click usage errors** (missing `--item`, non-integer `--item`, unknown option). The four human commands keep no abort exit; `ember maintain` exits **2 when the close-proposal confirm loop aborts** (a `q` answer or end of input), exactly like `capture`/`relate` (amended: §14). (The codebase's exit-2 comes from `aborted`, not from `UserAbort` reaching the CLI: `capture/confirm_write.py:158-159` and `relate/confirm_write.py:151-152` swallow `UserAbort` internally.)
 - `close-item --reason`: **human-settable reasons are `invalidated` and `expired`.** `superseded` and `answered` are **machine reasons** (produced by rules 1 and 4), and `reversed` is produced by the spec's reversal semantics, which *restore* an item rather than close it — so no v3 path produces a `Closed/reversed` item. A human passing any of those three → `MAINTAIN-003`.
 - **`reversed` has a defined meaning:** "closed because a supersedes link pointing at it was reversed." Under this plan a reversal *restores* the item to `Active` rather than closing it — so `reversed` is **not produced by any path here**. **Decision: a valid enum value (the spec requires it) but not settable by `close-item` in V1** → `MAINTAIN-003`. Settable only by the spec's own reversal semantics, which this plan implements as "restore to `Active`". Recorded in §8.
 - `set-status --to` accepts only `Active` or `Challenged` (L1:119). `--to` on a `Closed` item → `MAINTAIN-006`. `--to` equal to the current status → **no-op, exit 0, writes nothing**. **`--to Challenged` on an `Active` item does NOT set the shield** (B2) — only `--to Active` on a `Challenged` item does.
@@ -411,7 +419,7 @@ Every code in §6 has a test asserting the raised `code`, not message prose. Rel
 
 ### 7.7 Live
 
-**None.** No AI call, no embedder, no network. This is the first engine with no live test tier.
+**None required, one available.** The AI tier means a live check is possible; none ships. Tests use fixtures (T7). (Amended in hardening step 07 — see `plans/steps/hardening/07-ai-close-proposals.md` §10; the pre-step text was "None. No AI call, no embedder, no network. This is the first engine with no live test tier.")
 
 Pyramid (T4): ~18 unit, ~14 integration, 1 E2E, 0 live.
 
@@ -420,10 +428,10 @@ Pyramid (T4): ~18 unit, ~14 integration, 1 E2E, 0 live.
 - Engine D (Query) — `current_state`, `topic_search`, `why`, `history` are Engine D's (`plans/engine-query-plan.md`).
 - Multi-step cascade — the one-step flag-spread limit is a spec rule, not a limitation.
 - Re-opening a `Closed` item by any path other than reversal.
-- `edit_item` (human-only, spec 3.7) — a content edit. **No plan owns it** — deferred issue (§0).
-- `remove_link` (human-only, spec 3.7) — deletes a link edge. **No plan owns it** — deferred issue (§0). Note: removing a `supersedes` link does **not** reopen the old item.
+- `edit_item` (human-only, spec 3.7) — a content edit. **No plan owns it (amended: §12)** — deferred issue (§0).
+- `remove_link` (human-only, spec 3.7) — deletes a link edge. **No plan owns it (amended: §12)** — deferred issue (§0). Note: removing a `supersedes` link does **not** reopen the old item.
 - `items.rationale` / `items.source` (issue #1) — Capture's write path. Engine D's `why` mode reads `rationale` (`plans/engine-query-plan.md` §2.4); the column has no writer yet.
-- AI-proposed `close_item` (V1 uses a human-invoked command).
+- AI-proposed `close_item` (V1 uses a human-invoked command). **Closed by the §14 amendment (hardening step 07): `propose_close` ships pre-filtered inside `ember maintain`; `ember close-item` itself is untouched.**
 - Re-challenge after a manual clear (Gap B / B4) — deferred issue.
 - **Re-superseding the same `(source, target)` pair after a reversal** — blocked by the UNIQUE constraint + gatekeeper rule 9. Deferred note.
 - **The corrective inverse after a reversal** (`B→supersedes→A` when `A→supersedes→B` exists) — rejected with `RELATE-028`. Deferred note.
@@ -495,6 +503,257 @@ The substantive open decisions. Do NOT forget these when writing L3 step plans.
 
 **`PROJECT_MAP.md`** — add `ember/maintain/`, `tests/maintain/`, `plans/engine-maintain-plan.md`, `plans/steps/maintain/*.md`, migration 010, the 2 new `items` columns, the 4 CLI commands, and the `open_maintain_database` boot path. The `links.status` note ("`Confirmed` or `Rejected`") **stays accurate** — no third value is added.
 
+## 12. V1.x Amendment (hardening phase): human edit commands
+
+Source: `plans/hardening-plan.md` §2 cluster 2, §6, §7. Issues **#1** (the `items.rationale`/`items.source` writer — its §0 owner cell above moves to this engine) and **#19** (`edit_item` + `remove_link`, human-only, unimplemented — master plan rule 5 names them; §5 CLI never built them; `ember/maintain/human_actions.py` holds only the three close/set/reverse validators). No new migration — this amendment adds no migration of its own; the DB version at build time is whatever cluster 1 has left (10 today, ≥11 after the schema L2) — and both writes land on existing columns (`items.rationale`/`items.source`, migration 004; `links.status='Rejected'`, migration 006's CHECK).
+
+**Two gates stand before ANY code. Both are recorded here; neither is assumed.**
+
+### 12.0 Gate 1 — the rule-7 ADR (record before `edit_item` builds)
+
+Master plan rule 7 says historical items are immutable. #19 records that text editing had no answer. This is the ruling block; the maintainer confirms one option at plan review. **Either way #1 gets its writer — the ruling only changes the flags and the gatekeeper's width.**
+
+> **ADR — rule 7 vs `edit_item`** (2026-10-28, cluster 2)
+> **Option A — text edits forbidden.** `edit_item` writes ONLY `items.rationale` (on `Decision`) and `items.source` (on `Finding`) — master plan §5's designated slots — and nothing else on the item. Rule 7 scoped, not softened: it protects `items.statement` and every raw table. Typos keep the existing fix path — a new item + `supersedes` + `ember maintain` (master plan §2, L1:53; this plan §1). Re-linking needs no new machinery here: links are Relate's write path, and `edit_item` never writes links.
+> **Option B — text edits allowed.** `--field statement` is legal too; every old→new lands in `change_log`. Cost: the statement is extracted from `sources.full_text` (its `source_quote` must be a substring of it — master plan §2), so editing severs the item from its raw source (D1) and rule 7 needs its widest amendment.
+> **Recommendation: A.** Rationale is human authorial context with no raw counterpart; the statement's source-tie is the whole point of Capture.
+> **Decision: Option A — text edits forbidden (maintainer, 2026-10-28).** Gate 1 closed.
+> The filled line is the artifact that unblocks implementation (gate 1 closes).
+
+### 12.1 Gate 2 — the #15 ruling lands before `remove_link` builds
+
+**Dependency, stated as a hard gate:** `remove_link` must not be built before the #15 ruling is recorded in the engine-relate-plan amendment. Mechanics, verified: the UNIQUE triple `(source_item_id, target_item_id, link_type)` (migration 006) survives a status flip; `find_existing` returns a row of ANY status (`sqlite.py`, `find_existing` — "of any status, or None"); gatekeeper rule 9 blocks when that triple `is not None`. So a removed link becomes **indistinguishable from a human-rejected proposal** and the pair is blocked forever — the same #15 pattern this plan §2 already mapped for reversals. Whether removal freezes the triple for good or a partial live-only index frees it is **#15's ruling, not this amendment's**. **Gate 2 closes when the #15 ruling is recorded per `plans/hardening-schema-plan.md` §10** — the issue is updated either way, plus the relate-plan one-liner only if the relax branch is chosen; **'Keep the block' is a valid closed state.** Until that ruling lands, `remove_link` is unbuildable, and the §12.6 store method must not exist.
+
+### 12.2 The two clauses this amendment changes — recorded, not yet applied
+
+1. **"Links are immutable. Maintain never writes `links`"** (§1, the clause frozen there). Amended for `remove_link` ONLY: the human command may run **one** `UPDATE links SET status='Confirmed'→'Rejected'` on a named row, with its ledger row in the same transaction. It never INSERTs a `links` row, never DELETEs one, and never flips `Rejected` back — **plus the one `UPDATE links SET reversed_at` inside `apply_reversal` that cluster 1's schema L2 (§6) introduces — the §1 clause stays true only if it names this write.** Apply that edit to §1's line only when 12.6's store method lands — until then the frozen text stays, and this section is the amendment of record.
+2. **Rule-7 scoping** (master plan line 121) — per the ADR above: option A records a scoping amendment (rationale/source are the designated human-writable authorial slots, always ledger-trailed; statement and all raw tables stay immutable); option B records the wider amendment. This plan's §1 precedent stands — status/close_reason were already derived state, not content; the ADR only has to settle the text.
+3. Query plan §0's #19 row still reads "not ours" — amended to Maintain §12 (owner cells for #19).
+
+### 12.3 CLI (S1, I12)
+
+No confirm loop, no `UserAbort` — the human invoking the command IS the confirmation (the close-item precedent, §4.0). `--field`/`--value` are plain `str`, NOT `click.Choice` — `MAINTAIN-013/014` must fire from the command body (§5's `--reason` precedent). **`--field` is Click-`required=True`** — its absence never reaches a domain code.
+
+```
+ember edit-item --item <id> --field <rationale|source> --value <text> [--dry-run] [--db <path>]
+ember remove-link --link <id> [--dry-run] [--db <path>]
+```
+
+```
+$ ember edit-item --item 3 --field rationale --value "SQLite chosen — 5000-item ceiling, local file" --db research.db
+item 3: rationale edited
+$ ember remove-link --link 7 --db research.db
+link 7: supersedes 2 -> 5 removed (Confirmed -> Rejected)
+```
+
+- Exit **0** on success **and** on a no-op edit (`--value` equals the observed value → nothing written, set-status's B3 precedent). Exit **1** on a `MAINTAIN-*` code. Exit **2** on Click usage errors (missing `--item`, non-integer `--item`/`--link`). **`--value` omitted is a Click usage error (exit 2), the `--item` precedent.**
+- `--dry-run` prints the planned old→new and writes **no** `items`, `links`, or `change_log` row (§5's test-shape rule). DB must exist — `open_maintain_database` refuses a missing file (`MAINTAIN-007`).
+- One `--field` per invocation. Empty string `--value` is legal (a human may blank a rationale); the ledger row preserves the clearing.
+
+### 12.4 `edit_item` — what it writes
+
+Per master plan §5: `rationale` text lives on `Decision`; the Evidence text lives on `Finding` as `source`. Mapping enforced at the gate:
+
+| `--field` | writable on | everything else |
+|---|---|---|
+| `rationale` | `Decision` | `MAINTAIN-014` |
+| `source` | `Finding` | `MAINTAIN-014` |
+| `statement` | nobody under option A (`MAINTAIN-014` too — not a field this build accepts) | — |
+
+Pipeline = the §4 four phases, two new Phase-2 validators making it six entry points. Phase 1's item read grows `rationale`, `source` (and `statement` under option B) — the observed old value is read here, never invented. Phase 3 writes, in **one** transaction (copy `insert_link_with_log`'s discipline — one `commit()`, `rollback()` in every `except`, §4 Phase 3):
+
+```
+[ember edit-item | ember remove-link]
+   |
+   v
+Phase 1: Load     (the §4 snapshot + the item's rationale/source — observed old values)
+   |
+   v
+Phase 2: Derive   (PURE — validate_edit_item / validate_remove_link; [] = no-op)
+   |
+   v
+Phase 3: Apply    (one transaction: UPDATE items | UPDATE links + one change_log INSERT)
+   |
+   v
+Phase 4: Report   (one stdout line; sweep buckets untouched)
+```
+
+The one boundary worth stating: both commands enter the SAME Phase-1 snapshot the sweep uses (`_load`), so a `remove-link` can never read a `links` row the sweep cannot see, and an edit's `old_value` is the same observed value a later `history` renders. No side reads, no second connection.
+
+- `UPDATE items SET <field> = ? WHERE id = ?`
+- `INSERT INTO change_log (item_id, link_id, field_changed, old_value, new_value, timestamp, trigger_cause)` — `field_changed='rationale'|'source'`, `old_value` = the OBSERVED prior value (NULL stays NULL), `trigger_cause='user_edit_item'`, `link_id=NULL`.
+
+**The Query classifier — verified, not assumed.** `ember/query/history.py:15-30` holds **14** known `(field_changed, trigger_cause)` pairs → **8** recognised kinds; the 9th kind is `unknown` (the engine-query-plan §4.6 "nine kinds" counts kinds, not pairs — 14 known pairs is the real number for whoever extends that table). New pairs here: `('rationale','user_edit_item')`, `('source','user_edit_item')`, and under option B `('statement','user_edit_item')`. Every one renders **`kind='unknown'` today**, with raw `field_changed`/`old_value`/`new_value` visible and nothing crashing (query plan §4.6: "`unknown` … nothing is lost"). **Decision recorded: this L2 accepts the `unknown` fallback — it requires NO classifier extension.** The fallback is L1-stable, and hardening's only Query changes live in cluster 3's flags; a `kind='rationale_edited'` extension is Engine D work, deferred (12.9).
+
+**Writer-side rows for the frozen §4.6 vocabulary table — appended to it only when these commands build.** Until then they live here; Query's §4.6 maps kinds, not writers, so nothing there changes today:
+
+| `field_changed` | `trigger_cause` | `old_value` | `new_value` | `link_id` | `item_id` |
+|---|---|---|---|---|---|
+| `rationale` | `user_edit_item` | observed prior (or NULL) | the new text | NULL | the edited item |
+| `source` | `user_edit_item` | observed prior (or NULL) | the new text | NULL | the edited item |
+| (`statement` under option B) | `user_edit_item` | observed prior | the new text | NULL | the edited item |
+| `link_removed` | `user_remove_link` | `Confirmed` | `Rejected` | the removed link | the link's **source** |
+
+Every new `trigger_cause` string stays unique across the whole vocabulary (§4.6's rule), and both are schema-legal — `field_changed`/`trigger_cause` carry no CHECK (migration 003, §3's standing note).
+
+### 12.5 `remove_link` — semantics, types, sweep interplay
+
+- **DELETE stays forbidden.** `change_log.link_id REFERENCES links(id)` (migration 008) — deleting the row orphans the ledger. The status flip is the removal.
+- **Type coverage: all five.** #19 says "Remove confirmed relationship edge" with no type limit, and no type is nonsense to remove — but the consequences differ by type and are recorded, not hidden:
+
+| removed link type | immediate effect | does NOT happen (rulings family: engine-maintain-plan §2 Gap C / §8) |
+|---|---|---|
+| `supersedes` | nothing derived re-fires | the superseded item is **NOT reopened** — §8 carry-forward, verbatim |
+| `answers` | nothing derived re-fires | the answered `Question` is **NOT reopened** (same ruling) |
+| `contradicts` | nothing derived re-fires | the challenged target is **NOT un-challenged** — single-step, no unwind |
+| `depends_on` | nothing derived re-fires | the dependent is **NOT un-challenged** — same |
+| `supports` | none | nothing |
+
+- **Phase 3 write,** one transaction: `UPDATE links SET status='Rejected' WHERE id=?` + `INSERT INTO change_log (…, field_changed='link_removed', old_value='Confirmed', new_value='Rejected', trigger_cause='user_remove_link', link_id=<id>, item_id=<link's source_item_id>)`. `item_id` = the link's **source** — Relate's convention (engine-query-plan §4.6: "Engine B writes `item_id` = the link's source"); §4.6's rule-1 rows used the target, so the convention is stated here so Query keeps guessing nothing. Renders `kind='unknown'` today — same fallback acceptance as 12.4.
+- **The sweep must ignore removed links — by construction, no new rule.** Phase 1 loads `status='Confirmed'` only, so a `Rejected` link is invisible to all four triggers (§4 Phase 1). Regression tests pin it (12.7).
+- **Orthogonal to reversal.** A reversed supersedes link still reads `Confirmed` (Gap C), so `remove-link` ACCEPTS a reversed link: it is a Confirmed row, and the ledger ends with both a `link_reversed` and a `link_removed` row. Reverse after removal, though, is dead — `validate_reverse_supersedes` requires a Confirmed link; a removed one exits `MAINTAIN-005`, which is correct.
+- **Not-Confirmed is an error, not a no-op** (`MAINTAIN-015`) — the MAINTAIN-004/§Z(c) I8 precedent: a silent "success" on an already-removed link would hide a wrong id. Phase 1's Confirmed-only read means the validator CANNOT distinguish "no such row" from "rejected proposal" — one code for both, exactly as `MAINTAIN-005` already conflates missing and non-live links.
+
+### 12.6 Shapes at the boundaries (S3)
+
+- `ItemState` gains `rationale: str | None` and `source: str | None` (Phase 1 read; `statement` joins only under option B). `MaintainSnapshot` shape otherwise unchanged.
+- `EditChange(item_id: int, field: str, old_value: str | None, new_value: str, trigger_cause: str)` / `LinkChange(link_id: int, old_status: str, new_status: str, trigger_cause: str, item_id: int)` — pydantic, engine core, next to `StatusChange`.
+- Validators, pure (T1), joining `ember/maintain/human_actions.py`: `validate_edit_item(snapshot, item_id, field, value) -> list[EditChange]` (empty list = no-op; `[]` not `None`, I4) — 4 inputs, the I3 ceiling; `validate_remove_link(snapshot, link_id) -> list[LinkChange]`.
+- `MaintainRequest` gains `field: str | None = None`, `value: str | None = None`. New entry points `run_edit_item`, `run_remove_link` (`run_*(ports, request)`, 2 inputs) in `run_maintain.py`.
+- `MaintainStorePort` gains `apply_item_edit(change: EditChange) -> int` and `apply_remove_link(change: LinkChange) -> int` — int = 1 or raise; both raise `MAINTAIN-012` on the `change_log` INSERT (its name is generic — reused honestly, the number stays unique), `MAINTAIN-016`/`MAINTAIN-017` on the UPDATEs.
+- Report: one line each (12.3's block). §4's four buckets are the sweep's and stay untouched.
+- No new modules — `tests/test_architecture.py` passes unchanged; B6 watch noted in 12.7.
+
+### 12.7 Errors (continue from MAINTAIN-013; style per `ember/maintain/errors.py`)
+
+| Code | Name | Trigger |
+|---|---|---|
+| `MAINTAIN-013` | `EditFieldUnknown` | `edit-item`: `--field` is not one of the three known names (`rationale`/`source`/`statement`). (A missing `--field` cannot reach here — Click `required=True`, §12.3.) Under option A, `statement` is known-but-rejected → `MAINTAIN-014`, not here. |
+| `MAINTAIN-014` | `EditTargetMismatch` | the field is valid but not writable on that item's type (rationale on non-`Decision`, source on non-`Finding`); under option A, `--field statement` also lands here. |
+| `MAINTAIN-015` | `RemoveLinkNotConfirmed` | `remove-link`: no link with that id, or it is not `Confirmed` (a never-accepted proposal, or already removed). |
+| `MAINTAIN-016` | `ItemEditWriteFailed` | the `items` UPDATE failed; the write rolled back. |
+| `MAINTAIN-017` | `RemoveLinkWriteFailed` | the `links` UPDATE failed; the write rolled back. |
+
+Five codes, contiguous, no reserved-but-unused numbers (I17). `MAINTAIN-001` is REUSED for `edit-item` on an unknown `--item` — same failure, same code, never a new number. Names `EditFieldUnknown`, `EditTargetMismatch`, `RemoveLinkNotConfirmed`, `ItemEditWriteFailed`, `RemoveLinkWriteFailed` collide with nothing in `ember/relate/errors.py` or `ember/capture/errors.py` — no new aliases in `sqlite.py` (`LinkWriteFailed` was rejected for colliding with RELATE-029). `MAINTAIN-012 ChangeLogWriteFailed` serves both new paths' ledger INSERT (generic name). Context (I19): 013/014 carry `item_id` + `field`; 015 carries `link_id`; 016 `item_id`+`field`; 017 `link_id`.
+
+Error-code audits: check nothing after 012 exists in any branch before numbering — at write time, `git log -p ember/maintain/errors.py` is the receipt.
+
+### 12.8 Test targets
+
+- **Unit (pure, `FakeMaintainLookup` per T3 — the fake gains rationale/source fields):** rationale on `Decision` passes; on `Finding` → 014; source on `Finding` passes; on `Decision` → 014; `--field` bogus → 013 (a missing `--field` is Click's exit 2, never 013); same-value edit → empty list (no-op); observed `old_value` (NULL stays NULL, prior text survives); remove on missing/`Rejected` link → 015; remove on a reversed-but-Confirmed link → passes with a `LinkChange`.
+- **Integration (real temp DB, `open_maintain_database`):** `apply_item_edit` — the UPDATE + its ledger row in one transaction, all-or-nothing (**vehicle: inject `sqlite3.Error` at the connection's `execute`**, assert rollback plus `MAINTAIN-016`); `apply_remove_link` — `links.status='Rejected'` + the `link_removed` row in one transaction (same vehicle, asserting rollback plus `MAINTAIN-017`); **named per-code rows (I21):** `MAINTAIN-016` and `MAINTAIN-017` each get the monkeypatch vehicle above, asserting the code — not just the rollback; **the migration-008 reason proven**: after removal, `change_log` still joins `links` (no DELETE ever ran); **sweep interplay**: ONE parameterized test over the five link types — after removing each, the next sweep writes zero rows and no derived state unwinds (the 12.5 table, row by row); plus the two named regressions kept standalone: removed supersedes → the closed item is NOT reopened (§8 regression); reversed-then-removed link → both marker rows present, sweep unaffected; sweep empirically never reads `rationale`/`source`.
+- **Under ADR option B only:** statement happy path + its ledger row + `--field statement` passes; `MAINTAIN-014` narrows to type-mismatch only.
+- **CLI (exact codes, §7.4 style):** `--item 99` → exit 1 `MAINTAIN-001`; `--field bogus` → 1/013; rationale on a `Finding` → 1/014; `remove-link --link 99` → 1/015; on a rejected proposal → 1/015; success → 0 + the one stdout line; same-value edit → exit 0, zero rows written (the `--to Active` no-op precedent, §5); `--dry-run` writes zero rows; non-integer `--link` → exit 2 (Click, tested by exit code not error code).
+- **E2E / engine boundary, stated honestly:** the cross-engine proof is `ember edit-item …` then `ember history --item <id>` asserting the row renders `kind='unknown'` with raw values (Query is NOT modified in this phase — the unknown rendering IS the contract, and it holds until §12.9 item 4 (classifier extension) lands). One E2E test drives both shipped CLIs; no fake tools possible (no AI anywhere in this path).
+- **Architecture (T9):** no new files — `human_actions.py`, `rows.py`, `run_maintain.py`, `apply_status.py`, `sqlite.py`, `cli.py` grow; the globs already cover them. The B6 watch (human_actions.py growing) is recorded, not split.
+
+### 12.9 Deferred to L3
+
+1. Exact report wording for the two commands (buckets untouched; one-line format above is the contract's shape, not its final prose).
+2. Whether `edit-item` accepts several `--field`s per invocation (v1: one; the change is additive).
+3. Whether `remove-link`'s report should NAME the derived state it leaves standing (e.g. "item 5 stays Closed/superseded") — display only, never a write.
+4. The Engine D classifier extension (`kind` values for `rationale`/`source`/`link_removed`) — engine-query-plan work, NOT this phase; until it lands, `unknown` is correct output.
+5. Under option B: the `statement` widening — ItemState read, the §4.6 vocabulary row, and the rule-7 amendment text all change together.
+
+**Next step:** one L3 step plan, `plans/steps/maintain/04-edit-and-remove.md` — authored only when BOTH gates (12.0, 12.1) are closed. It owns: the five error classes + the six validator/orchestrator symbols of §12.6, the two store methods, the CLI commands, the §1 clause edit permitted by 12.2, and the §4.6 vocabulary rows above. Contract, not implementation (framework §1, L3 rules).
+
+### 12.10 §Z — Constitution compliance (this amendment)
+
+**(a) Touched & satisfied:** B1 (§12.3 — two commands, one job: human writeback) · B3 (§12.6 — SQLite behind the store port) · B5 (§12.6 — two thin entry points over the shared four-phase pipeline) · D1 (§12.0 option A — statement + raw tables untouched; every old value survives in `change_log.old_value`) · D2 (§12.5 — the removed status is rebuildable from the `link_removed` ledger rows, like the hardening plan's D3 reversal ruling) · D3 (§12.4/12.5 — the ledger is the source for the REMOVED/derived state; for `rationale`/`source` the column is the primary authored fact and the ledger row is its history (no rebuild claim)) · D5 (nothing renamed — no schema change at all) · P2/P3/P4 (§12.3→6 — CLI → pure validators → store adapter, the §4 pipeline) · I1 (`EditChange`, `LinkChange` named by job) · I2 (separate entry points; `--dry-run` never crosses a function) · I3 (`validate_edit_item` = 4 inputs, the stated ceiling) · I4 (named models; empty list, never `None`) · I5 (§12.7 — one code per failure) · I6 (`MaintainError` base) · I7 (fail fast at edges; rollback in every `except`) · I9 (validators own the domain checks, command body owns the flag surface) · I10 (additive request/store-port fields only) · I11 (validators' docstrings list raised codes) · I12 (§12.3 — 0/1/2) · I13 (`open_maintain_database` boot, unchanged) · I17 (§12.7 — contiguous, never reused, reuse is semantic not numeric) · I18/I19/I20 (`item_id`/`link_id`/`field` in every error, one `log_line()` to stderr) · I21 (§12.8 asserts codes) · T1 (validators pure) · T2 (writes in `SqliteMaintainStore`) · T3 (fakes extended, no mocks) · T4 (§12.8 pyramid) · T5/T6 (DB state + exit codes, not internals) · T9 (no new subpackage; existing globs hold) · S1 (§12.3 samples run standalone) · S2 (`tests/maintain/` suite extended) · S3 (§12.6 shapes) · S4 (DB rows stay the transfer mechanism).
+
+**(b) Untouched, with the check done:** B2 (no new cross-module reach — `Link` was already imported from `ember.relate.rows`), B4, B6-as-rule (watch noted, §12.8), D4 (flag validation already owned by the command body per §Z(c)), D6 (no migration of its own — the DB version at build time is whatever cluster 1 has left, per §12 preamble), D7 (no production data touched), D8 (no AI call), I8 (no-op edit designed away; error-vs-noop split recorded in (c)), I14/I15/I16 (no web, no external service, no AI), P1 (both entry points have named callers and issues), T7/T8 (no AI parser, no benchmark), S1's rule-5 list (master plan rule 5 already names both operations — this adds their implementations, not new authority).
+
+**(c) Knowingly deviated:** I8 — removing a non-Confirmed link is an ERROR (`MAINTAIN-015`), not a silent no-op; same justification as `MAINTAIN-004` (a wrong `--link` must not read as success). B6 — `human_actions.py` and `SqliteMaintainStore` grow a third/fifth method each; the warning sign to watch is splitting them, per this plan's own §Z. Rule 1/master plan (not Constitution) — `edit_item` and `remove_link` never call AI; the human invocation is the confirmation, the standing close-item precedent.
+
+## 13. V1.x Amendment (hardening phase): timestamp-scoped manual shield (ticket 12, #14 option c)
+
+Implements the Decision line of `plans/hardening-decisions.md` #14, pinned verbatim: **"option (c), timestamp-scoped shield, full scope. A manual clear silences evidence older than the clear (its change_log timestamp). Evidence newer than the clear passes the shield, for every derived change (re-flags and closes alike). Ties break by change_log id, matching the history sort convention. No migration."** The full-scope consequence is recorded, not hedged: a derived close (`superseded` / `answered`) also fires on a previously shielded card when its evidence is newer than the clear. L3: `plans/steps/hardening/06-timestamp-shield.md`. Ticket: `.scratch/hardening/issues/12-timestamp-shield.md` (closes #14).
+
+### 13.1 Amended lines (text this section replaces)
+
+- **Gap B4 (§2.1) is rewritten** from "Known V1 limitation (deferred issue)... a *new* contradiction confirmed later on a human-cleared item will not re-flag it. Fixing that needs per-trigger acknowledgment." to: "**B4. The shield is timestamp-scoped (V1.x amendment §13).** A manual clear silences exactly the derived evidence that predates it. Derived evidence confirmed after the clear passes the shield — re-flag or close — and the item's `status_origin` returns to `'derived'`, so a later clear re-arms the shield. The human still outranks the sweep (rule 6): every new clear moves the boundary forward."
+- **§4.6 bullet amended:** the sentence "`status_origin` is **NOT** written by the sweep" since this amendment reads "...written by the sweep only once per shielded change whose evidence passed the timestamp rule — the re-arm row of §13.4. Every human clear still writes it via `apply_status_origin`."
+- **§4.6 vocabulary table gains one row**, the re-arm (shape pinned in §13.4).
+- **Gap C's "the one `change_log` read in Phase 1" claim widens:** Phase 1 now reads a second ledger slice, `shield_log` (§13.5), next to `list_reversed_link_ids`. Still state lookup of facts the engines wrote, not an event bus.
+- **§4 Phase 3 bullet amended:** its line "No `status_origin` in the UPDATE. The sweep only writes items whose `status_origin` is `'derived'`, so writing it is a no-op that invites 'can the sweep un-manual an item?' (it must not)." now reads: "No `status_origin` in the UPDATE **except the re-arm branch of §13.4**." (Review fix 1.)
+
+### 13.2 Evidence timestamp — Decision per derived cause family
+
+Every derived cause is link-caused. For all four families the evidence event is the **triggering link's confirmation**, and the pinned source is its **ledger row** — not the `links` column. A consequence ruled in with this choice: a `dependency_closed` candidate's evidence is its own `depends_on` link's confirmation, so a dependent stays silent when its target is closed after the clear via an *older* `depends_on` link. The ruled sentence ("evidence older than the clear is silenced") intends exactly this; the chain-tracing alternative was rejected for complexity. (Review fix 2, ruled.)
+
+| Candidate change (cause on its `status` row) | Evidence event | Pinned evidence timestamp | Pinned evidence row for the tie |
+|---|---|---|---|
+| `contradicts_confirmed` → Challenged | the `contradicts` link's confirmation | that row's `timestamp` | `change_log` row `field_changed='link_confirmed'`, `link_id` = the `contradicts` link |
+| `dependency_closed` → Challenged | the `depends_on` link's confirmation | same | same, `link_id` = the `depends_on` link |
+| `supersedes_confirmed` → Closed/`superseded` | the `supersedes` link's confirmation | same | same, `link_id` = the `supersedes` link |
+| `answers_confirmed` → Closed/`answered` | the `answers` link's confirmation | same | same, `link_id` = the `answers` link |
+
+Why the ledger row and not `links.created_at`: the two values are equal by construction — the relate gatekeeper stamps both from ONE clock read (`ember/relate/link_gatekeeper.py:137-156`) and `SqliteLinkStore.insert_link_with_log` writes the pair in one transaction (`ember/adapters/sqlite.py:1401-1454`), stamping the real `link_id` onto the ledger row at `:1432`. The ledger row is pinned because (a) D3: the ledger is the source of item history, and (b) the tie rule needs the row's `change_log.id`, which the `links` column cannot supply. One deterministic source for every cause. Dev-only edge: links created before migration 003 added `change_log` carry no `link_confirmed` row — for them the rule fails closed (§13.4), identical to today's silence.
+
+### 13.3 Clear timestamp — Decision
+
+A manual clear is attested by exactly the rows `apply_status_origin` writes (`ember/adapters/sqlite.py:944-979`, cause hardcoded at `:970-971`): `field_changed='status_origin'` AND `trigger_cause='user_set_status'` AND `new_value='manual'` (spelling verified against the writer). **Clear timestamp for an item = the latest such row for that item, latest = max `(timestamp, change_log.id)`.** Multiple clears: newest is THE boundary. Only clears set the boundary: a human `set-status --to Challenged` write does not touch `status_origin` (verified: the shield arms on Challenged-to-Active clears only, `run_maintain.py`), so evidence newer than the last clear but older than a later human challenge may still escalate the item. Rule 6 holds for clears; stated honestly. (Review fix 3.)
+
+- **Multiple clears:** the newest clear is THE boundary; older clears are inert. Clear-after-clear moves the boundary forward (ticket checklist), and a second manual clear silences again the evidence that just passed (rule 6, human outranks sweep).
+- The `new_value='manual'` predicate is pinned so this amendment's own re-arm rows (§13.4: `new_value='derived'`, different cause) can never read back as a clear and poison the boundary.
+
+### 13.4 The rule and the re-arm write pattern
+
+**The rule — one rule, one choke point.** `merge_and_filter`'s shield skip (`ember/maintain/derive.py:68`) becomes per-candidate and timestamped. For each non-exempt candidate on a `status_origin='manual'` item:
+
+- **Apply iff `(evidence.timestamp, evidence.change_log.id) > (clear.timestamp, clear.change_log.id)`** — the triggering link's `link_confirmed` row (§13.2) beats the item's latest clear row (§13.3). Strictly newer wins. Equal timestamps resolve by the higher `change_log.id` (rows append, so higher id = later fact). A tie lost skips exactly as today. Legacy statement of the same rule, per the ticket: evidence older or equal with `evidence row id < clear row id` is skipped.
+- **Fail-closed:** no clear row visible for the item, or no `link_confirmed` row for the candidate's `link_id` → skipped, today's behavior. Snapshots built without the new rows (the additive default) therefore keep every existing test outcome.
+- The check runs on **each candidate before** the one-change-per-item precedence pick, so a shielded item with several passing candidates still resolves by precedence (§4.2). The internal `_flagging_closed_ids` call gets the same behavior for free — it is the same function on the same snapshot, so a passing full-scope close of a shielded item also feeds same-sweep dependency challenges exactly like any other close.
+
+**Re-arm (what happens when the change applies).** A derived change that passes the shield MUST return the item to `status_origin='derived'` so a later clear can re-arm (ticket checklist). The migration 010 CHECK `status_origin IN ('derived','manual')` allows writing `'derived'` — verified. Pinned pattern, one write call, one transaction:
+
+- `StatusChange` gains `rearm: bool = False` (I10 additive default; the `exempt` value-equality match is unaffected — exempt changes are never stamped, the human path keeps its own `apply_status_origin(item_id, 'manual')`).
+- The re-arm ledger row's `old_value` is the **observed** prior origin, read the way `apply_status_origin` reads it in the adapter (always `'manual'` by the stamp rule today, never hardcoded, review fix 5).
+- `merge_and_filter` stamps `rearm=True` on a winning candidate whose item is shielded and whose evidence passed (a model copy; the pure core decides, the adapter executes — T1/T2 unchanged).
+- `SqliteMaintainStore.apply_status_changes`, for a `rearm` change: the same batch UPDATE also sets `status_origin='derived'`, and one extra `change_log` row is appended in the same loop, from the same ONE clock read, inside the same transaction and rollback contract (MAINTAIN-011/012). Row shape (§4.6 table row):
+
+| Trigger | `field_changed` | `old_value` | `new_value` | `trigger_cause` | `link_id` | `item_id` |
+|---|---|---|---|---|---|---|
+| Sweep re-arm (shielded change passed the timestamp rule) | `status_origin` | `manual` (observed; `rearm` is stamped only on shielded items, so the observed value is always `manual`) | `derived` | `sweep_rearm` | the causing link's id (provenance) | the re-armed item |
+
+- `sweep_rearm` is NEW ledger vocabulary (a string, not an error code), per the §4.6 convention that each trigger string names its writer and meaning. Engine D renders it: `ember/query/history.py::_KIND_BY_PAIR` gains `("status_origin", "sweep_rearm") -> "status_origin_changed"` (one additive dict line; without it the row would classify `unknown` — our own engine's row must not).
+- **Rejected alternative, recorded:** calling `apply_status_origin(item_id, 'derived')` after the batch. Rejected for two reasons, both checked against the code: that writer hardcodes `trigger_cause='user_set_status'` (`sqlite.py:970-971`) — a sweep write mislabeled as a human act — and such a row would read back as a CLEAR under §13.3, poisoning the boundary. It would also be a second transaction against I7's batch atomicity.
+
+### 13.5 Determinism and the snapshot
+
+- All timestamps are UTC `isoformat()` with a constant `+00:00` offset (`sqlite.py:335-336`), so lexicographic string compare is chronological — the same convention `history` already sorts by (`history.py:120`).
+- The comparison is pure, deterministic, snapshot-driven: Phase 2 never touches the DB, no second read during the sweep. Phase 1 gains ONE additive read — `MaintainLookupPort.list_shield_log() -> list[ChangeLogEntry]` (reuse `ember.relate.rows.ChangeLogEntry`, D3: one shape, no duplicate model) — folded into `MaintainSnapshot.shield_log: list[ChangeLogEntry] = []` (I10: additive field, default keeps every existing constructor valid). Read failure raises the existing `MAINTAIN-010`. One query:
+
+```sql
+SELECT id, item_id, link_id, field_changed, old_value, new_value, timestamp, trigger_cause
+FROM change_log
+WHERE (field_changed = 'status_origin' AND trigger_cause = 'user_set_status' AND new_value = 'manual')
+   OR field_changed = 'link_confirmed'
+ORDER BY id
+```
+
+### 13.6 Floors — pinned: NO move
+
+`FLOORS` in `ember/adapters/db_check.py` stays exactly `(("relate", 12), ("maintain", 11), ("query", 10))`. This amendment ships no migration, no column, no table: the engine reads a table it already owns (`change_log`, present since migration 003) through one more Phase-1 query. `ember db-check` still prints `floors: relate 12 ok, maintain 11 ok, query 10 ok, capture none`, and `tests/maintain/test_maintain_boot.py`'s `required == 11` pin does not move. **Nobody bumps a floor for ticket 12.**
+
+### 13.7 Codes — zero new
+
+`MAINTAIN-010 ItemsReadFailed` for the new read, `MAINTAIN-011` / `MAINTAIN-012` for the batch write: all unchanged, per §6. One new `trigger_cause` string (`sweep_rearm`) is §4.6 vocabulary, not a code.
+
+### 13.8 The migration-free semantics change, stated honestly
+
+The rule only READS timestamps; it writes no schema and backfills nothing. Every shield already on disk — each `items.status_origin='manual'` column and its paired `change_log` clear row — gains the new behavior **automatically**: a manual clear written before this change is the boundary for evidence on disk, and the first newer link that confirms passes it. Reverting the code reverts the behavior; nothing on disk needs undoing or rewriting (a `sweep_rearm` row left behind under an old binary classifies `unknown` in history and is inert — the old rule checks only the column).
+
+### 13.9 Out of scope
+
+- No blanket veto command (no "silence forever" / keep-silent CLI), no per-cause acknowledgment state: no new column, no acknowledged-trigger bookkeeping — option (b) of the #14 brief is closed BY option (c), not deferred into a footnote.
+- No UI, no report-format change (re-flagged items are ordinary `format_report` `Challenged` lines; re-arm is visible through `ember history`, the ledger).
+- `run_set_status`, `validate_set_status`, `apply_status_origin` untouched: the human clear path keeps its `user_set_status` row and its second-transaction shape (step-03 §4.2).
+
+### 13.10 §Z — Constitution compliance (this amendment)
+
+**(a) Touched & satisfied:** B4 (§13.1/13.4 — the volatile decision "which evidence does a clear silence" hides inside one rule at one choke point) · D3 (§13.2/13.3 — ledger rows are both the evidence and the boundary, re-read, never a second truth) · D5/I10 (§13.4/13.5 — additive only: one snapshot field, one bool, one port method, one dict line, one table row; zero renames, zero schema) · I7 (§13.4 — re-arm rides the existing all-or-nothing batch) · I9 (§13.5 — pure snapshot compare: no clock, no I/O in Phase 2) · I21 (§13.7 — codes only; zero new). **(b) Untouched:** D6/D7 (no migration, no production data touched), T9 (no new subpackage, existing globs hold), B2 (no cross-engine reach — `change_log` rows are read through Maintain's own port). **(c) Knowingly deviated:** none. P1 held: only the ruled rule, its one read, and its one write pattern.
+
 ## Z. Constitution Compliance
 
 **Three tables.** (a) touched & satisfied with a §ref; (b) N/A with a reason; (c) knowingly deviated, with a §ref and a justification.
@@ -543,17 +802,17 @@ The substantive open decisions. Do NOT forget these when writing L3 step plans.
 | S2 dedicated suite | §10 (`tests/maintain/`) |
 | S3 document input/output | §4.5 (data models) + §4.7 (`MaintainRequest`/`MaintainResult`) |
 | S4 explicit data transfer | §2 (the DB is the transfer mechanism) |
+| D8 save raw model response | §14 (§14.4/§14.5: the raw answer stored verbatim in `ai_responses` keyed by `item_id` before it is judged). **(Amended in hardening step 07.)** |
+| I15 bounded external dependence | §14 (timeout 60 s, `max_retries=0`, the ONE retry belongs to the engine). **(Amended in hardening step 07.)** |
+| I16 AI output schema | §14 (`parse_close_proposal` checks the raw answer at the boundary, MAINTAIN-019). **(Amended in hardening step 07.)** |
+| T7 AI fixture testing | §14 (T7 fixtures under `tests/fixtures/maintain/`, no live AI in the suite). **(Amended in hardening step 07.)** |
 
 **(b) N/A, with reason:**
 
 | Rule | Reason |
 |---|---|
-| D8 save raw model response | Maintain makes no AI call (§4.0). Re-arms if "AI-proposed close_item" ships. |
 | I14 web API | No web API in V1. |
-| I15 external services | No external service. |
-| I16 AI output schema | No AI call. |
-| T7 AI fixture testing | No AI parser. |
-| T8 AI eval benchmark | No AI. |
+| T8 AI eval benchmark | No benchmark this step: "no path to measure yet, deferred until real proposals accumulate" (§14). |
 
 **(c) Knowingly deviated, with justification:**
 
@@ -569,3 +828,119 @@ The substantive open decisions. Do NOT forget these when writing L3 step plans.
 | T10 painful test setup | The atomicity test needs FK enforcement ON, so it must use `open_maintain_database` / `_connect`, not a bare `sqlite3.connect`. | Documented as a trap in §7.2, with the reason. |
 | — | The sweep writes `items` + `change_log` with **no gatekeeper script**. | **Phase 2's `merge_and_filter` IS the gatekeeper for machine writes** — it is the deterministic rule set the spec calls "gatekeeper scripts" (L1:81). Stated here because L1:116 ("All mutations pass gatekeeper validation scripts") would otherwise read as violated. |
 | — | `close_item` does **not** prompt. Spec 3.7:126 says "User confirms." | The human invoking `ember close-item` **is** the confirmation. An L1 amendment records this (§11). |
+
+## 14. V1.x Amendment (hardening phase): AI-proposed closes, pre-filtered (ticket 13, #16)
+
+Implements the Decision line of `plans/hardening-decisions.md` #16, pinned verbatim: **"build, pre-filtered (maintainer, 2026-10-29). The sweep pre-filters stale candidates with deterministic rules (example: Active Questions with an old confirmed answers link), the AI sees only that shortlist (typically 0-3 cards, never a full-corpus scan), proposes close with reason, the human confirms through the existing validate path, one ledger row. Maintain gains its first AI port."** L3: `plans/steps/hardening/07-ai-close-proposals.md`. Ticket: `.scratch/hardening/issues/13-ai-close-proposals.md` (closes #16). Blocked by ticket 12 (step 06) — sequential, one maintain module moving at a time. No migration.
+
+### 14.1 Amended lines (text this section replaces; applied 2026-10-29 by step 07, ticket 13)
+
+- **Status: applied 2026-10-29 (step 07, ticket 13, `feat/hardening`).**
+
+- **Header (line 5)** — from "Maintain adds **no dependency** — no AI, no embedder, no network (first engine with no live tier)." to: "Maintain adds **one AI proposal port** (§14): no embedder, no new package. The AI proposes only; every write is a human-confirmed path."
+- **§4.0** — its claim "Maintain calls no AI" narrows to: "**Maintain's four derived triggers call no AI** (deterministic rules, spec 3.5 unchanged). Maintain gains ONE AI surface, the §14 pre-filtered close proposal: the AI judges a bounded shortlist and proposes; the human confirms; `validate_close_item` writes. The spec-3.7:126 'User confirms' for AI proposals is satisfied by the y/n confirm loop, not by invocation alone."
+- **§4 pipeline** — gains a **Phase 5** box after Phase 4: `Phase 5: Propose (AI on the stale shortlist, human confirm, write via the human path)`. It is a separate entry point (`run_close_proposals`), NOT merged into `run_sweep` — see 14.4 for the placement ruling.
+- **§5 "No environment variables"** — amended: "`ember maintain` reads the AI env vars ONLY when its stale shortlist is non-empty: `EMBER_AI_API_KEY` (or `OPENROUTER_API_KEY`), `EMBER_AI_MODEL`, `EMBER_AI_BASE_URL` (same keys as capture/relate). An empty shortlist needs no key and builds no adapter."
+- **§5 exit codes** — the sentence "Maintain has **no user-abort exit 2** — there is no confirm loop" is amended: "the four human commands keep no abort exit; `ember maintain` exits **2 when the close-proposal confirm loop aborts** (a `q` answer or end of input), exactly like `capture`/`relate`."
+- **§7.7 Live** — from "**None.**" to "**None required, one available.** The AI tier means a live check is possible; none ships. Tests use fixtures (T7)."
+- **§8** — the bullet "AI-proposed `close_item` (V1 uses a human-invoked command)" is closed by this amendment; `ember close-item` itself is untouched.
+- **§Z** — rows **D8, I16, T7, I15** move from (b) "no AI call" to (a), satisfied by this section; **T8** stays (b): no benchmark set ships this step ("no path to measure yet, deferred until real proposals accumulate").
+
+### 14.2 The pre-filter (pinned)
+
+Pure, free, deterministic: `stale_close_candidates(snapshot: MaintainSnapshot, *, now: datetime) -> StaleShortlist` in `ember/maintain/close_proposer.py`. No clock, no I/O, no second read (T1) — `now` is injected as a parameter. **One rule, not two** (P1):
+
+> A candidate is an item that is `type == "Question"`, `status == "Active"`, and whose **newest** Confirmed `answers` link (by `links.created_at`) is confirmed at least `STALE_DAYS` before `now`.
+
+Constants, pinned: `STALE_DAYS = 30` and `MAX_CLOSE_PROPOSALS = 10` (both in `close_proposer.py`).
+
+- **`STALE_DAYS = 30`** — the repo's only existing window precedent (`candidate_pool.py` `METADATA_WINDOW`, ±30 days); the #16 trigger text (≥3 real closes/week, decisions brief) makes any longer window noise at current scale.
+- **Cap** — the shortlist takes the first `MAX_CLOSE_PROPOSALS` candidates by `item_id` ascending and sets `truncated=True` when it had to drop any; the CLI prints one truncation note. No path can trigger per-item calls across the whole corpus.
+- **Fail-closed totality:** a `created_at` that cannot be parsed (`fromisoformat`), or every comparison failure, means **not a candidate** — the rule never raises on a snapshot (the step-06 totality precedent). Today's store timestamps are UTC `isoformat()` with `+00:00` (`sqlite.py:335-336`), lexicographically and chronologically sortable.
+- **Why only ONE rule, and why this one (verified against real reads):** Maintain's snapshot (`SqliteMaintainContext.list_items`, `:712`) carries **no `items.created_at`** — any "age of the item" rule is NOT computable from existing reads without a schema read change. The only age data the engine already holds is `links.created_at` (`list_confirmed_links`, `:739`). The second rule is pinned to NONE for exactly that reason.
+- **Honest scope note (contradiction found and ruled, not hidden):** `derive.py` rule 2 already closes EVERY non-shielded Question with a Confirmed `answers` link (`answered`, `:190-198`) — so a literal reading of the decision's example ("Active Questions with an old confirmed answers link") yields candidates **only among `status_origin='manual'` (shielded) questions**, whose answers evidence predates their clear and lost the §13.4 tie. That is the real shortlist this feature serves: the cards a manual clear deliberately held open, re-examined when their answer went stale. The rule is pinned AS the decision line states it; the emergence of the shield-only scope is a documented consequence, and an accepted close on a shielded item goes through validate_close_item's exempt path — the explicit human `y` outranks the shield (rule 6, same mechanism as today's close-item). This is also why Phase 5 reads a **fresh post-apply snapshot** (14.4): without that, the same run would propose closing a card the sweep itself already closed `answered`, in one run, twice.
+
+### 14.3 The port + adapter (shapes at the boundary, S3)
+
+**Engine core: `ember/maintain/close_proposer.py`** (new module; mirrors `link_proposal.py`'s stage layout; imports stdlib + pydantic only — T9 architecture test already globs `ember/maintain/*.py`):
+
+- `STALE_DAYS = 30`, `MAX_CLOSE_PROPOSALS = 10`.
+- `StaleCandidate(item_id: int, item_type: str, statement: str | None, newest_answers_link_id: int, answered_by_item_id: int, newest_answer_created_at: str)` — the display and prompt slice of one candidate. **`ItemState` gains `statement: str | None = None`** (additive, I10; `SqliteMaintainContext.list_items` SELECT gains the column at `:721`) — without the statement the AI judges a card it cannot see, so the Phase-1 read widens once.
+- `StaleShortlist(candidates: list[StaleCandidate], truncated: bool)` (I4: named, never a bare list).
+- `stale_close_candidates(snapshot, *, now: datetime) -> StaleShortlist` (pure).
+- `CloseProposal(reason: str, confidence: float, rationale: str | None = None)` — `reason` is bounded to `HUMAN_SETTABLE_REASONS` (`{invalidated, expired}`, **imported as the existing constant from `ember/maintain/human_actions.py`** — D3: one fact, one place; the AI can never propose a reason the validate path would refuse because the parser checks the same frozenset).
+- `CloseProposalResponse(raw_response: str, proposal: CloseProposal | None)` — `proposal is None` = the model declines to propose (close=false).
+- `CloseProposerPort` (typing.Protocol): `propose_close(self, candidate: StaleCandidate) -> CloseProposalResponse`. Raise `MAINTAIN-018` on a call failure and `MAINTAIN-019` on an unreadable answer (the adapter checks the raw answer at this boundary, I9 — the capture pattern).
+- `SYSTEM_PROMPT` (pinned text in the step plan §2) — proposes ONLY `{invalidated, expired}` or decline; strict JSON object, no fence.
+- `parse_close_proposal(ai_response: str) -> CloseProposal | None` — whole answer must be a JSON object; `close` must be boolean; false → `None`; true requires `reason` in the set, `confidence` in [0.0, 1.0], `rationale` string-or-null; any deviation raises `MAINTAIN-019`.
+- `propose_close_with_retry(proposer, *, candidate) -> CloseProposalResponse` — **retry ONCE on `CloseAiCallFailed` OR `CloseAiSchemaInvalid`**; the second failure propagates. Divergence from relate pinned deliberately: relate does not retry a schema failure (RELATE-033), but ticket 13's checklist requires "empty/failed AI response retries per the pinned policy" — an empty answer is a schema failure — so maintain retries both, following capture's `propose_items` precedent (`AiError` base retried, `item_proposal.py:172-185`).
+
+**Adapter: `ember/adapters/llm.py`** gains a third section (the file already hosts both other proposers): `OpenAiCloseProposer` and `build_close_proposer(env=None) -> OpenAiCloseProposer`. Same client spine as `build_link_proposer`: key from `EMBER_AI_API_KEY`/`OPENROUTER_API_KEY` (missing → **`MAINTAIN-020 CloseAiConfigMissing`**, fail fast), `base_url=EMBER_AI_BASE_URL` default `DEFAULT_BASE_URL` (OpenRouter), `timeout=REQUEST_TIMEOUT_SECONDS` (60.0), `max_retries=0` (the ONE retry is the engine's), `temperature=0.0`, default model `DEFAULT_MODEL`. Raw answer parsed by `parse_close_proposal` inside the adapter (I9 boundary, capture shape). The adapter imports the maintain error classes from `ember.maintain.errors`; names are close-prefixed so **no alias needed** anywhere (verified against every name in `ember/relate/errors.py` and `ember/capture/errors.py`).
+
+### 14.4 Loop mechanics + placement (pinned)
+
+- **Placement decision (author's, replacing the brief's parenthetical "between derive and apply"):** Phase 5 runs the pre-filter on a **fresh post-apply snapshot** and is a separate entry point — `run_sweep` is untouched (zero churn to every existing sweep test; I2: no mode switch). Verified reason: `derive` rule 2 closes stale answered questions in the same run; a pre-apply propose phase would race its own apply, double-write a card, or need exclusion logic re-deriving rule 2. Fresh load gives the exclusion for free (a just-closed card is `Closed`, not `Active`) at the cost of one extra read of tables the engine already owns. Dry-run honesty: `--dry-run` computes the shortlist PRE-apply, so it may name a question the real run would machine-close `answered` an instant later. The dry-run list is deliberately the unfiltered-by-apply view (the human sees every candidate before committing to a run); the real run's list is the post-apply view. Pinned here so the two outputs are never confused. (Review fix 3.)
+
+- `@dataclass(frozen=True) class CloseProposalPorts(MaintainPorts)`: adds `close_proposer: CloseProposerPort`, `ai_response_store: AiResponseStorePort`, `confirm: ConfirmPort`. (**`AiResponseStorePort` is imported from `ember.relate.ai_response_store`** — public port, one shape (D3, the `Link`-rows precedent, documented B2); its `save(*, item_id=..., raw_response=...)` signature verified at `ai_response_store.py:13`.)
+- `run_close_proposals(ports: CloseProposalPorts, now: datetime) -> ProposalOutcome` in `run_maintain.py` — 2 inputs (I3). Owns the loop end-to-end (B5: deep module): fresh `_load` → `stale_close_candidates` → per candidate (≤10): one AI call → **save raw verbatim keyed by `item_id` BEFORE anything is judged** (D8, run_relate's `_save_raw_response` pattern; mapping: `ValueError` propagates raw because the owner pair is engine-constructed — a code bug crashes loudly, I5; storage failure → `MAINTAIN-021`) → proposal None → decline, counted; proposal → display block → `confirm.ask(PROMPT)`.
+- `ConfirmPort` is a maintain-local protocol (ask/write), the third sibling of capture's and relate's (house pattern); `parse_choice`-style answers `y/yes, n/no, q/quit`; unknown input re-asks; end of input raises **`MAINTAIN-022 UserAbort`** → `aborted=True`.
+- **`y` (accept) = the existing human close command path, zero new write code:** `run_close_item(MaintainPorts(lookup, store), MaintainRequest(item_id=<candidate>, reason=<proposed reason>))`. That single call reuses the whole existing chain — `validate_close_item` (its `MAINTAIN-001/002/003/004` checks, the dependent fan-out, `merge_and_filter` with `exempt=primary`, the §13 timestamp shield) and `SqliteMaintainStore.apply_status_changes` (one transaction, rollback on failure). **One ledger row** per accepted close primary, `trigger_cause='user_closed'` — the existing vocabulary row, no §4.6 change. The loop prints the returned `format_report` lines through the port's `write` (the CLI injects the terminal port — no `print` in the core).
+- **`n` (reject) = logged only in the outcome, no DB write at all.** DECIDED (the brief's open question, decided simply): rejected proposals write **no** ledger row. Relate's `n` writes a rejected LINK row because the insert itself blocks re-proposing; a rejected close has nothing to block — only `ai_responses` records that the proposal happened (D8), and the summary line counts it. No new `trigger_cause` string is minted (it would be ledger vocabulary for a non-event).
+- **`q` (quit)** stops the loop; remaining candidates get no AI call and nothing is written; `aborted=True`; exit 2 (the §5 amendment).
+- **Preview display** (pure helper `format_proposal_block` in `close_proposer.py`): `Proposal i/N: item <id> [Question] <statement>` / `  newest answers link <id>, confirmed <timestamp>` / `  reason: <reason>, confidence <c>` / `  rationale: <r or '-'>`, then the prompt `[y]es / [n]o / [q]uit`. A decline prints the preview header plus `  no close proposed`. Exact blocks pinned in the step plan §6.
+- `ProposalOutcome(stale: int, proposed: int, accepted: int, rejected: int, aborted: bool = False)` (I4) lives in `close_proposer.py`.
+- **Dry-run (CLI-only, I2):** `--dry-run` loads, derives, prints the normal report, then loads the fresh snapshot, runs the free pre-filter, prints one line per candidate and the outcome line — **no adapter is built, no key is needed, no AI call, nothing written, exit 0.** Non-dry-run with an **empty** shortlist: the normal report plus `stale: 0, proposed: 0, accepted: 0, rejected: 0, aborted: false`, no key, no call (proven by test).
+- **The unattended-run cost is stated, not hedged:** the confirm loop always runs when a proposal exists (capture precedent, and CliRunner tests must be able to drive it). An unattended `ember maintain` over a non-empty shortlist makes the AI calls (bounded by the cap), then hits EOF → `aborted=True`, exit 2, with all raw answers stored (D8) and nothing closed. No `--no-ai` flag ships this step (out of scope; the shortlist cap bounds waste).
+
+### 14.5 D8 keying + what lands where
+
+One fact, one place (D3): the **proposal evidence** is the verbatim raw answer in `ai_responses` (`item_id` keyed; migration 009's `item_id REFERENCES items(id)` + exactly-one-of owner check verified in `save`, `sqlite.py:1439-1463`); the **close itself** is the existing `user_closed` ledger rows written by the reused validate path; the **counts** live only in the run's stdout. Nothing new is written for a decline or a reject. D8/I16 therefore hold for Maintain exactly as for capture/relate: verbatim, stored before judging, schema-checked at the boundary.
+
+### 14.6 Floors, migration, cost
+
+- **No migration. No floor move.** The engine reads its own tables plus one column it does not yet select (`items.statement`) and writes through entirely existing paths. `ember db-check` unchanged; `tests/maintain/test_maintain_boot.py`'s `required == 11` pin does not move (verified: nobody bumped it for §13, nobody bumps it here). Schema version at build time = 12 (set by step 05a).
+- **Cost, pinned against L1 §0 numbers:** one call per candidate, ≤ `MAX_CLOSE_PROPOSALS` calls per sweep, prompt far below capture's (no 50-item context window — one question + one link line), on `claude-haiku-5.5` (~$0.0003 per full capture run). Worst case per sweep is an order of magnitude below one capture run; the #16 trigger volume makes the typical case zero calls. Empty shortlist = zero cost, proven by test.
+
+### 14.7 The L1 amendments (word-for-word; the step plan owns the build-time edit)
+
+Applied to `plans/master-plan.md` ONLY at build time by step 07 — not edited now.
+
+- **Rule 3, line 117** — from:
+
+  `3. AI-callable mutations (each requires user confirm): `add_item`, `add_link`.`
+
+  to:
+
+  `3. AI-callable mutations (each requires user confirm): `add_item`, `add_link`, `propose_close`. A `propose_close` proposal writes nothing: the human confirms it in `ember maintain`'s confirm loop and the close is written only through the human validate path (`validate_close_item`).`
+
+- **§5, line 131** — from:
+
+  `AI-proposed `close_item` deferred to V1.x (issue #16). V1 ships `ember close-item` human-invoked; the human running the command is the confirmation.`
+
+  to:
+
+  `AI-proposed `close_item` (issue #16) ships pre-filtered (V1.x, 2026-10-29): a deterministic pre-filter names stale candidates (capped at 10), the AI proposes a close with reason `invalidated` or `expired` for that shortlist only, and the human confirms through the existing `ember close-item` validate path (`validate_close_item`) inside `ember maintain`'s confirm loop. The AI never writes a close itself; raw answers are stored in `ai_responses` keyed by `item_id` (D8).`
+
+- **Lines intentionally NOT amended:** §3 line 81 ("For AI mutations: `validate_add_item`, `validate_add_link`.") stays — `propose_close` produces no mutation; its only write rides `validate_close_item`, already listed under human-only (line 83). §8's step-03 note stays true: it says `close_item` the *write* left the AI-callable list, which remains correct (`propose_close` is the new AI-callable operation; the write is still human-only). Rationale per §11.1: L1 §4 is the global-invariant list; a rule-3 line listing fewer AI-callable operations than exist poisons later plans (the §11.1 precedent, applied in reverse).
+
+### 14.8 Errors (continue family from MAINTAIN-017)
+
+`ember/maintain/errors.py`. Five codes, contiguous, no reserved-but-unused numbers (I17). Name audit: the four close-prefixed names collide with nothing in `ember/capture/errors.py`, `ember/relate/errors.py`, or the existing `sqlite.py` maintain aliases (verified) — **`UserAbort` deliberately reuses the shared name** (capture CAPTURE-014, relate RELATE-031): the CLI imports it aliased (`MaintainUserAbort`, the §6 house pattern, since capture's `UserAbort` is already imported there); nothing else in the codebase imports it, so no other alias exists.
+
+| Code | Name | Trigger |
+|---|---|---|
+| `MAINTAIN-018` | `CloseAiCallFailed` | the provider call failed (adapter), retried once, second failure propagates. Carries `item_id` + provider status. |
+| `MAINTAIN-019` | `CloseAiSchemaInvalid` | the answer is not strict JSON / not an object / non-boolean close / reason outside `{invalidated, expired}` / confidence out of range / rationale wrong type — retried once, second failure propagates. Carries `item_id`. |
+| `MAINTAIN-020` | `CloseAiConfigMissing` | a non-empty shortlist needs the AI but no API key is configured (`build_close_proposer`, fail fast). Carries nothing but the message (no secrets, I19). |
+| `MAINTAIN-021` | `CloseAiStoreFailed` | the `ai_responses` INSERT failed (storage error mapped at the engine boundary, roll-nothing: the save is single-statement autocommitted per `save()`). Carries `item_id`. |
+| `MAINTAIN-022` | `UserAbort` | end of input in the confirm loop → `aborted=True`, exit 2 (never printed as an error). |
+
+Error-code audit at write time: `git log -p ember/maintain/errors.py` is the receipt that 018-022 are the next free numbers (§12.8 precedent). `MAINTAIN-010/011/012/001/002/003/004` all reused honestly on the accept path (same failures, same codes).
+
+### 14.9 T7 fixture policy
+
+Raw AI answers are **recorded fixtures**, never live calls in tests: `tests/fixtures/maintain/close_proposal_*.json` (valid proposal, decline, bad reason, malformed JSON, empty). Parser and retry tests assert schema/types and raised codes, never prose (T7). The CLI check (S1) runs without any API key: the proposers are fakes injected at the same seam tests use (the `build_close_proposer` import in `ember/cli.py`, monkeypatched — the `tests/test_cli_capture.py` runner pattern); the empty-shortlist case also runs as a real-binary `.venv/bin/ember` run proving NO adapter construction happens without a key.
+
+### 14.10 §Z — Constitution compliance (this amendment)
+
+**(a) Touched & satisfied:** B3 (§14.3 — provider SDK behind the port, engine imports no adapter; `AiResponseStorePort` is a public interface, B2) · B4 (the volatile judgment hides inside `close_proposer.py` + the adapter) · B5/B1 (one module, one job: AI-proposed closes; one deep entry point over the shared pipeline) · D1 (raw answers verbatim, D8) · D3 (reasons read from `HUMAN_SETTABLE_REASONS`, one frozenset; proposal evidence in `ai_responses`, close evidence in `change_log`) · D4/I9 (parse at the boundary, twice — once inside the adapter, once in `parse_close_proposal`) · D5/I10 (additive only: `ItemState.statement` default None, three optional port fields on a subclass, no renames, no schema) · P3 (load → derive → apply → report → propose) · P4 (new port + adapter) · I1/I4 (`StaleShortlist`, `ProposalOutcome`) · I3 (`run_close_proposals` = 2 inputs) · I2 (separate entry point; dry-run never crosses a function) · I15 (timeout + the one retry + port) · I16 (schema check + verbatim log) · I17/I21 (§14.8 codes + per-code tests) · T1 (pre-filter and parser pure, `now` injected) · T2 (side effects at the adapter edge) · T3 (fakes, no mocks) · T7 (§14.9). **(b) Untouched:** D6/D7 (no migration, no production data), T8 (no benchmark this step), B6 watch (`run_maintain.py` grows a second orchestrator — the warning sign is splitting, not growing). **(c) Knowingly deviated:** §Z's old (b) rows for D8/I16/T7/I15 are superseded by (a) — the engine's first live tier, ruled with the pre-filter cap as the cost argument. P1 held: only the ruled scope (one rule, one cap, one port, one loop), nothing else.

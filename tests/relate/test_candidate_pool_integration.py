@@ -374,6 +374,106 @@ def test_preflight_model_mismatch_wipes_and_reencodes_every_item(db_path) -> Non
     assert store.get(90) is None
 
 
+def test_seeded_mixed_corpus_routes_labels_and_the_time_proxy(db_path) -> None:
+    """The L2 §13 matrix on a real database (plan 05b §5).
+
+    Seed: a labeled new item 1 plus four candidates. An equal-label partner
+    far outside the 30-day window (id 2, roughly 530 days old), an equal-label
+    partner inside it (id 3), a different-label candidate (id 4), and an
+    unlabeled same-day candidate (id 5). Item 6 mirrors all of it as an
+    unlabeled new item. The assertable observable is `Pool.counts` (§12: the
+    counts JSON is only printable in the empty-pool CLI branch).
+    """
+    conn = open_database(db_path)
+    source_id = insert_source(conn)
+    insert_item(
+        conn,
+        source_id=source_id,
+        item_id=1,
+        item_type="Finding",
+        statement=NEW_STATEMENT,
+        created_at=NEW_TIME,
+        metadata="database labeling",
+    )
+    insert_item(
+        conn,
+        source_id=source_id,
+        item_id=2,
+        item_type="Decision",
+        statement=_candidate_statement(2),
+        created_at=FAR_TIME,
+        metadata="database labeling",
+    )
+    insert_item(
+        conn,
+        source_id=source_id,
+        item_id=3,
+        item_type="Decision",
+        statement=_candidate_statement(3),
+        created_at=NEAR_PLUS,
+        metadata="database labeling",
+    )
+    insert_item(
+        conn,
+        source_id=source_id,
+        item_id=4,
+        item_type="Decision",
+        statement=_candidate_statement(4),
+        created_at=NEAR_MINUS,
+        metadata="unrelated",
+    )
+    insert_item(
+        conn,
+        source_id=source_id,
+        item_id=5,
+        item_type="Decision",
+        statement=_candidate_statement(5),
+        created_at=NEW_TIME,
+    )
+    insert_item(
+        conn,
+        source_id=source_id,
+        item_id=6,
+        item_type="Finding",
+        statement="the unlabeled mirror",
+        created_at=NEW_TIME,
+    )
+    conn.commit()
+
+    embedder = FakeEmbedder(model_name=MODEL, dim=DIM)
+    store = SqliteEmbedderStore(conn)
+    lookup = SqliteLinkContext(conn)
+
+    labeled = load_item_candidates(lookup, item_id=1, db_path=db_path)
+    pool = build_candidate_pool(
+        labeled,
+        link_lookup=lookup,
+        embedding_store=store,
+        embedder=embedder,
+    )
+
+    assert pool.warning is None
+    # The unlabeled mirror (id 6) is type-compatible with the new Finding, so
+    # the universe holds five candidates and the content signal keeps them all.
+    # Exactly two candidates earned the metadata signal: both equal-label
+    # partners, one of them far outside the 30-day window. The different
+    # label and the unlabeled same-day item were routed away.
+    assert pool.counts == {"dense": 5, "graph": 0, "metadata": 2}
+
+    mirror = load_item_candidates(lookup, item_id=6, db_path=db_path)
+    mirror_pool = build_candidate_pool(
+        mirror,
+        link_lookup=lookup,
+        embedding_store=store,
+        embedder=embedder,
+    )
+
+    # The unlabeled mirror keeps the 30-day proxy against unlabeled
+    # candidates only: the same-day unlabeled item 5 joins, every labeled
+    # partner (in-window or far) is excluded, and the mixed pairs never match.
+    assert mirror_pool.counts == {"dense": 5, "graph": 0, "metadata": 1}
+
+
 def test_graph_read_failure_surfaces_as_relate_021(db_path) -> None:
     """`build_candidate_pool` re-raises the adapter's RELATE-021 unchanged.
 

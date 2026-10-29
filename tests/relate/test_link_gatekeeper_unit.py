@@ -184,6 +184,93 @@ def test_rule9_duplicate():
     assert result.code == "RELATE-009"
 
 
+def test_reversed_supersedes_not_cycle():
+    link = Link(
+        id=100,
+        source_item_id=1,
+        target_item_id=2,
+        link_type="supersedes",
+        status="Confirmed",
+        created_at=FIXED_TIME,
+        reversed_at=FIXED_TIME,
+    )
+    lookup = FakeLinkLookup(
+        items=[_item(1, "Decision"), _item(2, "Decision")],
+        links=[link],
+        statuses={1: "Active", 2: "Active"},
+    )
+
+    result = _validate(_draft(source=2, target=1, link_type="supersedes"), lookup)
+
+    assert isinstance(result, ValidatedLink)
+
+
+def test_relate_028_names_blocking_link():
+    block = Link(
+        id=100,
+        source_item_id=1,
+        target_item_id=2,
+        link_type="supersedes",
+        status="Confirmed",
+        created_at=FIXED_TIME,
+    )
+    lookup = FakeLinkLookup(
+        items=[_item(1, "Decision"), _item(2, "Decision")],
+        links=[block],
+        statuses={1: "Active", 2: "Active"},
+    )
+
+    result = _validate(_draft(source=2, target=1, link_type="supersedes"), lookup)
+
+    assert isinstance(result, RejectedLink)
+    assert result.code == "RELATE-028"
+    assert result.detail is not None
+    assert "100" in result.detail
+    assert "(1 -> 2)" in result.detail
+
+
+def test_relate_009_duplicate_reports_reversed_state():
+    duplicate = Link(
+        id=50,
+        source_item_id=1,
+        target_item_id=2,
+        link_type="depends_on",
+        status="Confirmed",
+        created_at=FIXED_TIME,
+        reversed_at=FIXED_TIME,
+    )
+    lookup = FakeLinkLookup(
+        items=[_item(1, "Decision"), _item(2, "Decision")],
+        links=[duplicate],
+    )
+
+    result = _validate(_draft(link_type="depends_on"), lookup)
+
+    assert isinstance(result, RejectedLink)
+    assert result.code == "RELATE-009"
+    assert result.detail is not None
+    assert "50" in result.detail
+    assert "reversed" in result.detail
+
+
+def test_rejection_detail_is_none_outside_rules_8_and_9():
+    lookup = FakeLinkLookup(items=[_item(1, "Decision")])
+
+    result = _validate(_draft(source=1, target=1), lookup)
+
+    assert isinstance(result, RejectedLink)
+    assert result.code == "RELATE-010"
+    assert result.detail is None
+
+    lookup = FakeLinkLookup(items=[_item(1, "Decision"), _item(2, "Decision")])
+
+    result = _validate(_draft(link_type="invalid"), lookup)
+
+    assert isinstance(result, RejectedLink)
+    assert result.code == "RELATE-005"
+    assert result.detail is None
+
+
 def test_pass_shape():
     lookup = FakeLinkLookup(items=[_item(1, "Decision"), _item(2, "Decision")])
 

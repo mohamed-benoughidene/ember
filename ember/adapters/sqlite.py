@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import sqlite3
 import sys
 import urllib.parse
 from array import array
+from collections import deque
 from datetime import datetime, timezone
 from importlib import resources
 from typing import Callable
@@ -26,11 +28,13 @@ from ember.maintain.errors import (
     ChangeLogWriteFailed as MaintainChangeLogWriteFailed,
     DbMigrationFailed as MaintainDbMigrationFailed,
     DbOpenFailed as MaintainDbOpenFailed,
+    ItemEditWriteFailed as MaintainItemEditWriteFailed,
     ItemsReadFailed as MaintainItemsReadFailed,
+    RemoveLinkWriteFailed as MaintainRemoveLinkWriteFailed,
     SchemaOutdated as MaintainSchemaOutdated,
     StatusWriteFailed as MaintainStatusWriteFailed,
 )
-from ember.maintain.rows import ItemState, StatusChange
+from ember.maintain.rows import EditChange, ItemState, LinkChange, StatusChange
 from ember.query.errors import (
     DbOpenFailed as QueryDbOpenFailed,
     ItemsReadFailed as QueryItemsReadFailed,
@@ -52,6 +56,13 @@ from ember.relate.errors import (
 from ember.relate.rows import ChangeLogEntry, Link, NewItem
 
 _MIGRATIONS_MODULE = "ember.adapters.migrations"
+
+_BACKUPS_TO_KEEP = 3
+
+# One definition for "a supersedes edge the cycle rules walk" (rule 8/9): the
+# row is Confirmed and was never reversed. Shared by supersedes_ancestors and
+# supersedes_blocking_link so the two walks can never diverge.
+LIVE_SUPERSEDES_EDGE = "status = 'Confirmed' AND reversed_at IS NULL"
 
 
 def _connect(db_path: str) -> sqlite3.Connection:
@@ -103,7 +114,7 @@ def open_relate_database(db_path: str) -> sqlite3.Connection:
         raise DbOpenFailed("db open fail", db_path=db_path) from exc
     try:
         _apply_migrations(conn)
-    except (sqlite3.Error, ValueError) as exc:
+    except (sqlite3.Error, ValueError, OSError) as exc:
         conn.close()
         raise DbMigrationFailed("migration fail", db_path=db_path) from exc
     try:
@@ -118,15 +129,16 @@ def ensure_relate_schema(conn: sqlite3.Connection) -> None:
     """Check the applied schema version is new enough for the relate engine.
 
     Raise `DbOpenFailed` (RELATE-012) if the version cannot be read, and
-    `SchemaOutdated` (RELATE-014) if the version is below the required 9.
+    `SchemaOutdated` (RELATE-014) if the version is below the required 12
+    (the relate engine reads `items.metadata` from migration 012 on).
     """
     try:
         row = conn.execute("SELECT version FROM schema_version").fetchone()
         version = 0 if row is None else int(row["version"])
     except (sqlite3.Error, ValueError, TypeError) as exc:
         raise DbOpenFailed("schema version read fail") from exc
-    if version < 9:
-        raise SchemaOutdated("schema version too old", version=version, required=9)
+    if version < 12:
+        raise SchemaOutdated("schema version too old", version=version, required=12)
 
 
 def open_maintain_database(db_path: str) -> sqlite3.Connection:
@@ -149,7 +161,7 @@ def open_maintain_database(db_path: str) -> sqlite3.Connection:
         raise MaintainDbOpenFailed("db open fail", db_path=db_path) from exc
     try:
         _apply_migrations(conn)
-    except (sqlite3.Error, ValueError) as exc:
+    except (sqlite3.Error, ValueError, OSError) as exc:
         conn.close()
         raise MaintainDbMigrationFailed("migration fail", db_path=db_path) from exc
     try:
@@ -164,16 +176,16 @@ def ensure_maintain_schema(conn: sqlite3.Connection) -> None:
     """Check the applied schema version is new enough for the maintain engine.
 
     Raise `DbOpenFailed` (MAINTAIN-007) if the version cannot be read, and
-    `SchemaOutdated` (MAINTAIN-009) if the version is below the required 10.
+    `SchemaOutdated` (MAINTAIN-009) if the version is below the required 11.
     """
     try:
         row = conn.execute("SELECT version FROM schema_version").fetchone()
         version = 0 if row is None else int(row["version"])
     except (sqlite3.Error, ValueError, TypeError) as exc:
         raise MaintainDbOpenFailed("schema version read fail") from exc
-    if version < 10:
+    if version < 11:
         raise MaintainSchemaOutdated(
-            "schema version too old", version=version, required=10
+            "schema version too old", version=version, required=11
         )
 
 
@@ -224,6 +236,49 @@ def ensure_query_schema(
         )
 
 
+def _database_file(conn: sqlite3.Connection) -> str | None:
+    """Return the on-disk path of the connection's main database, or None.
+
+    An in-memory or temporary database has no file, so there is nothing to
+    back up.
+    """
+    rows = conn.execute("PRAGMA database_list").fetchall()
+    for row in rows:
+        if row[1] == "main" and row[2]:
+            return str(row[2])
+    return None
+
+
+def _backup_database(conn: sqlite3.Connection, current: int) -> None:
+    """Copy the database file once before any above-version script runs.
+
+    The copy is `<db>.bak-v<current>` (D7), taken with `copy2` so metadata
+    survives. Retention: keep the newest 3 `<db>.bak-v*` files, delete older.
+    Raise the raw `OSError` on failure. Per-engine boot call sites wrap it.
+    """
+    db_path = _database_file(conn)
+    if db_path is None:
+        return
+    shutil.copy2(db_path, f"{db_path}.bak-v{current}")
+    _prune_backups(db_path)
+
+
+def _prune_backups(db_path: str) -> None:
+    """Keep the newest 3 `<db>.bak-v*` files next to `db_path`, delete older."""
+    directory = os.path.dirname(os.path.abspath(db_path))
+    prefix = os.path.basename(os.path.abspath(db_path)) + ".bak-v"
+    backups: list[tuple[int, str]] = []
+    for name in os.listdir(directory):
+        if not name.startswith(prefix):
+            continue
+        suffix = name[len(prefix):]
+        if suffix.isdigit():
+            backups.append((int(suffix), name))
+    backups.sort(reverse=True)
+    for _, name in backups[_BACKUPS_TO_KEEP:]:
+        os.remove(os.path.join(directory, name))
+
+
 def _apply_migrations(conn: sqlite3.Connection) -> None:
     conn.execute(
         "CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL)"
@@ -232,11 +287,17 @@ def _apply_migrations(conn: sqlite3.Connection) -> None:
         conn.execute("INSERT INTO schema_version (version) VALUES (0)")
     conn.commit()
     current = conn.execute("SELECT version FROM schema_version").fetchone()[0]
+    pending = [
+        (number, script) for number, script in _migration_scripts() if number > current
+    ]
+    # One backup per run, before the first above-version script: a no-op open
+    # must not churn the retention window (L2 §5.0).
+    if pending:
+        _backup_database(conn, int(current))
     conn.execute("PRAGMA foreign_keys = OFF")
     try:
-        for number, script in _migration_scripts():
-            if number > current:
-                _apply_migration(conn, number, script)
+        for number, script in pending:
+            _apply_migration(conn, number, script)
     finally:
         conn.execute("PRAGMA foreign_keys = ON")
 
@@ -367,7 +428,8 @@ class SqliteLinkContext:
     """`LinkLookupPort` on SQLite. Read-only item and link lookups for relate.
 
     Every item and link read raises `ItemsReadFailed` (RELATE-016) on a read
-    failure, except `neighbors_of`, which raises `GraphReadFailed` (RELATE-021).
+    failure, except `neighbors_of` and `supersedes_blocking_link`, which raise
+    `GraphReadFailed` (RELATE-021).
     """
 
     def __init__(self, conn: sqlite3.Connection) -> None:
@@ -413,6 +475,20 @@ class SqliteLinkContext:
             raise ItemsReadFailed("item read fail", item_id=item_id) from exc
         return None if row is None else row["created_at"]
 
+    def item_metadata(self, item_id: int) -> str | None:
+        """Return the item's project label, or None if missing or unlabeled.
+
+        NULL is the stored shape for an unlabeled item (migration 012) and is
+        passed through, never treated as a missing row.
+        """
+        try:
+            row = self._conn.execute(
+                "SELECT metadata FROM items WHERE id = ?", (item_id,)
+            ).fetchone()
+        except sqlite3.Error as exc:
+            raise ItemsReadFailed("item read fail", item_id=item_id) from exc
+        return None if row is None else row["metadata"]
+
     def find_existing(
         self,
         source_id: int,
@@ -423,7 +499,7 @@ class SqliteLinkContext:
         try:
             row = self._conn.execute(
                 "SELECT id, source_item_id, target_item_id, link_type, status,"
-                " created_at FROM links"
+                " created_at, reversed_at FROM links"
                 " WHERE source_item_id = ? AND target_item_id = ? AND link_type = ?",
                 (source_id, target_id, link_type),
             ).fetchone()
@@ -443,6 +519,7 @@ class SqliteLinkContext:
             link_type=row["link_type"],
             status=row["status"],
             created_at=row["created_at"],
+            reversed_at=row["reversed_at"],
         )
 
     def existing_link_types(self, source_item_id: int) -> dict[int, set[str]]:
@@ -466,7 +543,7 @@ class SqliteLinkContext:
         """Return every item except `new_item_id`, ordered by id."""
         try:
             rows = self._conn.execute(
-                "SELECT id, type, statement, created_at FROM items"
+                "SELECT id, type, statement, created_at, metadata FROM items"
                 " WHERE id != ? ORDER BY id",
                 (new_item_id,),
             ).fetchall()
@@ -478,6 +555,7 @@ class SqliteLinkContext:
                 type=row["type"],
                 statement=row["statement"],
                 created_at=row["created_at"],
+                metadata=row["metadata"],
             )
             for row in rows
         ]
@@ -486,7 +564,7 @@ class SqliteLinkContext:
         """Return the newest Active item with no link from it, or None."""
         try:
             row = self._conn.execute(
-                "SELECT id, type, statement, created_at FROM items"
+                "SELECT id, type, statement, created_at, metadata FROM items"
                 " WHERE status = 'Active'"
                 " AND id NOT IN (SELECT source_item_id FROM links)"
                 " ORDER BY id DESC LIMIT 1"
@@ -500,6 +578,7 @@ class SqliteLinkContext:
             type=row["type"],
             statement=row["statement"],
             created_at=row["created_at"],
+            metadata=row["metadata"],
         )
 
     def neighbors_of(self, item_id: int) -> list[int]:
@@ -539,11 +618,14 @@ class SqliteLinkContext:
         return None if row is None else row["status"]
 
     def supersedes_ancestors(self, item_id: int) -> set[int]:
-        """Return every item reachable upstream via Confirmed supersedes links.
+        """Return every item reachable upstream via live Confirmed supersedes links.
 
         Breadth-first over `links` rows where `source_item_id` is the current
-        node and `link_type = 'supersedes'`. The seed is not included unless a
-        cycle walks back to it (cycles are forbidden at write time).
+        node and `link_type = 'supersedes'`. Only live rows are walked
+        (`status = 'Confirmed' AND reversed_at IS NULL`), so a reversed
+        supersedes no longer closes a cycle for the corrective inverse
+        (L2 hardening §9, rule 8). The seed is not included unless a cycle
+        walks back to it (cycles are forbidden at write time).
         """
         ancestors: set[int] = set()
         frontier: list[int] = [item_id]
@@ -553,7 +635,7 @@ class SqliteLinkContext:
                 rows = self._conn.execute(
                     "SELECT target_item_id FROM links"
                     " WHERE source_item_id = ? AND link_type = 'supersedes'"
-                    " AND status = 'Confirmed'",
+                    f" AND {LIVE_SUPERSEDES_EDGE}",
                     (current,),
                 ).fetchall()
                 for row in rows:
@@ -564,6 +646,58 @@ class SqliteLinkContext:
         except sqlite3.Error as exc:
             raise ItemsReadFailed("link read fail", item_id=item_id) from exc
         return ancestors
+
+    def supersedes_blocking_link(self, source_id: int, target_id: int) -> Link | None:
+        """Return the live Confirmed supersedes link joining the two items.
+
+        Walks the same edges `supersedes_ancestors` walks (`status =
+        'Confirmed' AND reversed_at IS NULL`), tried in link-id order (the
+        L2 §14 tie-break: first edge in id order). Walk 1 starts at
+        `target_id` and looks for a path to `source_id`. Walk 2 starts at
+        `source_id` and looks for a path to `target_id` (the two rule-8
+        directions). Returns the first edge that reaches the goal, else None.
+        Used only for cycle-rejection detail text, never the decision (the
+        cycle decision stays `supersedes_ancestors`).
+
+        Raise `GraphReadFailed` (RELATE-021) on a read failure.
+        """
+        by_source: dict[int, list[Link]] = {}
+        try:
+            rows = self._conn.execute(
+                "SELECT id, source_item_id, target_item_id, link_type, status,"
+                " created_at, reversed_at FROM links"
+                " WHERE link_type = 'supersedes'"
+                f" AND {LIVE_SUPERSEDES_EDGE}"
+                " ORDER BY id"
+            ).fetchall()
+        except sqlite3.Error as exc:
+            raise GraphReadFailed(
+                "graph read fail", source_id=source_id, target_id=target_id
+            ) from exc
+        for row in rows:
+            link = Link(
+                id=row["id"],
+                source_item_id=row["source_item_id"],
+                target_item_id=row["target_item_id"],
+                link_type=row["link_type"],
+                status=row["status"],
+                created_at=row["created_at"],
+                reversed_at=row["reversed_at"],
+            )
+            by_source.setdefault(int(row["source_item_id"]), []).append(link)
+        for start, goal in ((target_id, source_id), (source_id, target_id)):
+            seen = {start}
+            frontier: deque[int] = deque([start])
+            while frontier:
+                current = frontier.popleft()
+                for link in by_source.get(current, []):
+                    nxt = link.target_item_id
+                    if nxt == goal:
+                        return link
+                    if nxt not in seen:
+                        seen.add(nxt)
+                        frontier.append(nxt)
+        return None
 
 
 class SqliteMaintainContext:
@@ -576,13 +710,17 @@ class SqliteMaintainContext:
         self._conn = conn
 
     def list_items(self) -> list[ItemState]:
-        """Return every item: id, type, status, close_reason, status_origin.
+        """Return every item: id, type, status, close_reason, status_origin,
+        the two authorial columns `rationale` / `source` (migration 004)
+        that `edit-item` reads its observed old values from, and `statement`
+        (the additive Phase-5 display column the AI proposal judges).
 
         Raise `ItemsReadFailed` (MAINTAIN-010) on a read failure.
         """
         try:
             rows = self._conn.execute(
-                "SELECT id, type, status, close_reason, status_origin FROM items"
+                "SELECT id, type, status, close_reason, status_origin,"
+                " rationale, source, statement FROM items"
             ).fetchall()
         except sqlite3.Error as exc:
             raise MaintainItemsReadFailed("item read fail") from exc
@@ -593,6 +731,9 @@ class SqliteMaintainContext:
                 status=row["status"],
                 close_reason=row["close_reason"],
                 status_origin=row["status_origin"],
+                rationale=row["rationale"],
+                source=row["source"],
+                statement=row["statement"],
             )
             for row in rows
         ]
@@ -634,6 +775,42 @@ class SqliteMaintainContext:
         except sqlite3.Error as exc:
             raise MaintainItemsReadFailed("change_log read fail") from exc
         return {int(row["link_id"]) for row in rows}
+
+    def list_shield_log(self) -> list[ChangeLogEntry]:
+        """Return the ledger slice the timestamp-scoped manual shield reads
+        (L2 §13.5), in id order: the manual-clear rows (written by
+        `apply_status_origin`) and the `link_confirmed` rows (written by the
+        relate gatekeeper). One query over `change_log`, which the engine
+        already owns (no migration, L2 §13.6).
+
+        Raise `ItemsReadFailed` (MAINTAIN-010) on a read failure.
+        """
+        try:
+            rows = self._conn.execute(
+                "SELECT id, item_id, link_id, field_changed, old_value,"
+                " new_value, timestamp, trigger_cause"
+                " FROM change_log"
+                " WHERE (field_changed = 'status_origin'"
+                "        AND trigger_cause = 'user_set_status'"
+                "        AND new_value = 'manual')"
+                "    OR field_changed = 'link_confirmed'"
+                " ORDER BY id"
+            ).fetchall()
+        except sqlite3.Error as exc:
+            raise MaintainItemsReadFailed("change_log read fail") from exc
+        return [
+            ChangeLogEntry(
+                id=row["id"],
+                item_id=row["item_id"],
+                link_id=row["link_id"],
+                field_changed=row["field_changed"],
+                old_value=row["old_value"],
+                new_value=row["new_value"],
+                timestamp=row["timestamp"],
+                trigger_cause=row["trigger_cause"],
+            )
+            for row in rows
+        ]
 
 
 class SqliteQueryContext:
@@ -763,16 +940,42 @@ class SqliteMaintainStore:
     def apply_status_changes(self, changes: list[StatusChange]) -> int:
         """Write every change's status and its `change_log` row in one batch.
 
+        A `rearm` change (the timestamp-scoped shield's re-arm, L2 §13.4)
+        also returns `items.status_origin` to `'derived'` in the same batch
+        UPDATE and appends one `status_origin` ledger row, with `old_value`
+        the observed prior origin (read, never hardcoded), `new_value`
+        `'derived'`, `trigger_cause='sweep_rearm'`, `link_id` the causing
+        link, all from the same ONE clock read, inside the same transaction.
+
         Return `len(changes)`. Raise `StatusWriteFailed` (MAINTAIN-011) when an
         `items` UPDATE fails, and `ChangeLogWriteFailed` (MAINTAIN-012) when a
         `change_log` INSERT fails. Either failure rolls the whole batch back.
         """
+        rearm_old_values: dict[int, str | None] = {}
         for change in changes:
             try:
-                self._conn.execute(
-                    "UPDATE items SET status = ?, close_reason = ? WHERE id = ?",
-                    (change.new_status, change.close_reason, change.item_id),
-                )
+                if change.rearm:
+                    row = self._conn.execute(
+                        "SELECT status_origin FROM items WHERE id = ?",
+                        (change.item_id,),
+                    ).fetchone()
+                    rearm_old_values[change.item_id] = (
+                        row["status_origin"] if row is not None else None
+                    )
+                    self._conn.execute(
+                        "UPDATE items SET status = ?, close_reason = ?,"
+                        " status_origin = 'derived' WHERE id = ?",
+                        (
+                            change.new_status,
+                            change.close_reason,
+                            change.item_id,
+                        ),
+                    )
+                else:
+                    self._conn.execute(
+                        "UPDATE items SET status = ?, close_reason = ? WHERE id = ?",
+                        (change.new_status, change.close_reason, change.item_id),
+                    )
             except sqlite3.Error as exc:
                 self._conn.rollback()
                 raise MaintainStatusWriteFailed(
@@ -794,6 +997,20 @@ class SqliteMaintainStore:
                         change.trigger_cause,
                     ),
                 )
+                if change.rearm:
+                    self._conn.execute(
+                        "INSERT INTO change_log"
+                        " (item_id, link_id, field_changed, old_value, new_value,"
+                        " timestamp, trigger_cause)"
+                        " VALUES (?, ?, 'status_origin', ?, 'derived', ?,"
+                        " 'sweep_rearm')",
+                        (
+                            change.item_id,
+                            change.link_id,
+                            rearm_old_values.get(change.item_id),
+                            timestamp,
+                        ),
+                    )
             except sqlite3.Error as exc:
                 self._conn.rollback()
                 raise MaintainChangeLogWriteFailed(
@@ -840,19 +1057,23 @@ class SqliteMaintainStore:
         self._conn.commit()
 
     def apply_reversal(self, change: StatusChange, marker: ChangeLogEntry) -> int:
-        """Restore one item and append both its `status` row and the marker.
+        """Restore one item and pair the reversal column with its marker.
 
         One implicit transaction, one `commit()` at the end: the `items`
-        UPDATE, the `status` `change_log` row derived from `change`, and the
-        `link_reversed` marker row taken from `marker` are all-or-nothing.
+        UPDATE, the `status` `change_log` row derived from `change`, the
+        `reversed_at` column on the `links` row, and the `link_reversed`
+        marker row taken from `marker` are all-or-nothing (L2 §6 pairing rule).
 
-        The adapter owns time: it stamps both rows from `self._clock()` and
-        **overwrites** the passed `marker.timestamp` (the marker's timestamp is
-        a placeholder, not trusted).
+        The adapter owns time: it stamps all three writes from ONE
+        `self._clock()` read and **overwrites** the passed `marker.timestamp`
+        (the marker's timestamp is a placeholder, not trusted). One read keeps
+        `links.reversed_at` == the marker's `timestamp` by construction:
+        a second read would break the db-check replay rule.
 
         Return `1`. Raise `StatusWriteFailed` (MAINTAIN-011) when the `items`
-        UPDATE fails, and `ChangeLogWriteFailed` (MAINTAIN-012) when either
-        `change_log` INSERT fails. Either failure rolls the whole write back.
+        UPDATE or the `reversed_at` UPDATE fails, and
+        `ChangeLogWriteFailed` (MAINTAIN-012) when either `change_log` INSERT
+        fails. Either failure rolls the whole write back.
         """
         try:
             self._conn.execute(
@@ -886,6 +1107,16 @@ class SqliteMaintainStore:
             ) from exc
         try:
             self._conn.execute(
+                "UPDATE links SET reversed_at = ? WHERE id = ?",
+                (timestamp, marker.link_id),
+            )
+        except sqlite3.Error as exc:
+            self._conn.rollback()
+            raise MaintainStatusWriteFailed(
+                "reversed_at update fail", item_id=change.item_id
+            ) from exc
+        try:
+            self._conn.execute(
                 "INSERT INTO change_log"
                 " (item_id, link_id, field_changed, old_value, new_value,"
                 " timestamp, trigger_cause) VALUES (?, ?, ?, ?, ?, ?, ?)",
@@ -907,11 +1138,122 @@ class SqliteMaintainStore:
         self._conn.commit()
         return 1
 
+    def apply_item_edit(self, change: EditChange) -> int:
+        """Write one item's authorial column and its `change_log` row atomically.
+
+        One implicit transaction, one `commit()` at the end: the `items`
+        UPDATE and the ledger INSERT (field_changed = `change.field`,
+        `old_value` = the observed prior value, NULL stays NULL,
+        trigger_cause from the change) are all-or-nothing, so the ledger row
+        and the column can never diverge.
+
+        Return `1`. Raise `ItemEditWriteFailed` (MAINTAIN-016) when the
+        `items` UPDATE fails, and `ChangeLogWriteFailed` (MAINTAIN-012) when
+        the `change_log` INSERT fails. Either failure rolls the whole write
+        back.
+        """
+        column = _EDIT_COLUMNS.get(change.field)
+        if column is None:
+            raise MaintainItemEditWriteFailed(
+                "item edit column unknown",
+                item_id=change.item_id,
+                field=change.field,
+            )
+        try:
+            self._conn.execute(
+                f"UPDATE items SET {column} = ? WHERE id = ?",
+                (change.new_value, change.item_id),
+            )
+        except sqlite3.Error as exc:
+            self._conn.rollback()
+            raise MaintainItemEditWriteFailed(
+                "item edit update fail",
+                item_id=change.item_id,
+                field=change.field,
+            ) from exc
+        try:
+            self._conn.execute(
+                "INSERT INTO change_log"
+                " (item_id, link_id, field_changed, old_value, new_value,"
+                " timestamp, trigger_cause) VALUES (?, NULL, ?, ?, ?, ?, ?)",
+                (
+                    change.item_id,
+                    change.field,
+                    change.old_value,
+                    change.new_value,
+                    self._clock(),
+                    change.trigger_cause,
+                ),
+            )
+        except sqlite3.Error as exc:
+            self._conn.rollback()
+            raise MaintainChangeLogWriteFailed(
+                "change_log insert fail", item_id=change.item_id
+            ) from exc
+        self._conn.commit()
+        return 1
+
+    def apply_remove_link(self, change: LinkChange) -> int:
+        """Write the ONE removal and its `link_removed` ledger row atomically.
+
+        One implicit transaction, one `commit()` at the end: the `links`
+        status UPDATE (`Confirmed -> Rejected`, never an INSERT, never a
+        DELETE, never flipped back, `reversed_at` untouched) and the ledger
+        INSERT (`field_changed='link_removed'`, `item_id` = the link's
+        source, the `insert_link_with_log` discipline) are all-or-nothing,
+        so the row can never flip without its ledger row (Constitution D3).
+
+        Return `1`. Raise `RemoveLinkWriteFailed` (MAINTAIN-017) when the
+        `links` UPDATE fails, and `ChangeLogWriteFailed` (MAINTAIN-012) when
+        the `change_log` INSERT fails. Either failure rolls the whole write
+        back.
+        """
+        try:
+            self._conn.execute(
+                "UPDATE links SET status = ? WHERE id = ?",
+                (change.new_status, change.link_id),
+            )
+        except sqlite3.Error as exc:
+            self._conn.rollback()
+            raise MaintainRemoveLinkWriteFailed(
+                "link removal update fail", link_id=change.link_id
+            ) from exc
+        try:
+            self._conn.execute(
+                "INSERT INTO change_log"
+                " (item_id, link_id, field_changed, old_value, new_value,"
+                " timestamp, trigger_cause) VALUES (?, ?, 'link_removed', ?,"
+                " ?, ?, ?)",
+                (
+                    change.item_id,
+                    change.link_id,
+                    change.old_status,
+                    change.new_status,
+                    self._clock(),
+                    change.trigger_cause,
+                ),
+            )
+        except sqlite3.Error as exc:
+            self._conn.rollback()
+            raise MaintainChangeLogWriteFailed(
+                "change_log insert fail",
+                item_id=change.item_id,
+                link_id=change.link_id,
+            ) from exc
+        self._conn.commit()
+        return 1
+
 
 def _status_old_value(change: StatusChange) -> str:
     if change.old_status == "Closed":
         return f"{change.old_status}:{change.old_close_reason}"
     return change.old_status
+
+
+_EDIT_COLUMNS: dict[str, str] = {"rationale": "rationale", "source": "source"}
+"""The only `items` columns `apply_item_edit` may write. The validator
+whitelists the field name first, and this keeps the f-string UPDATE honest
+even if a future caller forgets."""
 
 
 def _status_new_value(change: StatusChange) -> str:
@@ -999,8 +1341,9 @@ class SqliteItemGatekeeper:
         try:
             self._conn.execute(
                 "INSERT INTO items"
-                " (id, type, statement, source_id, status, created_at, validated)"
-                " VALUES (?, ?, ?, ?, ?, ?, ?)",
+                " (id, type, statement, source_id, status, created_at, validated,"
+                " metadata)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     item.id,
                     item.type,
@@ -1009,6 +1352,7 @@ class SqliteItemGatekeeper:
                     item.status,
                     item.created_at,
                     validated,
+                    item.metadata,
                 ),
             )
             self._conn.commit()

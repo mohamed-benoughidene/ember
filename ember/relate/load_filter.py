@@ -34,11 +34,15 @@ def _read_item(
     created_at = lookup.item_created_at(item_id)
     if item_type is None or statement is None or created_at is None:
         raise ItemsReadFailed("item row missing during read", item_id=item_id)
+    # None is the legal unlabeled shape, so it never trips the missing-row
+    # check above.
+    metadata = lookup.item_metadata(item_id)
     return NewItem(
         id=item_id,
         type=item_type,
         statement=statement,
         created_at=created_at,
+        metadata=metadata,
     )
 
 

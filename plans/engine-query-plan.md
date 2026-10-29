@@ -9,11 +9,11 @@ Engine D. Read-only. Returns context views.
 | **#7** | BM25 `topic_search` | **Engine D** | **this engine's job.** §2.2, §4 Phase 2. Close when the L2 lands — the mode and its BM25 formula are specified below. |
 | **#22** | `close_reason` / `status_origin` history rendering | **Engine D** | **this engine's job.** §4.6. Close when the L2 lands — the `change_log` vocabulary contract is written there. |
 | **#24** | write the Engine D (Query) L2 | **Engine D** | **this file.** The ordering constraint it names is satisfied (`plans/master-plan.md` §8). Close when the L2 lands. |
-| #1 | `items.rationale` / `items.source` | Capture | not ours — but `why` reads `rationale` and **nothing writes it**, so the field is NULL today (§2.4). |
+| #1 | `items.rationale` / `items.source` | edit_item under Maintain | not ours — but `why` reads `rationale` and **nothing writes it**, so the field is NULL today (§2.4). |
 | #16 | AI-proposed `close_item` | Maintain | not ours — L1 §5 defers it to V1.x. |
 | #17 | DB-level compat-table enforcement | — | not ours — needs a `links` rebuild or triggers. No step plan owns it yet. |
 | #18 | plain-text export | — | not ours — a separate utility plan (approved in a prior planning session, **not yet written to `plans/`**). See §8. |
-| #19 | `edit_item` + `remove_link` | — | not ours — human-only writes. No plan owns them. |
+| #19 | `edit_item` + `remove_link` | Maintain §12 | human-only writes, owned by `plans/engine-maintain-plan.md` §12. `edit_item` landed there (step 04); `remove_link` waits on Gate 2 (§12.1). |
 | #20 | `links` rows have no lifecycle | note | not ours — but `history` is where a reversal becomes visible (§4.6). |
 | #23 | `Closed ⇒ close_reason` not enforced in schema | note | not ours — but `history` must tolerate a NULL `close_reason` (§4.6). |
 
@@ -335,7 +335,7 @@ ember why --item <id> [--db PATH]
 ember history [--item <id>] [--db PATH]
 ```
 
-- `--db` defaults to `ember.db` — the module-level `DEFAULT_DB_PATH` in `ember/cli.py:64`. The commands live in `ember/cli.py` and use that constant directly; **no module imports it from `ember.cli`** (that would be a circular import, Constitution B6's first warning sign).
+- `--db` defaults to `ember.db` — the module-level `DEFAULT_DB_PATH` in `ember/cli.py:72`. The commands live in `ember/cli.py` and use that constant directly; **no module imports it from `ember.cli`** (that would be a circular import, Constitution B6's first warning sign).
 - `--item` is `type=int`. **Required** for `why`. **Optional** for `history`: with no `--item` the mode returns the **global** ledger, every row in `(timestamp, id)` order — which is the literal spec reading ("Reads the change log", AI spec 3.8:140) and the only way Capture's NULL-subject `proposed` rows are reachable at all. With `--item <id>` it returns that item's rows by the union rule (§4 Phase 2). **A `--item` id that is not in `items` raises QUERY-001** (see §4.7), the same as `why`; the global view never raises it.
 - `--query` is **required** for `topic-search`.
 - **Exit codes:** 0 success (including an empty result), 1 on any `QUERY-*` error, 2 on a Click usage error. No exit 2 for abort — this engine has no prompt, so there is no `UserAbort`.
@@ -354,8 +354,10 @@ ember history [--item <id>] [--db PATH]
 | `QUERY-003` | `DbOpenFailed` | the DB file is missing, is not a readable SQLite database, the `schema_version` read failed, or the database has a hot journal. | `db_path` |
 | `QUERY-004` | `SchemaOutdated` | `schema_version` is below the required 10. | `version`, `required` |
 | `QUERY-005` | `ItemsReadFailed` | an `items`, `links` or `change_log` read failed (disk error, lock, corrupt page). | `table` |
+| `QUERY-006` | `QueryFilterInvalid` | a filter value not in the legal set (`--status`, `--type`), or a negative `--limit` / `--offset` — one shared non-negative helper behind `validate_topic_filter` / `validate_history_page`. | `field` |
+| `QUERY-007` | `QuerySinceInvalid` | `--since` does not parse as an ISO-8601 datetime, or parses as naive (no offset). Raised by `validate_history_page`. | `since_length` |
 
-**Codes are contiguous, 000–005, with no gaps and no removals** (I17) — the same shape as Maintain's 000–012. Six raisable codes is the right size for a read-only engine with one read port: Maintain has 12 raised codes (plus the `MAINTAIN-000` base), Relate 31, Capture 16.
+**Codes are contiguous, 000–007, with no gaps and no removals** (I17) — the same shape as Maintain's 000–012. Eight raisable codes is the right size for a read-only engine with one read port: Maintain has 12 raised codes (plus the `MAINTAIN-000` base), Relate 31, Capture 16. (006 and 007 are added by the V1.x amendment, §E.)
 
 **Name collisions are house style.** `DbOpenFailed` is also RELATE-012 and MAINTAIN-007; `SchemaOutdated` is RELATE-014 and MAINTAIN-009; `ItemsReadFailed` is RELATE-016 and MAINTAIN-010. The house resolves this with an import alias (`from ember.relate.errors import DbOpenFailed as MaintainDbOpenFailed`, `ember/adapters/sqlite.py:24-31`). Engine D follows it: `from ember.query.errors import DbOpenFailed as QueryDbOpenFailed` in the adapter. The `QUERY-` prefix makes the **code** unique (I17); the shared name makes it readable, and `name` is the bare class name, exactly as Maintain does it (`name = "DbOpenFailed"`).
 
@@ -376,6 +378,8 @@ ember history [--item <id>] [--db PATH]
 | 003 | `ember.adapters.sqlite.open_query_database` (missing file, open fail, probe fail) and `ensure_query_schema` (version read fail) |
 | 004 | `ember.adapters.sqlite.ensure_query_schema` |
 | 005 | `ember.adapters.sqlite.SqliteQueryContext.list_items` / `list_links` / `list_change_log` / `item_exists` |
+| 006 | `ember.query.query_gatekeeper.validate_topic_filter` (one shared non-negative helper; also called by `validate_history_page`) — added by the V1.x amendment (§E) |
+| 007 | `ember.query.query_gatekeeper.validate_history_page` — added by the V1.x amendment (§E) |
 
 ## 7. Test Targets
 
@@ -491,9 +495,9 @@ T4 caps E2E at 1–2 per engine; Relate and Maintain each ship one.
 L3 step plans (in `plans/steps/query/`) will resolve these. Recorded so the L3 author does not forget:
 
 1. **BM25 `k1` and `b`.** L2 fixes 1.2 / 0.75. L3 may tune them — but a change to either changes every expected score in §7.1, so the golden fixture moves with it.
-2. **A result cap for `topic_search`.** L2 has none, so a one-word query over a 5 000-item database returns 5 000 hits. L3 may add a `--limit`.
-3. **Status and type filters** on `topic_search` (§2.2's `Closed` decision is about search *scope*, not filters).
-4. **Whether `history` needs pagination or a limit** once the ledger is large.
+2. **A result cap for `topic_search`.** L2 has none, so a one-word query over a 5 000-item database returns 5 000 hits. L3 may add a `--limit` (closed by the V1.x amendment, §A/§G.1).
+3. **Status and type filters** on `topic_search` (§2.2's `Closed` decision is about search *scope*, not filters) (closed by the V1.x amendment, §A/§G.1).
+4. **Whether `history` needs pagination or a limit** once the ledger is large (closed by the V1.x amendment, §A/§G.1).
 5. **The `unknown` `kind` fallback.** L2 defines it; L3 may decide a future vocabulary deserves its own kind instead.
 6. **Plan length (housekeeping).** This L2 runs past the framework's 500-line guidance (§1 L2) even though it has none of the named exceptions (few codes, no migrations, one port). Nothing is wrong today; if the plan grows, split an appendix: §A error codes, §B the `change_log` vocabulary contract (§4.6).
 
@@ -637,3 +641,139 @@ All four are read-only and never write to the database. Each prints one JSON doc
 | I19 entity IDs | `SchemaOutdated` carries no path, and `DbOpenFailed` carries no version. | The raising function has what it has: `open_query_database` knows the path, `ensure_query_schema` knows the version. This matches the house's `SchemaOutdated` (`sqlite.py:151-155`). |
 | — | The boot path never migrates, so a database behind version 10 is refused rather than upgraded. | §2.6 — a read command that rewrites the ledger is not a read, and L1 rule 1 forbids an AI-callable write. The cost is one command for the user to run first. |
 | — | `topic_search` returns `Closed` items; `current_state` does not. | L1 line 60 states the Closed omission for `current_state` and line 61 does not state it for `topic_search`. The contrast is read as deliberate (§2.2), and the fix is one filter if that reading is wrong. |
+
+## V1.x Amendment (hardening phase): read surface
+
+Source: `plans/hardening-plan.md` §2 cluster 3 (approved L1). **Exactly three features, all read-only: #26, #27, #28.** Nothing else is absorbed. Amends §4 (core signatures), §4.7 (orchestration), §5 (CLI), §6 (errors), §9 (items 2–4 close). The §0 #1 owner cell moves to `edit_item under Maintain` (hardening L1 §7) — applied above, that table's only edit.
+
+**#18 ruling restated:** plain-text export belongs to a separate utility plan with its own `EXPORT-*` codes (§8, a prior approved decision) — **that ruling stands unless the maintainer supersedes it.** #18 is not absorbed here.
+
+### A. Purpose
+
+The three read features §9 parked as deferred L3 items: a `--limit` on `topic-search` (default **no cap**), `--status` / `--type` filters on `topic-search`, and `--limit` / `--offset` / `--since` on `history` (**never a silent default cap**). All are data into the pure cores. Phase 3 (render) and Phase 1 (load) are untouched: same envelope, same rows, same `(timestamp, id)` order. Read-only proof preserved: the `mode=ro` open (§3) and the DB-hash test (§7.2) stay; every new flag path runs behind the same `open_query_database` — no new open, no migration, no write. `--offset` travels with `--limit` as one paging pair; `--since` ships alongside — all three are issue #28's flags (crop window vs time window are different jobs).
+
+### B. CLI interface (samples)
+
+```
+ember topic-search --query "sqlite" [--status STATUS] [--type TYPE] [--limit N] [--db PATH]
+ember history [--item <id>] [--limit N] [--offset N] [--since TS] [--db PATH]
+```
+
+```
+ember topic-search --query sqlite --status Active --type Decision --limit 5 --db ember.db
+# exit 0 → {"mode": "topic_search", "query": "sqlite", "count": N, "results": [SearchHit, …]}   N ≤ 5
+
+ember history --item 3 --limit 20 --offset 40 --db ember.db
+# exit 0 → {"mode": "history", "item_id": 3, "count": N, "events": [HistoryEvent, …]}
+ember history --since 2026-10-01T00:00:00+00:00 --db ember.db
+# exit 0 → {"mode": "history", "item_id": null, "count": N, "events": [HistoryEvent, …]}
+ember history --since 2026-10-01T00:00:00 --db ember.db
+# exit 1 → QUERY-007 QuerySinceInvalid | … | since_length=19   (naive — parses but names no offset)
+```
+
+Envelope keys are unchanged — no new field, so the no-flag document stays byte-identical. Exit codes per §5: 0 success, 1 on `QUERY-*`, 2 on Click usage. All three work on both the global and the `--item` history view.
+
+### C. Pipeline sequence
+
+- `topic-search`: validate text (gatekeeper, QUERY-002) → **validate `TopicFilter`** → load `list_items()` → derive: **`--status` / `--type` filter the items handed to the scorer**, then BM25, then **`--limit` keeps the top N after ranking** → render unchanged (score desc, `item_id` asc).
+- `history`: **validate `HistoryPage`** → item check only when `--item` given (QUERY-001, §4.7 stands) → load `list_change_log()` + `list_links()` → derive: classify (unchanged) → order `(timestamp, id)` → **`--since` drops older rows** → **`--offset` skips, then `--limit` caps** → render unchanged.
+
+### D. Data shapes at boundaries + I3
+
+```python
+class TopicFilter(BaseModel):    # ember/query/rows.py
+    status: str | None = None    # one of Active | Challenged | Closed
+    type: str | None = None      # one of Decision | Assumption | Finding | Question
+    limit: int | None = None     # None = no cap; ≥ 0
+
+class HistoryPage(BaseModel):
+    limit: int | None = None     # None = no cap; ≥ 0
+    offset: int | None = None    # None = no skip; ≥ 0
+    since: str | None = None     # ISO-8601; normalised by the validator
+```
+
+item_id stays a plain parameter on `history`/`run_history`/`render_history` — never part of the page object (D3: one source of truth for the item scope).
+
+Signatures that change (verified names):
+
+| Symbol | File | Change |
+|---|---|---|
+| `topic_search(items, query, topic_filter=TopicFilter())` | `ember/query/topic_search.py` | 2 → 3 inputs |
+| `history(rows, links, item_id, page=HistoryPage())` | `ember/query/history.py` | additive — the raw `item_id` param stays, the page object joins as a defaulted final parameter; 3 → 4 inputs (I3-legal at the ceiling) |
+| `run_topic_search(lookup, query, topic_filter=TopicFilter())` | `ember/query/run_query.py` | 2 → 3 inputs |
+| `run_history(lookup, item_id, page=HistoryPage())` | `ember/query/run_query.py` | additive — the raw id stays, `page` is a defaulted final parameter; 2 + the defaulted page |
+| `validate_topic_filter(tf) -> None`, `validate_history_page(page) -> HistoryPage` | `ember/query/query_gatekeeper.py` | new, pure (MAINTAIN-002 precedent: `ember/maintain/human_actions.py` validates enums in the pure core and raises a coded error — same shape here) |
+
+Purely additive — every existing call site (CLI, tests, fakes) compiles unchanged.
+
+`render_history(events, item_id)` is unchanged — `item_id` is the raw parameter the runner already passes. No CLI boolean, no mode switch (I2): every flag is a typed value.
+
+**Port boundary — decided: the core slices; `QueryLookupPort` grows no method.** A windowed `list_change_log(page)` would push the window into SQL, cut memory on a huge ledger — but it duplicates the window rule outside the pure core, breaks every `FakeQueryLookup`, and changes the load path the byte-identical test pins. Full loads are what the engine does today (§4 Phase 1) and §7.7 has no live tier (0 live), so no ledger-size measurement exists; the full load is today's only path and stands until a measurement says otherwise. Flip only if a scale measure ever names it (see Deferred).
+
+**Filter-before-scoring consequence, stated:** the filtered subset **is the corpus**, so `N`, `df` and `avgdl` recompute — the remaining scores differ from the unfiltered run of the same query, and filtered-out items change `count` (they never appear with score 0). A window (offset/limit) only crops rows behind the existing sort; the no-flag path crops nothing. Edge cases: limit 0 returns zero rows (explicit empty, not an error); offset past the end returns `[]`. Both edges fold into `test_offset_skips_then_limit_caps`.
+
+**History ordering contract (verified `ember/query/history.py:110`):** events sort `(timestamp, id)` ascending; the amendment never changes that. `--since` filters *on* it: the validator parses `since` with `datetime.fromisoformat` (QUERY-007 if unparseable) and normalises it via `.isoformat()`, then the core keeps rows with `timestamp >= since` as opaque ISO text — the exact comparison the sort already uses (§4 Phase 2). The validator normalises the parsed `--since` with `astimezone(timezone.utc).isoformat()` before the lexical compare (the ledger's single clock writes tz-aware UTC); any spelling Python cannot parse, or that has no offset after normalisation, is QUERY-007. A stored timestamp that cannot parse renders everywhere today but is invisible to a `--since` view (a hand-edited row; recorded, not hidden).
+
+**`count` semantics — decided: `count` = the number of rows returned** (after filter/window, `len()` of the list), not the total matching. Justification: the no-flag byte-identical requirement and the house rule `count == len(list)` for all four envelopes (§4 Phase 3) allow nothing else; the price, stated honestly, is that a windowed caller cannot see there are more rows (see Deferred).
+
+**Filter validation (MAINTAIN-002 precedent):** `ACCEPTED_STATUSES = {"Active", "Challenged", "Closed"}`, `ACCEPTED_TYPES = {"Decision", "Assumption", "Finding", "Question"}` — exact case, the stored values. `--status` and `--type` combine as AND. Negative `--limit` / `--offset` → QUERY-006 (`field` says which). Filters narrow scope; §2.2 (every item scores) still holds when no filter is given.
+
+### E. Error codes
+
+| Code | Name | Trigger | Context (I19) |
+|---|---|---|---|
+| `QUERY-006` | `QueryFilterInvalid` | a filter value not in the legal set (`--status`, `--type`), or a negative `--limit` / `--offset`. | `field` |
+| `QUERY-007` | `QuerySinceInvalid` | `--since` does not parse as an ISO-8601 datetime, or parses as naive (no offset). | `since_length` |
+
+Continue from QUERY-005; numbers never reused. Verified no `FilterInvalid` / `SinceInvalid` name exists in any family. Raising sites: both in `ember/query/query_gatekeeper.py` (`validate_topic_filter`, `validate_history_page`). The non-negative check is factored into ONE shared helper so QUERY-006 has exactly one raising site (`validate_topic_filter` and `validate_history_page` both call it); QUERY-007's single site is `validate_history_page`. `since_length`, not the raw text — QUERY-002's rule (a newline would break the one-line log, and user text can hold a secret). **No code for Click-rejected input:** an unknown flag or a non-integer `--limit` never reaches Python — tested by exit code 2 and no house `error:` log line (Click's own usage block still prints), per hardening contract 5.
+
+### F. Test targets
+
+- **Unit, pure cores, fakes per T3** (`tests/query/fakes.py` — untouched): `test_default_topic_filter_scores_every_item` (`TopicFilter()` ≡ today); `test_status_and_type_filter_the_items_handed_to_the_scorer` (a `Closed` hit excluded under `--status Active`; remaining scores recompute over the smaller corpus); `test_limit_windows_after_ranking` (top N by score, not first N by id); `test_history_page_windows_within_the_union_rule` + `test_since_drops_older_rows` + `test_offset_skips_then_limit_caps` (global and `--item` both); `test_validate_topic_filter_raises_query_006`; `test_validate_history_page_raises_query_007`.
+- **Integration, real temp DB:** the CLI checks of §B with exact exit codes (0 / 1 with `error: QUERY-006 …` or `QUERY-007 …` on stderr / 2 with no code for `--limit abc` and `--pagesize`); **`test_cli_flags_never_touch_the_database_file`** — hash before/after with every new flag set, extending the existing §7.2 proof; the `mode=ro` write-attempt test stays green.
+- **Byte-identical test (I2, explicit):** `test_no_flags_output_is_byte_identical_to_pre_amendment` — before any code, capture `ember topic-search --query … --db <fixture>`, `ember history --db <fixture>`, and `ember history --item <existing id> --db <fixture>` (the most-used path through the changed runner) stdout from the pre-amendment build into `tests/fixtures/query/no_flags_golden.json`; after, the same commands with **no flags** print byte-identical bytes.
+- **Golden BM25 fixture:** `tests/fixtures/query/bm25_golden.json` is used by `tests/query/test_topic_search_unit.py`, which calls `topic_search(items, query)` with no filter — the default `TopicFilter()` is a no-op, so every score is unchanged and the test stays green **untouched**; the fixture file does not move.
+- **Read-only proof:** the §7.2 hash-identical test stays green exactly as written; the new-flag hash test reuses its mechanism.
+
+### G. Deferred to L3
+
+1. §9 items 2 (`result cap` = #26), 3 (`status/type filters` = #27), 4 (`history pagination` = #28) are **closed by this amendment**; L3 plans cite this section.
+2. The exact `--since` grammar: the code fixes `datetime.fromisoformat` + `.isoformat()` normalisation; which human spellings that accepts (date-only, space separator, fractional seconds) becomes L3's test surface. No new setting.
+3. A `total_matching` count next to a windowed `count`: **rejected for now** — the envelope's fields are fixed per the base plan §4 Phase 3; a conditional field changes the document shape per call. Both #26 and #28 voice exactly the visibility concern total_matching answers — parked for maintainer sign-off; not absorbed here.
+4. The port windowed read (§D): recorded trigger only — a scale measure on a synthetic large ledger showing the full-ledger load is the cost. Not planned work.
+
+### §Z Constitution compliance (amendment)
+
+**Touched:**
+
+| Rule | Line |
+|---|---|
+| B1 | the read engine grows read features; still one job, no write path. |
+| B3 | filter/page shapes are Pydantic + stdlib; the core still imports no adapter (T9 holds). |
+| B5 | filtering and windowing live inside the cores; the surface grows by flags and two validators, not modules. |
+| B6 | no new import list, no new file split — the amendment adds three flags, two shapes, two validators. |
+| D4 | flags are outside data: Click type-checks, the validators code-check, the core trusts (I9). |
+| I1 | `TopicFilter`, `HistoryPage`, `validate_topic_filter`, `validate_history_page` — named by job. |
+| I2 | flags are data, never mode switches — no boolean, no mode argument; the no-flag path is the old path, proven byte-identical. |
+| I3 | filter objects keep every touched call at ≤ 4 inputs; `history` keeps its raw id and sits at the 4-input ceiling, `run_history` has 2 plus the defaulted page. |
+| I4 | return types unchanged — lists of named models; empty result stays exit 0 / `count: 0`. |
+| I5 / I6 | expected domain failures are coded: QUERY-006 / QUERY-007 under the one `QueryError` base. |
+| I7 / I9 | validators run before load; the cores assume clean input. |
+| I10 | new params are keyword-with-default; topic_search gains a defaulted param so old call sites compile; history's id param stays, the new page param is additive — no existing call site is edited. The no-flag envelope is unchanged (byte-identical test). |
+| I11 | the changed cores and new validators update their contract docstrings (input, output, raised codes). |
+| I12 | explicit flags; 0/1/2 exit codes; JSON stdout; `error: {log_line()}` stderr — unchanged. |
+| I17 | codes continue from QUERY-005, never reused; no name collision with any family (checked). |
+| I18 | no subclass defines `__init__` — `_caller_location` injects the raiser. |
+| I19 | 006 carries `field`; 007 carries `since_length` — no raw user text in a log line. |
+| I21 | both codes get one raising site and a named test (§E, §F). |
+| P1 | the three flags are shipped issues (#26–#28), not decoration. |
+| P3 | still one direction — validate → load → derive (filter/window inside) → render unchanged. |
+| S1 | each command below runs alone on a fixture DB with expected output and exit code. |
+| S3 | §B/§D document the CLI and boundary shapes. |
+| T1 | filter/window logic is pure; `datetime.fromisoformat` is deterministic — no I/O, no clock. |
+| T3 | `FakeQueryLookup` untouched; unit tests run the cores against fakes. |
+| T4 | pyramid holds: unit + integration + CLI; no new E2E, no live tier. |
+| T5 / T6 | targets are outputs, exit codes and error codes, never internals. |
+| T10 | one golden fixture file; the hash test already exists — no harness bloat. |
+
+**Untouched, said untouched:** B2 (`QueryLookupPort` unchanged — §D), B4; D1 (nothing written — hash proof stays), D2, D3, D5, D6, D7, D8 (no AI call); P2, P4 (no new port, no new layer); I8 (empty result still not an error), I13 (no config), I14, I15, I16, I20's format; T2 (side-effect edges unchanged), T7, T8 (no AI), T9 (no new imports; architecture test unchanged), S2, S4.

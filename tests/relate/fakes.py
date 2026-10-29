@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections import deque
+
 from ember.relate.rows import Link, NewItem
 
 
@@ -33,6 +35,10 @@ class FakeLinkLookup:
     def item_created_at(self, item_id: int) -> str | None:
         item = self._by_id.get(item_id)
         return item.created_at if item is not None else None
+
+    def item_metadata(self, item_id: int) -> str | None:
+        item = self._by_id.get(item_id)
+        return item.metadata if item is not None else None
 
     def find_existing(
         self, source_id: int, target_id: int, link_type: str
@@ -80,12 +86,44 @@ class FakeLinkLookup:
                     link.source_item_id == current
                     and link.link_type == "supersedes"
                     and link.status == "Confirmed"
+                    and link.reversed_at is None
                 ):
                     target = link.target_item_id
                     if target not in ancestors:
                         ancestors.add(target)
                         frontier.append(target)
         return ancestors
+
+    def supersedes_blocking_link(self, source_id: int, target_id: int) -> Link | None:
+        """Mirror the adapter: walk both rule-8 directions, first edge in id
+        order that reaches the goal wins. Reversed and non-Confirmed rows
+        never count."""
+        edges = sorted(
+            (
+                link
+                for link in self._links
+                if link.link_type == "supersedes"
+                and link.status == "Confirmed"
+                and link.reversed_at is None
+                and link.id is not None
+            ),
+            key=lambda link: link.id,
+        )
+        for start, goal in ((target_id, source_id), (source_id, target_id)):
+            seen = {start}
+            frontier: deque[int] = deque([start])
+            while frontier:
+                current = frontier.popleft()
+                for link in edges:
+                    if link.source_item_id != current:
+                        continue
+                    nxt = link.target_item_id
+                    if nxt == goal:
+                        return link
+                    if nxt not in seen:
+                        seen.add(nxt)
+                        frontier.append(nxt)
+        return None
 
 
 class FakeEmbedder:

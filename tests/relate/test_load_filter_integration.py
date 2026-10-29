@@ -84,13 +84,13 @@ def test_latest_returns_newest_active_with_no_outgoing_link(db_path) -> None:
 
     assert lookup.find_latest_unlinked_active().id == 3
 
-    _insert_link(conn, 3, 1, "supports", "Confirmed")
+    _insert_link(conn, 3, 1, "depends_on", "Confirmed")
     assert lookup.find_latest_unlinked_active().id == 2
 
-    _insert_link(conn, 2, 1, "supports", "Confirmed")
+    _insert_link(conn, 2, 1, "depends_on", "Confirmed")
     assert lookup.find_latest_unlinked_active().id == 1
 
-    _insert_link(conn, 1, 2, "supports", "Confirmed")
+    _insert_link(conn, 1, 2, "depends_on", "Confirmed")
     assert lookup.find_latest_unlinked_active() is None
 
 

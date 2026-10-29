@@ -8,13 +8,19 @@ from __future__ import annotations
 from ember.query.current_state import current_state
 from ember.query.history import history
 from ember.query.lookup import QueryLookupPort
-from ember.query.query_gatekeeper import validate_query_item, validate_query_text
+from ember.query.query_gatekeeper import (
+    validate_history_page,
+    validate_query_item,
+    validate_query_text,
+    validate_topic_filter,
+)
 from ember.query.render import (
     render_current_state,
     render_history,
     render_topic_search,
     render_why,
 )
+from ember.query.rows import HistoryPage, TopicFilter
 from ember.query.topic_search import topic_search
 from ember.query.why import why
 
@@ -24,10 +30,21 @@ def run_current_state(lookup: QueryLookupPort) -> str:
     return render_current_state(current_state(lookup.list_items()))
 
 
-def run_topic_search(lookup: QueryLookupPort, query: str) -> str:
-    """Gate the query text, load every item, rank, render the JSON document."""
+def run_topic_search(
+    lookup: QueryLookupPort,
+    query: str,
+    topic_filter: TopicFilter = TopicFilter(),
+) -> str:
+    """Gate the text and the filter, load every item, rank, render.
+
+    The pipeline order is validate text (QUERY-002) then validate the filter
+    (QUERY-006), both before any load, then load, derive, render.
+    """
     normalised = validate_query_text(query)
-    return render_topic_search(topic_search(lookup.list_items(), normalised), normalised)
+    validate_topic_filter(topic_filter)
+    return render_topic_search(
+        topic_search(lookup.list_items(), normalised, topic_filter), normalised
+    )
 
 
 def run_why(lookup: QueryLookupPort, item_id: int) -> str:
@@ -36,13 +53,20 @@ def run_why(lookup: QueryLookupPort, item_id: int) -> str:
     return render_why(why(lookup.list_items(), lookup.list_links(), item_id))
 
 
-def run_history(lookup: QueryLookupPort, item_id: int | None) -> str:
+def run_history(
+    lookup: QueryLookupPort,
+    item_id: int | None,
+    page: HistoryPage = HistoryPage(),
+) -> str:
     """Show one item's ledger events, or the whole ledger when id is `None`.
 
-    The item check runs **only** when the user named an item: the global view
-    makes no existence lookup and can never raise QUERY-001.
+    The pipeline order is validate the page (QUERY-006 / QUERY-007) before
+    any load, then the item check **only** when the user named an item (the
+    global view makes no existence lookup and can never raise QUERY-001),
+    then load, derive (window inside), render.
     """
+    page = validate_history_page(page)
     if item_id is not None:
         validate_query_item(lookup, item_id)
-    events = history(lookup.list_change_log(), lookup.list_links(), item_id)
+    events = history(lookup.list_change_log(), lookup.list_links(), item_id, page)
     return render_history(events, item_id)

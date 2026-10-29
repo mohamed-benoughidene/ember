@@ -101,6 +101,7 @@ def format_block(item: ValidatedItem) -> str:
             f"  statement: {json.dumps(item.statement, ensure_ascii=False)}",
             f"  source_quote: {json.dumps(item.source_quote, ensure_ascii=False)}",
             f"  confidence: {item.confidence}",
+            f"  metadata: {json.dumps(item.metadata, ensure_ascii=False)}",
             f"  near_dup_warning: {_warning_text(item.near_dup_warning)}",
         ]
     )
@@ -186,6 +187,7 @@ def edit_item(
     draft = ProposalDraft(
         type=ask_type(confirm, default=item.type),
         statement=ask_statement(confirm, default=item.statement),
+        metadata=ask_metadata(confirm, default=item.metadata),
         source_quote=item.source_quote,
         confidence=item.confidence,
     )
@@ -214,6 +216,18 @@ def ask_statement(confirm: ConfirmPort, *, default: str) -> str:
         if value:
             return value
         confirm.write("statement is empty")
+
+
+def ask_metadata(confirm: ConfirmPort, *, default: str | None) -> str | None:
+    """Ask once for the label. Blank keeps the default, a lone `-` clears.
+
+    Every answer is valid, so there is no retry loop.
+    """
+    shown = default if default is not None else "none"
+    raw = confirm.ask(f"new metadata? (default {shown})").strip()
+    if raw == "-":
+        return None
+    return raw or default
 
 
 def _warning_text(warning: NearDupWarning | None) -> str:

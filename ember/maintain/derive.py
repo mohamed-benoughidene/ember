@@ -1,12 +1,15 @@
 """Pure Phase-2 derivation: read a snapshot, compute the intended changes.
 
 No I/O, no clock, no DB (T1). `merge_and_filter` is the shared Phase-2
-boundary every command passes its candidates through.
+boundary every command passes its candidates through. The manual shield is
+timestamp-scoped (L2 §13): a `status_origin='manual'` item skips only the
+candidates whose evidence does not beat the item's latest manual clear.
 """
 
 from __future__ import annotations
 
 from ember.maintain.rows import ItemState, MaintainSnapshot, StatusChange
+from ember.relate.rows import ChangeLogEntry
 
 FLAGGING_REASONS: frozenset[str] = frozenset(
     {"invalidated", "superseded", "reversed"}
@@ -49,11 +52,16 @@ def merge_and_filter(
     - One change per item_id: precedence `Closed > Challenged > Active`, the
       exempt change outranking everything for its item.
     - Derived changes are escalation-only: kept only if they move strictly up
-      `Active < Challenged < Closed`; a manual-shield item
-      (`status_origin == 'manual'`) is skipped.
+      `Active < Challenged < Closed`.
+    - The manual shield is timestamp-scoped (L2 §13.4): a manual-shield item
+      (`status_origin == 'manual'`) is skipped unless the candidate's
+      evidence (`_shield_passes`) beats the item's latest manual clear. A
+      winning shielded change is stamped `rearm=True` on a model copy, so
+      the adapter returns `status_origin` to `'derived'` in the same batch.
     - `exempt` is a human command's authoritative primary change (the seam for
-      step 3): it bypasses the ladder check and the manual shield. It is
-      recognized by value equality. Steps 1's sweep passes none.
+      step 3): it bypasses the ladder check and the manual shield, and is
+      never stamped `rearm`. It is recognized by value equality. Steps 1's
+      sweep passes none.
 
     Returns a list sorted by item_id, at most one entry per item_id.
     """
@@ -65,7 +73,9 @@ def merge_and_filter(
             continue
         is_exempt = exempt is not None and change == exempt
         if not is_exempt:
-            if item.status_origin == "manual":
+            if item.status_origin == "manual" and not _shield_passes(
+                change, snapshot
+            ):
                 continue
             if _LADDER.get(change.new_status, -1) <= _LADDER.get(
                 change.old_status, -1
@@ -73,14 +83,93 @@ def merge_and_filter(
                 continue
         current = chosen.get(change.item_id)
         if current is None:
-            chosen[change.item_id] = change
+            chosen[change.item_id] = _maybe_rearm(change, item, is_exempt)
         elif current == exempt:
             continue
         elif is_exempt or _PRECEDENCE.get(change.new_status, -1) > _PRECEDENCE.get(
             current.new_status, -1
         ):
-            chosen[change.item_id] = change
+            chosen[change.item_id] = _maybe_rearm(change, item, is_exempt)
     return sorted(chosen.values(), key=lambda change: change.item_id)
+
+
+def _shield_sort_key(row: ChangeLogEntry) -> tuple[str, int]:
+    """Return the row's `(timestamp, id)` ordering key (the history sort
+    convention: timestamps are UTC `isoformat()`, so the string compare is
+    chronological, and equal timestamps go to the higher id). A missing id
+    counts as 0: store rows always carry ids, and the fallback only keeps
+    the rule total on synthetic snapshots."""
+    return (row.timestamp, row.id if row.id is not None else 0)
+
+
+def _latest_clear(
+    shield_log: list[ChangeLogEntry], item_id: int
+) -> ChangeLogEntry | None:
+    """Return the item's latest manual-clear row, latest = max
+    `(timestamp, id)` (L2 §13.3). A clear is exactly the row
+    `apply_status_origin` writes: `field_changed='status_origin'`,
+    `trigger_cause='user_set_status'`, `new_value='manual'`. Older clears
+    are inert. Only clears set the boundary: the re-arm rows of this
+    amendment (`new_value='derived'`, cause `sweep_rearm`) can never read
+    back as one."""
+    best: ChangeLogEntry | None = None
+    best_key: tuple[str, int] | None = None
+    for row in shield_log:
+        if row.item_id != item_id:
+            continue
+        if (
+            row.field_changed != "status_origin"
+            or row.trigger_cause != "user_set_status"
+            or row.new_value != "manual"
+        ):
+            continue
+        key = _shield_sort_key(row)
+        if best_key is None or key > best_key:
+            best, best_key = row, key
+    return best
+
+
+def _evidence_row(
+    shield_log: list[ChangeLogEntry], link_id: int
+) -> ChangeLogEntry | None:
+    """Return the link's `link_confirmed` ledger row (L2 §13.2): the pinned
+    evidence event for every derived cause family, one deterministic source."""
+    best: ChangeLogEntry | None = None
+    best_key: tuple[str, int] | None = None
+    for row in shield_log:
+        if row.field_changed != "link_confirmed" or row.link_id != link_id:
+            continue
+        key = _shield_sort_key(row)
+        if best_key is None or key > best_key:
+            best, best_key = row, key
+    return best
+
+
+def _shield_passes(change: StatusChange, snapshot: MaintainSnapshot) -> bool:
+    """Return whether `change`'s evidence beats the item's latest manual
+    clear (L2 §13.4): strictly newer wins on `(timestamp, id)`, equal
+    timestamps go to the higher `change_log.id`, a tie lost skips. Fail-
+    closed: no clear row visible for the item, no `link_confirmed` row for
+    the candidate's `link_id`, or no `link_id` at all means skip, exactly
+    as the old blanket shield did."""
+    if change.link_id is None:
+        return False
+    clear = _latest_clear(snapshot.shield_log, change.item_id)
+    evidence = _evidence_row(snapshot.shield_log, change.link_id)
+    if clear is None or evidence is None:
+        return False
+    return _shield_sort_key(evidence) > _shield_sort_key(clear)
+
+
+def _maybe_rearm(
+    change: StatusChange, item: ItemState, is_exempt: bool
+) -> StatusChange:
+    """Stamp `rearm=True` on the winning change of a shielded item (a model
+    copy: the pure core decides, the adapter executes). Exempt (human)
+    changes are never stamped."""
+    if is_exempt or item.status_origin != "manual":
+        return change
+    return change.model_copy(update={"rearm": True})
 
 
 def _close_candidates(

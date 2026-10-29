@@ -1,11 +1,20 @@
-"""Unit tests for the query gatekeeper (QUERY-001 / QUERY-002)."""
+"""Unit tests for the query gatekeeper (QUERY-001 / QUERY-002 / QUERY-006)."""
 
 from __future__ import annotations
 
 import pytest
 
-from ember.query.errors import QueryItemNotFound, QueryTextEmpty
-from ember.query.query_gatekeeper import validate_query_item, validate_query_text
+from ember.query.errors import (
+    QueryFilterInvalid,
+    QueryItemNotFound,
+    QueryTextEmpty,
+)
+from ember.query.query_gatekeeper import (
+    validate_query_item,
+    validate_query_text,
+    validate_topic_filter,
+)
+from ember.query.rows import TopicFilter
 from tests.query.fakes import FakeQueryLookup, make_item
 
 
@@ -53,3 +62,46 @@ def test_existing_item_passes_with_one_lookup_call() -> None:
     validate_query_item(lookup, 1)
 
     assert lookup.calls == ["item_exists:1"]
+
+
+@pytest.mark.parametrize(
+    ("topic_filter", "field"),
+    [
+        (TopicFilter(status="bogus"), "status"),
+        (TopicFilter(status="active"), "status"),
+        (TopicFilter(type="bogus"), "type"),
+        (TopicFilter(type="decision"), "type"),
+        (TopicFilter(limit=-1), "limit"),
+    ],
+)
+def test_validate_topic_filter_raises_query_006(
+    topic_filter: TopicFilter, field: str
+) -> None:
+    with pytest.raises(QueryFilterInvalid) as exc:
+        validate_topic_filter(topic_filter)
+
+    assert exc.value.code == "QUERY-006"
+    assert exc.value.context["field"] == field
+    assert "bogus" not in str(exc.value.message)
+    assert "active" not in str(exc.value.message)
+    assert "decision" not in str(exc.value.message)
+
+
+@pytest.mark.parametrize(
+    "topic_filter",
+    [
+        TopicFilter(),
+        TopicFilter(status="Active"),
+        TopicFilter(status="Challenged"),
+        TopicFilter(status="Closed"),
+        TopicFilter(type="Decision"),
+        TopicFilter(type="Assumption"),
+        TopicFilter(type="Finding"),
+        TopicFilter(type="Question"),
+        TopicFilter(limit=0),
+        TopicFilter(limit=5),
+        TopicFilter(status="Closed", type="Question", limit=1),
+    ],
+)
+def test_legal_topic_filters_pass_and_return_none(topic_filter: TopicFilter) -> None:
+    assert validate_topic_filter(topic_filter) is None

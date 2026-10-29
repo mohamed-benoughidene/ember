@@ -117,23 +117,35 @@ def insert_item(
     status: str = "Active",
     close_reason: str | None = None,
     status_origin: str = "derived",
+    metadata: str | None = None,
 ) -> int:
-    """Insert one `items` row and return its id."""
+    """Insert one `items` row and return its id.
+
+    The metadata column is written only when a label is given, so v10 and v11
+    hand-built databases (no metadata column yet) stay insertable.
+    """
+    columns = (
+        "id, type, statement, source_id, status, created_at,"
+        " validated, close_reason, status_origin"
+    )
+    placeholders = "?, ?, ?, ?, ?, ?, ?, ?, ?"
+    values: list[object] = [
+        item_id,
+        item_type,
+        statement,
+        source_id,
+        status,
+        created_at,
+        validated,
+        close_reason,
+        status_origin,
+    ]
+    if metadata is not None:
+        columns += ", metadata"
+        placeholders += ", ?"
+        values.append(metadata)
     cursor = conn.execute(
-        "INSERT INTO items (id, type, statement, source_id, status, created_at,"
-        " validated, close_reason, status_origin)"
-        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        (
-            item_id,
-            item_type,
-            statement,
-            source_id,
-            status,
-            created_at,
-            validated,
-            close_reason,
-            status_origin,
-        ),
+        f"INSERT INTO items ({columns}) VALUES ({placeholders})", tuple(values)
     )
     return int(cursor.lastrowid)
 
@@ -156,6 +168,39 @@ def insert_link(
     return int(cursor.lastrowid)
 
 
+def insert_link_with_confirmation(
+    conn: sqlite3.Connection,
+    source_item_id: int,
+    target_item_id: int,
+    link_type: str,
+    *,
+    created_at: str = FIXED_TIME,
+) -> int:
+    """Insert one `links` row AND its production-shaped `link_confirmed`
+    ledger row (the `SqliteLinkStore.insert_link_with_log` pair) and return
+    the new link id.
+
+    Row shape mirrors `link_gatekeeper.py`: the ledger row's `item_id` is the
+    link's source, `old_value` NULL, `new_value`
+    `f"{link_type}:{target_item_id}"`, `trigger_cause='user_confirmed'`.
+    Both rows carry the same `created_at` clock read, as production does.
+    """
+    cursor = conn.execute(
+        "INSERT INTO links (source_item_id, target_item_id, link_type, status,"
+        " created_at) VALUES (?, ?, ?, 'Confirmed', ?)",
+        (source_item_id, target_item_id, link_type, created_at),
+    )
+    link_id = int(cursor.lastrowid)
+    conn.execute(
+        "INSERT INTO change_log"
+        " (item_id, link_id, field_changed, old_value, new_value,"
+        " timestamp, trigger_cause) VALUES (?, ?, 'link_confirmed',"
+        " NULL, ?, ?, 'user_confirmed')",
+        (source_item_id, link_id, f"{link_type}:{target_item_id}", created_at),
+    )
+    return link_id
+
+
 def insert_link_reversed(
     conn: sqlite3.Connection, link_id: int, item_id: int
 ) -> None:
@@ -175,6 +220,7 @@ def make_item(
     statement: str = "Use SQLite",
     source_id: int = 1,
     warning: NearDupWarning | None = None,
+    metadata: str | None = None,
 ) -> ValidatedItem:
     """Build one `ValidatedItem` for the Phase 4 tests."""
     return ValidatedItem(
@@ -187,4 +233,5 @@ def make_item(
         created_at=FIXED_TIME,
         status="Active",
         near_dup_warning=warning,
+        metadata=metadata,
     )

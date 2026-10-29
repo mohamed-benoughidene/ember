@@ -15,6 +15,7 @@ from ember.relate.errors import (
     SchemaValidationFailed,
     TargetNotInCandidates,
 )
+from ember.relate.link_gatekeeper import RejectedLink
 from ember.relate.link_proposal import LinkProposal, LinkProposalResponse
 from ember.relate.rows import Link, NewItem, RankedCandidate, SignalKind
 from ember.relate.run_relate import RelatePorts, RelateRequest, run_relate
@@ -135,6 +136,43 @@ def test_gatekeeper_rejection_counted_not_shown():
     assert result.accepted == []
     assert result.rejected == 1
     assert confirm.written == []
+
+
+def test_gatekeeper_rejections_carry_codes_and_detail():
+    lookup = FakeLinkLookup(
+        items=[_item(1), _item(2)],
+        links=[
+            Link(
+                id=9,
+                source_item_id=1,
+                target_item_id=2,
+                link_type="depends_on",
+                status="Rejected",
+                created_at=FIXED_TIME,
+            )
+        ],
+    )
+    ports = _ports(
+        responses=[
+            LinkProposalResponse(
+                raw_response="raw",
+                proposals=[LinkProposal(target_item_id=2, link_type="depends_on")],
+            )
+        ],
+        lookup=lookup,
+        confirm=FakeConfirm(["y"]),
+    )
+    request = RelateRequest(new_item=_item(1), ranked=_ranked(2), env={})
+
+    result = run_relate(ports, request)
+
+    assert result.accepted == []
+    assert result.rejected == 1
+    assert result.gatekeeper_rejections == [
+        RejectedLink(
+            code="RELATE-009", detail="link 9 exists (1 -> 2)"
+        )
+    ]
 
 
 def test_bad_target_propagates_024():

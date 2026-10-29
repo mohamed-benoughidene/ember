@@ -45,3 +45,17 @@ class ItemsReadFailed(QueryError):
 
     code = "QUERY-005"
     name = "ItemsReadFailed"
+
+
+class QueryFilterInvalid(QueryError):
+    """A filter value is outside its legal set, or a limit is negative."""
+
+    code = "QUERY-006"
+    name = "QueryFilterInvalid"
+
+
+class QuerySinceInvalid(QueryError):
+    """A `--since` value does not parse as an ISO-8601 datetime with an offset."""
+
+    code = "QUERY-007"
+    name = "QuerySinceInvalid"

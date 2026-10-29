@@ -114,11 +114,11 @@ Dependency order, not runtime order. Each engine invoked independently.
 
 1. AI direct DB write: PROHIBITED (Spec 3.7).
 2. All mutations pass gatekeeper validation scripts.
-3. AI-callable mutations (each requires user confirm): `add_item`, `add_link`.
+3. AI-callable mutations (each requires user confirm): `add_item`, `add_link`, `propose_close`. A `propose_close` proposal writes nothing: the human confirms it in `ember maintain`'s confirm loop and the close is written only through the human validate path (`validate_close_item`).
 4. AI-callable reads (no confirm needed, raw data only): `query`.
 5. Human-only operations: `edit_item`, `set_status` (only `Active` <-> `Challenged`), `set_validated`, `remove_link`.
 6. `Challenged` resolution: human only via `set_status` (Spec 3.5, 3.2).
-7. Raw input immutable. Historical items immutable (Spec 3.2 + 3.6).
+7. Raw input immutable. Historical items immutable (Spec 3.2 + 3.6). Scoped by the rule-7 ADR (2026-10-28, engine-maintain-plan §12.0, Option A): `items.rationale` (on a `Decision`) and `items.source` (on a `Finding`) are the designated human-writable authorial slots, always ledger-trailed via `ember edit-item`; the `statement` and every raw table stay immutable.
 
 ## 5. Out of Scope (V1)
 
@@ -128,7 +128,7 @@ Deferred item types: `Constraint`, `Issue`, `Evidence` standalone, `Rationale` s
 
 Deferred link types: `informs`, `constrained_by`, `invalidates`, `raises`, `derived_from`. Handling note: `invalidates` is achieved by creating a `contradicts` link plus closing the target as `Closed` reason `invalidated` (Spec 3.3).
 
-AI-proposed `close_item` deferred to V1.x (issue #16). V1 ships `ember close-item` human-invoked; the human running the command is the confirmation.
+AI-proposed `close_item` (issue #16) ships pre-filtered (V1.x, 2026-10-29): a deterministic pre-filter names stale candidates (capped at 10), the AI proposes a close with reason `invalidated` or `expired` for that shortlist only, and the human confirms through the existing `ember close-item` validate path (`validate_close_item`) inside `ember maintain`'s confirm loop. The AI never writes a close itself; raw answers are stored in `ai_responses` keyed by `item_id` (D8).
 
 ## 6. Live Measures (Post-Build)
 
@@ -157,6 +157,8 @@ AI testing (Rule T7): test parser, validation, retries with saved fixtures. Asse
 Human approves L1. Then 4 L2 engine master plans: `capture`, `relate`, `maintain`, `query`. Each L2 defines internal pipeline phases for its engine. All 4 are written (`plans/engine-capture-plan.md`, `plans/engine-relate-plan.md`, `plans/engine-maintain-plan.md`, `plans/engine-query-plan.md`).
 
 **Ordering constraint on `query`: satisfied.** Engine C's step 03 landed on 2026-10-25, and the L1 amendments it deferred are applied: `close_item` has moved from the AI-callable list (rule 3, line 117) to the human-only list, and `validate_close_item` + `validate_reverse_supersedes` have joined the human-only gatekeepers (lines 81, 83). Engine D's L2 may now be written — line 117 no longer claims an AI-callable `close_item` exists. The Engine D L2 is now written (`plans/engine-query-plan.md`); its four modes are `current_state`, `topic_search`, `why`, `history`.
+
+**V1.x hardening phase:** V1 is built. The next phase is hardening: its L1-level plan is `plans/hardening-plan.md`, which resolves the 16 open tracker issues in 4 clusters. The L2s are declared there (§7).
 
 ## 9. Deferred to L2 (Reminder)
 
