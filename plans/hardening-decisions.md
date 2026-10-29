@@ -2,7 +2,7 @@
 
 Decision brief under `plans/hardening-plan.md` §2 Cluster 4 (the L1 amendment, 2026-10-28). These five issues are decide-then-act: each one needs the maintainer to record exactly one decision — **build now**, **keep deferred with an updated trigger**, or **reject with an `.out-of-scope` note** (`hardening-plan.md` §2: "Code only after a recorded decision").
 
-**This brief recommends. It does not decide.** Every section ends with `Decision: PENDING (maintainer)`. Cluster 4 has no L2 (`hardening-plan.md` §7): a "build" decision gets its own L2 amendment at that moment; a deferral or rejection is recorded on the issue itself.
+**This brief recommends. It does not decide.** Cluster 4 has no L2 (`hardening-plan.md` §7): a "build" decision gets its own L2 amendment at that moment. All five decisions were made by the maintainer on 2026-10-29, with no deferrals: #5 build, #8 build, #12 build (measurement), #14 option (c) timestamp shield, #16 build (pre-filtered).
 
 Every code claim below was verified by reading the real file and symbol on branch `feat/hardening` on 2026-10-28. Where verification corrected a claim this brief inherited, the correction is stated in place.
 
@@ -24,7 +24,7 @@ Every code claim below was verified by reading the real file and symbol on branc
 
 **Cost if built.** One migration (cheap, per the L1 contract). The real cost is the writer: a capture-time input changes the AI schema and prompt (`item_proposal.py`), a human command is a new Maintain-surface operation, a convention needs documentation plus a reader rule. Plus a reader change in `candidate_pool.py` and its tests. Roughly: 1 migration + 1 writer path + 1 signal branch — a small L2 amendment, not a new engine.
 
-**Decision: PENDING (maintainer)**
+**Decision: build (maintainer, 2026-10-29).** Writer: capture AI proposes a project label, the human can correct it inline in the existing [e]dit path of the confirm loop, and relate reads the column instead of the 30-day proxy. The L2 amendment and the migration number are pinned at build time (next free number).
 
 ---
 
@@ -44,7 +44,7 @@ Every code claim below was verified by reading the real file and symbol on branc
 
 **Cost if built.** No new module, no migration, no port. One file (`candidate_pool.py`) plus its unit/integration tests, roughly half a day including churn to every `counts` assertion. This amends `plans/engine-relate-plan.md`'s frozen return shape (`Pool(ranked, counts, warning)`) and the CLI output test; per the brief's own rule this build option gets its own L2 amendment at that moment — priced here as 'small' only because the wrapper is shelling, not redesign. It is the cheapest "build" of the five — cheap is not the same as useful.
 
-**Decision: PENDING (maintainer)**
+**Decision: build (maintainer, 2026-10-29), against this brief's defer recommendation.** Wrapper only: the three existing fields, no fourth signal, no BM25 into the pool. The recorded warning stands: at single-user scale this buys structure without behavior change. Pool's external shape stays Pool(ranked, counts, warning) unless the build-time L2 amendment says otherwise.
 
 ---
 
@@ -64,7 +64,7 @@ Every code claim below was verified by reading the real file and symbol on branc
 
 **Cost if built.** No production code. One `scripts/` measurement — one command, runnable alone (S1-style), result recorded as a number on the issue. NOT a regression test (T4 economics and T10; timing assertions are flaky). One synthetic-DB fixture; runtime is the point (minutes). It requires the `.[relate]` extra installed and a one-time HuggingFace model download (network + ~419 MB + load timeout); runs manually on the maintainer's machine, skipped in CI. No migration, no port, no new module. Prefer folding this into the already-reserved master-plan §6.3 #3 recall scale test (500–5,000 items) — same synthetic fixture, same encode cost — rather than seeding a second corpus; a separate throwaway needs a stated reason.
 
-**Decision: PENDING (maintainer)**
+**Decision: build (maintainer, 2026-10-29).** One measurement script, synthetic 500-5000 item database, forced model change, timed wipe and re-encode, the number recorded on the issue. No production code.
 
 ---
 
@@ -86,7 +86,7 @@ Every code claim below was verified by reading the real file and symbol on branc
 
 **Cost if built.** Reading (a) mechanism 1 (timestamp compare): no migration; ~1 new port read or `change_log` join in the Maintain snapshot, a change to `merge_and_filter`'s shield skip, plus the two-tests-above. Mechanism 2 (per-trigger): a new migration (this phase's only additive-column candidate if chosen; migration number = next free AFTER cluster 1's 011, and after 012 if the #15 relax branch builds; pinned at that moment's L2 amendment, not assumed) + acknowledgment path. If the additive column is chosen, it inherits cluster 1's D3 ruling as written (`plans/hardening-schema-plan.md` §6): ledger stays source, column derived and labelled, one-transaction pairing, replay test. Add the clock-tie test: a contradicts link and the manual-clear ledger row sharing a timestamp resolve by `change_log.id` (the replay precedent). Either is a small L2 amendment to `plans/engine-maintain-plan.md` §2 Gap B.
 
-**Decision: PENDING (maintainer)**
+**Decision: option (c), timestamp-scoped shield, full scope (maintainer, 2026-10-29).** A manual clear silences evidence older than the clear (its change_log timestamp). Evidence newer than the clear passes the shield, for every derived change (re-flags and closes alike). Ties break by change_log id, matching the history sort convention. No migration. Three-agent panel unanimous (contrariant, first-principles, practitioner).
 
 ---
 
@@ -106,7 +106,7 @@ Every code claim below was verified by reading the real file and symbol on branc
 
 **Cost if built.** An AI port module + adapter under `ember/maintain/` (Maintain gains its first adapter — defeats its "no live tier" §7.7 property), `ai_responses` writes keyed how D8 dictates (`save()` already accepts `item_id` — migration 009 made `source_id` nullable and added a nullable `item_id REFERENCES items(id)`; the adapter enforces exactly-one-of, and Relate already saves by `item_id`. A closed item always HAS a `source_id`. The open question is narrower: whether a close *proposal* logs against the item before human acceptance, and which Maintain port owns the save), retry policy, fixtures + tests, and L1 amendments to BOTH §4 rule 3 and the §5 deferral line (master-plan line 131 freezes the human-only close-item decision). Roughly one step-plan's worth of work — the largest "build" of the five.
 
-**Decision: PENDING (maintainer)**
+**Decision: build, pre-filtered (maintainer, 2026-10-29).** The sweep pre-filters stale candidates with deterministic rules (example: Active Questions with an old confirmed answers link), the AI sees only that shortlist (typically 0-3 cards, never a full-corpus scan), proposes close with reason, the human confirms through the existing validate path, one ledger row. Maintain gains its first AI port.
 
 ---
 
