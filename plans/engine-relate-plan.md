@@ -527,3 +527,31 @@ Amended 2026-10-28, implementation pending. Source: `plans/hardening-schema-plan
 - `RejectedLink` gains an optional `detail` field (the frozen "no reason field" clause, §5.5, is amended).
 - `LinkLookupPort` grows a 12th method, `supersedes_blocking_link` (the frozen 11-method protocol, §5.4, is amended).
 - Boot floors move with the immutability migration — see the two floor bullets above; both ship in one step.
+
+## 12. V1.x Amendment: Signals wrapper (ticket 10, #8 ruling)
+
+Added 2026-10-29. Source: `plans/hardening-decisions.md` #8 ("Decision: build", maintainer, 2026-10-29, against the defer recommendation — the recorded warning stands: structure without behavior change) and `.scratch/hardening/issues/10-signals-wrapper.md`. Implementer: `plans/steps/hardening/04-signals-wrapper.md`. Supersedes two lines of this plan: §2's "V1 has exactly 3, so no wrapper" bullet and §8's "A `Signals` object wrapper" out-of-scope bullet. §5.5 unchanged: `Signals` is not a shared row model and does not enter `rows.py`.
+
+**The pin (frozen by this amendment):**
+
+- Type name `Signals`, one Pydantic `BaseModel` (same base as `Pool`, §5.5), defined in `ember/relate/candidate_pool.py` — the module that builds it and its single consumer. Not `rows.py` (`rows.py` holds shapes shared across modules; `Signals` crosses no module line). No re-export, no `__init__` entry.
+- Exactly three fields, matching today's local signal results verbatim (`candidate_pool.py:71-89` composition block):
+  - `content: dict[int, float]` — the top-`CONTENT_TOP_K`(10) cosine scores from `_content_signal`
+  - `graph: set[int]` — universe-surviving 1-hop neighbor ids from `_graph_signal`
+  - `metadata: set[int]` — in-window item ids from `_metadata_signal`
+- Boundary: built inside `build_candidate_pool` after the three signal calls return; consumed in the same function by `_merge` and the `counts` construction. No other module imports or names it (architecture test enforces). The empty-universe path still returns `Pool.empty(warning=warning)` before any signal runs — no `Signals` is built there.
+- Naming trap, do not "fix" either side: `counts` keys stay `dense`/`graph`/`metadata` (frozen in the CLI JSON and the tests) while the content-signal field stays `content` (today's local variable name).
+
+**Guarantees (zero output change):**
+
+- `Pool(ranked, counts, warning)` unchanged: `rows.py::Pool` gains no field, `Pool.empty` untouched, `ranked` order and tie-break unchanged.
+- CLI unchanged: the empty-pool JSON `{"phase": 2, "pool_size": 0, "signals": pool.counts}` (`ember/cli.py:306-310`) byte-identical; the model-change warning to STDERR unchanged; the `relate rejected: CODE [| detail]` lines and the `accepted: N, rejected: N, skipped: N, aborted: <bool>` summary unchanged; exit codes 0/1/2 unchanged.
+- `build_candidate_pool` keeps its 4-input signature (I3) and raises exactly today's codes: RELATE-017, 018, 019, 021, 022, 023, 037. **Zero new error codes.**
+
+**Test accept list:**
+
+- Must pass unmodified: every test in `tests/relate/test_candidate_pool_unit.py` (34 test functions, two parametrized) and all four in `tests/relate/test_candidate_pool_integration.py` (`test_seeded_pool_ranks_by_cosine_then_id_and_counts_all_three_signals`, `test_prewarmed_cache_is_reused_on_the_second_run`, `test_preflight_model_mismatch_wipes_and_reencodes_every_item`, `test_graph_read_failure_surfaces_as_relate_021`). Reason: both files drive only `build_candidate_pool` and read the returned `Pool`; no test imports a private helper (the unit docstring pins this).
+- Pure-restructure churn: **none expected.** The ticket's "except pure-restructure churn" clause should stay unused. If a test must be edited, that is a bug in the restructure, not churn — stop and record why in Build Notes.
+- Adjacent, must stay green untouched: `tests/relate/test_relate_cli.py` (it patches `ember.cli.build_candidate_pool` at `:238-245` and constructs `Pool` directly — the wrapper changes nothing it sees) and `tests/test_architecture.py::test_relate_core_does_not_import_adapters`.
+
+**Out of scope (this amendment):** no 4th signal; no BM25 into the pool (master-plan §2 exclusion stands; an L1 amendment is still required before that); no `ember.query` import anywhere under `ember/relate/` (architecture test stays green); no `Pool`/`RankedCandidate`/`RelateRequest` field change; no `rows.py` entry; no module move; no behavior, output, ranking, or cache-write change of any kind.
