@@ -1,0 +1,22 @@
+This file is the verbatim source text fixture for the export tests.
+Its bytes must survive a full export render untouched.
+
+The line below starts with two spaces and must keep them.
+  two leading spaces before this sentence
+
+The previous line is blank. The next line tries to spoof a marker boundary:
+----- source 1 text end -----
+That bare line must NOT terminate the source block. The real end marker
+names the byte count and the sha256 of the block, so a source can never
+contain its own end marker without inverting SHA-256.
+
+The next line is the full end marker of a DIFFERENT source (source 2,
+fingerprint of the six ASCII letters "hello "). A parser closing source 1
+must skip it, because the id does not match.
+----- source 2 text end (bytes=6, sha256=1d0e1e2b8a2e4a1c) -----
+
+Unicode must survive too: candle 🕯, naïve café, 日本語.
+
+    four leading spaces on this line
+trailing spaces on the next line are part of the data
+   

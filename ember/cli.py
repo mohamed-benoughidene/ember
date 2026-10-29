@@ -11,6 +11,12 @@ import click
 
 from ember.adapters.backup import create_backup
 from ember.adapters.db_check import check_database
+from ember.adapters.export import (
+    gather_export,
+    refuse_self_overwrite,
+    render_export,
+    write_export,
+)
 from ember.adapters.embedder import build_embedder, validate_embedder_config
 from ember.adapters.llm import (
     build_close_proposer,
@@ -943,6 +949,53 @@ def backup(target_path: str, db_path: str) -> None:
         f"backup written: {report.path}"
         f" (schema v{report.schema_version}, {report.item_count} items)"
     )
+
+
+@main.command("export")
+@click.option(
+    "--out",
+    "out_path",
+    type=click.Path(dir_okay=False),
+    default=None,
+    help="Write the export to this UTF-8 text file instead of STDOUT.",
+)
+@click.option(
+    "--db",
+    "db_path",
+    default=DEFAULT_DB_PATH,
+    help="SQLite database path.",
+)
+def export(out_path: str | None, db_path: str) -> None:
+    """Dump the whole knowledge base as one readable UTF-8 text file.
+
+    Deterministic: the same database renders byte-identical every time,
+    because the header's time line is the newest ledger event, never the
+    wall clock. Embeddings and raw AI answers are derived, rebuildable
+    data and are excluded. Raw source text is preserved verbatim.
+
+    This file is for reading without Ember. It is not restorable into
+    Ember because restoring is the backup's job (GLOSSARY).
+    """
+    try:
+        conn = open_query_database(db_path)
+        try:
+            data = gather_export(conn)
+        finally:
+            conn.close()
+        text = render_export(data)
+        if out_path is not None:
+            refuse_self_overwrite(db_path, out_path)
+            write_export(text, out_path)
+            click.echo(
+                f"exported {len(data.items)} items, {len(data.links)} links,"
+                f" {len(data.ledger)} ledger rows, {len(data.sources)} sources"
+                f" -> {out_path}"
+            )
+        else:
+            click.echo(text, nl=False)
+    except EmberError as exc:
+        click.echo(f"error: {exc.log_line()}", err=True)
+        raise SystemExit(1)
 
 
 @main.command("db-check")

@@ -38,3 +38,24 @@ class VerifyFailed(BackupError):
 
     code = "BACKUP-004"
     name = "VerifyFailed"
+
+
+class ExportError(EmberError):
+    """Base error for every export failure. Never raised directly."""
+
+    code = "EXPORT-000"
+    name = "ExportError"
+
+
+class OutputWriteFailed(ExportError):
+    """The `--out` file could not be written."""
+
+    code = "EXPORT-001"
+    name = "OutputWriteFailed"
+
+
+class OverwriteRefused(ExportError):
+    """The `--out` path is the knowledge base file itself."""
+
+    code = "EXPORT-002"
+    name = "OverwriteRefused"

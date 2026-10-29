@@ -51,3 +51,63 @@ No rollback — read-only over the live DB, enforced by the hash-proof tests. Th
 ## Build Notes
 
 *(post-implementation: what landed, suite numbers, deviations)*
+
+Landed as one commit on `feat/data-safety` (utility step 02, closes issue 18):
+
+- `ember/adapters/export.py`: `gather_export(conn) -> ExportData` (fixed-order
+  SELECTs, schema version read only) and the PURE `render_export(data) -> str`,
+  plus the emitter helpers `refuse_self_overwrite` and `write_export`. Row
+  models `ExportItem` / `ExportSource` / `ExportData` in the query `rows.py`
+  style (pydantic), links reuse `ember.relate.rows.Link` (D3) and ledger rows
+  reuse `ember.query.rows.ChangeRow`, so no row shape is duplicated.
+- `ember/adapters/errors.py`: `ExportError` (`EXPORT-000`) with leaves
+  `OutputWriteFailed` (`EXPORT-001`) and `OverwriteRefused` (`EXPORT-002`),
+  following the step 01 `BackupError` pattern exactly.
+- `ember/cli.py`: `ember export` with `--db` and optional `--out`, opened via
+  `open_query_database` (QUERY-003/004 reused, floors enforced, never
+  migrates). The guard runs before any open-for-write, and refusal leaves
+  the DB byte-identical (proved by hashes below).
+- `tests/test_export.py` (20 tests) + `tests/fixtures/export_source_verbatim.txt`.
+- `tests/fakes.py`: `insert_item` grew optional `rationale` / `source` params
+  (same conditional-column pattern as its existing `metadata` param) so the
+  coverage proof can seed every column. No other existing file changed.
+- `PROJECT_MAP.md` and `.scratch` ticket updated. README deliberately not
+  touched (orchestrator handles it, per step instructions).
+
+Suite numbers (TDD): red run before implementation: collection error
+(`OverwriteRefused` did not exist yet), then 8 passed / 12 failed after the
+first implementation pass, then green: **20 passed**. Full suite after:
+**872 passed, 4 deselected** (baseline was 852 passed, 4 deselected). `tests/
+test_architecture.py` explicitly: **6 passed**.
+
+CLI checks (seeded real DB at /tmp/opencode/export-check/ember.db):
+- `ember export --db ember.db | head -5`: the five pinned header lines,
+  exit 0.
+- `ember export --db ember.db --out /tmp/opencode/export-check/ember.txt`:
+  `exported 3 items, 2 links, 1 ledger rows, 1 sources -> ...`, exit 0.
+- `ember export --db ember.db --out ember.db`: `error: EXPORT-002
+  OverwriteRefused | ember.adapters.export.refuse_self_overwrite | output
+  path is the knowledge base file | db_path=ember.db out=ember.db`, exit 1.
+  sha256 before `18b17b476906d511cb6a58949935e86fcbc1c98d7e75cfe5e15a2b0088c69e8d`,
+  after identical, `IDENTICAL`.
+
+Deviations (each with a one-line justification):
+
+1. **End-marker design hardened** (the step plan flagged this as pre-commit
+   work): the end marker is `----- source <id> text end (bytes=<n>,
+   sha256=<h>) -----` instead of the sketched bare form, because a source
+   containing a bare `----- source 1 text end -----` line (as the fixture
+   does) could otherwise close its own block. The id + byte count + digest
+   cannot be forged by content without inverting SHA-256, and another
+   source's end line fails the id check.
+2. **Item blocks lead with `type id | status`** (rule 5 of the build order),
+   statement first among the field lines, and `source_id` added after the
+   plan's column list: the plan's list omitted it, but "ALL columns of every
+   row exported" wins, and a triaging reader needs the source pointer.
+3. **`validated` renders as the raw 0/1/(null)** column value rather than a
+   prose word: lossless, and the export is the record (L2 §5.2).
+4. **v12 `headers` declare the D2 exclusion in the plan's exact wording** and
+   the missing-ledger case renders `# as of (latest ledger event): (no
+   ledger rows)` so an empty database stays a valid 0-count file (I8).
+5. **`tests/query/fakes.py` `make_v9` reused for the floor test** instead of
+   a new builder: same pattern as `tests/test_backup.py`, no new seam.

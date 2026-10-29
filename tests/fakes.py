@@ -118,11 +118,15 @@ def insert_item(
     close_reason: str | None = None,
     status_origin: str = "derived",
     metadata: str | None = None,
+    rationale: str | None = None,
+    source: str | None = None,
 ) -> int:
     """Insert one `items` row and return its id.
 
-    The metadata column is written only when a label is given, so v10 and v11
-    hand-built databases (no metadata column yet) stay insertable.
+    The metadata column is written only when a label is given, so v10 and
+    v11 hand-built databases (no metadata column yet) stay insertable.
+    The rationale and source authorial columns (migration 004) follow the
+    same rule for the same reason.
     """
     columns = (
         "id, type, statement, source_id, status, created_at,"
@@ -144,6 +148,14 @@ def insert_item(
         columns += ", metadata"
         placeholders += ", ?"
         values.append(metadata)
+    if rationale is not None:
+        columns += ", rationale"
+        placeholders += ", ?"
+        values.append(rationale)
+    if source is not None:
+        columns += ", source"
+        placeholders += ", ?"
+        values.append(source)
     cursor = conn.execute(
         f"INSERT INTO items ({columns}) VALUES ({placeholders})", tuple(values)
     )
