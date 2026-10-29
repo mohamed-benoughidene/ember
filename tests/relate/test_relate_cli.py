@@ -19,6 +19,15 @@ from ember.relate.rows import Pool
 from tests.fakes import FIXED_TIME, insert_item, insert_link, insert_source
 from tests.relate.fakes import FakeEmbedder
 
+GOLDEN_EMPTY_POOL = json.loads(
+    (
+        Path(__file__).resolve().parents[1]
+        / "fixtures"
+        / "relate"
+        / "empty_pool_golden.json"
+    ).read_text(encoding="utf-8")
+)
+
 
 @pytest.fixture(autouse=True)
 def _stub_boot_validation(monkeypatch) -> None:
@@ -338,6 +347,31 @@ def test_relate_empty_universe_skips_the_model(db_path, monkeypatch) -> None:
         "pool_size": 0,
         "signals": {"dense": 0, "graph": 0, "metadata": 0},
     }
+
+
+def test_empty_pool_stdout_byte_identical_to_pre_amendment(
+    db_path, monkeypatch
+) -> None:
+    """Raw stdout must equal the pre-amendment capture (ticket 10, plan 04 §5).
+
+    The capture ran the same CliRunner call on the same single-item seed
+    before the `Signals` wrapper code landed. The dummy API key lets the real
+    link proposer construct offline, exactly like the capture.
+    """
+    monkeypatch.setenv("EMBER_AI_API_KEY", "dummy")
+    conn = open_database(db_path)
+    try:
+        source_id = insert_source(conn)
+        _seed_item(conn, source_id, 1)
+        conn.commit()
+    finally:
+        conn.close()
+
+    result = CliRunner().invoke(main, ["relate", "--item", "1", "--db", db_path])
+
+    assert result.exit_code == 0
+    assert result.stderr == ""
+    assert result.stdout.encode() == GOLDEN_EMPTY_POOL["empty_pool"].encode()
 
 
 def test_relate_embedder_load_failure_exits_1_with_relate_017(
