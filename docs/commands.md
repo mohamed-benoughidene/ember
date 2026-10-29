@@ -117,4 +117,4 @@ A readable text rendering (GLOSSARY: Export, not restorable). Every `items`, `li
 
 ## Helper script
 
-- `scripts/ember-key-wizard.sh`: interactive walkthrough for getting an OpenRouter key; writes `/tmp/opencode/ember.env` (mode 600, outside the repo, delete after a real run). Needed by `capture`, `relate`, and the live tests.
+- `scripts/ember-key-wizard.sh`: interactive walkthrough for getting an OpenRouter key; writes `.env` in the repository root (mode 600, gitignored, never committed). Needed by `capture`, `relate`, and the live tests; load it before a real run with `set -a; source .env; set +a`.
