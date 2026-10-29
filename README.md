@@ -24,15 +24,15 @@ Ember is a system for maintaining that durable context. It does not store the pr
 
 ## Repository Structure
 
-- `Constitution.md`: Architectural rules for standalone modules, clean boundaries, and reliable tests.
+- [`Constitution.md`](Constitution.md): Architectural rules for standalone modules, clean boundaries, and reliable tests.
 - [`GLOSSARY.md`](GLOSSARY.md): The project's vocabulary: knowledge base, ledger, item, link, and the backup/export/restore language.
-- `PROJECT_MAP.md`: Index of every file and directory in this project.
-- `Personal guidelines.md`: Working guidelines on accuracy, plain language, and critical thinking.
-- `docs/`: System documentation, brand philosophy, and architecture diagrams. The full command inventory (every command with its flags, writes, and error codes) is in [`docs/commands.md`](docs/commands.md).
-  - `docs/ai version/`: Compressed specifications optimized for AI readers.
-  - `docs/humen version/`: Plain-English specifications written for human builders.
-  - `docs/Graphs/`: Visual diagrams and example runs.
-- `assets/`: Official Ember brand logos and icons.
+- [`PROJECT_MAP.md`](PROJECT_MAP.md): Index of every file and directory in this project.
+- [`docs/`](docs/): System documentation, brand philosophy, and architecture diagrams. The full command inventory (every command with its flags, writes, and error codes) is in [`docs/commands.md`](docs/commands.md).
+  - [`docs/ai version/`](docs/ai%20version/): Compressed specifications optimized for AI readers.
+  - [`docs/humen version/`](docs/humen%20version/): Plain-English specifications written for human builders.
+  - [`docs/Graphs/`](docs/Graphs/): Visual diagrams and example runs.
+- [`plans/`](plans/): The layered build plans: the system master plan (L1), the engine plans (L2), and the per-step plans (L3).
+- [`assets/`](assets/): Official Ember brand logos and icons.
 
 ---
 
