@@ -163,6 +163,16 @@ pytest
 pytest -m live
 ```
 
+## License
+
+Ember is **source-available** under the [Business Source License 1.1](LICENSE) (`BSL-1.1`), (c) Mohamed Benoughidene.
+
+- **You may use, copy, modify, and redistribute Ember for free** as long as the use stays inside your own organization or is personal: learning, development, testing, personal projects, and internal tools included.
+- **Only selling Ember itself** (or a product or service built on or with it, including as a hosted service) to third parties requires a commercial license. Contact **mohamedbenoughidene@gmail.com**.
+- **It ages into open source:** two years after a version is first published, that version automatically becomes available under the MIT License.
+- Ember is not Open Source while under BSL 1.1; the license text says so itself.
+- Contributions are welcome under the terms of [CLA.md](CLA.md): you keep ownership of what you write and grant the project a permanent license to use it, signed with a `Signed-off-by:` line in your commits.
+
 ## API key wizard
 
 For any command that needs a real OpenRouter key (capture, relate, or the live tests), run:

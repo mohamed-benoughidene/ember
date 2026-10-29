@@ -5,7 +5,9 @@ This file lists every file and its purpose in the repository. Update it when fil
 ## Root Files
 - `.gitignore`: Ignore rules for Python build files and local database files.
 - `AGENTS.md`: Rules for AI coding agents working in this repository.
+- `CLA.md`: Contributor License Agreement (license-grant style): contributors keep copyright, grant the project a permanent license, signed with a `Signed-off-by:` commit line.
 - `Constitution.md`: Core build rules for modules, data, interfaces and tests (AI caveman version).
+- `LICENSE`: Business Source License 1.1 (source-available): free for personal and internal use, commercial license required only for offering Ember to third parties; each version becomes MIT two years after its first publication.
 - `Personal guidelines.md`: Rules for tone, accuracy and review style (AI caveman version).
 - `PROJECT_MAP.md`: This file. Index of files and their purpose.
 - `README.md`: Overview of the Ember project, its core purpose, and repository layout.
