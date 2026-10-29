@@ -660,6 +660,93 @@ Error-code audits: check nothing after 012 exists in any branch before numbering
 
 **(c) Knowingly deviated:** I8 — removing a non-Confirmed link is an ERROR (`MAINTAIN-015`), not a silent no-op; same justification as `MAINTAIN-004` (a wrong `--link` must not read as success). B6 — `human_actions.py` and `SqliteMaintainStore` grow a third/fifth method each; the warning sign to watch is splitting them, per this plan's own §Z. Rule 1/master plan (not Constitution) — `edit_item` and `remove_link` never call AI; the human invocation is the confirmation, the standing close-item precedent.
 
+## 13. V1.x Amendment (hardening phase): timestamp-scoped manual shield (ticket 12, #14 option c)
+
+Implements the Decision line of `plans/hardening-decisions.md` #14, pinned verbatim: **"option (c), timestamp-scoped shield, full scope. A manual clear silences evidence older than the clear (its change_log timestamp). Evidence newer than the clear passes the shield, for every derived change (re-flags and closes alike). Ties break by change_log id, matching the history sort convention. No migration."** The full-scope consequence is recorded, not hedged: a derived close (`superseded` / `answered`) also fires on a previously shielded card when its evidence is newer than the clear. L3: `plans/steps/hardening/06-timestamp-shield.md`. Ticket: `.scratch/hardening/issues/12-timestamp-shield.md` (closes #14).
+
+### 13.1 Amended lines (text this section replaces)
+
+- **Gap B4 (§2.1) is rewritten** from "Known V1 limitation (deferred issue)... a *new* contradiction confirmed later on a human-cleared item will not re-flag it. Fixing that needs per-trigger acknowledgment." to: "**B4. The shield is timestamp-scoped (V1.x amendment §13).** A manual clear silences exactly the derived evidence that predates it. Derived evidence confirmed after the clear passes the shield — re-flag or close — and the item's `status_origin` returns to `'derived'`, so a later clear re-arms the shield. The human still outranks the sweep (rule 6): every new clear moves the boundary forward."
+- **§4.6 bullet amended:** the sentence "`status_origin` is **NOT** written by the sweep" since this amendment reads "...written by the sweep only once per shielded change whose evidence passed the timestamp rule — the re-arm row of §13.4. Every human clear still writes it via `apply_status_origin`."
+- **§4.6 vocabulary table gains one row**, the re-arm (shape pinned in §13.4).
+- **Gap C's "the one `change_log` read in Phase 1" claim widens:** Phase 1 now reads a second ledger slice, `shield_log` (§13.5), next to `list_reversed_link_ids`. Still state lookup of facts the engines wrote, not an event bus.
+
+### 13.2 Evidence timestamp — Decision per derived cause family
+
+Every derived cause is link-caused. For all four families the evidence event is the **triggering link's confirmation**, and the pinned source is its **ledger row** — not the `links` column:
+
+| Candidate change (cause on its `status` row) | Evidence event | Pinned evidence timestamp | Pinned evidence row for the tie |
+|---|---|---|---|
+| `contradicts_confirmed` → Challenged | the `contradicts` link's confirmation | that row's `timestamp` | `change_log` row `field_changed='link_confirmed'`, `link_id` = the `contradicts` link |
+| `dependency_closed` → Challenged | the `depends_on` link's confirmation | same | same, `link_id` = the `depends_on` link |
+| `supersedes_confirmed` → Closed/`superseded` | the `supersedes` link's confirmation | same | same, `link_id` = the `supersedes` link |
+| `answers_confirmed` → Closed/`answered` | the `answers` link's confirmation | same | same, `link_id` = the `answers` link |
+
+Why the ledger row and not `links.created_at`: the two values are equal by construction — the relate gatekeeper stamps both from ONE clock read (`ember/relate/link_gatekeeper.py:137-156`) and `SqliteLinkStore.insert_link_with_log` writes the pair in one transaction (`ember/adapters/sqlite.py:1401-1454`), stamping the real `link_id` onto the ledger row at `:1432`. The ledger row is pinned because (a) D3: the ledger is the source of item history, and (b) the tie rule needs the row's `change_log.id`, which the `links` column cannot supply. One deterministic source for every cause. Dev-only edge: links created before migration 003 added `change_log` carry no `link_confirmed` row — for them the rule fails closed (§13.4), identical to today's silence.
+
+### 13.3 Clear timestamp — Decision
+
+A manual clear is attested by exactly the rows `apply_status_origin` writes (`ember/adapters/sqlite.py:944-979`, cause hardcoded at `:970-971`): `field_changed='status_origin'` AND `trigger_cause='user_set_status'` AND `new_value='manual'` (spelling verified against the writer). **Clear timestamp for an item = the latest such row for that item, latest = max `(timestamp, change_log.id)`.**
+
+- **Multiple clears:** the newest clear is THE boundary; older clears are inert. Clear-after-clear moves the boundary forward (ticket checklist), and a second manual clear silences again the evidence that just passed (rule 6, human outranks sweep).
+- The `new_value='manual'` predicate is pinned so this amendment's own re-arm rows (§13.4: `new_value='derived'`, different cause) can never read back as a clear and poison the boundary.
+
+### 13.4 The rule and the re-arm write pattern
+
+**The rule — one rule, one choke point.** `merge_and_filter`'s shield skip (`ember/maintain/derive.py:68`) becomes per-candidate and timestamped. For each non-exempt candidate on a `status_origin='manual'` item:
+
+- **Apply iff `(evidence.timestamp, evidence.change_log.id) > (clear.timestamp, clear.change_log.id)`** — the triggering link's `link_confirmed` row (§13.2) beats the item's latest clear row (§13.3). Strictly newer wins. Equal timestamps resolve by the higher `change_log.id` (rows append, so higher id = later fact). A tie lost skips exactly as today. Legacy statement of the same rule, per the ticket: evidence older or equal with `evidence row id < clear row id` is skipped.
+- **Fail-closed:** no clear row visible for the item, or no `link_confirmed` row for the candidate's `link_id` → skipped, today's behavior. Snapshots built without the new rows (the additive default) therefore keep every existing test outcome.
+- The check runs on **each candidate before** the one-change-per-item precedence pick, so a shielded item with several passing candidates still resolves by precedence (§4.2). The internal `_flagging_closed_ids` call gets the same behavior for free — it is the same function on the same snapshot, so a passing full-scope close of a shielded item also feeds same-sweep dependency challenges exactly like any other close.
+
+**Re-arm (what happens when the change applies).** A derived change that passes the shield MUST return the item to `status_origin='derived'` so a later clear can re-arm (ticket checklist). The migration 010 CHECK `status_origin IN ('derived','manual')` allows writing `'derived'` — verified. Pinned pattern, one write call, one transaction:
+
+- `StatusChange` gains `rearm: bool = False` (I10 additive default; the `exempt` value-equality match is unaffected — exempt changes are never stamped, the human path keeps its own `apply_status_origin(item_id, 'manual')`).
+- `merge_and_filter` stamps `rearm=True` on a winning candidate whose item is shielded and whose evidence passed (a model copy; the pure core decides, the adapter executes — T1/T2 unchanged).
+- `SqliteMaintainStore.apply_status_changes`, for a `rearm` change: the same batch UPDATE also sets `status_origin='derived'`, and one extra `change_log` row is appended in the same loop, from the same ONE clock read, inside the same transaction and rollback contract (MAINTAIN-011/012). Row shape (§4.6 table row):
+
+| Trigger | `field_changed` | `old_value` | `new_value` | `trigger_cause` | `link_id` | `item_id` |
+|---|---|---|---|---|---|---|
+| Sweep re-arm (shielded change passed the timestamp rule) | `status_origin` | `manual` (observed; `rearm` is stamped only on shielded items, so the observed value is always `manual`) | `derived` | `sweep_rearm` | the causing link's id (provenance) | the re-armed item |
+
+- `sweep_rearm` is NEW ledger vocabulary (a string, not an error code), per the §4.6 convention that each trigger string names its writer and meaning. Engine D renders it: `ember/query/history.py::_KIND_BY_PAIR` gains `("status_origin", "sweep_rearm") -> "status_origin_changed"` (one additive dict line; without it the row would classify `unknown` — our own engine's row must not).
+- **Rejected alternative, recorded:** calling `apply_status_origin(item_id, 'derived')` after the batch. Rejected for two reasons, both checked against the code: that writer hardcodes `trigger_cause='user_set_status'` (`sqlite.py:970-971`) — a sweep write mislabeled as a human act — and such a row would read back as a CLEAR under §13.3, poisoning the boundary. It would also be a second transaction against I7's batch atomicity.
+
+### 13.5 Determinism and the snapshot
+
+- All timestamps are UTC `isoformat()` with a constant `+00:00` offset (`sqlite.py:335-336`), so lexicographic string compare is chronological — the same convention `history` already sorts by (`history.py:120`).
+- The comparison is pure, deterministic, snapshot-driven: Phase 2 never touches the DB, no second read during the sweep. Phase 1 gains ONE additive read — `MaintainLookupPort.list_shield_log() -> list[ChangeLogEntry]` (reuse `ember.relate.rows.ChangeLogEntry`, D3: one shape, no duplicate model) — folded into `MaintainSnapshot.shield_log: list[ChangeLogEntry] = []` (I10: additive field, default keeps every existing constructor valid). Read failure raises the existing `MAINTAIN-010`. One query:
+
+```sql
+SELECT id, item_id, link_id, field_changed, old_value, new_value, timestamp, trigger_cause
+FROM change_log
+WHERE (field_changed = 'status_origin' AND trigger_cause = 'user_set_status' AND new_value = 'manual')
+   OR field_changed = 'link_confirmed'
+ORDER BY id
+```
+
+### 13.6 Floors — pinned: NO move
+
+`FLOORS` in `ember/adapters/db_check.py` stays exactly `(("relate", 12), ("maintain", 11), ("query", 10))`. This amendment ships no migration, no column, no table: the engine reads a table it already owns (`change_log`, present since migration 003) through one more Phase-1 query. `ember db-check` still prints `floors: relate 12 ok, maintain 11 ok, query 10 ok, capture none`, and `tests/maintain/test_maintain_boot.py`'s `required == 11` pin does not move. **Nobody bumps a floor for ticket 12.**
+
+### 13.7 Codes — zero new
+
+`MAINTAIN-010 ItemsReadFailed` for the new read, `MAINTAIN-011` / `MAINTAIN-012` for the batch write: all unchanged, per §6. One new `trigger_cause` string (`sweep_rearm`) is §4.6 vocabulary, not a code.
+
+### 13.8 The migration-free semantics change, stated honestly
+
+The rule only READS timestamps; it writes no schema and backfills nothing. Every shield already on disk — each `items.status_origin='manual'` column and its paired `change_log` clear row — gains the new behavior **automatically**: a manual clear written before this change is the boundary for evidence on disk, and the first newer link that confirms passes it. Reverting the code reverts the behavior; nothing on disk needs undoing or rewriting (a `sweep_rearm` row left behind under an old binary classifies `unknown` in history and is inert — the old rule checks only the column).
+
+### 13.9 Out of scope
+
+- No blanket veto command (no "silence forever" / keep-silent CLI), no per-cause acknowledgment state: no new column, no acknowledged-trigger bookkeeping — option (b) of the #14 brief is closed BY option (c), not deferred into a footnote.
+- No UI, no report-format change (re-flagged items are ordinary `format_report` `Challenged` lines; re-arm is visible through `ember history`, the ledger).
+- `run_set_status`, `validate_set_status`, `apply_status_origin` untouched: the human clear path keeps its `user_set_status` row and its second-transaction shape (step-03 §4.2).
+
+### 13.10 §Z — Constitution compliance (this amendment)
+
+**(a) Touched & satisfied:** B4 (§13.1/13.4 — the volatile decision "which evidence does a clear silence" hides inside one rule at one choke point) · D3 (§13.2/13.3 — ledger rows are both the evidence and the boundary, re-read, never a second truth) · D5/I10 (§13.4/13.5 — additive only: one snapshot field, one bool, one port method, one dict line, one table row; zero renames, zero schema) · I7 (§13.4 — re-arm rides the existing all-or-nothing batch) · I9 (§13.5 — pure snapshot compare: no clock, no I/O in Phase 2) · I21 (§13.7 — codes only; zero new). **(b) Untouched:** D6/D7 (no migration, no production data touched), T9 (no new subpackage, existing globs hold), B2 (no cross-engine reach — `change_log` rows are read through Maintain's own port). **(c) Knowingly deviated:** none. P1 held: only the ruled rule, its one read, and its one write pattern.
+
 ## Z. Constitution Compliance
 
 **Three tables.** (a) touched & satisfied with a §ref; (b) N/A with a reason; (c) knowingly deviated, with a §ref and a justification.
