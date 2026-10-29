@@ -25,7 +25,7 @@ EXPECTED_TRIGGERS = (
 )
 
 FLOORS: tuple[tuple[str, int], ...] = (
-    ("relate", 11),
+    ("relate", 12),
     ("maintain", 11),
     ("query", 10),
 )

@@ -56,12 +56,19 @@ def _stamp(days: int) -> str:
     return (datetime.fromisoformat(NEW_TIME) + timedelta(days=days)).isoformat()
 
 
-def _item(item_id: int, *, days: int = 0, item_type: str = "Finding") -> NewItem:
+def _item(
+    item_id: int,
+    *,
+    days: int = 0,
+    item_type: str = "Finding",
+    metadata: str | None = None,
+) -> NewItem:
     return NewItem(
         id=item_id,
         type=item_type,
         statement=f"statement {item_id}",
         created_at=_stamp(days),
+        metadata=metadata,
     )
 
 
@@ -457,6 +464,152 @@ def test_metadata_window_is_inclusive_at_thirty_days() -> None:
     assert pool.counts == {"dense": 10, "graph": 0, "metadata": 2}
     assert _ids_with_source(pool.ranked, SignalKind.metadata) == [12, 14]
     assert 13 not in {candidate.item.id for candidate in pool.ranked}
+
+
+def test_labeled_new_item_matches_only_casefolded_equal_labels() -> None:
+    """A labeled new item keeps only labeled, label-equal candidates (§13).
+
+    The 30-day window does not apply, so every candidate here sits far
+    outside it and the outcome depends on the label alone: the equal label
+    matches, the different label and the unlabeled item never do.
+    """
+    new_item = _item(1, metadata="sqlite storage")
+    items = [
+        _item(2, days=FAR_DAYS, metadata="sqlite storage"),
+        _item(3, days=FAR_DAYS, metadata="other area"),
+        _item(4, days=FAR_DAYS),
+    ]
+
+    pool = _build(
+        _loaded(new_item, items),
+        embedder=FakeEmbedder(model_name=MODEL),
+        store=FakeEmbeddingStore(model_name=MODEL),
+    )
+
+    # `counts` holds the pre-merge signal sizes, so exactly one candidate
+    # earned the metadata signal: the equal label at any distance.
+    assert pool.counts == {"dense": 3, "graph": 0, "metadata": 1}
+
+
+def test_same_label_matches_outside_the_thirty_day_window() -> None:
+    """An equal label is a match at any age; the window never applies (§13).
+
+    The equal-label partner is 200 days old, far beyond `METADATA_WINDOW`,
+    and still lands in the metadata signal. The unlabeled same-day item in
+    the same corpus is excluded: a labeled new item never matches down.
+    """
+    new_item = _item(1, metadata="sqlite storage")
+    items = [
+        _item(2, days=FAR_DAYS, metadata="sqlite storage"),
+        _item(3, days=0),
+    ]
+
+    pool = _build(
+        _loaded(new_item, items),
+        embedder=FakeEmbedder(model_name=MODEL),
+        store=FakeEmbeddingStore(model_name=MODEL),
+    )
+
+    assert pool.counts == {"dense": 2, "graph": 0, "metadata": 1}
+
+
+def test_unlabeled_new_item_keeps_the_time_proxy_against_unlabeled_candidates() -> None:
+    """With no label, the frozen 30-day proxy still runs on the both-NULL subset."""
+    new_item = _item(1)
+    items = [
+        _item(2, days=0),
+        _item(3, days=FAR_DAYS),
+        _item(4, days=10),
+    ]
+
+    pool = _build(
+        _loaded(new_item, items),
+        embedder=FakeEmbedder(model_name=MODEL),
+        store=FakeEmbeddingStore(model_name=MODEL),
+    )
+
+    assert pool.counts == {"dense": 3, "graph": 0, "metadata": 2}
+
+
+def test_labeled_candidates_are_excluded_from_the_unlabeled_time_proxy() -> None:
+    """An unlabeled new item never matches a labeled candidate (§13)."""
+    new_item = _item(1)
+    items = [
+        _item(2, days=0, metadata="unrelated"),
+        _item(3, days=0),
+    ]
+
+    pool = _build(
+        _loaded(new_item, items),
+        embedder=FakeEmbedder(model_name=MODEL),
+        store=FakeEmbeddingStore(model_name=MODEL),
+    )
+
+    assert pool.counts == {"dense": 2, "graph": 0, "metadata": 1}
+
+
+def test_metadata_signal_normalizes_case_and_padding() -> None:
+    """Labels compare as `strip().casefold()` on both sides (§13)."""
+    new_item = _item(1, metadata="  Sqlite Storage  ")
+    items = [
+        _item(2, days=FAR_DAYS, metadata="sqlite storage"),
+        _item(3, days=FAR_DAYS, metadata="SQLITE Storage "),
+        _item(4, days=FAR_DAYS, metadata="sqlite"),
+    ]
+
+    pool = _build(
+        _loaded(new_item, items),
+        embedder=FakeEmbedder(model_name=MODEL),
+        store=FakeEmbeddingStore(model_name=MODEL),
+    )
+
+    assert pool.counts == {"dense": 3, "graph": 0, "metadata": 2}
+
+
+def test_blank_metadata_is_unlabeled() -> None:
+    """A blank or whitespace label behaves exactly like NULL (§13).
+
+    Both sides here carry blank text, so the pair falls into the both-NULL
+    branch and the 30-day proxy decides: the same-day blank candidate joins,
+    the far-away one does not.
+    """
+    new_item = _item(1, metadata="   ")
+    items = [
+        _item(2, days=0, metadata=""),
+        _item(3, days=0, metadata="  "),
+        _item(4, days=FAR_DAYS, metadata=""),
+    ]
+
+    pool = _build(
+        _loaded(new_item, items),
+        embedder=FakeEmbedder(model_name=MODEL),
+        store=FakeEmbeddingStore(model_name=MODEL),
+    )
+
+    assert pool.counts == {"dense": 3, "graph": 0, "metadata": 2}
+
+
+def test_labeled_new_item_still_parses_every_created_at() -> None:
+    """Review fix 9: the candidate timestamps keep parsing even when the
+    branch ignores the window, so a malformed value still raises RELATE-023."""
+    new_item = _item(1, metadata="sqlite storage")
+    broken = NewItem(
+        id=2,
+        type="Finding",
+        statement="statement 2",
+        created_at="not a stamp",
+        metadata="sqlite storage",
+    )
+
+    with pytest.raises(MetadataReadFailed) as excinfo:
+        _build(
+            _loaded(new_item, [broken]),
+            embedder=FakeEmbedder(model_name=MODEL),
+            store=FakeEmbeddingStore(model_name=MODEL),
+        )
+
+    assert excinfo.value.code == "RELATE-023"
+    assert excinfo.value.context["item_id"] == 2
 
 
 # --- merge and source priority --------------------------------------------

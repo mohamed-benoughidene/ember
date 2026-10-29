@@ -18,6 +18,9 @@ class NewItem(BaseModel):
     type: str
     statement: str
     created_at: str
+    # Project label from `items.metadata` (ticket 11, step 05b). None means
+    # unlabeled; read-only here, capture is the only writer.
+    metadata: str | None = None
 
 
 class CandidateUniverse(BaseModel):

@@ -94,10 +94,7 @@ def test_db_check_healthy(db_path) -> None:
     assert result.exit_code == 0
     lines = result.output.splitlines()
     assert "version: 12" in lines
-    assert (
-        "floors: relate 11 ok, maintain 11 ok, query 10 ok, capture none"
-        in lines
-    )
+    assert "floors: relate 12 ok, maintain 11 ok, query 10 ok, capture none" in lines
     assert (
         "triggers: links_compat_insert, links_compat_update,"
         " items_closed_reason_insert, items_closed_reason_update - present"
@@ -146,7 +143,7 @@ def test_db_check_drift_stale_version(db_path) -> None:
     assert result.exit_code == 1
     lines = result.output.splitlines()
     assert "version: 10" in lines
-    assert "floors: unmet - relate needs 11, maintain needs 11" in lines
+    assert "floors: unmet - relate needs 12, maintain needs 11" in lines
     assert "result: DRIFT" == lines[-1]
 
 

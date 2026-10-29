@@ -36,6 +36,10 @@ class FakeLinkLookup:
         item = self._by_id.get(item_id)
         return item.created_at if item is not None else None
 
+    def item_metadata(self, item_id: int) -> str | None:
+        item = self._by_id.get(item_id)
+        return item.metadata if item is not None else None
+
     def find_existing(
         self, source_id: int, target_id: int, link_type: str
     ) -> Link | None:

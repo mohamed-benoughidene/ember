@@ -129,15 +129,16 @@ def ensure_relate_schema(conn: sqlite3.Connection) -> None:
     """Check the applied schema version is new enough for the relate engine.
 
     Raise `DbOpenFailed` (RELATE-012) if the version cannot be read, and
-    `SchemaOutdated` (RELATE-014) if the version is below the required 11.
+    `SchemaOutdated` (RELATE-014) if the version is below the required 12
+    (the relate engine reads `items.metadata` from migration 012 on).
     """
     try:
         row = conn.execute("SELECT version FROM schema_version").fetchone()
         version = 0 if row is None else int(row["version"])
     except (sqlite3.Error, ValueError, TypeError) as exc:
         raise DbOpenFailed("schema version read fail") from exc
-    if version < 11:
-        raise SchemaOutdated("schema version too old", version=version, required=11)
+    if version < 12:
+        raise SchemaOutdated("schema version too old", version=version, required=12)
 
 
 def open_maintain_database(db_path: str) -> sqlite3.Connection:
@@ -474,6 +475,20 @@ class SqliteLinkContext:
             raise ItemsReadFailed("item read fail", item_id=item_id) from exc
         return None if row is None else row["created_at"]
 
+    def item_metadata(self, item_id: int) -> str | None:
+        """Return the item's project label, or None if missing or unlabeled.
+
+        NULL is the stored shape for an unlabeled item (migration 012) and is
+        passed through, never treated as a missing row.
+        """
+        try:
+            row = self._conn.execute(
+                "SELECT metadata FROM items WHERE id = ?", (item_id,)
+            ).fetchone()
+        except sqlite3.Error as exc:
+            raise ItemsReadFailed("item read fail", item_id=item_id) from exc
+        return None if row is None else row["metadata"]
+
     def find_existing(
         self,
         source_id: int,
@@ -528,7 +543,7 @@ class SqliteLinkContext:
         """Return every item except `new_item_id`, ordered by id."""
         try:
             rows = self._conn.execute(
-                "SELECT id, type, statement, created_at FROM items"
+                "SELECT id, type, statement, created_at, metadata FROM items"
                 " WHERE id != ? ORDER BY id",
                 (new_item_id,),
             ).fetchall()
@@ -540,6 +555,7 @@ class SqliteLinkContext:
                 type=row["type"],
                 statement=row["statement"],
                 created_at=row["created_at"],
+                metadata=row["metadata"],
             )
             for row in rows
         ]
@@ -548,7 +564,7 @@ class SqliteLinkContext:
         """Return the newest Active item with no link from it, or None."""
         try:
             row = self._conn.execute(
-                "SELECT id, type, statement, created_at FROM items"
+                "SELECT id, type, statement, created_at, metadata FROM items"
                 " WHERE status = 'Active'"
                 " AND id NOT IN (SELECT source_item_id FROM links)"
                 " ORDER BY id DESC LIMIT 1"
@@ -562,6 +578,7 @@ class SqliteLinkContext:
             type=row["type"],
             statement=row["statement"],
             created_at=row["created_at"],
+            metadata=row["metadata"],
         )
 
     def neighbors_of(self, item_id: int) -> list[int]:
