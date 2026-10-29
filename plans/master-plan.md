@@ -160,6 +160,8 @@ Human approves L1. Then 4 L2 engine master plans: `capture`, `relate`, `maintain
 
 **V1.x hardening phase:** V1 is built. The next phase is hardening: its L1-level plan is `plans/hardening-plan.md`, which resolves the 16 open tracker issues in 4 clusters. The L2s are declared there (§7).
 
+**Engine E amendment (approved by maintainer, 2026-10-29):** A fifth standalone module, Engine E: Utility, holds commands outside the capture→relate→maintain→query pipeline, human-only, implemented in the adapters layer following the `ember/adapters/db_check.py` precedent (a self-contained store-adjacent tool that opens the database itself). It shares the storage engine (SQLite, ledger) and inherits L1's read-write invariants; boot engine floors apply at normal engine opens, not at the backup snapshot path. It defines no inter-engine data flow; its two commands (`ember backup`, `ember export`) are leaves on the CLI, layered UI → logic → data (Constitution P2), and they never mutate the live database (backup snapshots it read-only, export reads it read-only). L2: `plans/engine-utility-plan.md`.
+
 ## 9. Deferred to L2 (Reminder)
 
 - Embedding table name and metadata table name.
