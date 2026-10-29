@@ -1246,8 +1246,9 @@ class SqliteItemGatekeeper:
         try:
             self._conn.execute(
                 "INSERT INTO items"
-                " (id, type, statement, source_id, status, created_at, validated)"
-                " VALUES (?, ?, ?, ?, ?, ?, ?)",
+                " (id, type, statement, source_id, status, created_at, validated,"
+                " metadata)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     item.id,
                     item.type,
@@ -1256,6 +1257,7 @@ class SqliteItemGatekeeper:
                     item.status,
                     item.created_at,
                     validated,
+                    item.metadata,
                 ),
             )
             self._conn.commit()

@@ -139,6 +139,7 @@ Earlier logo and character images, kept for history.
 - `ember/adapters/migrations/009_drop_source_id_not_null_and_add_item_id.sql`: Makes `ai_responses.source_id` nullable and adds `item_id`.
 - `ember/adapters/migrations/010_add_item_close_reason.sql`: Adds the `items.close_reason` and `items.status_origin` columns.
 - `ember/adapters/migrations/011_add_links_reversed_at_and_enforcement_triggers.sql`: Adds `links.reversed_at`, the `link_compat` pair table (16 rows), the items/links guard pre-assertions, and the four enforcement triggers (compat pairs on `links`, `Closed` implies `close_reason` on `items`).
+- `ember/adapters/migrations/012_add_items_metadata.sql`: Adds the `items.metadata` column (nullable TEXT, no default, no rebuild, no backfill). NULL means unlabeled. Written by capture (ticket 11, step 05a), read by relate (step 05b).
 
 ## Tests (`tests/`)
 - `tests/__init__.py`: Marks the tests folder as a package.
@@ -156,6 +157,7 @@ Earlier logo and character images, kept for history.
 - `tests/test_capture_pipeline_integration.py`: Phases 3 + 4 end to end on a real temp DB.
 - `tests/test_migrations.py`: Asserts the `items` and `change_log` schema after migrations.
 - `tests/test_migration_011.py`: Migration 011 on real v10 temp DBs: full-row preservation, schema diff, foreign-key check, `sqlite_sequence`, ledger backfill of `reversed_at`, both guard pre-assertions, backup-when-pending with retention 3, fresh install, and failed-migration rollback.
+- `tests/test_migration_012.py`: Migration 012 on real v11 temp DBs: the nullable `metadata` column, full-row preservation (values intact, new column NULL), schema diff, 011's Closed trigger still active and metadata writes not firing the status/close_reason trigger, fresh install through 012, and failed-migration rollback with the `.bak-v11` backup.
 - `tests/test_schema_enforcement.py`: The migration 011 triggers: direct illegal pair INSERT rejected, `link_compat` matches `TYPE_COMPAT` (16 rows), real writers still commit, and `Closed` without `close_reason` rejected.
 - `tests/test_link_replay.py`: The D3 replay tests (hardening 02): `replay_reversals` over a real ledger matches the live `links.reversed_at` column, highest-id marker wins on a clock tie, and pure-unit cases (no marker gives `None`, link-less rows skipped).
 - `tests/test_db_check.py`: `ember db-check` CLI checks (hardening 02): healthy DB exits 0 with the pinned report, seeded drifts (zeroed column, dropped `link_compat` row, stale v10 DB) exit 1 `DRIFT`, missing and corrupt files exit 1 `UNREADABLE`, the read-only hash proof (identical sha256 before and after), and unknown flags exit 2.

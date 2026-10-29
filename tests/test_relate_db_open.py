@@ -107,7 +107,7 @@ def test_open_relate_database_applies_all_migrations(db_path) -> None:
     conn = open_relate_database(db_path)
 
     version = conn.execute("SELECT version FROM schema_version").fetchone()["version"]
-    assert version == 11
+    assert version == 12
 
     tables = {
         row["name"]

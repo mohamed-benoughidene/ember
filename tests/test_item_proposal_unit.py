@@ -275,3 +275,36 @@ def test_whole_response_that_is_not_a_list_raises_schema_error() -> None:
 
 def test_ai_call_error_code_is_stable() -> None:
     assert AiCallError("ai call fail").code == "CAPTURE-008"
+
+
+# --- the optional metadata key (L2 capture plan section 9) -----------------
+
+
+def test_metadata_key_is_read_when_present() -> None:
+    batch = parse_proposals(_response(_entry(metadata="  Auth Network  ")), RAW_TEXT)
+
+    assert batch.dropped == []
+    assert [proposal.metadata for proposal in batch.proposals] == ["Auth Network"]
+
+
+def test_metadata_absent_or_null_is_none() -> None:
+    absent = parse_proposals(_response(_entry()), RAW_TEXT)
+    explicit_null = parse_proposals(_response(_entry(metadata=None)), RAW_TEXT)
+
+    assert absent.proposals[0].metadata is None
+    assert explicit_null.proposals[0].metadata is None
+
+
+def test_metadata_non_string_drops_the_entry() -> None:
+    good = _entry(statement="Team ships weekly", source_quote="team")
+    batch = parse_proposals(_response(_entry(metadata=5), good), RAW_TEXT)
+
+    assert [proposal.metadata for proposal in batch.proposals] == [None]
+    assert [dropped.rule for dropped in batch.dropped] == ["metadata"]
+
+
+def test_metadata_blank_or_whitespace_becomes_none() -> None:
+    batch = parse_proposals(_response(_entry(metadata="   ")), RAW_TEXT)
+
+    assert batch.dropped == []
+    assert batch.proposals[0].metadata is None

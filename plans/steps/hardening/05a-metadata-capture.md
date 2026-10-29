@@ -91,7 +91,84 @@ After this step: the module runs, migration 012 applies on a fresh DB and on a m
 
 ## 10. Build Notes
 
-(placeholder, filled after implementation: what landed vs §3, TDD red-first notes, suite numbers, §6 output evidence, deviations from the pin)
+Filled 2026-10-29 (step 05a, branch `feat/hardening`).
+
+**What landed vs section 3:** all six steps as pinned. The 012 SQL is the exact
+pasted pin. `item_proposal.py` gained the `Field(default=None)` key, the trim
+validator (blank to None), the `metadata` mapping in `_rule_for` (per-entry
+drop, per-entry, no whole-answer failure) and the prompt sentence.
+`item_gatekeeper.py` gained `metadata: str | None = None` on `ProposalDraft`
+and `ValidatedItem`, carried by `_to_draft` and `validate_add_item`.
+`confirm_write.py` gained the `format_block` line (between `confidence` and
+`near_dup_warning`, JSON-quoted) and `ask_metadata` (single prompt, blank keeps
+default, lone `-` clears to None, no retry loop). `sqlite.py` `insert_item`
+gained the column bound to `item.metadata`. `tests/fakes.py` `make_item` and
+`insert_item` gained the additive kwarg.
+
+**TDD red first:** baseline 745 passed, 4 deselected. Tests written first: red
+run showed 46 failed, 718 passed (all 19 new tests failing for missing
+migration/field, plus the declared churn pins). After implementation: 764
+passed, 4 deselected, 0 failed (745 + 19 new).
+
+**Section 6 output evidence:** real `.venv/bin/ember` CLI entry on a real temp
+DB (fresh DB, real Click command, real confirm loop on real stdin, real
+migrations) with only `build_item_proposer` faked per section 6 (the runner
+route). Input `y` printed the exact block:
+
+```
+- id: 1
+  type: "Decision"
+  statement: "Move auth behind the service"
+  source_quote: "move auth"
+  confidence: 0.9
+  metadata: "auth-network"
+  near_dup_warning: null
+[y]es / [n]o / [e]dit / [q]uit
+accepted: 1, rejected: 0, warnings: 0, aborted: false
+```
+
+Exit 0. Edit sequence `e / blank / blank / payments / y` reprinted the block
+with `metadata: "payments"`. The lone `-` edit sequence landed the row with
+metadata NULL. Two new CLI tests pin both routes.
+
+**Migration proof:** fresh DB lands at version 12
+(`test_fresh_install_applies_all_migrations_through_012` plus a real `ember
+db-check` run). A hand-built v11 DB upgrades with items rows and values
+preserved and metadata NULL (`test_migration_012_preserves_all_rows_and_values`)
+and its prior file is intact with a `.bak-v11` backup on a failed 012.
+011's Closed trigger still rejects after 012, and a metadata write does not
+fire the status/close_reason update trigger
+(`test_migration_012_items_triggers_still_active`).
+
+**Confirmed state:** `ember db-check` after this step reports
+`version: 12`, `floors: relate 11 ok, maintain 11 ok, query 10 ok, capture
+none`, `result: OK`. Relate's boot floor stays 11 (05b moves it).
+
+**Deviations from the pin:**
+
+1. The section 9 prompt sentence contains a semicolon in the plan prose. This
+   repo's work rule bans semicolons in code, so the sentence landed with a
+   period: `An item may also carry an optional fifth key, metadata: one short
+   project-area label. Omit the key when unsure.` Meaning unchanged.
+2. Undeclared churn: five existing edit-loop tests gained one blank answer
+   where the new metadata question is asked (three in
+   `test_confirm_write_unit.py`, `test_edit_flow_writes_the_corrected_type` in
+   `test_capture_pipeline_integration.py`, `test_editing_writes_the_corrected_type`
+   in `test_cli_capture.py`). The edit loop is one question longer, so the
+   scripted answers had to match. Intent of each test unchanged.
+3. Undeclared churn: `test_migration_011.py` preservation tests now exempt
+   `items` the way they already exempted `links`, because opening a v10 DB
+   applies 011 and 012 in one run (`SELECT *` gains one trailing NULL key).
+4. `tests/fakes.py` `insert_item` writes the metadata column only when a label
+   is given, so the v10 and v11 hand-built databases (no column yet) stay
+   insertable.
+5. `test_item_gatekeeper_unit.py:61` `_proposal(**overrides)` needed no edit:
+   `metadata` already flows through its overrides path unchanged.
+6. Two new CLI tests beyond section 5's owned list
+   (`test_label_block_and_summary_line`, `test_edit_sequence_relabels_metadata`)
+   to pin the section 6 runner-route behavior in the suite.
+
+Suites in the exact expected state: 764 passed, 4 deselected.
 
 ## 11. Issue closure
 

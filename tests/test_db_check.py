@@ -93,7 +93,7 @@ def test_db_check_healthy(db_path) -> None:
 
     assert result.exit_code == 0
     lines = result.output.splitlines()
-    assert "version: 11" in lines
+    assert "version: 12" in lines
     assert (
         "floors: relate 11 ok, maintain 11 ok, query 10 ok, capture none"
         in lines

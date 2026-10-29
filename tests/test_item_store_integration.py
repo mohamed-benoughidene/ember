@@ -93,6 +93,22 @@ def test_insert_item_writes_the_row(db_path) -> None:
     assert row["validated"] is None
 
 
+def test_insert_item_persists_metadata(db_path) -> None:
+    conn = open_database(db_path)
+    source_id = insert_source(conn)
+
+    SqliteItemGatekeeper(conn).insert_item(
+        make_item(source_id=source_id, metadata="auth-network"), validated=None
+    )
+    SqliteItemGatekeeper(conn).insert_item(
+        make_item(2, source_id=source_id), validated=None
+    )
+
+    labels = conn.execute("SELECT metadata FROM items ORDER BY id").fetchall()
+    assert labels[0]["metadata"] == "auth-network"
+    assert labels[1]["metadata"] is None
+
+
 def test_insert_assumption_sets_the_validated_flag(db_path) -> None:
     conn = open_database(db_path)
     source_id = insert_source(conn)

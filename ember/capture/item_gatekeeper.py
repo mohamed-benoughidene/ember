@@ -36,6 +36,7 @@ class ProposalDraft:
     statement: str
     source_quote: str
     confidence: float
+    metadata: str | None = None
 
 
 @dataclass(frozen=True)
@@ -76,6 +77,7 @@ class ValidatedItem:
     created_at: str
     status: str
     near_dup_warning: NearDupWarning | None
+    metadata: str | None = None
 
 
 @dataclass(frozen=True)
@@ -123,6 +125,7 @@ def _to_draft(proposal: ItemProposal) -> ProposalDraft:
         statement=proposal.statement,
         source_quote=proposal.source_quote,
         confidence=proposal.confidence,
+        metadata=proposal.metadata,
     )
 
 
@@ -195,6 +198,7 @@ def validate_add_item(
         created_at=run.clock(),
         status=STATUS_ACTIVE,
         near_dup_warning=_find_near_dup(draft.statement, run.existing),
+        metadata=draft.metadata,
     )
 
 

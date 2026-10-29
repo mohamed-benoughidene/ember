@@ -165,7 +165,7 @@ def test_edit_re_validates_and_accepts() -> None:
 
     result, _, commit = run(
         [make_item(item_type="Finding")],
-        ["e", "Decision", "Use SQLite", "y"],
+        ["e", "Decision", "Use SQLite", "", "y"],
         revalidate=revalidate,
     )
 
@@ -187,7 +187,7 @@ def test_edit_re_prompts_until_the_type_is_allowed() -> None:
 
     _, confirm, commit = run(
         [make_item(item_type="Finding")],
-        ["e", "Risk", "Decision", "New statement", "y"],
+        ["e", "Risk", "Decision", "New statement", "", "y"],
         revalidate=revalidate,
     )
 
@@ -201,10 +201,58 @@ def test_edit_dropped_by_the_gatekeeper_writes_nothing() -> None:
         return RejectedProposal(rule="quote")
 
     result, confirm, commit = run(
-        [make_item(1)], ["e", "Decision", "x"], revalidate=revalidate
+        [make_item(1)], ["e", "Decision", "x", ""], revalidate=revalidate
     )
 
     assert result.accepted_ids == []
     assert commit.items == []
     assert commit.created == []
     assert any("dropped proposal: quote" in line for line in confirm.written)
+
+
+# --- the metadata line and the metadata edit prompt (ticket 11, step 05a) ---
+
+
+def test_format_block_shows_the_metadata_line() -> None:
+    labeled = format_block(make_item(metadata="auth-network")).splitlines()
+    plain = format_block(make_item()).splitlines()
+
+    assert '  metadata: "auth-network"' in labeled
+    assert "  metadata: null" in plain
+    # The line sits between confidence and near_dup_warning.
+    assert labeled.index("  confidence: 0.9") + 1 == labeled.index(
+        '  metadata: "auth-network"'
+    )
+    assert labeled.index('  metadata: "auth-network"') + 1 == labeled.index(
+        "  near_dup_warning: null"
+    )
+
+
+def test_edit_re_asks_metadata_with_the_ai_default() -> None:
+    def revalidate(draft: ProposalDraft):
+        return make_item(metadata=draft.metadata)
+
+    result, confirm, commit = run(
+        [make_item(metadata="auth-network")],
+        ["e", "", "", "", "y"],
+        revalidate=revalidate,
+    )
+
+    assert "new metadata? (default auth-network)" in confirm.prompts
+    assert result.accepted_ids == [1]
+    assert commit.created[0].metadata == "auth-network"
+
+
+def test_edit_dash_clears_metadata_to_none() -> None:
+    def revalidate(draft: ProposalDraft):
+        return make_item(metadata=draft.metadata)
+
+    _, confirm, commit = run(
+        [make_item(metadata="auth-network")],
+        ["e", "", "", "-", "y"],
+        revalidate=revalidate,
+    )
+
+    assert "new metadata? (default auth-network)" in confirm.prompts
+    assert commit.created[0].metadata is None
+    assert any("  metadata: null" in line for line in confirm.written)

@@ -117,23 +117,35 @@ def insert_item(
     status: str = "Active",
     close_reason: str | None = None,
     status_origin: str = "derived",
+    metadata: str | None = None,
 ) -> int:
-    """Insert one `items` row and return its id."""
+    """Insert one `items` row and return its id.
+
+    The metadata column is written only when a label is given, so v10 and v11
+    hand-built databases (no metadata column yet) stay insertable.
+    """
+    columns = (
+        "id, type, statement, source_id, status, created_at,"
+        " validated, close_reason, status_origin"
+    )
+    placeholders = "?, ?, ?, ?, ?, ?, ?, ?, ?"
+    values: list[object] = [
+        item_id,
+        item_type,
+        statement,
+        source_id,
+        status,
+        created_at,
+        validated,
+        close_reason,
+        status_origin,
+    ]
+    if metadata is not None:
+        columns += ", metadata"
+        placeholders += ", ?"
+        values.append(metadata)
     cursor = conn.execute(
-        "INSERT INTO items (id, type, statement, source_id, status, created_at,"
-        " validated, close_reason, status_origin)"
-        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        (
-            item_id,
-            item_type,
-            statement,
-            source_id,
-            status,
-            created_at,
-            validated,
-            close_reason,
-            status_origin,
-        ),
+        f"INSERT INTO items ({columns}) VALUES ({placeholders})", tuple(values)
     )
     return int(cursor.lastrowid)
 
@@ -175,6 +187,7 @@ def make_item(
     statement: str = "Use SQLite",
     source_id: int = 1,
     warning: NearDupWarning | None = None,
+    metadata: str | None = None,
 ) -> ValidatedItem:
     """Build one `ValidatedItem` for the Phase 4 tests."""
     return ValidatedItem(
@@ -187,4 +200,5 @@ def make_item(
         created_at=FIXED_TIME,
         status="Active",
         near_dup_warning=warning,
+        metadata=metadata,
     )

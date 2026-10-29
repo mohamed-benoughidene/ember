@@ -29,9 +29,15 @@ RAW_TEXT = (
 )
 
 
-def proposal(item_type: ItemType, statement: str, quote: str) -> ItemProposal:
+def proposal(
+    item_type: ItemType, statement: str, quote: str, metadata: str | None = None
+) -> ItemProposal:
     return ItemProposal(
-        type=item_type, statement=statement, source_quote=quote, confidence=0.9
+        type=item_type,
+        statement=statement,
+        source_quote=quote,
+        confidence=0.9,
+        metadata=metadata,
     )
 
 
@@ -126,7 +132,7 @@ def test_edit_flow_writes_the_corrected_type(db_path) -> None:
     proposals = [proposal(ItemType.FINDING, "Use SQLite", "use SQLite")]
 
     _, result, _ = run_pipeline(
-        conn, proposals, ["e", "Decision", "Use SQLite", "y"]
+        conn, proposals, ["e", "Decision", "Use SQLite", "", "y"]
     )
 
     row = conn.execute("SELECT * FROM items").fetchone()
@@ -165,3 +171,50 @@ def test_assumption_row_carries_the_validated_flag(db_path) -> None:
     rows = _rows(conn, "SELECT type, validated FROM items ORDER BY id")
     assert rows[0]["validated"] == 0
     assert rows[1]["validated"] is None
+
+
+# --- the metadata label (ticket 11, step 05a) ------------------------------
+
+
+def test_accepted_label_lands_in_items(db_path) -> None:
+    conn = open_database(db_path)
+    proposals = [
+        proposal(ItemType.DECISION, "Use SQLite", "use SQLite", "auth-network")
+    ]
+
+    _, result, _ = run_pipeline(conn, proposals, ["y"])
+
+    row = conn.execute("SELECT metadata FROM items ORDER BY id").fetchone()
+    assert row["metadata"] == "auth-network"
+    assert len(result.accepted_ids) == 1
+    created = _rows(
+        conn, "SELECT * FROM change_log WHERE field_changed = 'created'"
+    )
+    assert len(created) == 1
+
+
+def test_items_without_a_label_store_null(db_path) -> None:
+    conn = open_database(db_path)
+    proposals = [proposal(ItemType.DECISION, "Use SQLite", "use SQLite")]
+
+    run_pipeline(conn, proposals, ["y"])
+
+    row = conn.execute("SELECT metadata FROM items ORDER BY id").fetchone()
+    assert row["metadata"] is None
+
+
+def test_wrong_metadata_correctable_via_edit(db_path) -> None:
+    conn = open_database(db_path)
+    proposals = [
+        proposal(ItemType.DECISION, "Use SQLite", "use SQLite", "wrong-label")
+    ]
+
+    _, result, _ = run_pipeline(
+        conn, proposals, ["e", "", "", "auth-network", "y"]
+    )
+
+    # The corrected item is re-validated, so it lands under a new id.
+    rows = _rows(conn, "SELECT id, metadata FROM items ORDER BY id")
+    assert len(rows) == 1
+    assert rows[0]["metadata"] == "auth-network"
+    assert result.accepted_ids == [rows[0]["id"]]
