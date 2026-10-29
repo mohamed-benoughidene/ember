@@ -139,6 +139,20 @@ ember history [--item <id>] [--db PATH]
 
 All four are read-only and never write to the database. Each prints one JSON document on stdout. `current-state` lists the `Active` and `Challenged` items with the `Challenged` ones first. `topic-search` ranks by BM25 over item statements. `why` walks the `depends_on` and `supports` links behind an item. `history` shows that item's `change_log` rows with the cause of each change, or the whole ledger with no `--item`.
 
+**7. Keep the knowledge safe (Engine E):**
+
+```bash
+# Snapshot the whole knowledge base to a file you can always go back to
+ember backup /path/to/backup.db [--db PATH]
+
+# Export everything as plain text, readable without Ember, forever
+ember export [--db PATH] [--out PATH]
+```
+
+`backup` copies the database with SQLite's online backup API (a consistent snapshot even if another command is mid-write), then re-opens the copy and prints its schema version and item count as proof. If the target already exists, the previous copy is rotated to `<target>.old-1` (the `.old` chain keeps the newest 3 old copies, so 4 generations exist in total, like the migration runner's own backups) and the command reports the rotation. Restore is deliberately not a command: copy the backup back over `ember.db`, or point Ember at it with `--db`. A backup of an older-schema file is fine, boot upgrades it on restore.
+
+`export` writes every item, link, source, and full ledger row as one deterministic, human-readable text file (same database always produces the same bytes). Rejected and reversed links are included with their states, raw source text is kept verbatim, and derived data (embeddings, AI responses) is declared excluded in the header. The file cannot be restored into Ember; that is the backup's job. Read-only: the database file is byte-identical after an export. If `--out` points at the database itself, export refuses before touching anything (`EXPORT-002`).
+
 ### Running Tests
 
 ```bash
