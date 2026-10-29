@@ -34,3 +34,7 @@ uv.lock
 
 # Local ticket scratch space
 .scratch/
+
+# Local secrets and env files, never committed
+.env
+*.env
