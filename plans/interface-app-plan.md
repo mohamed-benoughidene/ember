@@ -138,11 +138,11 @@ Engine and bridge codes are shown through the §5.6 table.
 | 13 | `plans/steps/app/13-packaging-and-ci.md` | Installers, size, no-network check, before/after measure |
 
 ## §9 Deferred to L3
-- Exact Electron version and package list (step 02, confirmed by A/B).
-- Python bundling method (step 01 decides; step 13 builds it).
+- ~~Exact Electron version and package list (step 02, confirmed by A/B).~~ **DECIDED 2026-10-30, maintainer option A:** exactly two npm packages — `electron@45.1.0` (the spike-frozen version) + `playwright` (dev-only, per decision 7). Settings/key stores, menus, shortcuts and tray are hand-rolled on Electron's built-in APIs; no convenience packages. Python bundling (PyInstaller, spike-tested) is step 13's, not step 02's.
+- Python bundling method (**decided by step 01:** PyInstaller — spike-frozen 20 MB binary, ~32 s build; step 13 builds it).
 - Popup placement options and default (step 11).
 - Font language subsets (step 03; spec §8 says the build must include the ones users need — decided with the founder).
-- Key test (decision 5) and platform scope (decision 2) follow the maintainer's answers.
+- ~~Key test (decision 5) and platform scope (decision 2) follow the maintainer's answers.~~ **DECIDED 2026-10-30:** 5 = A (shape check + real refusal at first Add; stories 5/8 PARTIAL signed off), 2 = A Debian-only V1 (deferred issue #38 tracks Windows/macOS installers).
 - Help content for the Help menu (out of scope; item disabled, spec).
 - Search in the title bar, drag and drop (spec "Still open"): not in V1 unless the founder decides before step 04/05.
 
