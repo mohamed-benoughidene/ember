@@ -13,6 +13,25 @@ Facts in this file come from the code (`ember/cli.py` and the engine modules), n
 
 ---
 
+## Machine use (reading commands from a program)
+
+A program (the desktop app, a script) can read Ember's output as data instead of parsing sentences. Three tools, described once here:
+
+**`--format text|json`** (default `text`) is offered by the ten write and utility commands `maintain`, `close-item`, `set-status`, `reverse-supersedes`, `edit-item`, `remove-link`, `undo`, `redo`, `backup`, `db-check`. With `json`, the command prints ONE JSON document on stdout (sorted keys), with top-level keys `command`, `changes` (the run's change records), `summary` (the counts), and `dry_run` (true on a `--dry-run` run). The terminal `text` default prints, byte for byte, what it always printed. The six Query commands and `capture-source` always print their one JSON document; their shapes are the "Envelope" lines in their own sections. On `capture` and `relate` the flag is accepted but changes nothing — their program-facing mode is the event stream below.
+
+**`--confirm terminal|json`** (default `terminal`) is offered by the three interactive commands `capture`, `relate`, `maintain`. With `json`, every stdout line is one flushed JSON event object, and the answers arrive as stdin lines instead of keystrokes:
+
+- Events, one JSON object per line: `{"event": "block", "kind": "item"|"link-preview"|"link"|"close", "fields": {...}|null, "text": "..."}` (the printed proposal or link block, machine-readable in `fields` when it parses, always raw in `text`); `{"event": "prompt", "kind": "choice"|"type"|"statement"|"metadata", "text": "...", "choices": ["y", ...]}`; `{"event": "message", "text": "..."}` (information lines that bypass the prompts); and `{"event": "summary", ...}` as the final line.
+- Answers: one stdin line per prompt, exactly `{"answer": "<text>"}` (a plain `y`, the edit text to use, or `q` to quit).
+- A stdin line that is not that shape is refused once and the prompt is asked again (`BRIDGE-001`); a second bad line, or the end of input, aborts as a user quit (exit 2), nothing half-written.
+- `capture --confirm json` requires `--file` (the pasted text goes in the file; stdin carries the answers). Without `--file` it is a usage error (exit 2).
+
+**Errors** stay one stderr line in every mode: `error: <CODE> <Name> | <location> | <message>` (the message may itself contain `|` or line breaks; a program reads the first stderr line, matches this shape, and treats the rest as continuation). Exit codes are unchanged: 0 success, 1 on any `CODE-###` error, 2 on a usage error or a user abort.
+
+The whole table above (one row per command: sample arguments, document keys, flags, exit codes) is pinned by the test `tests/bridge/test_contract_table.py` — it fails when a command changes its contract without a row.
+
+---
+
 ## Engine A: Capture (writes entries into the knowledge base)
 
 ### `ember capture [--file PATH] [--db PATH]` - needs key

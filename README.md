@@ -179,14 +179,16 @@ All other commands run only on your computer. After its first download, the `rel
 
 For every flag, what each command writes, and every error code, read the [full command inventory](docs/commands.md).
 
+A program (the desktop app, a script) can also read these commands as data: `--format json` turns a command's output into one JSON document, and `--confirm json` turns the three interactive commands' questions into JSON event lines you answer on stdin. See "Machine use" in the [command inventory](docs/commands.md).
+
 ## Status
 
 Ember has five parts, called engines. All five are built and verified by the offline test suite.
 
 - **Engine A, Capture:** Stores raw notes and asks AI to propose items. You confirm each one.
 - **Engine B, Relate:** Ranks link candidates and asks AI to propose typed links. You confirm each one.
-- **Engine C, Maintain:** A sweep with no AI updates statuses from confirmed links. Five commands make manual changes.
-- **Engine D, Query:** Four read-only commands show the current state, search topics, explain a decision, and show the ledger.
+- **Engine C, Maintain:** A sweep with no AI updates statuses from confirmed links. Seven commands make manual changes (including Undo and Redo).
+- **Engine D, Query:** Six read-only commands show the current state, search topics, explain a decision, show the ledger, and list or show items.
 - **Engine E, Utility:** Safety commands: `backup`, `export`, and the read-only `db-check`.
 
 ## FAQ

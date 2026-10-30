@@ -1,6 +1,6 @@
 # L2 Plan: Interface Bridge (the structured door between the window and Python)
 
-Status: DRAFT 2, 2026-10-30. Revised after the first review round (4 reviewers). Not yet approved. Nothing is built.
+Status: BUILT (2026-10-30). Maintainer gate passed (2026-10-30: D1 = child processes option A, D2 = embedder stays unfakeable, one manual check owed, option A, D3 = key test is shape-check at save + real refusal at first Add, NO `ember check-key` command). Steps 01-04 landed on `ember-interface`: Bridge 02 `77d1bbd`, merge `2f7fe24`, Bridge 01 `5a4fa7e`, Bridge 03 `46bcdc3`, plus the step-04 closeout commit carrying this note; suite 1164 passed, 4 deselected. Known handoffs: the D2 manual check (`ember relate --latest --confirm json` once with a real key) is still owed before the app's relate screen ships; stories 5/8 stay PARTIAL per D3 (the real refusal at first Add is the app's to build); `capture` and `relate` carry the `--format` flag without using it (shared `OutputOptions` bundle, see `archive/interface-deviations.md`); the app parsers read the shapes pinned in `tests/bridge/test_contract_table.py` and L2 §5.
 Origin: `docs/ember-interface-spec.md` Implementation Decisions §3 (modules), §4 (gaps), §11 (platform); user stories 105 to 107.
 L1: `plans/master-plan.md` §8, "Interface module amendment" items 1 and 2.
 Needs first: `plans/engine-undo-plan.md` built (the bridge wraps `undo` and `redo` once).
