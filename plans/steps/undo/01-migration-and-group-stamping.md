@@ -40,6 +40,6 @@ Migration is forward-only (L2 §8 risk 1) (as 010 and 012). Way back: the `<db>.
 ## 6. Done when
 Full suite passes with the real count shown; the CLI check prints the shared id; the migration test passes on a copy of a v12 file.
 
-## 7. Required A/B before building (AGENTS.md §2)
+## 7. Decision taken (2026-10-30, maintainer): **A — migration 013 approved.** Still show the counts in build notes (done: 0 tracked DB files, no `ember.db` on the machine).
 - **A:** go with migration 013 now. Affects: 0 existing rows changed, 0 tracked database files, local files unknown (builder runs `sqlite3 <file> "select count(*) from change_log"` on the maintainer's real file and shows it). Undo: restore `.bak-v12`.
-- **B:** use the spec's fallback (group rows by identical timestamp, no migration). Affects: 0 rows, no structure change; cost: special case in `set-status`, clock-tick risk, step 03 and 05 shrink.
+- **B (not taken):** use the spec's fallback (group rows by identical timestamp, no migration). Affects: 0 rows, no structure change; cost: special case in `set-status`, clock-tick risk, step 03 and 05 shrink.
