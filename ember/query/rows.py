@@ -14,7 +14,13 @@ from ember.relate.rows import Link
 
 
 class QueryItem(BaseModel):
-    """One `items` row as this engine reads it (Phase 1 input)."""
+    """One `items` row as this engine reads it (Phase 1 input).
+
+    `source` (the authorial note, migration 004) and `validated` (the human
+    0/1 flag) grow the read model additively for the bridge reads (bridge
+    step 02): both default to `None`, so every pre-existing constructor and
+    reader keeps working unchanged.
+    """
 
     id: int
     type: str
@@ -25,6 +31,8 @@ class QueryItem(BaseModel):
     rationale: str | None
     created_at: str
     source_id: int
+    source: str | None = None
+    validated: bool | None = None
 
 
 class CurrentStateRow(BaseModel):
@@ -150,3 +158,44 @@ class HistoryEvent(BaseModel):
     old_value: str | None
     new_value: str | None
     close_reason: str | None
+
+
+class ListPage(BaseModel):
+    """What `list_items` may crop before the render (bridge step 02).
+
+    `None` means no restriction on that axis: no cap, no skip, as `history`.
+    `limit` 0 is an explicit empty result, never an error. The status/type
+    narrowing never lives here: it stays the existing `TopicFilter` (D3).
+    """
+
+    limit: int | None = None
+    offset: int | None = None
+
+
+class ShowLink(BaseModel):
+    """One of the shown item's links, in one direction (bridge step 02).
+
+    `type` is the link type, `status` travels with it so a Rejected or
+    reversed link stays visible. The `other_item_*` fields describe the item
+    at the far end of the edge, whichever side that is. `reversed_at` is the
+    migration-011 timestamp, `null` on a live link and on every pre-011
+    (schema v10) file, where the column does not exist.
+    """
+
+    id: int
+    type: str
+    status: str
+    other_item_id: int
+    other_item_type: str
+    other_item_statement: str
+    other_item_status: str
+    reversed_at: str | None
+
+
+class ShowItemResult(BaseModel):
+    """The `show_item` output view: the item, its source text, its links."""
+
+    item: QueryItem
+    source: str
+    links_out: list[ShowLink]
+    links_in: list[ShowLink]

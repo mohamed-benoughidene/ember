@@ -171,6 +171,8 @@ All other commands run only on your computer. After its first download, the `rel
 | `topic-search` | Searches item statements by topic | No |
 | `why` | Shows the reasons behind an item | No |
 | `history` | Shows the ledger, for one item or for all | No |
+| `list-items` | Lists every item in any status, with filters | No |
+| `show-item` | Shows one item with its source text and all its links | No |
 | `db-check` | Reports the health of the knowledge base file | No |
 | `backup` | Saves a restorable snapshot | No |
 | `export` | Writes everything as one plain text file | No |

@@ -85,10 +85,12 @@ from ember.maintain.run_maintain import (
     run_sweep,
     run_undo,
 )
-from ember.query.rows import HistoryPage, TopicFilter
+from ember.query.rows import HistoryPage, ListPage, TopicFilter
 from ember.query.run_query import (
     run_current_state,
     run_history,
+    run_list_items,
+    run_show_item,
     run_topic_search,
     run_why,
 )
@@ -1170,3 +1172,97 @@ def _gatekeeper_run(
         next_id=gatekeeper.next_item_id,
         clock=gatekeeper.now,
     )
+
+
+# --- bridge read commands (step 02) -----------------------------------------
+
+
+@main.command("list-items")
+@click.option(
+    "--status",
+    "status",
+    default=None,
+    help="Only list items with this status: Active, Challenged or Closed.",
+)
+@click.option(
+    "--type",
+    "item_type",
+    default=None,
+    help="Only list items of this type: Decision, Assumption, Finding or Question.",
+)
+@click.option(
+    "--limit",
+    "limit",
+    type=int,
+    default=None,
+    help="Keep at most N items after the cut. 0 prints an empty list.",
+)
+@click.option(
+    "--offset",
+    "offset",
+    type=int,
+    default=None,
+    help="Skip N items after the cut. Omit it to skip none.",
+)
+@click.option(
+    "--db",
+    "db_path",
+    default=DEFAULT_DB_PATH,
+    help="SQLite database path.",
+)
+def list_items_command(
+    status: str | None,
+    item_type: str | None,
+    limit: int | None,
+    offset: int | None,
+    db_path: str,
+) -> None:
+    """List every item in any status, as JSON.
+
+    Unlike `current-state`, `Closed` items are listed on purpose, each with
+    its status and close reason. `total` is the count after the filters but
+    before `--limit`/`--offset` crop the printed window. Read-only: the
+    database is opened read-only and never migrated, like every query
+    command.
+    """
+    try:
+        conn = open_query_database(db_path)
+        filter_ = TopicFilter(status=status, type=item_type)
+        page = ListPage(limit=limit, offset=offset)
+        output = run_list_items(SqliteQueryContext(conn), filter_, page)
+    except EmberError as exc:
+        click.echo(f"error: {exc.log_line()}", err=True)
+        raise SystemExit(1)
+    click.echo(output)
+
+
+@main.command("show-item")
+@click.option(
+    "--item",
+    "item_id",
+    type=int,
+    required=True,
+    help="Item id to show.",
+)
+@click.option(
+    "--db",
+    "db_path",
+    default=DEFAULT_DB_PATH,
+    help="SQLite database path.",
+)
+def show_item_command(item_id: int, db_path: str) -> None:
+    """Show one item, its verbatim source text and all its links, as JSON.
+
+    Every link is included in both directions (`links_out`, `links_in`),
+    Rejected and reversed ones too, each with the other item's coordinates
+    and the `reversed_at` timestamp (`null` on a live link, and always null
+    on an older schema file without the column). Read-only, like every
+    query command.
+    """
+    try:
+        conn = open_query_database(db_path)
+        output = run_show_item(SqliteQueryContext(conn), item_id)
+    except EmberError as exc:
+        click.echo(f"error: {exc.log_line()}", err=True)
+        raise SystemExit(1)
+    click.echo(output)

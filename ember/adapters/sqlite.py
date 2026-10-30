@@ -970,6 +970,19 @@ class SqliteMaintainContext:
         return row is not None
 
 
+def _column_exists(conn: sqlite3.Connection, table: str, column: str) -> bool:
+    """Whether `table` has `column` (`PRAGMA table_info`, the export rule).
+
+    Readers select an additive column ONLY through this check (I5): a file
+    from before the migration that added the column keeps reading, with the
+    model default (`None`) in its place. Precedent: `export.py` gates
+    `change_log.group_id` the same way.
+    """
+    return column in {
+        row["name"] for row in conn.execute(f"PRAGMA table_info({table})")
+    }
+
+
 class SqliteQueryContext:
     """`QueryLookupPort` on SQLite: the whole world Engine D may read.
 
@@ -989,7 +1002,8 @@ class SqliteQueryContext:
         try:
             rows = self._conn.execute(
                 "SELECT id, type, statement, status, close_reason,"
-                " status_origin, rationale, created_at, source_id"
+                " status_origin, rationale, created_at, source_id, source,"
+                " validated"
                 " FROM items ORDER BY id"
             ).fetchall()
         except sqlite3.Error as exc:
@@ -1005,6 +1019,11 @@ class SqliteQueryContext:
                 rationale=row["rationale"],
                 created_at=row["created_at"],
                 source_id=row["source_id"],
+                # Bridge step 02 additive columns (migration 004 / 002).
+                source=row["source"],
+                validated=(
+                    bool(row["validated"]) if row["validated"] is not None else None
+                ),
             )
             for row in rows
         ]
@@ -1012,12 +1031,21 @@ class SqliteQueryContext:
     def list_links(self) -> list[Link]:
         """Return every link, ordered by id ascending.
 
-        Raise `ItemsReadFailed` (QUERY-005) on a read failure.
+        `reversed_at` is selected only when the column exists (migration
+        011): on a pre-011 file every `Link` keeps the model default `None`
+        and nothing fails. Raise `ItemsReadFailed` (QUERY-005) on a read
+        failure.
         """
         try:
+            columns = (
+                "id, source_item_id, target_item_id, link_type, status,"
+                " created_at"
+            )
+            has_reversed = _column_exists(self._conn, "links", "reversed_at")
+            if has_reversed:
+                columns += ", reversed_at"
             rows = self._conn.execute(
-                "SELECT id, source_item_id, target_item_id, link_type, status,"
-                " created_at FROM links ORDER BY id"
+                f"SELECT {columns} FROM links ORDER BY id"
             ).fetchall()
         except sqlite3.Error as exc:
             raise QueryItemsReadFailed("link read fail", table="links") from exc
@@ -1029,6 +1057,7 @@ class SqliteQueryContext:
                 link_type=row["link_type"],
                 status=row["status"],
                 created_at=row["created_at"],
+                reversed_at=row["reversed_at"] if has_reversed else None,
             )
             for row in rows
         ]
@@ -1074,6 +1103,29 @@ class SqliteQueryContext:
         except sqlite3.Error as exc:
             raise QueryItemsReadFailed("item read fail", table="items") from exc
         return row is not None
+
+    def source_text_for(self, item_id: int) -> str:
+        """Return the verbatim `sources.full_text` behind the item's source.
+
+        Bridge step 02's one new read (Query's boot is read-only, no write
+        path). Raise `ItemsReadFailed` (QUERY-005) on a read failure, or
+        when the item the gatekeeper just validated has no joinable source
+        row (a dangling `items.source_id`: read failure, not a user error).
+        """
+        try:
+            row = self._conn.execute(
+                "SELECT s.full_text FROM items AS i"
+                " JOIN sources AS s ON s.id = i.source_id"
+                " WHERE i.id = ?",
+                (item_id,),
+            ).fetchone()
+        except sqlite3.Error as exc:
+            raise QueryItemsReadFailed(
+                "source text read fail", item_id=item_id
+            ) from exc
+        if row is None:
+            raise QueryItemsReadFailed("source text read fail", item_id=item_id)
+        return str(row["full_text"])
 
 
 class SqliteMaintainStore:

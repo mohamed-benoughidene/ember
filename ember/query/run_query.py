@@ -7,9 +7,11 @@ from __future__ import annotations
 
 from ember.query.current_state import current_state
 from ember.query.history import history
+from ember.query.list_items import list_items
 from ember.query.lookup import QueryLookupPort
 from ember.query.query_gatekeeper import (
     validate_history_page,
+    validate_list_page,
     validate_query_item,
     validate_query_text,
     validate_topic_filter,
@@ -17,10 +19,13 @@ from ember.query.query_gatekeeper import (
 from ember.query.render import (
     render_current_state,
     render_history,
+    render_list_items,
+    render_show_item,
     render_topic_search,
     render_why,
 )
-from ember.query.rows import HistoryPage, TopicFilter
+from ember.query.rows import HistoryPage, ListPage, TopicFilter
+from ember.query.show_item import show_item
 from ember.query.topic_search import topic_search
 from ember.query.why import why
 
@@ -70,3 +75,34 @@ def run_history(
         validate_query_item(lookup, item_id)
     events = history(lookup.list_change_log(), lookup.list_links(), item_id, page)
     return render_history(events, item_id)
+
+
+def run_list_items(
+    lookup: QueryLookupPort,
+    filter: TopicFilter = TopicFilter(),
+    page: ListPage = ListPage(),
+) -> str:
+    """List every item in any status, as JSON.
+
+    Bridge step 02. The pipeline order is validate the filter (QUERY-006)
+    and the page (QUERY-006), both before any load, then load, derive
+    (filter then page inside), render.
+    """
+    validate_topic_filter(filter)
+    page = validate_list_page(page)
+    total, window = list_items(lookup.list_items(), filter, page)
+    return render_list_items(total, window)
+
+
+def run_show_item(lookup: QueryLookupPort, item_id: int) -> str:
+    """Show one item, its verbatim source text and all its links, as JSON.
+
+    Bridge step 02. The pipeline order is gate the item id (QUERY-001)
+    before any load, then load, derive (both link directions inside),
+    render. The source text comes through the one `source_text_for` read.
+    """
+    validate_query_item(lookup, item_id)
+    items = lookup.list_items()
+    links = lookup.list_links()
+    source_text = lookup.source_text_for(item_id)
+    return render_show_item(show_item(item_id, items, links, source_text))

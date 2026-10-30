@@ -22,10 +22,13 @@ class FakeQueryLookup:
         items: list[QueryItem] | None = None,
         links: list[Link] | None = None,
         change_rows: list[ChangeRow] | None = None,
+        source_texts: dict[int, str] | None = None,
     ) -> None:
         self._items = list(items or [])
         self._links = list(links or [])
         self._change_rows = list(change_rows or [])
+        # Bridge step 02: `source_text_for` texts, keyed by item id.
+        self._source_texts = dict(source_texts or {})
         self.calls: list[str] = []
 
     def list_items(self) -> list[QueryItem]:
@@ -44,6 +47,10 @@ class FakeQueryLookup:
         self.calls.append(f"item_exists:{item_id}")
         return any(item.id == item_id for item in self._items)
 
+    def source_text_for(self, item_id: int) -> str:
+        self.calls.append(f"source_text_for:{item_id}")
+        return self._source_texts.get(item_id, "")
+
 
 def make_item(
     item_id: int = 1,
@@ -56,6 +63,8 @@ def make_item(
     status_origin: str = "derived",
     rationale: str | None = None,
     created_at: str = FIXED_TIME,
+    source: str | None = None,
+    validated: bool | None = None,
 ) -> QueryItem:
     """Build one `QueryItem` for the pure-core tests."""
     return QueryItem(
@@ -68,6 +77,8 @@ def make_item(
         rationale=rationale,
         created_at=created_at,
         source_id=source_id,
+        source=source,
+        validated=validated,
     )
 
 
@@ -124,6 +135,7 @@ def make_link(
     *,
     link_type: str = "depends_on",
     status: str = "Confirmed",
+    reversed_at: str | None = None,
 ) -> Link:
     """Build one `Link` for the history tests."""
     return Link(
@@ -133,6 +145,7 @@ def make_link(
         link_type=link_type,
         status=status,
         created_at=FIXED_TIME,
+        reversed_at=reversed_at,
     )
 
 
