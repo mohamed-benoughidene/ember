@@ -1,6 +1,6 @@
 # L3 App Step 6: Link items (job 3)
 
-Status: DRAFT 2026-10-30. Parent: `plans/interface-app-plan.md` §5.1. Spec stories 42 to 48. Needs step 05.
+Status: DRAFT 2, 2026-10-30. Parent: `plans/interface-app-plan.md` §5.1. Spec stories 42 to 48. Needs step 05.
 
 ## Constitution rules this step enforces
 P4, D4, I15 (long first run), I7, T2, T5.
@@ -16,8 +16,8 @@ None.
 - Summary of confirmed / skipped / rejected (story 47); gatekeeper rejections printed by `relate` as `relate rejected: CODE | detail` lines arrive as `message` events and are shown in plain words.
 
 ## 2. Tests
-- E2E with fake link proposer and fake embedder (existing seams): confirm / skip / reject; rejection message; empty pool; summary counts equal DB.
-- Parity: same input, terminal and app, identical `links` and `change_log` rows.
+- **Embedder cannot be faked across a process (bridge L2 §10 D2).** With D2 = A, Link items end to end is "Not covered by tests" with one manual check using the real model; what IS tested is the UI against the JSON events (a scripted fake event stream feeding the screen: confirm / skip / reject / rejection message / empty pool / summary) and the bridge parsers. With D2 = B, the E2E uses the test-only embedder setting.
+- Parity (D2 = B only): same input, terminal and app, identical `links` and `change_log` rows.
 - Waiting-state test with a slow fake child (no event for 3 s): UI shows preparing + Stop; Stop ends the child cleanly (exit 2 path).
 - Not covered: real model download; manual run once.
 
@@ -27,7 +27,7 @@ $ npm --prefix app run e2e -- link    -> pass, real numbers
 ```
 
 ## 4. Error codes raised
-RELATE-xxx via the table; APP-001, 002.
+RELATE-xxx via the table (L2 §5.6); APP-001, 002, 008.
 
 ## 5. Rollback
 A wrong link: Fix and close → Remove link (marks it Rejected; Undo also reverses it). Code: revert the commit.

@@ -1,6 +1,6 @@
 # L3 App Step 8: Clean up (job 5, the sweep)
 
-Status: DRAFT 2026-10-30. Parent: `plans/interface-app-plan.md` §5.2. Spec stories 63 to 69. Needs steps 03, 04 and bridge steps 01, 03.
+Status: DRAFT 2, 2026-10-30. Parent: `plans/interface-app-plan.md` §5.2. Spec stories 63 to 69. Needs steps 03, 04 and bridge steps 01, 03.
 
 ## Constitution rules this step enforces
 B3 (the sweep rules stay in Python), D3 (badge count = dry-run count), T5, I7, P2.

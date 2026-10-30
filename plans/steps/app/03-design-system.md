@@ -1,6 +1,6 @@
 # L3 App Step 3: the design system as code
 
-Status: DRAFT 2026-10-30. Parent: `plans/interface-app-plan.md` §5.8. Source of truth: `docs/DESIGN.md` (approved) and the prototype. Needs step 02.
+Status: DRAFT 2, 2026-10-30. Parent: `plans/interface-app-plan.md` §5.8. Source of truth: `docs/DESIGN.md` (approved) and the prototype. Needs step 02.
 
 ## Constitution rules this step enforces
 B5 (a few deep components), T1 (pure helpers), D3 (tokens defined once), I10 (tokens additive), S2.
@@ -13,6 +13,7 @@ B5 (a few deep components), T1 (pure helpers), D3 (tokens defined once), I10 (to
 - Fonts under `app/assets/fonts/` with the SIL OFL 1.1 text and copyright notice in the same folder and in the About box (spec story 108). No network font loading.
 - Components with fixed contracts (props/events only): HeatMark (Active = full dot, Challenged = half dot, Closed = ring; accessible name; settle motion on status change; no motion under Reduce Motion), StatusPill, ProvenanceLine, ItemRow, ProposalBlock, StateBlock (loading / empty / error with Retry and Details / no-key), Button (one primary per screen), Banner.
 - Pure helpers: `textScale(step)`, `rem` conversion, contrast check used in tests.
+- **Shared accessibility helper** (L2 §7 item 3): scans a rendered screen for unnamed interactive elements, missing focus rings, and horizontal overflow at the Largest size. Steps 04 to 11 each run it in their own E2E (stories 96, 98, 100, 101, 103).
 
 ## 2. Tests
 - Unit: token file contains every `DESIGN.md` token name (parse both); HeatMark shape per status; StateBlock renders all four states.
@@ -27,7 +28,7 @@ $ npm --prefix app run gallery         -> opens a page showing every component i
 ```
 
 ## 4. Error codes raised
-None.
+None (L2 §6).
 
 ## 5. Rollback
 Revert the commit. No data or Python change.

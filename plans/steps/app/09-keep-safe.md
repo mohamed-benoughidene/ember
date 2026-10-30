@@ -1,9 +1,9 @@
 # L3 App Step 9: Keep safe (job 6)
 
-Status: DRAFT 2026-10-30. Parent: `plans/interface-app-plan.md` §5.2. Spec stories 70 to 77. Needs steps 03, 04 and bridge step 01.
+Status: DRAFT 2, 2026-10-30. Parent: `plans/interface-app-plan.md` §5.2. Spec stories 70 to 77. Needs steps 03, 04 and bridge step 01.
 
 ## Constitution rules this step enforces
-D1, D7 (backup before touching), B3, I7, T5, S1.
+D7 (backup before touching), B3, I7, T5, S1.
 
 ## Deferred settings resolved by this step
 - Open a different knowledge base file ("restore", story 76): the app changes its `--db` path in settings; no restore command exists by design (GLOSSARY). The window asks for one confirmation naming the file and says the current file is unchanged.
@@ -13,7 +13,7 @@ D1, D7 (backup before touching), B3, I7, T5, S1.
 - Export: `export --out <file> --format json`; states in one line that an export cannot be restored into Ember (story 74); `EXPORT-002` refusal shown in plain words.
 - Health check: `db-check --format json` → plain-word rows (version, floors, triggers, links, replay) with OK / DRIFT / UNREADABLE (story 75).
 - Failures say the knowledge base file is unchanged (story 77); true because backup/export never write the live file (utility L2 §1).
-- Open file: native open dialog; the chosen file must pass `db-check` (UNREADABLE → `APP-006` message) before the setting changes.
+- Open file: native open dialog; the chosen file must pass `db-check` (UNREADABLE -> `APP-006` message) before the setting changes. An older (v12) file is NOT rejected: `db-check` has no floor for it (Undo L2 §5.6), and the first write command migrates it with a safety copy. A test opens a v12 backup (story 76).
 
 ## 2. Tests
 - Contract: backup through the app equals `ember backup` (file reads back, count equal); export file bytes equal `ember export --out` on the same KB; db-check rows equal the report.
@@ -26,7 +26,7 @@ $ npm --prefix app run e2e -- keep-safe   -> pass, real numbers
 ```
 
 ## 4. Error codes raised
-BACKUP-001 to 004, EXPORT-001, 002, QUERY-003, 004 via the table; APP-006.
+BACKUP-001 to 004, EXPORT-001, 002, QUERY-003, 004 via the table (L2 §5.6); APP-006, 008.
 
 ## 5. Rollback
 Backups and exports only create files. Open-file changes a setting; switch back in Settings or the menu. Code: revert the commit.

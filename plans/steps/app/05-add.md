@@ -1,6 +1,6 @@
 # L3 App Step 5: Add (job 1) and the confirm UI
 
-Status: DRAFT 2026-10-30. Parent: `plans/interface-app-plan.md` §5.1. Spec stories 16 to 29. Needs steps 02 to 04 and bridge step 03.
+Status: DRAFT 2, 2026-10-30. Parent: `plans/interface-app-plan.md` §5.1. Spec stories 16 to 29. Needs steps 02 to 04 and bridge step 03.
 
 ## Constitution rules this step enforces
 P4 (the confirm screen is an adapter for the confirm session), D4, D8 stays in Python, I7 (a quit never leaves a half write; engines write only after a confirm), T2, T5.
@@ -16,7 +16,7 @@ P4 (the confirm screen is an adapter for the confirm session), D4, D8 stays in P
 - Notice before sending: text is kept word for word and goes to the AI service (story 17).
 
 ## 2. Tests
-- E2E with a fake AI (the same seam existing CLI tests use): confirm, reject, edit-then-confirm, stop part-way; DB state equals the terminal run on the same input (contract parity).
+- E2E with a fake AI: a local HTTP server on `EMBER_AI_BASE_URL` (the only seam across a process boundary; the in-process seam used by `CliRunner` tests is not available to a child process): confirm, reject, edit-then-confirm, stop part-way; DB state equals the terminal run on the same input (contract parity).
 - Keyboard-only: Return confirms, Esc stops (automatic).
 - Failure: fake child dies mid-session → the UI shows the error, no item half-created (DB check).
 - Not covered: real AI; manual run with a real key on Debian.
@@ -27,7 +27,7 @@ $ npm --prefix app run e2e -- add    -> pass, real numbers
 ```
 
 ## 4. Error codes raised
-APP-001, 002; CAPTURE-xxx (all current codes via the table); BRIDGE-001 should never reach the user (client bug if so; test asserts).
+APP-001, 002, 008; CAPTURE-xxx (all current codes via the table, L2 §5.6); BRIDGE-001 never reaches the user (a client bug if it does; a test asserts it).
 
 ## 5. Rollback
 Items are never deleted: a wrong add is reversed by Fix and close (close the item). Code: revert the commit.

@@ -1,6 +1,6 @@
 # L3 App Step 10: Settings
 
-Status: DRAFT 2026-10-30. Parent: `plans/interface-app-plan.md` §5.3, §5.4. Spec stories 78 to 89. Needs steps 02, 03.
+Status: DRAFT 2, 2026-10-30. Parent: `plans/interface-app-plan.md` §5.3, §5.4. Spec stories 78 to 89. Needs steps 02, 03.
 
 ## Constitution rules this step enforces
 I13 (settings loaded once, passed down), D5/D6 (schema number), T1 (conflict warnings pure), T5, B3.
@@ -12,7 +12,7 @@ I13 (settings loaded once, passed down), D5/D6 (schema number), T1 (conflict war
 - Four panes: Appearance (Text size to 200% in five steps, spacing follows, Light / Dark), Quick popup (shortcut and position), Menu (hide/reorder jobs; Home and Settings always present), AI connection (paste/test/replace/remove key; remove marked careful).
 - Opens with Cmd+Comma on a Mac and Ctrl+Comma elsewhere; the window title names the pane; last pane remembered; every change saves itself with a quiet "Saved" (stories 79 to 81).
 - Applying a change takes effect at once (text size, theme); shortcut re-registration failure → `APP-005` message and the tray fallback; key store without OS storage → `APP-003` message and session-only option.
-- Key "test": **Open (carried from step 04):** no engine command tests a key. Contract here: the same decision as step 04 (non-empty and plausible length check; real check at first Add).
+- Key "test": follows L2 §3 decision 5 (same as step 04). Key storage follows decision 4.
 
 ## 2. Tests
 - Unit: warnings table (Ctrl on Mac, bare key, Cmd+Q/W/C/V/Z etc.); schema validation; atomic write; settings survive a restart (E2E: change, relaunch, same values).
@@ -25,7 +25,7 @@ $ npm --prefix app run e2e -- settings   -> pass, real numbers
 ```
 
 ## 4. Error codes raised
-APP-003, APP-004, APP-005.
+APP-003, APP-004, APP-005 (L2 §6).
 
 ## 5. Rollback
 Settings are one file; deleting it restores defaults. Code: revert the commit.
