@@ -7,10 +7,11 @@ This file lists every file and its purpose in the repository. Update it when fil
 - `AGENTS.md`: Rules for AI coding agents working in this repository.
 - `CLA.md`: Contributor License Agreement (license-grant style): contributors keep copyright, grant the project a permanent license, signed with a `Signed-off-by:` commit line.
 - `Constitution.md`: Core build rules for modules, data, interfaces and tests (AI caveman version).
+- `GLOSSARY.md`: Shared vocabulary of the project: knowledge base, ledger, item, link, source, status, proposal, confirm, gatekeeper, sweep, engine, and the backup, export, and restore language. Lists the words to avoid.
 - `LICENSE`: Business Source License 1.1 (source-available): free for personal and internal use, commercial license required only for offering Ember to third parties; each version becomes MIT two years after its first publication.
 - `Personal guidelines.md`: Rules for tone, accuracy and review style (AI caveman version).
 - `PROJECT_MAP.md`: This file. Index of files and their purpose.
-- `README.md`: The front page. What Ember is, a quickstart with settings, which commands send text to an AI service, a one-table command overview (details in `docs/commands.md`), engine status, an FAQ, the license, and the repository layout.
+- `README.md`: The front page. What Ember is, two small Mermaid diagrams of how it works, a quickstart with settings, which commands send text to an AI service, a one-table command overview (details in `docs/commands.md`), engine status, an FAQ, the license, and the repository layout.
 - `SECURITY.md`: Security vulnerability reporting instructions and policy.
 
 ## GitHub Config (`.github/`)
@@ -23,16 +24,18 @@ This file lists every file and its purpose in the repository. Update it when fil
 
 ## Documentation (`docs/`)
 - `docs/commands.md`: Command inventory. Every `ember` CLI command with its flags, what it reads and writes, API key needs, exit codes, and error codes.
-- `docs/brand-philosophy.md`: Brand meaning behind the name Ember, the logo, and the Lantern Keeper character.
-- `docs/pain statment.md`: The problem the product solves, written as a pain statement.
+- `docs/index.html`: Landing page for a GitHub Pages site built from `docs/`. Links to the two diagrams and their PDFs.
+- `docs/.nojekyll`: Empty marker file. It tells GitHub Pages to publish `docs/` as plain files, without the Jekyll build.
 
 ### AI Versions (`docs/ai version/`)
 - `docs/ai version/brand-philosophy-ai.md`: Brand philosophy, terse caveman style for AI readers.
+- `docs/ai version/embedder-reencode-measurement-ai.md`: Measurement record for issue #12 (ticket 14): what it costs to swap the embedding model, measured on 2026-10-29. Terse style for AI readers.
 - `docs/ai version/planning-framework-ai.md`: 3-level planning framework (L1 System, L2 Engine, L3 Step), terse caveman style for AI readers.
 - `docs/ai version/project-context-system-v1-ai.md`: Project Context System V1 spec, terse caveman style for AI readers.
 
 ### Human Versions (`docs/humen version/`)
 - `docs/humen version/brand-philosophy-humen.md`: Brand philosophy, plain English for human readers.
+- `docs/humen version/embedder-reencode-measurement.md`: Plain-English write-up of the same issue #12 measurement: how costly it is to swap the embedding model at scale.
 - `docs/humen version/Constitution-humen.md`: Core build rules, plain English for human readers.
 - `docs/humen version/Personal guidelines-humen.md`: Tone, accuracy and review rules, plain English for human readers.
 - `docs/humen version/project-context-system-v1-human.md`: Project Context System V1 spec, plain English for human readers.
@@ -59,7 +62,11 @@ Earlier logo and character images, kept for history.
 - `archive/assets/Molten Ember Shard Emblem.png`
 
 ## Planning Documents (`plans/`)
-- `plans/master-plan.md`: L1 System Master Plan. 4 engines (Capture, Relate, Maintain, Query), shared SQLite storage, global rules, test strategy, L1 §0 stack decisions. §8 now also holds the approved Engine E amendment (Utility: backup, export).
+- `plans/master-plan.md`: L1 System Master Plan. 4 engines (Capture, Relate, Maintain, Query), shared SQLite storage, global rules, test strategy, L1 §0 stack decisions. §8 now also holds the approved Engine E amendment (Utility: backup, export). Out of date on the engine count (five now): see `plans/README.md`.
+- `plans/README.md`: Status note for the plans. They are history, the code is the source of truth, and it shows how the layers fit together.
+- `plans/hardening-plan.md`: L1 Hardening Phase plan. Resolves the open tracker issues left after the four engines shipped.
+- `plans/hardening-schema-plan.md`: L2 Hardening plan, Cluster 1: schema enforcement (migration 011 triggers, reversal replay, `ember db-check`).
+- `plans/hardening-decisions.md`: Decision brief for hardening Cluster 4 (issues #5, #8, #12, #14, #16). The maintainer recorded all five decisions on 2026-10-29.
 - `plans/engine-capture-plan.md`: L2 Capture engine master plan. Pipeline phases 1-4 (source storage, AI proposal, gatekeeper, user confirm + write).
 - `plans/engine-utility-plan.md`: L2 Engine E (Utility) master plan, APPROVED 2026-10-29 after a 4-axis review panel. `ember backup` (online-API snapshot, `.old` rotation, verified read-back) and `ember export` (deterministic readable text, not restorable). §9 holds the 16-finding review log.
 - `plans/steps/utility/step-01-backup.md`: L3 Utility Step 1 plan. Backup: precheck+rotate, open read-only, snapshot, verify, report.
@@ -78,6 +85,19 @@ Earlier logo and character images, kept for history.
 - `plans/steps/maintain/03-human-actions.md`: L3 Maintain Step 3 plan. The three human commands (`close-item`, `set-status`, `reverse-supersedes`), the `status_origin` shield and the `link_reversed` reversal marker, and the cross-plan amendments that close out the engine.
 - `plans/steps/maintain/04-edit-item.md`: L3 hardening Step 4 plan. `ember edit-item` under ADR Option A (rationale/source only, statement forbidden), with post-implementation Build Notes.
 - `plans/steps/maintain/05-remove-link.md`: L3 hardening Step 5 plan. `ember remove-link`: the ONE `links` status UPDATE (Gate 2, "keep the block"), the per-type sweep-interplay table, and the combined E2E, with post-implementation Build Notes.
+- `plans/steps/hardening/01-migration-011.md`: L3 Hardening Step 1. Migration 011: runner backup, guards, enforcement triggers, schema floors.
+- `plans/steps/hardening/02-replay-and-db-check.md`: L3 Hardening Step 2. Reversal replay, one-clock pairing, and the `ember db-check` command.
+- `plans/steps/hardening/03-relate-reader-deltas.md`: L3 Hardening Step 3. Relate reader deltas: gatekeeper rules 8 and 9 see `reversed_at`.
+- `plans/steps/hardening/04-signals-wrapper.md`: L3 Hardening Step 4. Signals wrapper in `build_candidate_pool` (ticket 10, issue #8), a pure restructure.
+- `plans/steps/hardening/05a-metadata-capture.md`: L3 Hardening Step 5a. Migration 012 and the capture write path for the project label (ticket 11, issue #5).
+- `plans/steps/hardening/05b-metadata-relate.md`: L3 Hardening Step 5b. The Relate metadata signal reads `items.metadata` (ticket 11, issue #5).
+- `plans/steps/hardening/06-timestamp-shield.md`: L3 Hardening Step 6. Timestamp-scoped manual shield (ticket 12, issue #14).
+- `plans/steps/hardening/07-ai-close-proposals.md`: L3 Hardening Step 7. AI-proposed closes, pre-filtered (ticket 13, issue #16).
+- `plans/steps/query/01-load-and-current-state.md`: L3 Query Step 1. Load and `current_state`, with the full read seam.
+- `plans/steps/query/02-topic-search-and-why.md`: L3 Query Step 2. Topic search (BM25) and `why`.
+- `plans/steps/query/03-history-and-closeout.md`: L3 Query Step 3. `history` and the Query engine closeout.
+- `plans/steps/query/04-topic-filters.md`: L3 Query Step 4. Topic-search filters (`--status`, `--type`, `--limit`).
+- `plans/steps/query/05-history-window.md`: L3 Query Step 5. History window (`--limit`, `--offset`, `--since`).
 
 ## Python Implementation (`ember/`)
 - `pyproject.toml`: Package metadata, locked stack deps (click, openai, pydantic; pytest is a dev dep), the optional `relate` extra (`sentence-transformers`), pytest config.
@@ -133,6 +153,7 @@ Earlier logo and character images, kept for history.
 - `ember/adapters/link_replay.py`: `replay_reversals`, the pure D3 replay step (hardening 02): ledger rows in, `dict[int, str | None]` out, highest-id `link_reversed` marker wins, no clock, no I/O. Adapters-only by T9: no engine core imports it.
 - `ember/adapters/errors.py`: Adapter-layer error namespaces: `BackupError` (`BACKUP-000` base, never raised directly) and its leaves `SourceOpenFailed` (`BACKUP-001`), `SourceInvalid` (`BACKUP-002`), `TargetWriteFailed` (`BACKUP-003`), `VerifyFailed` (`BACKUP-004`), plus `ExportError` (`EXPORT-000` base, never raised directly) and its leaves `OutputWriteFailed` (`EXPORT-001`, the `--out` file cannot be written) and `OverwriteRefused` (`EXPORT-002`, the `--out` path is the knowledge base file itself), all `EmberError` subclasses after the `ember/query/errors.py` pattern.
 - `ember/adapters/backup.py`: `create_backup(source_path, target_path) -> BackupReport`, the five-phase backup pipeline (precheck + rotate, read-only source open, snapshot via the sqlite3 online backup API, verify by re-opening the copy and reading `schema_version` + item count, report). An existing target rotates into `.old-<N>` files (newest `.old-1`, newest 3 kept, older deleted, the `.bak-v` convention); a partial copy is deleted on snapshot or verify failure. No engine floors on the source.
+- `ember/adapters/paths.py`: Path guards shared by the backup and export adapters. Decides whether two spellings of a path name the same file.
 - `ember/adapters/export.py`: the `ember export` pipeline behind `gather_export(conn) -> ExportData` (fixed-order SELECTs: items by id, links by id, sources by id, ledger by `(timestamp, id)`, schema version read never advanced, `item_embeddings` / `ai_responses` never read), the row models `ExportItem` / `ExportSource` / `ExportData` (links are the shared `ember.relate.rows.Link`, ledger rows the shared `ember.query.rows.ChangeRow`), the PURE `render_export(data) -> str` (no I/O, no clock, deterministic: header lines include counts and "as of" = max ledger timestamp, sections `== items ==` / `== links ==` / `== sources ==` / `== ledger ==`, one aligned `  label: value` field block per row, removed links labelled `(removed)` and reversed ones `(reversed)`, ledger values never truncated), and the emitter: `refuse_self_overwrite(db_path, out_path)` (raises `EXPORT-002` before any open-for-write when both paths name one file: `os.path.samefile` where both exist, resolved absolute paths otherwise) and `write_export(text, out_path)` (UTF-8, LF endings, raises `EXPORT-001`). Raw source text is D1-verbatim between pinned marker lines, the end marker carrying the source id, byte count and sha256 so no source can ever carry its own end marker.
 - `ember/adapters/db_check.py`: `check_database`, the read-only health check behind `ember db-check` (hardening 02): reads version, floors (relate 12, maintain 11, query 10, capture none), the four enforcement triggers, `link_compat` vs `TYPE_COMPAT`, `PRAGMA foreign_key_check`, and the reversal replay against the live `reversed_at` column. Reports `OK` / `DRIFT` / `UNREADABLE`, never migrates, never writes, no error codes.
 - `ember/adapters/llm.py`: `OpenAiItemProposer` (`ItemProposerPort` on the OpenAI SDK, OpenRouter base URL) and the env-driven factory; `OpenAiLinkProposer` (`LinkProposerPort`) and the `build_link_proposer` factory; `OpenAiCloseProposer` (`CloseProposerPort`, the maintain-third section: parses the raw close answer at the boundary with `parse_close_proposal`, key missing fails fast `MAINTAIN-020`) and the `build_close_proposer` factory.
@@ -265,10 +286,12 @@ Saved AI answers for parser tests. Each pair is `case_NN.raw_text.txt` (the sour
 - `tests/query/test_history_integration.py`: `history` over a ledger written by the real Relate and Maintain writers.
 - `tests/query/test_query_cli.py`: CLI checks for all four commands: exit codes, `QUERY-001` / `QUERY-002`, and JSON-only stdout.
 - `tests/query/test_query_e2e.py`: The one end-to-end chain: capture → relate → maintain → query on a single temp DB with every outside tool faked, all four query documents asserted, and the database hash unchanged by the query phase.
+- `tests/query/test_query_gatekeeper_unit.py`: Unit tests for the Query gatekeeper (QUERY-001, QUERY-002, QUERY-006).
 
 ### Query Fixtures (`tests/fixtures/query/`)
 - `tests/fixtures/query/bm25_golden.json`: The hand-computed BM25 corpus, query and expected scores, with the derivation notes.
 - `tests/fixtures/query/no_flags_golden.json`: Raw stdout captured from the pre-amendment build (item filtering), for the three no-flag commands (`topic-search --query sqlite`, `history`, `history --item 1`) on a temp v10 DB seeded with fixed clock stamps and named ids. The history lines are asserted by `tests/query/test_history_window_cli.py` (hardening 07), the topic-search line by `tests/query/test_topic_filter_cli.py` (hardening 06).
+- `tests/fixtures/relate/empty_pool_golden.json`: Golden output line for `ember relate` when the ranked pool is empty (`{"phase": 2, "pool_size": 0, ...}`).
 
 ## Scripts (`scripts/`)
 - `scripts/measure_model_change.py`: Throwaway measurement asset for issue #12 (not product code). Seeds a synthetic database through the real schema and `tests/fakes.py` helpers, builds the real `bge-base-en-v1.5` embedder, warms the relate Phase-2 vector cache, re-points the cached model name at `all-MiniLM-L6-v2`, then times the real wipe + re-encode + total Phase-2 wall clock with `time.perf_counter`. Args `--items N` (default 500), `--db PATH` (default under `/tmp/opencode/measure14/`). Prints a dated number block the maintainer records on the issue; asserts `MODEL_CHANGED_LINE` on stderr; deletes its throwaway database on the measured paths (the abort paths before the run leave the file for the next run to reset).

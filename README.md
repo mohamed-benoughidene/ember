@@ -22,6 +22,33 @@ Ember keeps it. It does not store the project itself, such as code, images, or d
 Ember is built for any team project, not only software. The four kinds of item are not tied to code. Two limits apply today. Ember runs in a terminal (a text window where you type commands). And it has not been tested on other kinds of work yet: its tests use placeholder text, and its one worked example is a design decision.
 
 If you keep a decision log today, Ember does that job and also keeps assumptions, findings, and questions. Every item is Active, Challenged, or Closed.
+## How Ember works
+
+Capture and Relate both work in three steps. The AI only suggests. A fixed check makes sure each suggestion is valid. You decide what is saved.
+
+```mermaid
+flowchart LR
+    A["You run the command"]:::you --> B["AI suggests<br/>items or links"]:::ai
+    B --> C["Automatic check<br/>(no AI)"]:::auto
+    C --> D["You confirm<br/>each one"]:::you
+    D --> E[("Saved in your<br/>knowledge base file")]:::saved
+    classDef ai fill:#fde3cc,stroke:#c8691d,color:#1f1d1a
+    classDef auto fill:#d9e6fb,stroke:#2f6bc9,color:#1f1d1a
+    classDef you fill:#d7f0d8,stroke:#2f8a43,color:#1f1d1a
+    classDef saved fill:#ffffff,stroke:#8a857b,color:#1f1d1a
+```
+
+Ember has five parts. Capture turns a source into items. Relate links them. Maintain flags items that need a second look. Query reads everything back out. Safety backs up and checks your file.
+
+```mermaid
+flowchart LR
+    P1["1 Capture<br/>turns a source into items"]:::part --> P2["2 Relate<br/>links items to each other"]:::part
+    P2 --> P3["3 Maintain<br/>flags items that need a second look"]:::part
+    P3 --> P4["4 Query<br/>reads it all out"]:::part
+    P5["5 Safety<br/>backup, export, health check"]:::safe
+    classDef part fill:#f1eee4,stroke:#8a857b,color:#1f1d1a
+    classDef safe fill:#cdeee6,stroke:#2f8a7a,color:#1f1d1a
+```
 
 New to the idea? Read the [worked example (PDF)](docs/Graphs/V1%20Example%20Run%20the%20blue%20button%20story-4.pdf) or the [master diagram (PDF)](docs/Graphs/V1%20Master%20Diagram%20Project%20Context%20Management%20System-1.pdf). Both are written for people who do not code.
 
@@ -199,12 +226,22 @@ pytest -m live
 
 ## What is in this repository
 
-This is a map of the folders and files, grouped by what they are for.
+This is a map of the folders and files, grouped by what they are for. [`PROJECT_MAP.md`](PROJECT_MAP.md) describes every single file in one line.
 
 ### The program
 
 - [`ember/`](ember/): The Ember program itself, written in Python.
+  - [`ember/cli.py`](ember/cli.py): The commands you type.
+  - [`ember/capture/`](ember/capture/): Engine A, Capture.
+  - [`ember/relate/`](ember/relate/): Engine B, Relate.
+  - [`ember/maintain/`](ember/maintain/): Engine C, Maintain.
+  - [`ember/query/`](ember/query/): Engine D, Query.
+  - [`ember/adapters/`](ember/adapters/): The parts that touch the outside world: the knowledge base file, the AI service, and the embedding model. Engine E, Utility (backup, export, health check) also lives here.
 - [`tests/`](tests/): The automatic tests that check the program.
+  - [`tests/relate/`](tests/relate/), [`tests/maintain/`](tests/maintain/), and [`tests/query/`](tests/query/): Tests for those three engines.
+  - Test files directly in [`tests/`](tests/): Capture, backup, export, the health check, the commands, and the knowledge base file and its upgrades.
+  - [`tests/fixtures/`](tests/fixtures/): Sample data the tests use.
+  - [`tests/test_architecture.py`](tests/test_architecture.py): Checks that the four engines never depend on an adapter.
 - [`scripts/`](scripts/): Helper scripts. The API key wizard lives here.
 - [`pyproject.toml`](pyproject.toml): Package settings: the name, the version, and what Ember needs to run.
 
@@ -216,7 +253,7 @@ This is a map of the folders and files, grouped by what they are for.
 - [`docs/ai version/`](docs/ai%20version/): Compressed specifications optimized for AI readers.
 - [`GLOSSARY.md`](GLOSSARY.md): The project's vocabulary: knowledge base, ledger, item, link, and the backup, export, and restore language.
 - [`PROJECT_MAP.md`](PROJECT_MAP.md): A one-line description of every file in this project.
-- [`plans/`](plans/): The layered build plans: the system master plan (L1), the engine plans (L2), and the per-step plans (L3).
+- [`plans/`](plans/): The layered build plans: the system master plan (L1), the engine plans (L2), and the per-step plans (L3). Kept as history. Start with [`plans/README.md`](plans/README.md).
 - [`assets/`](assets/): Official Ember brand logos and icons.
 
 ### Rules for working on the project
