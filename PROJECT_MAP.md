@@ -24,6 +24,10 @@ This file lists every file and its purpose in the repository. Update it when fil
 
 ## Documentation (`docs/`)
 - `docs/commands.md`: Command inventory. Every `ember` CLI command with its flags, what it reads and writes, API key needs, exit codes, and error codes.
+- `docs/ember-interface-spec.md`: Spec for the desktop interface (problem, solution, 123 user stories, 22 decisions, jobs-to-commands table, menu bar, shortcuts, Undo framing in section 12, testing decisions, out of scope). Written 2026-10-30 from a design session. Nothing in it is built.
+- `docs/PRODUCT.md`: Product brief for the interface (users, purpose, positioning, constraints, brand commitments, principles, accessibility). Approved by the founder 2026-10-30.
+- `docs/DESIGN.md`: Design system for the interface (Ledger Page and Soot palettes, spacing steps, type, heat marks, motion). Approved by the founder 2026-10-30.
+- `docs/PROTOTYPE-ember-interface-v3.html`: Clickable prototype of the interface with made-up data. Not connected to Ember. Shows the approved look and all screen states.
 - `docs/index.html`: Landing page for a GitHub Pages site built from `docs/`. Links to the two diagrams and their PDFs.
 - `docs/.nojekyll`: Empty marker file. It tells GitHub Pages to publish `docs/` as plain files, without the Jekyll build.
 
@@ -71,6 +75,31 @@ Earlier logo and character images, kept for history.
 - `plans/engine-utility-plan.md`: L2 Engine E (Utility) master plan, APPROVED 2026-10-29 after a 4-axis review panel. `ember backup` (online-API snapshot, `.old` rotation, verified read-back) and `ember export` (deterministic readable text, not restorable). §9 holds the 16-finding review log.
 - `plans/steps/utility/step-01-backup.md`: L3 Utility Step 1 plan. Backup: precheck+rotate, open read-only, snapshot, verify, report.
 - `plans/steps/utility/step-02-export.md`: L3 Utility Step 2 plan. Export: gather, pure render, guarded emit (EXPORT-002 self-overwrite refusal).
+- `plans/engine-undo-plan.md`: L2 Undo and Redo plan (DRAFT 2026-10-30). Group id column (migration 013), `undo` and `redo` commands, refusal rule, shield restore, reversal replay amendment, history/export/db-check changes. Needs the maintainer's approval before any build.
+- `plans/steps/undo/01-migration-and-group-stamping.md`: L3 Undo Step 1 plan. Migration 013 and group ids on the six human actions. A/B on the structure change before building.
+- `plans/steps/undo/02-undo-core.md`: L3 Undo Step 2 plan. The pure undo/redo derivation.
+- `plans/steps/undo/03-store-and-replay.md`: L3 Undo Step 3 plan. The atomic undo write, the replay amendment, and the rule 7 notes.
+- `plans/steps/undo/04-cli-undo-redo.md`: L3 Undo Step 4 plan. The `ember undo` and `ember redo` commands and their docs.
+- `plans/steps/undo/05-read-side-and-closeout.md`: L3 Undo Step 5 plan. History kinds, db-check, export, the E2E test and closeout.
+- `plans/interface-bridge-plan.md`: L2 Interface Bridge plan (DRAFT 2026-10-30). `--format json`, two new read commands (`list-items`, `show-item`), and a JSON confirm port, so the window never guesses what a command printed.
+- `plans/steps/bridge/01-format-json.md`: L3 Bridge Step 1 plan. `--format json` on the write and utility commands.
+- `plans/steps/bridge/02-list-items-show-item.md`: L3 Bridge Step 2 plan. The two new read-only commands.
+- `plans/steps/bridge/03-json-confirm.md`: L3 Bridge Step 3 plan. The JSON confirm port for `capture`, `relate`, `maintain`.
+- `plans/steps/bridge/04-contract-suite-and-closeout.md`: L3 Bridge Step 4 plan. The contract table test and closeout.
+- `plans/interface-app-plan.md`: L2 Interface App plan (DRAFT 2026-10-30). The Electron desktop app: modules, stores, screens, popup, menus, error codes `APP-`, tests. Gated by the step 01 spike.
+- `plans/steps/app/01-spike-three-checks.md`: L3 App Step 1 plan. The throwaway spike: run Ember's Python, popup shortcut on Windows and macOS, install size. Gate for Electron.
+- `plans/steps/app/02-shell-bridge-client-stores.md`: L3 App Step 2 plan. Electron shell, bridge client, settings store, key store.
+- `plans/steps/app/03-design-system.md`: L3 App Step 3 plan. Tokens, fonts and licence, heat mark and state components.
+- `plans/steps/app/04-first-run-home-lookup.md`: L3 App Step 4 plan. First run, Home, Look up.
+- `plans/steps/app/05-add.md`: L3 App Step 5 plan. Add and the confirm screen.
+- `plans/steps/app/06-link-items.md`: L3 App Step 6 plan. Link items.
+- `plans/steps/app/07-fix-and-close-undo.md`: L3 App Step 7 plan. Fix and close with Undo and Redo.
+- `plans/steps/app/08-clean-up.md`: L3 App Step 8 plan. Clean up (the sweep).
+- `plans/steps/app/09-keep-safe.md`: L3 App Step 9 plan. Backup, export, health check, open a file.
+- `plans/steps/app/10-settings.md`: L3 App Step 10 plan. Settings panes.
+- `plans/steps/app/11-quick-popup-tray.md`: L3 App Step 11 plan. Quick popup, global shortcut, tray.
+- `plans/steps/app/12-menus-keyboard-accessibility.md`: L3 App Step 12 plan. Menu bar, keyboard, accessibility pass.
+- `plans/steps/app/13-packaging-and-ci.md`: L3 App Step 13 plan. Installers, CI on three systems, install size.
 - `plans/engine-relate-plan.md`: L2 Relate engine master plan. Pipeline phases 1-4 (load + filter, candidate pool, AI proposal, confirm + write).
 - `plans/steps/capture/01-source-storage.md`: L3 Step 1 plan. Phase 1, source dedup by content hash.
 - `plans/steps/capture/02-ai-port-call.md`: L3 Step 2 plan. Phase 2, AI proposal via `ItemProposerPort`.

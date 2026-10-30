@@ -167,3 +167,13 @@ Human approves L1. Then 4 L2 engine master plans: `capture`, `relate`, `maintain
 - Embedding table name and metadata table name.
 - `Signals` object wrapper for candidate builder (deferred until signal count grows beyond 3).
 - **Embedder model revalidate at Engine B L2 planning start.** Current default `bge-base-en-v1.5` per V1 spec 3.4. Owner: Engine B author. May swap to a different model (e.g. larger or different family) based on V1 spec 3.9 #3 candidate-recall scale test.
+
+**Interface module amendment (DRAFT 2026-10-30, awaiting maintainer approval; source of truth for the product decisions: `docs/ember-interface-spec.md`):** A sixth module, the Interface (desktop app), gives people who do not code a window over the same commands. It is a leaf above the CLI, layered UI → command layer → logic → data (Constitution P2). Rules:
+
+1. **One rule-holder.** Every Ember rule stays in Python. The window never writes the database, never re-implements a gatekeeper, and never does more than the matching `ember` command (spec 12.6 rule 6). The command layer is the single test seam.
+2. **No server of Ember's own.** The window talks to Python by starting `ember` commands as child processes and reading their stdout. No port is opened (README promise).
+3. **Stack for this module (locked here, changes need a new amendment):** Electron + plain JavaScript/HTML/CSS in `app/`; Python side unchanged in stack (Python 3.12+, Click, Pydantic, stdlib `sqlite3`). Electron is confirmed by three checks before any product code (L2 `interface-app-plan.md` step 01). Tauri is the named fallback.
+4. **Three L2 plans, built bottom-up in this order:** `plans/engine-undo-plan.md` (Undo and Redo as engine work, migration 013), `plans/interface-bridge-plan.md` (the structured-output door), `plans/interface-app-plan.md` (the Electron app).
+5. **Rule 7 amended (spec 12.3, confirmed by the maintainer 2026-10-30):** (a) a Closed item may reopen by undoing its own close (before: reversal only); (b) a removed link may flip back `Rejected -> Confirmed`, only as an undo, always with a new ledger row (before: "never flipped back"). Ledger stays append-only: an undo adds rows, it never edits or deletes one.
+6. **Schema:** one additive nullable column `change_log.group_id` (migration 013, schema v13), forward-only, safety copy before upgrade (spec 12.4, decided 2026-10-30).
+7. **Command count:** 18 today; Undo adds `undo` and `redo`; the bridge adds two reads, `list-items` and `show-item` (bridge L2 §5.3). Total 22.
