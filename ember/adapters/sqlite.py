@@ -34,7 +34,13 @@ from ember.maintain.errors import (
     SchemaOutdated as MaintainSchemaOutdated,
     StatusWriteFailed as MaintainStatusWriteFailed,
 )
-from ember.maintain.rows import EditChange, ItemState, LinkChange, StatusChange
+from ember.maintain.rows import (
+    EditChange,
+    ItemState,
+    LedgerGroup,
+    LinkChange,
+    StatusChange,
+)
 from ember.query.errors import (
     DbOpenFailed as QueryDbOpenFailed,
     ItemsReadFailed as QueryItemsReadFailed,
@@ -736,15 +742,18 @@ class SqliteMaintainContext:
     def list_items(self) -> list[ItemState]:
         """Return every item: id, type, status, close_reason, status_origin,
         the two authorial columns `rationale` / `source` (migration 004)
-        that `edit-item` reads its observed old values from, and `statement`
-        (the additive Phase-5 display column the AI proposal judges).
+        that `edit-item` reads its observed old values from, `statement`
+        (the additive Phase-5 display column the AI proposal judges), and
+        `validated` as the ledger encodes it (`true` / `false` / NULL, undo
+        step 02: the refusal rule compares each grouped row against the
+        live value).
 
         Raise `ItemsReadFailed` (MAINTAIN-010) on a read failure.
         """
         try:
             rows = self._conn.execute(
                 "SELECT id, type, status, close_reason, status_origin,"
-                " rationale, source, statement FROM items"
+                " rationale, source, statement, validated FROM items"
             ).fetchall()
         except sqlite3.Error as exc:
             raise MaintainItemsReadFailed("item read fail") from exc
@@ -758,6 +767,11 @@ class SqliteMaintainContext:
                 rationale=row["rationale"],
                 source=row["source"],
                 statement=row["statement"],
+                validated=(
+                    "true" if row["validated"]
+                    else "false" if row["validated"] is not None
+                    else None
+                ),
             )
             for row in rows
         ]
@@ -835,6 +849,53 @@ class SqliteMaintainContext:
             )
             for row in rows
         ]
+
+    def list_grouped_ledger(self) -> list[LedgerGroup]:
+        """Return every undo group: only `change_log` rows with a non-NULL
+        `group_id`, wrapped per group, ordered by group id then row id
+        (undo step 02, L2 §5.1). Read-only: nothing is written or migrated.
+
+        Rows from before migration 013 carry no group id and are invisible
+        here by definition (story 123); the undo core is told separately
+        whether such rows exist, so its refusal message can say so.
+
+        Raise `ItemsReadFailed` (MAINTAIN-010) on a read failure.
+        """
+        try:
+            rows = self._conn.execute(
+                "SELECT id, item_id, link_id, field_changed, old_value,"
+                " new_value, timestamp, trigger_cause, group_id"
+                " FROM change_log"
+                " WHERE group_id IS NOT NULL"
+                " ORDER BY group_id, id"
+            ).fetchall()
+        except sqlite3.Error as exc:
+            raise MaintainItemsReadFailed("change_log read fail") from exc
+        groups: list[LedgerGroup] = []
+        by_id: dict[int, list[ChangeLogEntry]] = {}
+        order: list[int] = []
+        for row in rows:
+            group_id = int(row["group_id"])
+            if group_id not in by_id:
+                by_id[group_id] = []
+                order.append(group_id)
+            by_id[group_id].append(
+                ChangeLogEntry(
+                    id=row["id"],
+                    item_id=row["item_id"],
+                    link_id=row["link_id"],
+                    field_changed=row["field_changed"],
+                    old_value=row["old_value"],
+                    new_value=row["new_value"],
+                    timestamp=row["timestamp"],
+                    trigger_cause=row["trigger_cause"],
+                )
+            )
+        for group_id in order:
+            groups.append(
+                LedgerGroup(group_id=group_id, rows=by_id[group_id])
+            )
+        return groups
 
 
 class SqliteQueryContext:

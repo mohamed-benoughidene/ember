@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Protocol
 
-from ember.maintain.rows import ItemState
+from ember.maintain.rows import ItemState, LedgerGroup
 from ember.relate.rows import ChangeLogEntry, Link
 
 
@@ -35,6 +35,18 @@ class MaintainLookupPort(Protocol):
         """Return the ledger slice the timestamp-scoped manual shield reads
         (L2 §13.5), in id order: the manual-clear rows (`status_origin` /
         `user_set_status` / `manual`) and the `link_confirmed` rows.
+
+        Raise `MAINTAIN-010 ItemsReadFailed` on a read failure.
+        """
+        ...
+
+    def list_grouped_ledger(self) -> list[LedgerGroup]:
+        """Return every undo group: only ledger rows with a non-NULL
+        `group_id`, wrapped per group in id, then row-id, order (undo step
+        02, L2 §5.1). Rows from before migration 013 have no group id and
+        are invisible here by definition (story 123) — the undo core is
+        told whether such rows exist separately, so its refusal message can
+        say so.
 
         Raise `MAINTAIN-010 ItemsReadFailed` on a read failure.
         """

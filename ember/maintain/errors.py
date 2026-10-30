@@ -118,3 +118,23 @@ class CloseAiStoreFailed(MaintainError):
 class UserAbort(MaintainError):
     code = "MAINTAIN-022"
     name = "UserAbort"
+
+
+class NothingToUndo(MaintainError):
+    code = "MAINTAIN-023"
+    name = "NothingToUndo"
+
+
+class NothingToRedo(MaintainError):
+    code = "MAINTAIN-024"
+    name = "NothingToRedo"
+
+
+class UndoRefused(MaintainError):
+    code = "MAINTAIN-025"
+    name = "UndoRefused"
+
+
+class GroupRecordInvalid(MaintainError):
+    code = "MAINTAIN-027"
+    name = "GroupRecordInvalid"
