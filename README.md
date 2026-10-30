@@ -23,6 +23,8 @@ Ember is built for any team project, not only software. The four kinds of item a
 
 If you keep a decision log today, Ember does that job and also keeps assumptions, findings, and questions. Every item is Active, Challenged, or Closed.
 
+New to the idea? Read the [worked example (PDF)](docs/Graphs/V1%20Example%20Run%20the%20blue%20button%20story-4.pdf) or the [master diagram (PDF)](docs/Graphs/V1%20Master%20Diagram%20Project%20Context%20Management%20System-1.pdf). Both are written for people who do not code.
+
 ## What you can do with Ember
 
 - **Capture notes.** Ember reads a note, proposes items, and saves only the ones you confirm.
@@ -180,7 +182,7 @@ You may use, copy, modify, and share Ember for free for personal use or inside y
 
 ### Can a team that does not write software use Ember?
 
-The design does not depend on software. Items are plain statements, and the four kinds are not tied to code. But Ember runs in a terminal and needs Python 3.12 or newer, so someone on the team must be comfortable with that. It has not been tested on non-software notes yet.
+The design does not depend on software. Items are plain statements, and the four kinds are not tied to code. But Ember runs in a terminal and needs Python 3.12 or newer. Someone on the team must be comfortable with that. It has not been tested on non-software notes yet.
 
 ### How is Ember different from architecture decision records?
 

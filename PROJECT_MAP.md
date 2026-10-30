@@ -38,10 +38,10 @@ This file lists every file and its purpose in the repository. Update it when fil
 - `docs/humen version/project-context-system-v1-human.md`: Project Context System V1 spec, plain English for human readers.
 
 ### Diagrams and Examples (`docs/Graphs/`)
-- `docs/Graphs/V1 Master Diagram Project Context Management System – Master diagram.html`: Visual diagram of the system architecture.
-- `docs/Graphs/V1 Master Diagram Project Context Management System-1.pdf`: PDF export of the master diagram.
-- `docs/Graphs/V1 Example Run the blue button story – Example run.html`: Worked example showing the system in use.
-- `docs/Graphs/V1 Example Run the blue button story-4.pdf`: PDF export of the worked example.
+- `docs/Graphs/V1 Master Diagram Project Context Management System – Master diagram.html`: Plain, hand-written HTML (no scripts) that explains the five parts of Ember for non-developers: steps tagged by who acts (AI, automatic check, you), the kinds of item and link, and the four maintain rules. Checked against the code on 2026-10-30.
+- `docs/Graphs/V1 Master Diagram Project Context Management System-1.pdf`: Print of the master diagram HTML (5 A4 pages).
+- `docs/Graphs/V1 Example Run the blue button story – Example run.html`: Plain HTML worked example in five scenes. The closing, flagging, reading, and resetting steps were replayed with the real commands on 2026-10-30.
+- `docs/Graphs/V1 Example Run the blue button story-4.pdf`: Print of the worked example HTML (3 A4 pages).
 
 ## Active Brand Assets (`assets/`)
 - `assets/logo.svg`: Main Ember logo, vertical format.
