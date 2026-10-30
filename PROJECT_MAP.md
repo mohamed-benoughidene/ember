@@ -10,7 +10,7 @@ This file lists every file and its purpose in the repository. Update it when fil
 - `LICENSE`: Business Source License 1.1 (source-available): free for personal and internal use, commercial license required only for offering Ember to third parties; each version becomes MIT two years after its first publication.
 - `Personal guidelines.md`: Rules for tone, accuracy and review style (AI caveman version).
 - `PROJECT_MAP.md`: This file. Index of files and their purpose.
-- `README.md`: Overview of the Ember project, its core purpose, and repository layout.
+- `README.md`: The front page. What Ember is, a quickstart with settings, which commands send text to an AI service, a one-table command overview (details in `docs/commands.md`), engine status, an FAQ, the license, and the repository layout.
 - `SECURITY.md`: Security vulnerability reporting instructions and policy.
 
 ## GitHub Config (`.github/`)
