@@ -19,7 +19,7 @@ already prints are used — step 04's contract table pins this table):
 
 | command            | summary keys                                            | source                                                     |
 |--------------------|---------------------------------------------------------|------------------------------------------------------------|
-| `maintain`         | `closed, challenged, reopened, unchanged` (report counts), `stale, stale_truncated, proposed, accepted, rejected, aborted` | report counts + `ProposalOutcome` + `StaleShortlist.truncated` |
+| `maintain`         | `closed, challenged, reopened, unchanged` (report counts), `stale, stale_truncated, proposed, accepted, rejected, aborted`, `stale_candidates` (the `StaleShortlist` serialized whole: `candidates` + `truncated`) | report counts + `ProposalOutcome` + the `StaleShortlist` model itself (D3: the engine's own model, no second definition) |
 | `close-item`       | `closed, challenged, reopened, unchanged`               | report counts (the text summary line's own numbers)         |
 | `set-status`       | `closed, challenged, reopened, unchanged`               | report counts                                               |
 | `reverse-supersedes`| `closed, challenged, reopened, unchanged`              | report counts                                               |
@@ -33,7 +33,10 @@ Step-01 note (recorded for step 03): a `maintain` run whose stale shortlist
 is non-empty still runs the interactive Phase-5 loop on the terminal in this
 step; its text lines ride the confirm port exactly as in text mode and are
 not part of the document. The JSON event stream for that loop arrives with
-`--confirm json` in step 03.
+`--confirm json` in step 03. (Review fix, ticket 24: the shortlist FACTS now
+reach document mode as `summary.stale_candidates` — the engine's own
+`StaleShortlist` — while under `--confirm json` the shortlist text lines
+still ride the sink as `message` events, so neither json surface drops them.)
 """
 
 from __future__ import annotations

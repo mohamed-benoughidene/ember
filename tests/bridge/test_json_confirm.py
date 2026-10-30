@@ -106,6 +106,22 @@ def test_capture_edit_sub_prompt_kinds(prompt: str, kind: str) -> None:
     assert event["choices"] == []
 
 
+def test_capture_edit_prompt_drift_is_unknown_never_mislabeled() -> None:
+    """Review fix (I5/AGENTS): prompt text matching no known prefix is
+    engine drift, so the kind says `unknown` and the raw text stays in the
+    event — it must not masquerade as a real `statement` prompt."""
+    drift = "new question the engine never asked before?"
+
+    confirm, stream = _capture('{"answer": ""}\n')
+    confirm.ask(drift)
+
+    event = _events(stream)[0]
+    assert event["event"] == "prompt"
+    assert event["kind"] == "unknown"
+    assert event["text"] == drift
+    assert event["choices"] == []
+
+
 def test_first_bad_line_reasks_once_then_accepts_the_good_answer() -> None:
     confirm, stream = _capture('not json at all\n{"answer": "e"}\n')
 

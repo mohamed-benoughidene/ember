@@ -79,7 +79,7 @@ def run_history(
 
 def run_list_items(
     lookup: QueryLookupPort,
-    filter: TopicFilter = TopicFilter(),
+    filter_: TopicFilter = TopicFilter(),
     page: ListPage = ListPage(),
 ) -> str:
     """List every item in any status, as JSON.
@@ -88,9 +88,9 @@ def run_list_items(
     and the page (QUERY-006), both before any load, then load, derive
     (filter then page inside), render.
     """
-    validate_topic_filter(filter)
+    validate_topic_filter(filter_)
     page = validate_list_page(page)
-    total, window = list_items(lookup.list_items(), filter, page)
+    total, window = list_items(lookup.list_items(), filter_, page)
     return render_list_items(total, window)
 
 

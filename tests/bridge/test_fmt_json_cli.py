@@ -22,6 +22,7 @@ from typing import Any, Callable
 import pytest
 
 from ember.adapters import sqlite as sqlite_adapter
+from tests.bridge import confirm_scenarios as cs
 from tests.bridge import harness
 
 GOLDENS = (
@@ -329,3 +330,54 @@ def test_db_check_json_unreadable_exits_1_with_the_document(tmp_path) -> None:
     assert document["command"] == "db-check"
     assert document["summary"]["result"] == "UNREADABLE"
     assert result.stderr == "detail: db file missing\n"
+
+
+# --- review fix, ticket 24: the stale shortlist reaches document mode --------
+
+
+def test_maintain_dry_run_json_document_carries_the_stale_candidates(
+    db_path: str,
+) -> None:
+    """The shortlist lines are prints in text mode, so document mode used to
+    drop them. The document's summary now carries the engine's own
+    `StaleShortlist` whole (D3: no second definition), truncated included."""
+    cs.seed_two_stale_questions(db_path)
+    before = harness.sha(db_path)
+
+    result = harness.invoke(
+        ["maintain", "--dry-run", "--format", "json", "--db", db_path]
+    )
+
+    assert result.exit_code == 0, result.output
+    document = json.loads(result.stdout)
+    shortlist = document["summary"]["stale_candidates"]
+    assert shortlist["truncated"] is False
+    assert [c["item_id"] for c in shortlist["candidates"]] == [7, 9]
+    assert shortlist["candidates"][0] == {
+        "item_id": 7,
+        "item_type": "Question",
+        "statement": "should we cache tokens?",
+        "newest_answers_link_id": 11,
+        "answered_by_item_id": 5,
+        "newest_answer_created_at": "2026-01-01T00:00:00+00:00",
+    }
+    assert harness.sha(db_path) == before
+
+
+def test_maintain_json_document_carries_the_stale_candidates(tmp_path) -> None:
+    """A real run with the faked proposer feed: the document still carries
+    the pre-loop shortlist as data, and the text goldens are untouched
+    (this run's stdout is exactly one document, no shortlist lines)."""
+    result = cs.maintain_session(
+        tmp_path, input_text="y\nn\n", extra_args=("--format", "json")
+    )
+
+    assert result.exit_code == 0
+    document = json.loads(result.stdout.splitlines()[-1])
+    shortlist = document["summary"]["stale_candidates"]
+    assert shortlist["truncated"] is False
+    assert [c["item_id"] for c in shortlist["candidates"]] == [7, 9]
+    assert document["summary"]["stale"] == 2
+    # Document mode: the text shortlist lines are NOT on stdout — the
+    # document carries the facts instead.
+    assert "item 7: stale Question" not in result.stdout

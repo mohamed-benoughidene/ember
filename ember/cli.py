@@ -610,6 +610,10 @@ def maintain(output: OutputOptions) -> None:
             accepted=outcome.accepted,
             rejected=outcome.rejected,
             aborted=outcome.aborted,
+            # The engine's own StaleShortlist model, serialized whole (D3):
+            # in document mode the text-mode shortlist lines live here as
+            # data instead of stdout lines (review fix, ticket 24).
+            stale_candidates=shortlist,
         )
         sink.echo(
             render_document(

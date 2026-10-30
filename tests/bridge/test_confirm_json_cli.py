@@ -461,6 +461,48 @@ def test_maintain_json_no_key_exits_1_after_the_sweep_report(
     assert all(json.loads(line) for line in result.stdout.splitlines())
 
 
+# --- review fix, ticket 24: the dry-run shortlist lines ride the sink --------
+
+
+def test_maintain_dry_run_json_shortlist_lines_are_message_events(
+    tmp_path: Path,
+) -> None:
+    """The pre-apply shortlist lines bypass the confirm port, so under
+    `--confirm json` each one is one `message` event (L2 §5.4), one per
+    candidate — the same bytes the terminal echoes in text mode."""
+    from click.testing import CliRunner
+
+    from ember.cli import main
+    from tests.bridge.confirm_scenarios import seed_two_stale_questions
+
+    seed_two_stale_questions(str(tmp_path / "maintain.db"))
+    result = CliRunner().invoke(
+        main,
+        [
+            "maintain", "--dry-run", "--confirm", "json",
+            "--db", str(tmp_path / "maintain.db"),
+        ],
+        input="",
+    )
+
+    assert result.exit_code == 0, result.output
+    events = _events(result)
+    shortlist = [
+        event["text"]
+        for event in events
+        if event["event"] == "message" and event["text"].startswith("item ")
+    ]
+    assert shortlist == [
+        "item 7: stale Question (newest answers link 11,"
+        " confirmed 2026-01-01T00:00:00+00:00) (dry-run)",
+        "item 9: stale Question (newest answers link 12,"
+        " confirmed 2026-01-01T00:00:00+00:00) (dry-run)",
+    ]
+    summary = events[-1]
+    assert summary["event"] == "summary"
+    assert summary["stale"] == 2
+
+
 # --- the choice itself -------------------------------------------------------
 
 

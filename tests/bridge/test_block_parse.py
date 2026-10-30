@@ -10,8 +10,6 @@ always kept).
 
 from __future__ import annotations
 
-import dataclasses
-
 from ember.bridge.block_parse import (
     parse_capture_block,
     parse_close_proposal_block,
@@ -32,20 +30,28 @@ from ember.relate.rows import ChangeLogEntry, Link
 FIXED_TIME = "2026-01-01T00:00:00+00:00"
 
 
-def _validated_item(**overrides: object) -> ValidatedItem:
-    item = ValidatedItem(
+def _validated_item(
+    *,
+    statement: str = "Use SQLite",
+    source_quote: str = "use SQLite",
+    metadata: str | None = "auth-network",
+    near_dup_warning: NearDupWarning | None = None,
+) -> ValidatedItem:
+    """The plain block's exact source item; every override is a real named
+    parameter with the field's own type, so a typo here is a type error,
+    never a silent `replace` no-op."""
+    return ValidatedItem(
         id=3,
         type="Decision",
-        statement="Use SQLite",
-        source_quote="use SQLite",
+        statement=statement,
+        source_quote=source_quote,
         confidence=0.9,
         source_id=1,
         created_at=FIXED_TIME,
         status="Active",
-        near_dup_warning=None,
-        metadata="auth-network",
+        near_dup_warning=near_dup_warning,
+        metadata=metadata,
     )
-    return dataclasses.replace(item, **overrides)  # type: ignore[arg-type]
 
 
 def _link(link_id: int = 3, rationale: str | None = None) -> ValidatedLink:

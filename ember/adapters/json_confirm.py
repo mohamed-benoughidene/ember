@@ -38,7 +38,10 @@ one line at a time) — a block ends at `no close proposed`, at its
 The `prompt` `choices` are parsed out of each engine's real `PROMPT`
 constant (never re-typed here), and the `kind` picks the pinned event kinds
 (`choice` for a main confirm prompt, `type`/`statement`/`metadata` for the
-capture edit sub-prompts).
+capture edit sub-prompts). Prompt text that matches none of these is
+engine drift: it emits as kind `unknown` with the raw prompt text kept in
+the event — never mislabeled (the same fail-loud marker the block parsers
+use with `fields: null`).
 """
 
 from __future__ import annotations
@@ -164,16 +167,22 @@ class _JsonConfirm:
     def ask(self, prompt: str) -> str:
         self._emit_prompt(prompt)
         try:
-            return self._read_answer()
+            return self._read_answer_line()
         except AnswerLineInvalid:
-            pass  # first bad line: re-ask ONCE
-        self._emit_prompt(prompt)
-        try:
-            return self._read_answer()
-        except AnswerLineInvalid as exc:
-            raise self.user_abort("invalid answer line") from exc
+            # The FIRST invalid answer line re-asks the prompt ONCE (D4);
+            # `_read_answer_line` raises the engine's own `UserAbort`
+            # directly on end of input — there is nothing left to re-ask.
+            self._emit_prompt(prompt)
+            try:
+                return self._read_answer_line()
+            except AnswerLineInvalid as exc:
+                raise self.user_abort("invalid answer line") from exc
 
-    def _read_answer(self) -> str:
+    def _read_answer_line(self) -> str:
+        """Read and validate ONE stdin answer line. A valid `{"answer": ...}`
+        line returns its text; end of input raises the engine's own
+        `UserAbort` (downstream abort signal, nothing to re-ask); an invalid
+        line raises `BRIDGE-001 AnswerLineInvalid` for the caller to count."""
         line = self._stdin.readline()
         if line == "":
             raise self.user_abort("input ended")
@@ -210,7 +219,7 @@ class JsonCaptureConfirm(_JsonConfirm):
         for prefix, kind in _EDIT_KIND_PREFIXES:
             if prompt.startswith(prefix):
                 return kind
-        return "statement"  # unreachable while the engine texts hold
+        return "unknown"  # drift: fail loud, the raw text stays in the event
 
     def write(self, text: str) -> None:
         if text.startswith("- id: "):
