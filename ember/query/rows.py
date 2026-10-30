@@ -45,7 +45,12 @@ class CurrentStateRow(BaseModel):
 
 
 class ChangeRow(BaseModel):
-    """One `change_log` row as this engine reads it (item_id may be NULL)."""
+    """One `change_log` row as this engine reads it (item_id may be NULL).
+
+    `group_id` is the additive undo-group stamp (migration 013, undo step
+    05): export renders it, defaulting to `None` so every pre-013 caller and
+    reader keeps working unchanged.
+    """
 
     id: int
     item_id: int | None
@@ -55,6 +60,7 @@ class ChangeRow(BaseModel):
     new_value: str | None
     timestamp: str
     trigger_cause: str
+    group_id: int | None = None
 
 
 class TopicFilter(BaseModel):

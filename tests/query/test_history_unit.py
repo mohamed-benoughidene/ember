@@ -249,3 +249,90 @@ def test_link_fields_are_null_when_the_row_names_no_link() -> None:
     assert event.link_source_item_id is None
     assert event.link_target_item_id is None
     assert event.link_type is None
+
+
+# ---------------------------------------------------------------------------
+# Undo step 05: every undo/redo pair keeps its kind (L2 §5.6) — nothing the
+# undo engine writes may fall to `unknown`.
+# ---------------------------------------------------------------------------
+
+UNDO_REDO_KIND_BY_PAIR = [
+    (("status", "user_undo"), "status_changed"),
+    (("status", "user_redo"), "status_changed"),
+    (("validated", "user_undo"), "validated"),
+    (("validated", "user_redo"), "validated"),
+    (("link_removed", "user_undo"), "link_confirmed"),
+    (("link_removed", "user_redo"), "link_removed"),
+    (("rationale", "user_undo"), "item_edited"),
+    (("rationale", "user_redo"), "item_edited"),
+    (("source", "user_undo"), "item_edited"),
+    (("source", "user_redo"), "item_edited"),
+    (("status_origin", "user_undo"), "status_origin_changed"),
+    (("status_origin", "user_redo"), "status_origin_changed"),
+    (("link_reversed", "user_undo"), "link_reversed"),
+    (("link_reversed", "user_redo"), "link_reversed"),
+]
+
+
+@pytest.mark.parametrize(("pair", "kind"), UNDO_REDO_KIND_BY_PAIR)
+def test_no_undo_or_redo_row_of_a_human_pair_is_unknown(pair, kind: str) -> None:
+    row = make_change_row(field_changed=pair[0], trigger_cause=pair[1])
+
+    assert classify_change_row(row) == kind
+    assert classify_change_row(row) != "unknown"
+
+
+def test_the_undo_redo_pointers_and_the_unreversal_marker_have_kinds() -> None:
+    assert (
+        classify_change_row(
+            make_change_row(field_changed="undo_of", trigger_cause="user_undo")
+        )
+        == "undone"
+    )
+    assert (
+        classify_change_row(
+            make_change_row(field_changed="redo_of", trigger_cause="user_redo")
+        )
+        == "redone"
+    )
+    assert (
+        classify_change_row(
+            make_change_row(
+                field_changed="link_unreversed", trigger_cause="user_undo"
+            )
+        )
+        == "link_unreversed"
+    )
+
+
+def test_a_redone_close_keeps_its_close_reason_and_an_undone_one_has_none() -> None:
+    """The close reason rides the status value, so an inverse status row of
+    the SAME kind (`status_changed`) keeps it (L2 §5.6)."""
+    rows = [
+        make_change_row(
+            row_id=1,
+            field_changed="status",
+            trigger_cause="user_undo",
+            new_value="Active",
+        ),
+        make_change_row(
+            row_id=2,
+            field_changed="status",
+            trigger_cause="user_redo",
+            new_value="Closed:invalidated",
+        ),
+    ]
+
+    (undo_event, redo_event) = history(rows, [], None)
+
+    assert (undo_event.kind, undo_event.close_reason) == ("status_changed", None)
+    assert (redo_event.kind, redo_event.close_reason) == (
+        "status_changed",
+        "invalidated",
+    )
+
+
+def test_the_unknown_fallback_covers_even_an_undo_cause() -> None:
+    row = make_change_row(field_changed="sentiment", trigger_cause="user_undo")
+
+    assert classify_change_row(row) == "unknown"

@@ -4,7 +4,11 @@ The inspectable artifact of the storage cluster (Rule S1). It opens the
 database `mode=ro`, never migrates, never writes (I12/I2/I3, no `--repair`,
 no mode flags). Any drift is reported as `result: DRIFT`, a missing or
 not-a-database file as `result: UNREADABLE`, both with exit 1 at the CLI site.
-A check reports, it raises no error codes (I12).
+A check reports, it raises no error codes (I12). Since undo step 05 the
+report also carries the undo-group check: on schema 13+ every `undo_of` /
+`redo_of` pointer row must name an existing group; on v12 it prints
+`group_id: not applicable (schema v12)` (no new floor, so a healthy v12
+file never reads as drift).
 """
 
 from __future__ import annotations
@@ -89,6 +93,9 @@ def check_database(db_path: str) -> DbCheckReport:
         line, hit = _replay_line(conn)
         lines.append(line)
         drifted = drifted or hit
+        line, hit = _group_marker_line(conn, version)
+        lines.append(line)
+        drifted = drifted or hit
         lines.append(f"result: {DRIFT if drifted else OK}")
         return DbCheckReport(lines, DRIFT if drifted else OK)
     except sqlite3.Error as exc:
@@ -165,6 +172,49 @@ def _replay_line(conn: sqlite3.Connection) -> tuple[str, bool]:
         f"reversal replay: {reversed_count} reversed links, column != ledger"
         f" (mismatched links: {', '.join(str(i) for i in mismatched)})",
         True,
+    )
+
+
+UNDO_MARKER_FIELDS = ("undo_of", "redo_of")
+
+
+def _group_marker_line(conn: sqlite3.Connection, version: int) -> tuple[str, bool]:
+    """The undo-group check (undo step 05): pointers name existing groups.
+
+    Runs only on schema 13 and newer, where migration 013 guarantees the
+    `group_id` column — a floor of 13 would report every healthy v12 file as
+    drift, so there is deliberately no new floor. On v12 the line says
+    `not applicable` and never drifts. Read-only SELECTs only.
+    """
+    if version < 13:
+        return f"group_id: not applicable (schema v{version})", False
+    rows = conn.execute(
+        "SELECT id, new_value FROM change_log"
+        " WHERE field_changed IN (?, ?) ORDER BY id",
+        UNDO_MARKER_FIELDS,
+    ).fetchall()
+    groups = {
+        row["group_id"]
+        for row in conn.execute(
+            "SELECT DISTINCT group_id FROM change_log"
+            " WHERE group_id IS NOT NULL"
+        )
+    }
+    broken = [
+        f"{row['id']}->{row['new_value']}"
+        for row in rows
+        if not (row["new_value"] or "").isdigit()
+        or int(row["new_value"]) not in groups
+    ]
+    if broken:
+        return (
+            f"group_id: undo/redo pointers name missing groups"
+            f" ({len(rows)} pointers, broken: {', '.join(broken)})",
+            True,
+        )
+    return (
+        f"group_id: {len(rows)} undo/redo pointers, all name existing groups",
+        False,
     )
 
 

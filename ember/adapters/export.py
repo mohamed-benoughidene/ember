@@ -13,6 +13,10 @@ Section order is fixed: header, items, links, sources, ledger. Items are
 in id order, links in id order, sources in id order, ledger in
 `(timestamp, id)` order. Every column of every row is exported, removed
 and reversed links carry their state, ledger values are never truncated.
+Since undo step 05 each ledger row also carries its `group_id` (the undo
+group stamp): read from the column only when `PRAGMA table_info` shows it
+(never migrated), rendered `-` when NULL or when the column does not
+exist (a v12 file).
 `item_embeddings` and `ai_responses` are deliberately excluded: derived,
 rebuildable data (D2), declared in the header.
 
@@ -102,12 +106,20 @@ def gather_export(conn: sqlite3.Connection) -> ExportData:
     Input: a read-only connection opened by the CLI through
     `open_query_database` (floors QUERY-003/004 already enforced, never
     migrated). Output: an `ExportData` with the schema version, items,
-    links, sources and the full ledger. Side effects: none, SELECT only
+    links, sources and the full ledger (each row's `group_id` when the
+    column exists, else `None`). Side effects: none, SELECT only
     (`item_embeddings` and `ai_responses` are never read, D2). Raised
     codes: none of its own. An unexpected read failure propagates (I7,
     fail fast, no swallowed errors).
     """
     version = int(conn.execute("SELECT version FROM schema_version").fetchone()["version"])
+    # The undo-group column exists only from migration 013 (schema 13). The
+    # file is never migrated here: on a v12 file the ledger rows gather with
+    # `group_id=None` and the render prints `-`.
+    has_group_id = "group_id" in {
+        row["name"]
+        for row in conn.execute("PRAGMA table_info(change_log)")
+    }
     items = [
         ExportItem(
             id=row["id"],
@@ -167,10 +179,13 @@ def gather_export(conn: sqlite3.Connection) -> ExportData:
             new_value=row["new_value"],
             timestamp=row["timestamp"],
             trigger_cause=row["trigger_cause"],
+            group_id=row["group_id"] if has_group_id else None,
         )
         for row in conn.execute(
             "SELECT id, item_id, link_id, field_changed, old_value,"
-            " new_value, timestamp, trigger_cause FROM change_log"
+            " new_value, timestamp, trigger_cause"
+            + (", group_id" if has_group_id else "")
+            + " FROM change_log"
             " ORDER BY timestamp, id"
         )
     ]
@@ -329,7 +344,12 @@ def _source_text_lines(source: ExportSource) -> list[str]:
 
 
 def _ledger_lines(ledger: list[ChangeRow]) -> list[str]:
-    """The ledger section: full values, never truncated, `(timestamp, id)`."""
+    """The ledger section: full values, never truncated, `(timestamp, id)`.
+
+    Each row ends with its `group_id` (the undo-group stamp, undo step 05):
+    the id when stamped, `-` when NULL or when the source column does not
+    exist (a v12 file), so the render is total and deterministic on both.
+    """
     lines = ["", f"== ledger ({len(ledger)}) =="]
     for row in ledger:
         lines.append(f"ledger {row.id} | {row.timestamp} | {row.trigger_cause}")
@@ -340,6 +360,7 @@ def _ledger_lines(ledger: list[ChangeRow]) -> list[str]:
         lines += _field_lines("field_changed", row.field_changed)
         lines += _field_lines("old_value", row.old_value)
         lines += _field_lines("new_value", row.new_value)
+        lines += _field_lines("group_id", row.group_id if row.group_id is not None else "-")
         lines.append("")
     return lines
 

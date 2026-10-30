@@ -9,6 +9,8 @@ renders, the read-only proofs as sha256 file hashes before and after.
 from __future__ import annotations
 
 import hashlib
+import importlib.resources
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -42,6 +44,20 @@ from tests.query.fakes import make_v9
 
 LATER = "2026-01-02T00:00:00+00:00"
 NEWEST = "2026-01-03T00:00:00+00:00"
+_MIGRATIONS_TO_12 = (
+    "001_create_sources.sql",
+    "002_create_items.sql",
+    "003_create_change_log.sql",
+    "004_add_item_detail_columns.sql",
+    "005_create_ai_responses.sql",
+    "006_create_links.sql",
+    "007_create_item_embeddings.sql",
+    "008_add_change_log_link_fk.sql",
+    "009_drop_source_id_not_null_and_add_item_id.sql",
+    "010_add_item_close_reason.sql",
+    "011_add_links_reversed_at_and_enforcement_triggers.sql",
+    "012_add_items_metadata.sql",
+)
 FIXTURE_PATH = (
     Path(__file__).resolve().parents[1]
     / "tests"
@@ -618,3 +634,71 @@ def test_export_help_ends_with_restorable_warning() -> None:
         "This file is for reading without Ember. It is not restorable into"
         " Ember; that is the backup's job (GLOSSARY)."
     )
+
+
+# 6. Undo step 05: every ledger row carries its `group_id` (undo-group
+#    stamp). `-` when NULL, and also when the column does not exist — a
+#    v12 file exports successfully and is never migrated or written.
+
+
+def test_group_id_renders_stamped_or_a_dash() -> None:
+    data = _sample_data()
+    stamped = data.ledger[0].model_copy(update={"group_id": 3})
+    data = data.model_copy(update={"ledger": [stamped, data.ledger[1]]})
+
+    rendered = render_export(data)
+
+    assert "group_id:           3" in rendered
+    assert "group_id:           -" in rendered
+
+
+def test_export_v13_prints_every_ledger_rows_group_id(db_path) -> None:
+    _seed(db_path)
+    conn = sqlite3.connect(db_path)
+    conn.execute("UPDATE change_log SET group_id = 3 WHERE id = 2")
+    conn.commit()
+    conn.close()
+    before = _sha256(db_path)
+
+    first = CliRunner().invoke(main, ["export", "--db", db_path])
+    second = CliRunner().invoke(main, ["export", "--db", db_path])
+
+    assert first.exit_code == 0
+    assert second.exit_code == 0
+    # Deterministic with the group ids in, and the database untouched.
+    assert first.output == second.output
+    assert _sha256(db_path) == before
+    assert "group_id:           3" in first.output
+    # The other three seeded ledger rows are unstamped (capture/relate/sweep
+    # rows stay NULL): one dash line per row.
+    assert first.output.count("group_id:           -") == 3
+
+
+def test_export_on_a_v12_file_prints_dashes_and_stays_v12(db_path) -> None:
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    conn.execute("CREATE TABLE schema_version (version INTEGER NOT NULL)")
+    conn.execute("INSERT INTO schema_version (version) VALUES (12)")
+    package = importlib.resources.files("ember.adapters.migrations")
+    for name in _MIGRATIONS_TO_12:
+        conn.executescript(package.joinpath(name).read_text(encoding="utf-8"))
+    conn.execute(
+        "INSERT INTO change_log (item_id, field_changed, old_value,"
+        " new_value, timestamp, trigger_cause)"
+        " VALUES (NULL, 'proposed', NULL, 'ok',"
+        " '2026-01-01T00:00:00+00:00', 'rejected')"
+    )
+    conn.commit()
+    conn.close()
+    before = _sha256(db_path)
+
+    result = CliRunner().invoke(main, ["export", "--db", db_path])
+
+    assert result.exit_code == 0, result.output
+    assert "# schema version: 12" in result.output
+    assert "group_id:           -" in result.output
+    assert _sha256(db_path) == before  # read-only, never migrated
+    version = sqlite3.connect(db_path).execute(
+        "SELECT version FROM schema_version"
+    ).fetchone()[0]
+    assert version == 12

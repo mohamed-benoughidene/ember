@@ -43,6 +43,25 @@ _MIGRATIONS_TO_10 = (
 )
 
 
+_MIGRATIONS_TO_12 = _MIGRATIONS_TO_10 + (
+    "011_add_links_reversed_at_and_enforcement_triggers.sql",
+    "012_add_items_metadata.sql",
+)
+
+
+def _build_v12_db(db_path: str) -> None:
+    """Build a real untouched v12 file (scripts 001-012, version stamped 12)."""
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    conn.execute("CREATE TABLE schema_version (version INTEGER NOT NULL)")
+    conn.execute("INSERT INTO schema_version (version) VALUES (12)")
+    package = importlib.resources.files("ember.adapters.migrations")
+    for name in _MIGRATIONS_TO_12:
+        conn.executescript(package.joinpath(name).read_text(encoding="utf-8"))
+    conn.commit()
+    conn.close()
+
+
 def _build_healthy_db(db_path: str) -> None:
     """Build a real v11 database with one reversal through the writer paths."""
     Path(db_path).touch()
@@ -181,3 +200,62 @@ def test_db_check_rejects_unknown_flag(db_path) -> None:
     result = CliRunner().invoke(main, ["db-check", "--nope", "--db", db_path])
 
     assert result.exit_code == 2
+
+
+# ---------------------------------------------------------------------------
+# Undo step 05: the undo-group pointer check (no new floor — a v12 file
+# stays healthy; the check runs only on schema 13 and newer).
+# ---------------------------------------------------------------------------
+
+
+def _add_undo_pointer(db_path: str, *, new_value: str, group_id: int | None) -> None:
+    conn = sqlite3.connect(db_path)
+    conn.execute(
+        "INSERT INTO change_log (item_id, field_changed, old_value,"
+        " new_value, timestamp, trigger_cause, group_id)"
+        " VALUES (1, 'undo_of', NULL, ?,"
+        " '2026-01-02T00:00:00+00:00', 'user_undo', ?)",
+        (new_value, group_id),
+    )
+    conn.commit()
+    conn.close()
+
+
+def test_db_check_drift_when_a_pointer_names_a_missing_group(db_path) -> None:
+    _build_healthy_db(db_path)
+    _add_undo_pointer(db_path, new_value="999", group_id=None)
+    before = _sha256(db_path)
+
+    result = CliRunner().invoke(main, ["db-check", "--db", db_path])
+
+    assert result.exit_code == 1
+    lines = result.output.splitlines()
+    assert "999" in lines[-2] and "group_id:" in lines[-2]
+    assert "result: DRIFT" == lines[-1]
+    assert _sha256(db_path) == before
+
+
+def test_db_check_group_check_healthy_on_v13(db_path) -> None:
+    _build_healthy_db(db_path)
+    # A self-consistent pointer: the row carries group 7 and names group 7.
+    _add_undo_pointer(db_path, new_value="7", group_id=7)
+
+    result = CliRunner().invoke(main, ["db-check", "--db", db_path])
+
+    assert result.exit_code == 0
+    lines = result.output.splitlines()
+    assert "group_id: 1 undo/redo pointers, all name existing groups" in lines
+    assert "result: OK" == lines[-1]
+
+
+def test_db_check_group_check_not_applicable_on_v12(db_path) -> None:
+    _build_v12_db(db_path)
+    before = _sha256(db_path)
+
+    result = CliRunner().invoke(main, ["db-check", "--db", db_path])
+
+    assert result.exit_code == 0
+    lines = result.output.splitlines()
+    assert "group_id: not applicable (schema v12)" in lines
+    assert "result: OK" == lines[-1]
+    assert _sha256(db_path) == before
