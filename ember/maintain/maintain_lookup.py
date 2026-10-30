@@ -25,7 +25,9 @@ class MaintainLookupPort(Protocol):
         ...
 
     def list_reversed_link_ids(self) -> set[int]:
-        """Return the link ids carrying a `link_reversed` change_log row.
+        """Return the link ids whose reversal state reads "reversed": the
+        highest-id marker among `link_reversed` / `link_unreversed` is a
+        `link_reversed` (undo step 03, so an undone reversal reads live).
 
         Raise `MAINTAIN-010 ItemsReadFailed` on a read failure.
         """
@@ -34,7 +36,8 @@ class MaintainLookupPort(Protocol):
     def list_shield_log(self) -> list[ChangeLogEntry]:
         """Return the ledger slice the timestamp-scoped manual shield reads
         (L2 §13.5), in id order: the manual-clear rows (`status_origin` /
-        `user_set_status` / `manual`) and the `link_confirmed` rows.
+        `manual` with cause `user_set_status` OR `user_redo`, undo step 03)
+        and the `link_confirmed` rows.
 
         Raise `MAINTAIN-010 ItemsReadFailed` on a read failure.
         """

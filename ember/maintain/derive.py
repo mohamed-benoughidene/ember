@@ -106,12 +106,14 @@ def _latest_clear(
     shield_log: list[ChangeLogEntry], item_id: int
 ) -> ChangeLogEntry | None:
     """Return the item's latest manual-clear row, latest = max
-    `(timestamp, id)` (L2 §13.3). A clear is exactly the row
-    `apply_status_origin` writes: `field_changed='status_origin'`,
-    `trigger_cause='user_set_status'`, `new_value='manual'`. Older clears
-    are inert. Only clears set the boundary: the re-arm rows of this
-    amendment (`new_value='derived'`, cause `sweep_rearm`) can never read
-    back as one."""
+    `(timestamp, id)` (L2 §13.3). A clear is the row
+    `apply_status_origin` writes (`field_changed='status_origin'`,
+    `new_value='manual'`, cause `user_set_status`) — or the same-shaped row
+    a redo of a clear writes (cause `user_redo`, undo step 03), so a redo
+    re-sets the shield boundary to the redo time. Older clears are inert.
+    An undo of a clear (`new_value='derived'`) is never one, and neither
+    are the re-arm rows of this amendment (`new_value='derived'`, cause
+    `sweep_rearm`): only `new_value='manual'` sets the boundary."""
     best: ChangeLogEntry | None = None
     best_key: tuple[str, int] | None = None
     for row in shield_log:
@@ -119,7 +121,7 @@ def _latest_clear(
             continue
         if (
             row.field_changed != "status_origin"
-            or row.trigger_cause != "user_set_status"
+            or row.trigger_cause not in ("user_set_status", "user_redo")
             or row.new_value != "manual"
         ):
             continue

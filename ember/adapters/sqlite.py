@@ -28,18 +28,23 @@ from ember.maintain.errors import (
     ChangeLogWriteFailed as MaintainChangeLogWriteFailed,
     DbMigrationFailed as MaintainDbMigrationFailed,
     DbOpenFailed as MaintainDbOpenFailed,
+    GroupRecordInvalid as MaintainGroupRecordInvalid,
     ItemEditWriteFailed as MaintainItemEditWriteFailed,
     ItemsReadFailed as MaintainItemsReadFailed,
     RemoveLinkWriteFailed as MaintainRemoveLinkWriteFailed,
     SchemaOutdated as MaintainSchemaOutdated,
     StatusWriteFailed as MaintainStatusWriteFailed,
+    UndoWriteFailed as MaintainUndoWriteFailed,
 )
 from ember.maintain.rows import (
     EditChange,
+    InverseChange,
     ItemState,
     LedgerGroup,
     LinkChange,
     StatusChange,
+    UndoResult,
+    split_status_value,
 )
 from ember.query.errors import (
     DbOpenFailed as QueryDbOpenFailed,
@@ -801,25 +806,43 @@ class SqliteMaintainContext:
         ]
 
     def list_reversed_link_ids(self) -> set[int]:
-        """Return the link ids carrying a `link_reversed` change_log row.
+        """Return the link ids whose reversal state reads "reversed".
+
+        The rule (undo step 03, engine-undo-plan §5.4): a link is reversed
+        when its highest-id marker among `link_reversed` and
+        `link_unreversed` is a `link_reversed` — the undo of a reversal
+        appends `link_unreversed`, so the link reads live again, and a redo
+        appends a later `link_reversed` and reads reversed again.
 
         Raise `ItemsReadFailed` (MAINTAIN-010) on a read failure.
         """
         try:
             rows = self._conn.execute(
-                "SELECT DISTINCT link_id FROM change_log"
-                " WHERE field_changed = 'link_reversed' AND link_id IS NOT NULL"
+                "SELECT id, link_id, field_changed FROM change_log"
+                " WHERE field_changed IN"
+                "       ('link_reversed', 'link_unreversed')"
+                "   AND link_id IS NOT NULL"
+                " ORDER BY id"
             ).fetchall()
         except sqlite3.Error as exc:
             raise MaintainItemsReadFailed("change_log read fail") from exc
-        return {int(row["link_id"]) for row in rows}
+        latest: dict[int, str] = {}
+        for row in rows:
+            latest[int(row["link_id"])] = row["field_changed"]
+        return {
+            link_id
+            for link_id, field_changed in latest.items()
+            if field_changed == "link_reversed"
+        }
 
     def list_shield_log(self) -> list[ChangeLogEntry]:
         """Return the ledger slice the timestamp-scoped manual shield reads
         (L2 §13.5), in id order: the manual-clear rows (written by
-        `apply_status_origin`) and the `link_confirmed` rows (written by the
-        relate gatekeeper). One query over `change_log`, which the engine
-        already owns (no migration, L2 §13.6).
+        `apply_status_origin`, or re-set by a redo of a clear — a clear is
+        `status_origin` / `new_value='manual'` with cause `user_set_status`
+        OR `user_redo`, undo step 03) and the `link_confirmed` rows
+        (written by the relate gatekeeper). One query over `change_log`,
+        which the engine already owns (no migration, L2 §13.6).
 
         Raise `ItemsReadFailed` (MAINTAIN-010) on a read failure.
         """
@@ -829,8 +852,9 @@ class SqliteMaintainContext:
                 " new_value, timestamp, trigger_cause"
                 " FROM change_log"
                 " WHERE (field_changed = 'status_origin'"
-                "        AND trigger_cause = 'user_set_status'"
-                "        AND new_value = 'manual')"
+                "        AND new_value = 'manual'"
+                "        AND trigger_cause IN"
+                "            ('user_set_status', 'user_redo'))"
                 "    OR field_changed = 'link_confirmed'"
                 " ORDER BY id"
             ).fetchall()
@@ -1314,7 +1338,8 @@ class SqliteMaintainStore:
 
         One implicit transaction, one `commit()` at the end: the `links`
         status UPDATE (`Confirmed -> Rejected`, never an INSERT, never a
-        DELETE, never flipped back, `reversed_at` untouched) and the ledger
+        DELETE, never flipped back — except as an undo, see
+        `apply_inverse_group`, `reversed_at` untouched) and the ledger
         INSERT (`field_changed='link_removed'`, `item_id` = the link's
         source, the `insert_link_with_log` discipline) are all-or-nothing,
         so the row can never flip without its ledger row (Constitution D3).
@@ -1362,6 +1387,168 @@ class SqliteMaintainStore:
             ) from exc
         self._conn.commit()
         return 1
+
+    def apply_inverse_group(self, plan: UndoResult) -> int:
+        """Write one undo or redo plan atomically (undo step 03, L2 §5.5).
+
+        ONE transaction, ONE clock read: the `items` / `links` UPDATEs of
+        `plan.changes` first (a redo of a close sets `status` and
+        `close_reason` in the ONE UPDATE, so the migration-011 trigger sees
+        the paired reason), then the inverse `change_log` rows and the
+        `undo_of` / `redo_of` marker row, each stamped with the ONE new
+        group id (read from the ledger inside this write, `MAX(group_id)+1`)
+        and the ONE clock read — the same timestamp the `reversed_at`
+        redraw of a redo stamps, so the db-check replay rule holds by
+        construction. All-or-nothing.
+
+        The declared B2 exception lives here: an undo of the `validated`
+        flag writes `items.validated`, a Capture-owned column — the only
+        cross-module write, covered by a test.
+
+        Return the number of inverse changes applied (the marker row is not
+        counted). Raise `UndoWriteFailed` (MAINTAIN-026) when any UPDATE
+        fails and `ChangeLogWriteFailed` (MAINTAIN-012) when any INSERT
+        fails; either failure rolls the whole group back, so the ledger
+        never gains a half-undone group and no row state moves half way.
+        """
+        group_id = SqliteGroupIdPort(self._conn).next_group_id()
+        timestamp = self._clock()
+        try:
+            for change in plan.changes:
+                self._apply_inverse_update(change, timestamp)
+        except sqlite3.Error as exc:
+            self._conn.rollback()
+            raise MaintainUndoWriteFailed(
+                "inverse update fail", group_id=group_id
+            ) from exc
+        except MaintainGroupRecordInvalid:
+            self._conn.rollback()
+            raise
+        for change in plan.changes:
+            try:
+                self._conn.execute(
+                    "INSERT INTO change_log"
+                    " (item_id, link_id, field_changed, old_value, new_value,"
+                    " timestamp, trigger_cause, group_id)"
+                    " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        change.ledger_row.item_id,
+                        change.ledger_row.link_id,
+                        change.ledger_row.field_changed,
+                        change.ledger_row.old_value,
+                        change.ledger_row.new_value,
+                        timestamp,
+                        change.ledger_row.trigger_cause,
+                        group_id,
+                    ),
+                )
+            except sqlite3.Error as exc:
+                self._conn.rollback()
+                raise MaintainChangeLogWriteFailed(
+                    "change_log insert fail",
+                    item_id=change.ledger_row.item_id,
+                    link_id=change.ledger_row.link_id,
+                ) from exc
+        try:
+            self._conn.execute(
+                "INSERT INTO change_log"
+                " (item_id, link_id, field_changed, old_value, new_value,"
+                " timestamp, trigger_cause, group_id)"
+                " VALUES (?, ?, ?, NULL, ?, ?, ?, ?)",
+                (
+                    plan.marker.item_id,
+                    plan.marker.link_id,
+                    plan.marker.field_changed,
+                    plan.marker.new_value,
+                    timestamp,
+                    plan.marker.trigger_cause,
+                    group_id,
+                ),
+            )
+        except sqlite3.Error as exc:
+            self._conn.rollback()
+            raise MaintainChangeLogWriteFailed(
+                "change_log insert fail", item_id=plan.marker.item_id
+            ) from exc
+        self._conn.commit()
+        return len(plan.changes)
+
+    def _apply_inverse_update(
+        self, change: InverseChange, timestamp: str
+    ) -> None:
+        """Run the ONE row UPDATE one inverse change describes (undo step 03).
+
+        Item fields: `status` (split from the ledgers's encoded
+        `<status>:<reason>` value), `status_origin`, `validated` (the B2
+        exception) and the two authorial columns behind the
+        `_EDIT_COLUMNS` whitelist. Link fields: `status` (the removal
+        flip-back; no migration-011 trigger fires on a `status`-only UPDATE)
+        and the symbolic `reversed_at` (`Reversed` stamps the write time,
+        `None` clears it). An unknown shape raises `GroupRecordInvalid`
+        (fail closed; the core never emits one).
+        """
+        if change.item_id is not None:
+            if change.field == "status":
+                value = split_status_value(change.new_value or "")
+                self._conn.execute(
+                    "UPDATE items SET status = ?, close_reason = ?"
+                    " WHERE id = ?",
+                    (value.status, value.close_reason, change.item_id),
+                )
+            elif change.field == "status_origin":
+                self._conn.execute(
+                    "UPDATE items SET status_origin = ? WHERE id = ?",
+                    (change.new_value, change.item_id),
+                )
+            elif change.field == "validated":
+                self._conn.execute(
+                    "UPDATE items SET validated = ? WHERE id = ?",
+                    (_validated_column_value(change.new_value), change.item_id),
+                )
+            elif change.field in _EDIT_COLUMNS:
+                self._conn.execute(
+                    f"UPDATE items SET {_EDIT_COLUMNS[change.field]} = ?"
+                    " WHERE id = ?",
+                    (change.new_value, change.item_id),
+                )
+            else:
+                raise MaintainGroupRecordInvalid(
+                    "unknown item field in undo plan", field_changed=change.field
+                )
+            return
+        if change.link_id is None:
+            raise MaintainGroupRecordInvalid(
+                "inverse change names neither an item nor a link",
+                field_changed=change.field,
+            )
+        if change.field == "status":
+            self._conn.execute(
+                "UPDATE links SET status = ? WHERE id = ?",
+                (change.new_value, change.link_id),
+            )
+        elif change.field == "reversed_at":
+            if change.new_value == "Reversed":
+                self._conn.execute(
+                    "UPDATE links SET reversed_at = ? WHERE id = ?",
+                    (timestamp, change.link_id),
+                )
+            else:
+                self._conn.execute(
+                    "UPDATE links SET reversed_at = NULL WHERE id = ?",
+                    (change.link_id,),
+                )
+        else:
+            raise MaintainGroupRecordInvalid(
+                "unknown link field in undo plan", field_changed=change.field
+            )
+
+
+def _validated_column_value(flag: str | None) -> int | None:
+    """Map the ledger's flag text (`true` / `false` / NULL) to the
+    `items.validated` column value (the B2 exception's encoding)."""
+    if flag is None:
+        return None
+    return 1 if flag == "true" else 0
 
 
 def _status_old_value(change: StatusChange) -> str:

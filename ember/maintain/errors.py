@@ -135,6 +135,11 @@ class UndoRefused(MaintainError):
     name = "UndoRefused"
 
 
+class UndoWriteFailed(MaintainError):
+    code = "MAINTAIN-026"
+    name = "UndoWriteFailed"
+
+
 class GroupRecordInvalid(MaintainError):
     code = "MAINTAIN-027"
     name = "GroupRecordInvalid"

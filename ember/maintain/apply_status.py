@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from typing import Protocol
 
-from ember.maintain.rows import EditChange, LinkChange, StatusChange
+from ember.maintain.rows import EditChange, LinkChange, StatusChange, UndoResult
 from ember.relate.rows import ChangeLogEntry
 
 
@@ -75,9 +75,32 @@ class MaintainStorePort(Protocol):
         self, change: LinkChange, group_id: int | None = None
     ) -> int:
         """Write the ONE removal (`UPDATE links SET status='Rejected'`) AND
-        its `link_removed` change_log row in ONE transaction. Never INSERT,
-        DELETE, or flip back. Returns 1. `group_id` stamps the row (undo
-        step 01). Raises MAINTAIN-017 on the links UPDATE, MAINTAIN-012 on
-        the change_log INSERT (both roll the whole write back).
+        its `link_removed` change_log row in ONE transaction. This method
+        never INSERTs, DELETEs, or flips a row back — the one exception is
+        the undo path (`apply_inverse_group`), which may restore a removed
+        link to `Confirmed` as an undo of its own removal. Returns 1.
+        `group_id` stamps the row (undo step 01). Raises MAINTAIN-017 on the
+        links UPDATE, MAINTAIN-012 on the change_log INSERT (both roll the
+        whole write back).
+        """
+        ...
+
+    def apply_inverse_group(self, plan: UndoResult) -> int:
+        """Write one undo or redo plan atomically (undo step 03, L2 §5.5).
+
+        ONE transaction, ONE clock read: the `items` / `links` UPDATEs of
+        `plan.changes` (a redo of a close sets `status` and `close_reason`
+        in the ONE UPDATE so the migration-011 trigger sees the reason),
+        then the inverse `change_log` rows and the `undo_of` / `redo_of`
+        marker row, all stamped with the ONE new group id. All-or-nothing.
+
+        The declared B2 exception lives here: an undo of the `validated`
+        flag writes `items.validated`, a Capture-owned column — the only
+        cross-module write, covered by a test.
+
+        Returns the number of inverse changes applied (the marker row is
+        not counted). Raises MAINTAIN-026 on any UPDATE failure and
+        MAINTAIN-012 on any INSERT failure; either rolls the whole group
+        back, so the ledger never gains a half-undone group.
         """
         ...
