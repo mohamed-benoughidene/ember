@@ -48,6 +48,8 @@ Links one item to the rest of the graph in four phases: load and filter, rank a 
 - The link types are `supports`, `contradicts`, `depends_on`, `supersedes`, `answers`, restricted by a per-type compatibility table (11 allowed pairs).
 - The gatekeeper runs 9 ordered rules per proposal; refusals print `relate rejected: CODE | detail` (duplicates, `supersedes` cycles, Closed targets). All rejected-row checks also see reversed links.
 - An empty candidate pool exits 0 without ever calling the AI. Summary line at the end: `accepted: N, rejected: N, skipped: N, aborted: true|false`.
+- `--db` must point to an existing knowledge base file. A missing file or a file that is not SQLite exits 1 (`RELATE-012`). A candidate is dropped when every link type allowed between the two items is already used from this item, whatever the status of that link.
+- What prints before the AI is called: `no unrelated items` when no candidate item is left, or `{"phase": 2, "pool_size": 0, "signals": {...}}` when candidates exist but none ranks. Both exit 0.
 
 ---
 

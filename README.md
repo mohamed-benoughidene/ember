@@ -1,56 +1,77 @@
-# Ember
+<p align="center">
+  <img src="assets/icon.svg" alt="Ember icon: a dark, cracked stone with a glowing core" width="96">
+</p>
+
+# Ember: local-first knowledge base for project decisions
 
 > **Project Context Management System**
 > Preserving the evolving state of what a project knows, believes, decides, and learns over time.
 
----
+Ember is a command-line tool that keeps the knowledge around a project: decisions, assumptions, findings, and questions. It stores them in one local file, links them to each other, and records every change in a ledger.
+
+Ember is a Python tool. It is not related to the Ember.js web framework. The [glossary](GLOSSARY.md) explains words like item, link, and ledger.
+
+**[Run your first capture in five minutes](#quickstart)**
 
 ## What is Ember?
 
-When teams work on software or products, they make decisions, discover facts, test assumptions, and ask questions. Over time, that knowledge gets lost inside old chat logs, commit histories, or people's heads.
+When a team works on a big project, people make decisions, find facts, test assumptions, and ask questions. That knowledge gets lost in chat logs, files, and people's heads.
 
-Ember is a system for maintaining that durable context. It does not store the project itself (like code files or images). Instead, it stores the understanding **around** the project: why choices were made, what is currently unproven, and what new findings change our thinking.
+Ember keeps it. It does not store the project itself, such as code, images, or documents. It stores the understanding around the project: why choices were made, what is unproven, and what new findings change.
 
----
+Ember is built for any team project, not only software. The four kinds of item are not tied to code. Two limits apply today. Ember runs in a terminal (a text window where you type commands). And it has not been tested on other kinds of work yet: its tests use placeholder text, and its one worked example is a design decision.
+
+If you keep a decision log today, Ember does that job and also keeps assumptions, findings, and questions. Every item is Active, Challenged, or Closed.
+## How Ember works
+
+Capture and Relate both work in three steps. The AI only suggests. A fixed check makes sure each suggestion is valid. You decide what is saved.
+
+```mermaid
+flowchart LR
+    A["You run the command"]:::you --> B["AI suggests<br/>items or links"]:::ai
+    B --> C["Automatic check<br/>(no AI)"]:::auto
+    C --> D["You confirm<br/>each one"]:::you
+    D --> E[("Saved in your<br/>knowledge base file")]:::saved
+    classDef ai fill:#fde3cc,stroke:#c8691d,color:#1f1d1a
+    classDef auto fill:#d9e6fb,stroke:#2f6bc9,color:#1f1d1a
+    classDef you fill:#d7f0d8,stroke:#2f8a43,color:#1f1d1a
+    classDef saved fill:#ffffff,stroke:#8a857b,color:#1f1d1a
+```
+
+Ember has five parts. Capture turns a source into items. Relate links them. Maintain flags items that need a second look. Query reads everything back out. Safety backs up and checks your file.
+
+```mermaid
+flowchart LR
+    P1["1 Capture<br/>turns a source into items"]:::part --> P2["2 Relate<br/>links items to each other"]:::part
+    P2 --> P3["3 Maintain<br/>flags items that need a second look"]:::part
+    P3 --> P4["4 Query<br/>reads it all out"]:::part
+    P5["5 Safety<br/>backup, export, health check"]:::safe
+    classDef part fill:#f1eee4,stroke:#8a857b,color:#1f1d1a
+    classDef safe fill:#cdeee6,stroke:#2f8a7a,color:#1f1d1a
+```
+
+New to the idea? Read the [worked example (PDF)](docs/Graphs/V1%20Example%20Run%20the%20blue%20button%20story-4.pdf) or the [master diagram (PDF)](docs/Graphs/V1%20Master%20Diagram%20Project%20Context%20Management%20System-1.pdf). Both are written for people who do not code.
+
+## What you can do with Ember
+
+- **Capture notes.** Ember reads a note, proposes items, and saves only the ones you confirm.
+- **Link items.** Ember proposes how items relate: supports, contradicts, supersedes, answers, or depends on. You confirm each link.
+- **Track assumptions.** Mark an assumption as verified. Ember flags an item as Challenged when a link contradicts it.
+- **Ask why a decision was made.** Search by topic, list what is true now, or walk the reasons behind one item.
+- **Back up and export.** Save a restorable snapshot, or write a plain text file any editor can read.
 
 ## Core Principles
 
-- **Durable Knowledge Only:** Focuses on persistent knowledge that alters how a project is understood, not raw code or daily to-do lists.
-- **Traceable History:** Items are never deleted. State changes (like an assumption becoming invalid) are preserved with their causes.
+- **Durable Knowledge Only:** Persistent knowledge that changes how a project is understood, not raw code or daily to-do lists.
+- **Traceable History:** Ember has no command that deletes an item. Removing a link marks it Rejected. State changes keep their causes.
 - **Strict Boundaries:** External data and AI outputs pass through validation scripts before entering the system.
-- **Fast, Local-First:** Designed to run with a local database on your own computer with zero mandatory servers.
-
----
-
-## Repository Structure
-
-- [`Constitution.md`](Constitution.md): Architectural rules for standalone modules, clean boundaries, and reliable tests.
-- [`GLOSSARY.md`](GLOSSARY.md): The project's vocabulary: knowledge base, ledger, item, link, and the backup/export/restore language.
-- [`PROJECT_MAP.md`](PROJECT_MAP.md): Index of every file and directory in this project.
-- [`docs/`](docs/): System documentation, brand philosophy, and architecture diagrams. The full command inventory (every command with its flags, writes, and error codes) is in [`docs/commands.md`](docs/commands.md).
-  - [`docs/ai version/`](docs/ai%20version/): Compressed specifications optimized for AI readers.
-  - [`docs/humen version/`](docs/humen%20version/): Plain-English specifications written for human builders.
-  - [`docs/Graphs/`](docs/Graphs/): Visual diagrams and example runs.
-- [`plans/`](plans/): The layered build plans: the system master plan (L1), the engine plans (L2), and the per-step plans (L3).
-- [`assets/`](assets/): Official Ember brand logos and icons.
-
----
-
-## Status
-
-- **Engine A (Capture):** Built and verified. Stores raw source text with SHA-256 dedup, asks AI for typed `Decision` / `Assumption` / `Finding` / `Question` proposals, validates them with gatekeeper checks, and writes only what you confirm key by key (`y` accept, `n` reject, `e` edit, `q` quit).
-- **Engine B (Relate):** Built and verified. Ranks link candidates for one item with three signals (embedding content, graph neighbors, project labels), asks AI for typed link proposals, runs 9 gatekeeper rules (duplicates, `supersedes` cycles, compatibility), and writes links only after your per-proposal check (`y` accept, `n` reject, `s` skip, `q` quit).
-- **Engine C (Maintain):** Built and verified. A deterministic, zero-AI sweep derives item statuses from confirmed links and writes only the difference to the ledger, plus an optional AI close-proposal loop for `Question` items whose newest answer link is at least 30 days old. Five human-only commands (`close-item`, `set-status`, `reverse-supersedes`, `edit-item`, `remove-link`) write through the same ledger, each with a `--dry-run`.
-- **Engine D (Query):** Built and verified. Four read-only JSON commands over the local database: current state, BM25 topic search, the `why` reason walk, and the `history` ledger view. It refuses an older database instead of migrating it.
-- **Engine E (Utility):** Built and verified. Human-only safety commands outside the pipeline: `backup` (verified snapshot with rotation) and `export` (deterministic readable text file).
-
----
+- **Local-First:** The knowledge base is one local SQLite file, and Ember needs no server of its own. Commands that use AI send text to an AI service. See [Your text and the internet](#your-text-and-the-internet).
 
 ## Quickstart
 
-### Installation
+Ember needs Python 3.12 or newer.
 
-Requires Python 3.12+.
+### Install
 
 ```bash
 git clone https://github.com/mohamed-benoughidene/ember.git
@@ -60,116 +81,193 @@ source .venv/bin/activate
 pip install -e ".[dev]"
 ```
 
-### Environment Variables
+### Get an API key
 
-For AI-assisted capture, provide an OpenRouter API key:
+`capture` and `relate` need an [OpenRouter](https://openrouter.ai) key. `maintain` needs one only for its optional AI close proposals. All other commands run without one.
+
+The key wizard walks you through getting a key. It writes the key to `.env` (mode 600, gitignored, never committed) and never prints it.
 
 ```bash
-export EMBER_AI_API_KEY="your-openrouter-key"
+bash scripts/ember-key-wizard.sh
 ```
 
-Optional settings:
-- `EMBER_AI_MODEL`: Model name (default: `anthropic/claude-haiku-5.5`).
-- `EMBER_AI_BASE_URL`: API base URL (default: `https://openrouter.ai/api/v1`).
-- `EMBER_CAPTURE_CONTEXT_MODE`: `B` to include the newest 50 items as context (default), `A` for no context.
-
-### CLI Usage
-
-**1. Store raw source text only (Phase 1):**
+Load the key into your shell before a real run:
 
 ```bash
-# Read from STDIN
+set -a; source .env; set +a
+```
+
+### Settings
+
+| Variable | What it does | Default |
+|---|---|---|
+| `EMBER_AI_API_KEY` | Your OpenRouter key. `OPENROUTER_API_KEY` also works. | none |
+| `EMBER_AI_MODEL` | The AI model name. | `anthropic/claude-haiku-5.5` |
+| `EMBER_AI_BASE_URL` | The AI service address. | `https://openrouter.ai/api/v1` |
+| `EMBER_CAPTURE_CONTEXT_MODE` | `B` shows the AI the newest 50 items. `A` shows none. | `B` |
+| `EMBER_EMBEDDER_MODEL` | The model that ranks link candidates in `relate`. | `bge-base-en-v1.5` |
+| `EMBER_EMBEDDER_LOAD_TIMEOUT_SECONDS` | How long `relate` waits for that model to load. | `120` |
+
+`relate` also needs an optional extra. Its first run may download the embedding model.
+
+```bash
+pip install -e ".[relate]"
+```
+
+### Your first run
+
+Ember creates `ember.db` (the knowledge base file) in the folder where you run it. Use `--db PATH` on any command to pick another file. Ember also writes a safety copy such as `ember.db.bak-v0` before it sets up or upgrades the file.
+
+These three commands need no key:
+
+```bash
 printf 'We decided to use SQLite for local storage.' | ember capture-source
-
-# Or read from a file
-ember capture-source --file note.txt
+ember current-state
+ember backup backup.db
 ```
 
-**2. Run full Capture pipeline (Phases 1–4):**
+Example output, one result per command:
+
+```text
+{"source_id": 1, "content_hash": "d24e3e4fefb852e4452635f2989c2d9ece94578299fd019880ec9868800078af", "raw_text": "We decided to use SQLite for local storage."}
+{"mode": "current_state", "count": 0, "items": []}
+backup written: backup.db (schema v12, 0 items)
+```
+
+`current-state` shows no items because `capture-source` only stores the note. To turn a note into items, run `capture` (needs a key). Ember proposes items and asks you to confirm each one: `y` accept, `n` reject, `e` edit, `q` quit.
 
 ```bash
 ember capture --file note.txt
 ```
 
-Ember stores the raw text, generates typed item proposals (`Decision`, `Assumption`, `Finding`, `Question`), runs gatekeeper checks, and prompts you to confirm (`y`), reject (`n`), edit (`e`), or quit (`q`). Editing re-asks the type, the statement, and the optional project label, then revalidates before the write. Sources are deduplicated by content hash (the same text twice reuses the stored source), file input is capped at 5 MiB, and by default the AI sees the newest 50 items as context (`EMBER_CAPTURE_CONTEXT_MODE`).
+## Your text and the internet
 
-**3. Manage Assumption validation flag:**
+Three commands send text to an AI service. The default is OpenRouter (see [Settings](#settings)).
+
+- `capture` sends the whole note, plus the id, type, and statement of the newest 50 items. Mode `A` sends no items.
+- `relate` sends the id, type, and statement of the new item and of each candidate it ranks.
+- `maintain` sends text only on a real run, and only for Questions with an old answer. It handles up to 10 Questions per run. For each one, it sends the id, type, and statement, and the ids and date of its newest answer link.
+
+All other commands run only on your computer. After its first download, the `relate` embedding model also runs on your computer.
+
+## Commands at a glance
+
+| Command | What it does | Needs a key |
+|---|---|---|
+| `capture` | Reads a note, proposes items, saves the ones you confirm | Yes |
+| `capture-source` | Stores a raw note only, with no AI | No |
+| `set-validated` | Marks an Assumption as verified | No |
+| `clear-validated` | Clears that flag | No |
+| `relate` | Proposes typed links for one item, saves the ones you confirm | Yes, plus the `relate` extra |
+| `maintain` | Updates item statuses from confirmed links, with no AI | Only for the AI close proposals |
+| `close-item` | Closes an item by hand | No |
+| `set-status` | Moves an item between Active and Challenged | No |
+| `reverse-supersedes` | Undoes a `supersedes` link | No |
+| `edit-item` | Edits the rationale of a Decision or the source of a Finding | No |
+| `remove-link` | Removes one confirmed link by marking it Rejected | No |
+| `current-state` | Lists live items, Challenged first | No |
+| `topic-search` | Searches item statements by topic | No |
+| `why` | Shows the reasons behind an item | No |
+| `history` | Shows the ledger, for one item or for all | No |
+| `db-check` | Reports the health of the knowledge base file | No |
+| `backup` | Saves a restorable snapshot | No |
+| `export` | Writes everything as one plain text file | No |
+
+For every flag, what each command writes, and every error code, read the [full command inventory](docs/commands.md).
+
+## Status
+
+Ember has five parts, called engines. All five are built and verified by the offline test suite.
+
+- **Engine A, Capture:** Stores raw notes and asks AI to propose items. You confirm each one.
+- **Engine B, Relate:** Ranks link candidates and asks AI to propose typed links. You confirm each one.
+- **Engine C, Maintain:** A sweep with no AI updates statuses from confirmed links. Five commands make manual changes.
+- **Engine D, Query:** Four read-only commands show the current state, search topics, explain a decision, and show the ledger.
+- **Engine E, Utility:** Safety commands: `backup`, `export`, and the read-only `db-check`.
+
+## FAQ
+
+### What is Ember?
+
+Ember is a command-line tool that helps you track decisions, assumptions, findings, and questions in a project. It stores them as items in one local SQLite file, links them, and keeps a ledger of every change. It does not store your code.
+
+### Does Ember send my text over the internet?
+
+Only `capture`, `relate`, and the optional close proposals in `maintain` do. They send text to an AI service, OpenRouter by default. [Your text and the internet](#your-text-and-the-internet) lists exactly what. All other commands run only on your computer.
+
+### Do I need an API key?
+
+Only for the three commands above. `capture-source`, the Query commands, `backup`, and `export` run without one. The [key wizard](#get-an-api-key) helps you get a key.
+
+### Can I lose my knowledge?
+
+`ember backup` saves a restorable snapshot. To restore, copy it over `ember.db` or point `--db` at it. `ember export` writes plain text you can read without Ember. Ember has no command that deletes an item.
+
+### Can I use Ember at work, and can I sell it?
+
+You may use, copy, modify, and share Ember for free for personal use or inside your own organization. Selling Ember, or a product or service built on it, needs a commercial license. This is a summary, not legal advice. Read [LICENSE](LICENSE) for the exact terms.
+
+### Can a team that does not write software use Ember?
+
+The design does not depend on software. Items are plain statements, and the four kinds are not tied to code. But Ember runs in a terminal and needs Python 3.12 or newer. Someone on the team must be comfortable with that. It has not been tested on non-software notes yet.
+
+### How is Ember different from architecture decision records?
+
+Tools like [adr-tools](https://github.com/npryce/adr-tools) keep architecture decisions as numbered files. Ember also keeps assumptions, findings, and questions, and the links between them. Which one fits depends on your team.
+
+## Running tests
 
 ```bash
-# Mark an Assumption as verified
-ember set-validated --item 2
-
-# Clear the flag
-ember clear-validated --item 2
-```
-
-**4. Relate an item to typed link candidates (Phase 1):**
-
-```bash
-ember relate --item <id> [--db PATH]
-ember relate --latest [--db PATH]
-```
-
-Phase 1 loads the item, drops pairs that already have a link (any status), and prints `{"phase": 1, "new_item_id": <id>, "candidates": <count>}` (or `no unrelated items`). `--db` must point to an existing database. Confirm each proposal with `y` (accept), `n` (reject), `s` (skip, the candidate is not written and may resurface later), or `q` (quit, exit 2). Ranking uses three signals: embedding content, one-hop graph neighbors, and the project label written by capture. The content signal needs the optional extra installed once (```pip install -e ".[relate]"```); if the embedding model ever changes, the vector cache is wiped and rebuilt (a one-time, minutes-long cost, a warning prints). Gatekeeper rejections print one `relate rejected: CODE | detail` line each before the summary.
-
-**5. Maintain the graph (Engine C):**
-
-```bash
-# Reconcile item statuses from links (add --dry-run to preview)
-ember maintain [--db PATH]
-
-# Close an item by hand (human-only reasons: invalidated, expired)
-ember close-item --item <id> --reason invalidated [--dry-run] [--db PATH]
-
-# Move an item between Active and Challenged
-ember set-status --item <id> --to Active [--db PATH]
-
-# Undo a supersedes (restores the closed item to Active)
-ember reverse-supersedes --item <id> --link <id> [--db PATH]
-
-# Change an authorial field by hand (rationale on a Decision, source on a Finding)
-ember edit-item --item <id> --field rationale --value "new text" [--dry-run] [--db PATH]
-
-# Remove one confirmed link (a status flip to Rejected, never a delete)
-ember remove-link --link <id> [--dry-run] [--db PATH]
-```
-
-The sweep reads `items` + Confirmed `links`, derives each item's status (a confirmed `supersedes` or `answers` closes the target, a `contradicts` challenges it, and an invalidated dependency challenges the dependent), and writes only the difference, one `change_log` row per change. `close-item`, `set-status`, `reverse-supersedes`, `edit-item`, and `remove-link` are the human-only mutations; all render through the same report format. After a real sweep applies its changes, Ember may offer AI close proposals for `Question` items whose newest answer link is at least 30 days old (at most 10 per run), each confirmed with `[y]es / [n]o / [q]uit`; an accepted close goes through the same human `close-item` path. An empty shortlist calls no AI and needs no key.
-
-**6. Query the project context (Engine D):**
-
-```bash
-ember current-state [--db PATH]
-ember topic-search --query TEXT [--status Active] [--type Question] [--limit 10] [--db PATH]
-ember why --item <id> [--db PATH]
-ember history [--item <id>] [--limit 20] [--offset 0] [--since 2026-01-01T00:00:00+00:00] [--db PATH]
-```
-
-All four are read-only and never write to the database. Each prints one JSON document on stdout. `current-state` lists the `Active` and `Challenged` items with the `Challenged` ones first. `topic-search` ranks by BM25 over item statements; `--limit 0` means an explicitly empty result. `why` walks the `depends_on` and `supports` links behind an item (Confirmed links only, transitively). `history` shows that item's `change_log` rows with the cause of each change, or the whole ledger with no `--item`; `--since` must carry a UTC offset. An older database is refused (`QUERY-004`), never migrated.
-
-**7. Keep the knowledge safe (Engine E):**
-
-```bash
-# Snapshot the whole knowledge base to a file you can always go back to
-ember backup /path/to/backup.db [--db PATH]
-
-# Export everything as plain text, readable without Ember, forever
-ember export [--db PATH] [--out PATH]
-```
-
-`backup` copies the database with SQLite's online backup API (a consistent snapshot even if another command is mid-write), then re-opens the copy and prints its schema version and item count as proof. If the target already exists, the previous copy is rotated to `<target>.old-1` (the `.old` chain keeps the newest 3 old copies, so 4 generations exist in total, like the migration runner's own backups) and the command reports the rotation. Restore is deliberately not a command: copy the backup back over `ember.db`, or point Ember at it with `--db`. A backup of an older-schema file is fine, boot upgrades it on restore.
-
-`export` writes every item, link, source, and full ledger row as one deterministic, human-readable text file (same database always produces the same bytes). Rejected and reversed links are included with their states, raw source text is kept verbatim, and derived data (embeddings, AI responses) is declared excluded in the header. The file cannot be restored into Ember; that is the backup's job. Read-only: the database file is byte-identical after an export. If `--out` points at the database itself, export refuses before touching anything (`EXPORT-002`).
-
-### Running Tests
-
-```bash
-# Run all offline tests (873 tests)
 pytest
-
-# Run the live AI round-trip test (requires EMBER_AI_API_KEY)
 pytest -m live
 ```
+
+`pytest` runs the offline tests. `pytest -m live` calls the real AI service, needs `EMBER_AI_API_KEY`, and costs money.
+
+## What is in this repository
+
+This is a map of the folders and files, grouped by what they are for. [`PROJECT_MAP.md`](PROJECT_MAP.md) describes every single file in one line.
+
+### The program
+
+- [`ember/`](ember/): The Ember program itself, written in Python.
+  - [`ember/cli.py`](ember/cli.py): The commands you type.
+  - [`ember/capture/`](ember/capture/): Engine A, Capture.
+  - [`ember/relate/`](ember/relate/): Engine B, Relate.
+  - [`ember/maintain/`](ember/maintain/): Engine C, Maintain.
+  - [`ember/query/`](ember/query/): Engine D, Query.
+  - [`ember/adapters/`](ember/adapters/): The parts that touch the outside world: the knowledge base file, the AI service, and the embedding model. Engine E, Utility (backup, export, health check) also lives here.
+- [`tests/`](tests/): The automatic tests that check the program.
+  - [`tests/relate/`](tests/relate/), [`tests/maintain/`](tests/maintain/), and [`tests/query/`](tests/query/): Tests for those three engines.
+  - Test files directly in [`tests/`](tests/): Capture, backup, export, the health check, the commands, and the knowledge base file and its upgrades. [`tests/test_docs_in_sync.py`](tests/test_docs_in_sync.py) checks that the documents match the code.
+  - [`tests/fixtures/`](tests/fixtures/): Sample data the tests use.
+  - [`tests/test_architecture.py`](tests/test_architecture.py): Checks that the four engines never depend on an adapter.
+- [`scripts/`](scripts/): Helper scripts. The API key wizard lives here.
+- [`pyproject.toml`](pyproject.toml): Package settings: the name, the version, and what Ember needs to run.
+
+### Documentation
+
+- [`docs/commands.md`](docs/commands.md): Every command, with its flags and what it writes.
+- [`docs/Graphs/`](docs/Graphs/): The master diagram and the worked example, as HTML and PDF. Written for people who do not code.
+- [`docs/humen version/`](docs/humen%20version/): Plain-English specifications written for human builders.
+- [`docs/ai version/`](docs/ai%20version/): Compressed specifications optimized for AI readers.
+- [`GLOSSARY.md`](GLOSSARY.md): The project's vocabulary: knowledge base, ledger, item, link, and the backup, export, and restore language.
+- [`PROJECT_MAP.md`](PROJECT_MAP.md): A one-line description of every file in this project.
+- [`plans/`](plans/): The layered build plans: the system master plan (L1), the engine plans (L2), and the per-step plans (L3). Kept as history. Start with [`plans/README.md`](plans/README.md).
+- [`assets/`](assets/): Official Ember brand logos and icons.
+
+### Rules for working on the project
+
+- [`Constitution.md`](Constitution.md): Architectural rules for standalone modules, clean boundaries, and reliable tests.
+- [`AGENTS.md`](AGENTS.md): Rules for AI coding agents that work in this repository.
+- [`Personal guidelines.md`](Personal%20guidelines.md): Rules for tone, accuracy, and review style.
+
+### Legal and community
+
+- [`LICENSE`](LICENSE): The Business Source License 1.1.
+- [`CLA.md`](CLA.md): The Contributor License Agreement.
+- [`SECURITY.md`](SECURITY.md): How to report a security problem.
+- [`.github/`](.github/): Issue and pull request templates, the automatic test run, and dependency update settings.
 
 ## License
 
@@ -181,16 +279,8 @@ Ember is **source-available** under the [Business Source License 1.1](LICENSE) (
 - Ember is not Open Source while under BSL 1.1; the license text says so itself.
 - Contributions are welcome under the terms of [CLA.md](CLA.md): you keep ownership of what you write and grant the project a permanent license to use it, signed with a `Signed-off-by:` line in your commits.
 
-## API key wizard
 
-For any command that needs a real OpenRouter key (capture, relate, or the live tests), run:
+## Contributing and security
 
-```
-bash scripts/ember-key-wizard.sh
-```
-
-It walks you through getting the key from openrouter.ai, writes it to `.env` in the repository root (mode 600, gitignored, so it is never committed), verifies the file, and never prints the key. Load it into your shell before a real run:
-
-```bash
-set -a; source .env; set +a
-```
+- **Contribute:** Read the [Contributor License Agreement](CLA.md) first. You keep ownership of what you write, and you sign your commits with a `Signed-off-by:` line.
+- **Report a security problem:** Follow the [security policy](SECURITY.md). Report it privately. Do not open a public issue.

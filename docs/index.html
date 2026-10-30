@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ember diagrams: how a local-first project knowledge base works</title>
+<meta name="description" content="Two plain-language diagrams of Ember, a local-first command-line knowledge base for project decisions, assumptions, findings, and questions. No coding needed to read them.">
+<style>
+  /* Plain, hand-written styles. No scripts, no external files. */
+  :root { color-scheme: light; --paper: #faf9f5; --ink: #1f1d1a; --muted: #5f5a52; --line: #d6d1c3; --panel: #f1eee4; }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: var(--paper); color: var(--ink); font: 16px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; padding: 40px 16px 56px; }
+  main { max-width: 760px; margin: 0 auto; }
+  h1 { font-size: 2rem; line-height: 1.2; }
+  .lede { color: var(--muted); margin-top: 10px; }
+  .cards { display: grid; gap: 14px; margin-top: 28px; }
+  .card { display: block; background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 18px 20px; text-decoration: none; color: inherit; }
+  .card:hover, .card:focus-visible { border-color: var(--ink); outline: none; }
+  .card h2 { font-size: 1.2rem; }
+  .card p { color: var(--muted); margin-top: 4px; font-size: 0.95rem; }
+  .card .pdf { display: inline-block; margin-top: 8px; font-size: 0.9rem; }
+  footer { margin-top: 32px; color: var(--muted); font-size: 0.9rem; }
+  a { color: #1d4ed8; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Ember: how it works</h1>
+  <p class="lede">Ember is a command-line tool that keeps a project's decisions, assumptions, findings, and questions in one local file. These two diagrams explain it in plain words. You do not need to code to read them.</p>
+
+  <div class="cards">
+    <a class="card" href="Graphs/V1%20Master%20Diagram%20Project%20Context%20Management%20System%20%E2%80%93%20Master%20diagram.html">
+      <h2>The master diagram</h2>
+      <p>The five parts of Ember. Who acts at each step: the AI, an automatic check, or you.</p>
+    </a>
+    <a class="card" href="Graphs/V1%20Example%20Run%20the%20blue%20button%20story%20%E2%80%93%20Example%20run.html">
+      <h2>The worked example</h2>
+      <p>One small story in five scenes: a team decision, an open question, an answer, a surprise, and reading it back.</p>
+    </a>
+  </div>
+
+  <footer>
+    Prefer paper? Print-ready PDFs:
+    <a href="Graphs/V1%20Master%20Diagram%20Project%20Context%20Management%20System-1.pdf">master diagram</a> and
+    <a href="Graphs/V1%20Example%20Run%20the%20blue%20button%20story-4.pdf">worked example</a>.
+    The code, the commands, and the glossary are in the
+    <a href="https://github.com/mohamed-benoughidene/ember">Ember repository on GitHub</a>.
+  </footer>
+</main>
+</body>
+</html>
