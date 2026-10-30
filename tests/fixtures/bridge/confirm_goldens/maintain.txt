@@ -1,0 +1,11 @@
+closed: 0, challenged: 0, reopened: 0, unchanged: 4
+Proposal 1/2: item 7 [Question] should we cache tokens?
+  newest answers link 11, confirmed 2026-01-01T00:00:00+00:00
+  no close proposed
+Proposal 2/2: item 9 [Question] which auth backend?
+  newest answers link 12, confirmed 2026-01-01T00:00:00+00:00
+  reason: expired, confidence 0.8
+  rationale: answered long ago, no follow-up open
+[y]es / [n]o / [q]uititem 9: Active -> Closed (expired)
+closed: 1, challenged: 0, reopened: 0, unchanged: 3
+stale: 2, proposed: 1, accepted: 1, rejected: 0, aborted: false

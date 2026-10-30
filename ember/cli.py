@@ -21,6 +21,13 @@ from ember.adapters.export import (
     write_export,
 )
 from ember.adapters.embedder import build_embedder, validate_embedder_config
+from ember.adapters.json_confirm import (
+    JsonCaptureConfirm,
+    JsonMaintainConfirm,
+    JsonRelateConfirm,
+    JsonSink,
+    TerminalSink,
+)
 from ember.adapters.llm import (
     build_close_proposer,
     build_item_proposer,
@@ -116,11 +123,12 @@ DEFAULT_DB_PATH = "ember.db"
 class OutputOptions:
     """The output surface and run scope of one command, as ONE bundle (I3).
 
-    `--format` (`fmt`) is added in bridge step 01; `--confirm` is wired in
-    step 03 (the field exists already, default `terminal`); the `--dry-run`
+    `--format` (`fmt`) was added in bridge step 01; `--confirm` (which
+    adapter answers the interactive confirm prompts — the terminal, or the
+    JSON-lines pipe protocol) is wired in bridge step 03; the `--dry-run`
     flag and the `--db` path ride the bundle so every handler stays at
-    <= 4 inputs (the 5-input `edit_item` was the reason). The `fmt` default
-    is `text`, byte-identical to the pre-bridge output (I10).
+    <= 4 inputs. The defaults (`text`, `terminal`) are byte-identical to
+    the pre-bridge output (I10).
     """
 
     fmt: str = "text"
@@ -130,27 +138,39 @@ class OutputOptions:
 
 
 def _output_options(
-    *, dry_run: bool = False
+    *, dry_run: bool = False, confirm: bool = False
 ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
-    """Shared Click decorator: binds `--db`, `--format` and (on the six
-    commands that have it, unchanged) `--dry-run` into ONE `OutputOptions`
-    bundle argument named `output` (I3).
+    """Shared Click decorator: binds `--db`, `--format`, (on the six
+    commands that have it, unchanged) `--dry-run` and (on the three
+    interactive commands) `--confirm` into ONE `OutputOptions` bundle
+    argument named `output` (I3).
 
     The `--format [text|json]` choice is branched only inside `cli.py` (I2):
     `json` renders the one `OutputDocument`; `text`, the default, prints the
-    exact pre-bridge text lines. An unknown value is Click's own usage error
-    (exit 2).
+    exact pre-bridge text lines. The `--confirm [terminal|json]` choice
+    selects the confirm adapter only here at the composition root (P4):
+    `terminal` (the default) keeps today's byte-identical behaviour, `json`
+    selects `ember/adapters/json_confirm.py`. An unknown value is Click's
+    own usage error (exit 2).
     """
 
     def decorate(func: Callable[..., Any]) -> Callable[..., Any]:
         @wraps(func)
         def wrapper(
-            *args: Any, output_fmt: str, db_path: str, dry_run: bool = False, **kwargs: Any
+            *args: Any,
+            output_fmt: str,
+            db_path: str,
+            dry_run: bool = False,
+            output_confirm: str = "terminal",
+            **kwargs: Any,
         ) -> Any:
             return func(
                 *args,
                 output=OutputOptions(
-                    fmt=output_fmt, dry_run=dry_run, db_path=db_path
+                    fmt=output_fmt,
+                    confirm=output_confirm,
+                    dry_run=dry_run,
+                    db_path=db_path,
                 ),
                 **kwargs,
             )
@@ -161,6 +181,18 @@ def _output_options(
                 is_flag=True,
                 default=False,
                 help="Print the planned changes and write nothing.",
+            )(wrapper)
+        if confirm:
+            wrapper = click.option(
+                "--confirm",
+                "output_confirm",
+                type=click.Choice(("terminal", "json")),
+                default="terminal",
+                help=(
+                    "Prompt surface: the terminal (default), or JSON events"
+                    " on stdout with `{'answer': ...}` lines on stdin (then"
+                    " every stdout line is one JSON object)."
+                ),
             )(wrapper)
         wrapper = click.option(
             "--format",
@@ -178,6 +210,19 @@ def _output_options(
         return wrapper
 
     return decorate
+
+
+def _confirm_io(
+    output: OutputOptions, json_cls: type, terminal_cls: type
+) -> tuple[TerminalSink | JsonSink, Any]:
+    """The ONE place the confirm adapter is chosen (P4): the composition
+    root. Returns the output sink every stdout line of the body flows
+    through plus the `ConfirmPort` for the engine loop. `terminal` echoes
+    exactly as before the bridge; `json` emits events and `summary`."""
+    if output.confirm == "json":
+        sink: TerminalSink | JsonSink = JsonSink()
+        return sink, json_cls(sink)
+    return TerminalSink(), terminal_cls()
 
 
 class TerminalConfirm:
@@ -288,47 +333,55 @@ def capture_source(file_path: str | None, db_path: str) -> None:
     default=None,
     help="Read raw text from this file instead of STDIN.",
 )
-@click.option(
-    "--db",
-    "db_path",
-    default=DEFAULT_DB_PATH,
-    help="SQLite database path.",
-)
-def capture(file_path: str | None, db_path: str) -> None:
+@_output_options(confirm=True)
+def capture(file_path: str | None, output: OutputOptions) -> None:
     """Run all 4 capture phases: store, propose, gatekeeper, confirm, write.
 
     Exit 0 when every proposal is handled, 1 on a phase 1/2/3 error or a DB
-    write failure, and 2 when the user quits mid-prompt.
+    write failure, and 2 when the user quits mid-prompt. `--confirm json`
+    (bridge step 03) requires `--file`: stdin then carries the `{"answer":`
+    ...}` answer lines instead of the pasted text.
     """
+    if output.confirm == "json" and file_path is None:
+        raise click.UsageError(
+            "--confirm json requires --file (stdin carries the answer lines)"
+        )
     mode = InputMode.FILE if file_path else InputMode.STDIN
+    sink, confirm = _confirm_io(output, JsonCaptureConfirm, TerminalConfirm)
     try:
         raw_text = read_raw_text(mode=mode, path=file_path)
-        conn = open_database(db_path)
+        conn = open_database(db_path=output.db_path)
         stored = _store(conn, raw_text)
         response = _propose(conn, stored)
         _store_ai_response(conn, stored, response)
         for drop in response.batch.dropped:
-            click.echo(f"dropped proposal: {drop.rule}")
+            sink.echo(f"dropped proposal: {drop.rule}")
         if not response.batch.proposals:
-            click.echo("0 valid proposals")
+            sink.echo("0 valid proposals")
 
         gatekeeper = SqliteItemGatekeeper(conn)
         run = _gatekeeper_run(conn, gatekeeper, stored)
         outcome = validate_proposals(response.batch.proposals, run)
         for reject in outcome.rejected:
-            click.echo(f"rejected by gatekeeper: {reject.rule}")
+            sink.echo(f"rejected by gatekeeper: {reject.rule}")
 
         result = run_confirm_loop(
             outcome.validated,
-            confirm=TerminalConfirm(),
+            confirm=confirm,
             commit=gatekeeper,
             revalidate=lambda draft: validate_add_item(draft, run),
         )
-        click.echo(
+        sink.summary(
             f"accepted: {len(result.accepted_ids)}"
             f", rejected: {result.rejected_count}"
             f", warnings: {result.warning_count}"
-            f", aborted: {str(result.aborted).lower()}"
+            f", aborted: {str(result.aborted).lower()}",
+            {
+                "accepted": len(result.accepted_ids),
+                "rejected": result.rejected_count,
+                "warnings": result.warning_count,
+                "aborted": result.aborted,
+            },
         )
     except EmberError as exc:
         click.echo(f"error: {exc.log_line()}", err=True)
@@ -376,28 +429,25 @@ def clear_validated(item_id: int, db_path: str) -> None:
     default=False,
     help="Newest Active item with no link from it.",
 )
-@click.option(
-    "--db",
-    "db_path",
-    default=DEFAULT_DB_PATH,
-    help="SQLite database path.",
-)
-def relate(item_id: int | None, latest: bool, db_path: str) -> None:
+@_output_options(confirm=True)
+def relate(item_id: int | None, latest: bool, output: OutputOptions) -> None:
     """Run all 4 relate phases: load, pool, AI propose, confirm, write.
 
     Prints one `relate rejected: CODE | detail` line per gatekeeper rejection,
     then the summary. Exit 0 when every proposal is handled, 1 on a phase
     error, and 2 when the user quits mid-prompt. An empty candidate pool
-    prints the Phase 2 JSON and exits 0 without an AI call.
+    prints the Phase 2 JSON and exits 0 without an AI call. `--confirm json`
+    (bridge step 03) turns every stdout line into one JSON event object.
     """
     if item_id is not None and latest:
         raise click.UsageError("use either --item or --latest, not both")
     if item_id is None and not latest:
         raise click.UsageError("one of --item or --latest is required")
+    sink, confirm = _confirm_io(output, JsonRelateConfirm, RelateTerminalConfirm)
     aborted = False
     try:
         validate_embedder_config()
-        conn = open_relate_database(db_path)
+        conn = open_relate_database(output.db_path)
         lookup = SqliteLinkContext(conn)
         store = SqliteLinkStore(conn)
         link_proposer = build_link_proposer(os.environ)
@@ -405,9 +455,9 @@ def relate(item_id: int | None, latest: bool, db_path: str) -> None:
         if latest:
             result = load_latest_candidates(lookup)
         else:
-            result = load_item_candidates(lookup, item_id=item_id, db_path=db_path)
+            result = load_item_candidates(lookup, item_id=item_id, db_path=output.db_path)
         if result is None:
-            click.echo("no unrelated items")
+            sink.echo("no unrelated items")
             return
         if result.universe.items:
             pool = build_candidate_pool(
@@ -421,7 +471,7 @@ def relate(item_id: int | None, latest: bool, db_path: str) -> None:
         if pool.warning:
             click.echo(pool.warning, err=True)
         if not pool.ranked:
-            click.echo(
+            sink.echo(
                 json.dumps(
                     {"phase": 2, "pool_size": 0, "signals": pool.counts}
                 )
@@ -432,7 +482,7 @@ def relate(item_id: int | None, latest: bool, db_path: str) -> None:
             link_store=store,
             link_proposer=link_proposer,
             ai_response_store=ai_response_store,
-            confirm=RelateTerminalConfirm(),
+            confirm=confirm,
         )
         request = RelateRequest(
             new_item=result.new_item, ranked=pool.ranked, env=os.environ
@@ -440,16 +490,22 @@ def relate(item_id: int | None, latest: bool, db_path: str) -> None:
         outcome = run_relate(ports, request)
         for rejection in outcome.gatekeeper_rejections:
             if rejection.detail:
-                click.echo(
+                sink.echo(
                     f"relate rejected: {rejection.code} | {rejection.detail}"
                 )
             else:
-                click.echo(f"relate rejected: {rejection.code}")
-        click.echo(
+                sink.echo(f"relate rejected: {rejection.code}")
+        sink.summary(
             f"accepted: {len(outcome.accepted)}"
             f", rejected: {outcome.rejected}"
             f", skipped: {outcome.skipped}"
-            f", aborted: {str(outcome.aborted).lower()}"
+            f", aborted: {str(outcome.aborted).lower()}",
+            {
+                "accepted": len(outcome.accepted),
+                "rejected": outcome.rejected,
+                "skipped": outcome.skipped,
+                "aborted": outcome.aborted,
+            },
         )
         aborted = outcome.aborted
     except EmberError as exc:
@@ -460,7 +516,7 @@ def relate(item_id: int | None, latest: bool, db_path: str) -> None:
 
 
 @main.command("maintain")
-@_output_options(dry_run=True)
+@_output_options(dry_run=True, confirm=True)
 def maintain(output: OutputOptions) -> None:
     """Run the maintain sweep, then propose AI closes for the stale shortlist.
 
@@ -473,9 +529,12 @@ def maintain(output: OutputOptions) -> None:
     `[y]es / [n]o / [q]uit`. An accepted close is written through the human
     `close-item` validate path. The AI never closes anything itself. Exit 0
     normally, 1 on an error, 2 when the user quits the proposal loop.
+    `--confirm json` (bridge step 03) turns every stdout line into one JSON
+    event object.
     """
     outcome = ProposalOutcome(stale=0, proposed=0, accepted=0, rejected=0)
     json_mode = output.fmt == "json"
+    sink, confirm = _confirm_io(output, JsonMaintainConfirm, MaintainTerminalConfirm)
     sweep_changes: list[StatusChange] = []
     total_items = 0
     stale_truncated = False
@@ -492,7 +551,7 @@ def maintain(output: OutputOptions) -> None:
             total_items = len(snapshot.items)
             if not json_mode:
                 for line in format_report(changes, total_items):
-                    click.echo(line)
+                    sink.echo(line)
             # Nothing was applied, so this fresh load is still the pre-apply
             # view: the dry-run list deliberately names every candidate
             # before the human commits to a run (review fix 3).
@@ -501,10 +560,10 @@ def maintain(output: OutputOptions) -> None:
             )
             stale_truncated = shortlist.truncated
             if shortlist.truncated and not json_mode:
-                click.echo("stale shortlist capped at 10 items (list truncated)")
+                sink.echo("stale shortlist capped at 10 items (list truncated)")
             if not json_mode:
                 for candidate in shortlist.candidates:
-                    click.echo(
+                    sink.echo(
                         f"item {candidate.item_id}: stale {candidate.item_type}"
                         f" (newest answers link"
                         f" {candidate.newest_answers_link_id},"
@@ -521,13 +580,13 @@ def maintain(output: OutputOptions) -> None:
             sweep_changes = result.changed
             if not json_mode:
                 for line in format_report(result.changed, result.total_items):
-                    click.echo(line)
+                    sink.echo(line)
             shortlist = stale_close_candidates(
                 _load(ports.lookup), now=datetime.now(timezone.utc)
             )
             stale_truncated = shortlist.truncated
             if shortlist.truncated and not json_mode:
-                click.echo("stale shortlist capped at 10 items (list truncated)")
+                sink.echo("stale shortlist capped at 10 items (list truncated)")
             if shortlist.candidates:
                 outcome = run_close_proposals(
                     CloseProposalPorts(
@@ -535,7 +594,7 @@ def maintain(output: OutputOptions) -> None:
                         store=ports.store,
                         close_proposer=build_close_proposer(os.environ),
                         ai_response_store=SqliteAiResponseStore(conn),
-                        confirm=MaintainTerminalConfirm(),
+                        confirm=confirm,
                     ),
                     now=datetime.now(timezone.utc),
                 )
@@ -552,7 +611,7 @@ def maintain(output: OutputOptions) -> None:
             rejected=outcome.rejected,
             aborted=outcome.aborted,
         )
-        click.echo(
+        sink.echo(
             render_document(
                 OutputDocument(
                     command="maintain",
@@ -563,10 +622,17 @@ def maintain(output: OutputOptions) -> None:
             )
         )
     else:
-        click.echo(
+        sink.summary(
             f"stale: {outcome.stale}, proposed: {outcome.proposed},"
             f" accepted: {outcome.accepted}, rejected: {outcome.rejected},"
-            f" aborted: {str(outcome.aborted).lower()}"
+            f" aborted: {str(outcome.aborted).lower()}",
+            {
+                "stale": outcome.stale,
+                "proposed": outcome.proposed,
+                "accepted": outcome.accepted,
+                "rejected": outcome.rejected,
+                "aborted": outcome.aborted,
+            },
         )
     if outcome.aborted:
         sys.exit(2)

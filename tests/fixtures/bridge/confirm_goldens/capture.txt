@@ -1,0 +1,16 @@
+dropped proposal: type
+- id: 1
+  type: "Decision"
+  statement: "Use SQLite"
+  source_quote: "use SQLite"
+  confidence: 0.9
+  metadata: "auth-network"
+  near_dup_warning: null
+[y]es / [n]o / [e]dit / [q]uit- id: 2
+  type: "Assumption"
+  statement: "Team ships weekly"
+  source_quote: "ships weekly"
+  confidence: 0.8
+  metadata: null
+  near_dup_warning: null
+[y]es / [n]o / [e]dit / [q]uitaccepted: 1, rejected: 1, warnings: 0, aborted: false

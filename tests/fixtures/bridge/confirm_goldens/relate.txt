@@ -1,0 +1,13 @@
+Proposal 1/3: item 1 -> item 4 [depends_on]
+  rationale: -
+[y]es / [n]o / [s]kip / [q]uit- link_id: 3
+  source_item_id: 1
+  target_item_id: 4
+  link_type: "depends_on"
+  status: "Confirmed"
+  rationale: null
+Proposal 2/3: item 1 -> item 5 [depends_on]
+  rationale: -
+[y]es / [n]o / [s]kip / [q]uitProposal 3/3: item 1 -> item 6 [depends_on]
+  rationale: -
+[y]es / [n]o / [s]kip / [q]uitaccepted: 1, rejected: 1, skipped: 1, aborted: false
