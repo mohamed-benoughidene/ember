@@ -197,17 +197,40 @@ pytest -m live
 
 `pytest` runs the offline tests. `pytest -m live` calls the real AI service, needs `EMBER_AI_API_KEY`, and costs money.
 
-## Repository Structure
+## What is in this repository
 
-- [`Constitution.md`](Constitution.md): Architectural rules for standalone modules, clean boundaries, and reliable tests.
-- [`GLOSSARY.md`](GLOSSARY.md): The project's vocabulary: knowledge base, ledger, item, link, and the backup/export/restore language.
-- [`PROJECT_MAP.md`](PROJECT_MAP.md): Index of every file and directory in this project.
-- [`docs/`](docs/): System documentation, brand philosophy, and architecture diagrams. The full command inventory (every command with its flags, writes, and error codes) is in [`docs/commands.md`](docs/commands.md).
-  - [`docs/ai version/`](docs/ai%20version/): Compressed specifications optimized for AI readers.
-  - [`docs/humen version/`](docs/humen%20version/): Plain-English specifications written for human builders.
-  - [`docs/Graphs/`](docs/Graphs/): Visual diagrams and example runs.
+This is a map of the folders and files, grouped by what they are for.
+
+### The program
+
+- [`ember/`](ember/): The Ember program itself, written in Python.
+- [`tests/`](tests/): The automatic tests that check the program.
+- [`scripts/`](scripts/): Helper scripts. The API key wizard lives here.
+- [`pyproject.toml`](pyproject.toml): Package settings: the name, the version, and what Ember needs to run.
+
+### Documentation
+
+- [`docs/commands.md`](docs/commands.md): Every command, with its flags and what it writes.
+- [`docs/Graphs/`](docs/Graphs/): The master diagram and the worked example, as HTML and PDF. Written for people who do not code.
+- [`docs/humen version/`](docs/humen%20version/): Plain-English specifications written for human builders.
+- [`docs/ai version/`](docs/ai%20version/): Compressed specifications optimized for AI readers.
+- [`GLOSSARY.md`](GLOSSARY.md): The project's vocabulary: knowledge base, ledger, item, link, and the backup, export, and restore language.
+- [`PROJECT_MAP.md`](PROJECT_MAP.md): A one-line description of every file in this project.
 - [`plans/`](plans/): The layered build plans: the system master plan (L1), the engine plans (L2), and the per-step plans (L3).
 - [`assets/`](assets/): Official Ember brand logos and icons.
+
+### Rules for working on the project
+
+- [`Constitution.md`](Constitution.md): Architectural rules for standalone modules, clean boundaries, and reliable tests.
+- [`AGENTS.md`](AGENTS.md): Rules for AI coding agents that work in this repository.
+- [`Personal guidelines.md`](Personal%20guidelines.md): Rules for tone, accuracy, and review style.
+
+### Legal and community
+
+- [`LICENSE`](LICENSE): The Business Source License 1.1.
+- [`CLA.md`](CLA.md): The Contributor License Agreement.
+- [`SECURITY.md`](SECURITY.md): How to report a security problem.
+- [`.github/`](.github/): Issue and pull request templates, the automatic test run, and dependency update settings.
 
 ## License
 
