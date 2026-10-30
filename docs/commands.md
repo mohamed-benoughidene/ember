@@ -96,7 +96,7 @@ Re-apply the change you just undid, the same append-only way (a new group with t
 
 ## Engine D: Query (read-only views)
 
-All four print exactly one JSON document on stdout and read only `items`, `links`, `change_log`. They enforce a schema floor (`QUERY-004` on an older file) and never migrate. `--db PATH` everywhere.
+All six print exactly one JSON document on stdout and read only `items`, `links`, `change_log`. They enforce a schema floor (`QUERY-004` on an older file) and never migrate. `--db PATH` everywhere.
 
 ### `ember current-state [--db PATH]`
 Live statuses only: `Active` and `Challenged` items, `Closed` omitted, `Challenged` listed first. Envelope: `mode`, `count`, `items` (each row carries a `challenged` flag).
@@ -109,6 +109,12 @@ The reasons behind an item: follows `depends_on` (to its target) and `supports` 
 
 ### `ember history [--item N] [--limit N] [--offset N] [--since TS] [--db PATH]`
 The ledger view, item-scoped or global. Item scope includes rows whose `link_id` touches the item; a row matching both ways appears once. Events are classified into readable kinds (`created`, `link_confirmed`, `status_changed`, `link_reversed`, and — since Undo — `undone` / `redone` for the undo/redo pointers and the same kind as the original on undo/redo inverse rows; anything unmatchable is `unknown`). Sort is `(timestamp, id)` ascending; `--limit 0` is an explicit empty page. `--since` must parse as ISO-8601 **with a UTC offset** (naive or garbage input exits 1, `QUERY-007`). Envelope: `mode`, `item_id`, `count`, `events`.
+
+### `ember list-items [--status S] [--type T] [--limit N] [--offset N] [--db PATH]`
+Every item in any status, `Closed` included — that is the point: `current-state` hides them. `--status` accepts `Active|Challenged|Closed` and `--type` accepts `Decision|Assumption|Finding|Question` (same values and `QUERY-006` handling as `ember topic-search`); `total` is the count after the filters but before the page crops it, and `--limit 0` is an explicit empty list. Each item carries `id`, `type`, `statement`, `status`, `close_reason`, `rationale`, `source`, `validated`, `created_at`. Envelope: `total`, `items`.
+
+### `ember show-item --item N [--db PATH]`
+One item, its verbatim source text, and ALL its links in both directions (`links_out`: the item is the source, `links_in`: the item is the target), Rejected and reversed links included. Each link carries `id`, `type`, `status`, the other item's `other_item_id` / `other_item_type` / `other_item_statement` / `other_item_status`, and `reversed_at` (the reversal timestamp; `null` on a live link, and always `null` on a pre-011 schema file where the column does not exist — the file is never migrated). Unknown ids exit 1 (`QUERY-001`). Envelope: `item`, `source`, `links_out`, `links_in`.
 
 ---
 
