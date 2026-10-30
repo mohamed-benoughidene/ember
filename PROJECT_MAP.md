@@ -27,6 +27,7 @@ This file lists every file and its purpose in the repository. Update it when fil
 - `docs/ember-interface-spec.md`: Spec for the desktop interface (problem, solution, 123 user stories, 22 decisions, jobs-to-commands table, menu bar, shortcuts, Undo framing in section 12, testing decisions, out of scope). Written 2026-10-30 from a design session. Nothing in it is built.
 - `docs/PRODUCT.md`: Product brief for the interface (users, purpose, positioning, constraints, brand commitments, principles, accessibility). Approved by the founder 2026-10-30.
 - `docs/DESIGN.md`: Design system for the interface (Ledger Page and Soot palettes, spacing steps, type, heat marks, motion). Approved by the founder 2026-10-30.
+- `docs/interface-spike-findings.md`: The app step 01 spike record (2026-10-30): GO for Electron + the three checks with real numbers (Python spawn + PyInstaller 20 MB, Wayland/KDE shortcut+tray, safeStorage kwallet6, install sizes base ~300 MB / embedder +1357 MB), the NOT VERIFIED list, and the maintainer's resting answers to app §3 decisions 2-4.
 - `docs/PROTOTYPE-ember-interface-v3.html`: Clickable prototype of the interface with made-up data. Not connected to Ember. Shows the approved look and all screen states.
 - `docs/index.html`: Landing page for a GitHub Pages site built from `docs/`. Links to the two diagrams and their PDFs.
 - `docs/.nojekyll`: Empty marker file. It tells GitHub Pages to publish `docs/` as plain files, without the Jekyll build.
