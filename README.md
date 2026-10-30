@@ -15,9 +15,11 @@ Ember is a Python tool. It is not related to the Ember.js web framework. The [gl
 
 ## What is Ember?
 
-When teams build software, they make decisions, find facts, test assumptions, and ask questions. That knowledge gets lost in chat logs, commit history, and people's heads.
+When a team works on a big project, people make decisions, find facts, test assumptions, and ask questions. That knowledge gets lost in chat logs, files, and people's heads.
 
-Ember keeps it. It does not store the project itself, such as code or images. It stores the understanding around the project: why choices were made, what is unproven, and what new findings change.
+Ember keeps it. It does not store the project itself, such as code, images, or documents. It stores the understanding around the project: why choices were made, what is unproven, and what new findings change.
+
+Ember is built for any team project, not only software. The four kinds of item are not tied to code. Two limits apply today. Ember runs in a terminal (a text window where you type commands). And it has not been tested on other kinds of work yet: its tests use placeholder text, and its one worked example is a design decision.
 
 If you keep a decision log today, Ember does that job and also keeps assumptions, findings, and questions. Every item is Active, Challenged, or Closed.
 
@@ -175,6 +177,10 @@ Only for the three commands above. `capture-source`, the Query commands, `backup
 ### Can I use Ember at work, and can I sell it?
 
 You may use, copy, modify, and share Ember for free for personal use or inside your own organization. Selling Ember, or a product or service built on it, needs a commercial license. This is a summary, not legal advice. Read [LICENSE](LICENSE) for the exact terms.
+
+### Can a team that does not write software use Ember?
+
+The design does not depend on software. Items are plain statements, and the four kinds are not tied to code. But Ember runs in a terminal and needs Python 3.12 or newer, so someone on the team must be comfortable with that. It has not been tested on non-software notes yet.
 
 ### How is Ember different from architecture decision records?
 
