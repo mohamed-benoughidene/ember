@@ -239,7 +239,7 @@ This is a map of the folders and files, grouped by what they are for. [`PROJECT_
   - [`ember/adapters/`](ember/adapters/): The parts that touch the outside world: the knowledge base file, the AI service, and the embedding model. Engine E, Utility (backup, export, health check) also lives here.
 - [`tests/`](tests/): The automatic tests that check the program.
   - [`tests/relate/`](tests/relate/), [`tests/maintain/`](tests/maintain/), and [`tests/query/`](tests/query/): Tests for those three engines.
-  - Test files directly in [`tests/`](tests/): Capture, backup, export, the health check, the commands, and the knowledge base file and its upgrades.
+  - Test files directly in [`tests/`](tests/): Capture, backup, export, the health check, the commands, and the knowledge base file and its upgrades. [`tests/test_docs_in_sync.py`](tests/test_docs_in_sync.py) checks that the documents match the code.
   - [`tests/fixtures/`](tests/fixtures/): Sample data the tests use.
   - [`tests/test_architecture.py`](tests/test_architecture.py): Checks that the four engines never depend on an adapter.
 - [`scripts/`](scripts/): Helper scripts. The API key wizard lives here.

@@ -195,6 +195,7 @@ Earlier logo and character images, kept for history.
 - `tests/test_schema_enforcement.py`: The migration 011 triggers: direct illegal pair INSERT rejected, `link_compat` matches `TYPE_COMPAT` (16 rows), real writers still commit, and `Closed` without `close_reason` rejected.
 - `tests/test_link_replay.py`: The D3 replay tests (hardening 02): `replay_reversals` over a real ledger matches the live `links.reversed_at` column, highest-id marker wins on a clock tie, and pure-unit cases (no marker gives `None`, link-less rows skipped).
 - `tests/test_db_check.py`: `ember db-check` CLI checks (hardening 02): healthy DB exits 0 with the pinned report, seeded drifts (zeroed column, dropped `link_compat` row, stale v10 DB) exit 1 `DRIFT`, missing and corrupt files exit 1 `UNREADABLE`, the read-only hash proof (identical sha256 before and after), and unknown flags exit 2.
+- `tests/test_docs_in_sync.py`: Keeps the docs honest. Fails when the README, `docs/commands.md`, the diagrams, the glossary, or this map name a command, flag, setting, item kind, link kind, or file that the code does not have, or when a tracked file has no line here.
 - `tests/test_cli.py`: CLI checks for the Phase 1 command, file/stdin modes and exit codes.
 - `tests/test_cli_capture.py`: CLI checks for the `capture` command with a fake AI.
 - `tests/test_cli_validated.py`: CLI checks for `set-validated` / `clear-validated` and the Assumption-only rule.
