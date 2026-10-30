@@ -10,7 +10,7 @@ owns the read step.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 
 from ember.maintain.apply_status import MaintainStorePort
@@ -42,15 +42,23 @@ from ember.maintain.rows import (
     StatusChange,
 )
 from ember.relate.ai_response_store import AiResponseStorePort
-from ember.relate.rows import ChangeLogEntry
+from ember.relate.rows import ChangeLogEntry, GroupIdPort
 
 
 @dataclass(frozen=True)
 class MaintainPorts:
-    """The two ports the maintain pipeline reads and writes through."""
+    """The ports the maintain pipeline reads and writes through.
+
+    `group_ids` is the neutral undo-group id source (B2, injected, undo step
+    01): the six human entry points stamp one shared group id per action
+    through it. `None` keeps every entry point's behaviour byte for byte.
+    """
 
     lookup: MaintainLookupPort
     store: MaintainStorePort
+    # Keyword-only (Python >=3.10) so `CloseProposalPorts` can add its own
+    # required ports after it without reordering existing call sites.
+    group_ids: GroupIdPort | None = field(default=None, kw_only=True)
 
 
 @dataclass(frozen=True)
@@ -129,17 +137,35 @@ def _build_result(
     )
 
 
+def _next_group_id(ports: MaintainPorts) -> int | None:
+    """Allocate ONE undo group id for one human action, or None.
+
+    `None` when no group-id port was injected (pre-013 behaviour). The
+    caller stamps every ledger row its action writes with the SAME id, so
+    `run_set_status`'s two transactions share it (engine-undo-plan §5.1).
+    """
+    return None if ports.group_ids is None else ports.group_ids.next_group_id()
+
+
 def _apply_and_report(
     ports: MaintainPorts,
     snapshot: MaintainSnapshot,
     changes: list[StatusChange],
+    group_id: int | None = None,
 ) -> MaintainResult:
     """Write the batch through the store port, then build the result.
 
-    Raises `MAINTAIN-011 StatusWriteFailed` / `MAINTAIN-012 ChangeLogWriteFailed`
+    `group_id` stamps every ledger row of the batch (undo step 01); the
+    sweep passes nothing. With `group_id` None the store is called exactly
+    as before the port grew, byte for byte (undo step 01 contract). Raises
+    `MAINTAIN-011 StatusWriteFailed` / `MAINTAIN-012 ChangeLogWriteFailed`
     from the store, which rolls the whole batch back (I7).
     """
-    applied = ports.store.apply_status_changes(changes)
+    applied = (
+        ports.store.apply_status_changes(changes)
+        if group_id is None
+        else ports.store.apply_status_changes(changes, group_id)
+    )
     return _build_result(changes, applied, snapshot)
 
 
@@ -161,11 +187,14 @@ def run_close_item(ports: MaintainPorts, request: MaintainRequest) -> MaintainRe
     Reads `request.item_id` and `request.reason`. Raises `MAINTAIN-001` /
     `002` / `003` / `004` from the validator, `MAINTAIN-010` on a read failure,
     `MAINTAIN-011` / `012` from the store. The close does **not** set the shield
-    (a human close is a derived close, step-03 §4.1).
+    (a human close is a derived close, step-03 §4.1). The close is a human
+    action: its close row and every `dependency_closed` row share ONE group
+    id (undo step 01) — an AI-proposed close accepted in `run_close_proposals`
+    rides this entry point, so it is stamped the same way.
     """
     snapshot = _load(ports.lookup)
     changes = validate_close_item(snapshot, request.item_id, request.reason)
-    return _apply_and_report(ports, snapshot, changes)
+    return _apply_and_report(ports, snapshot, changes, _next_group_id(ports))
 
 
 def run_set_status(ports: MaintainPorts, request: MaintainRequest) -> MaintainResult:
@@ -176,18 +205,22 @@ def run_set_status(ports: MaintainPorts, request: MaintainRequest) -> MaintainRe
     `012` from the store. Only a `Challenged -> Active` clear writes the
     `status_origin='manual'` shield, and only when a change was actually applied
     (so a no-op does not shield). The shield is a second transaction (step-03
-    §4.2).
+    §4.2). ONE group id stamps BOTH transactions (undo step 01).
     """
     snapshot = _load(ports.lookup)
     changes = validate_set_status(snapshot, request.item_id, request.to_status)
-    result = _apply_and_report(ports, snapshot, changes)
+    group_id = _next_group_id(ports) if changes else None
+    result = _apply_and_report(ports, snapshot, changes, group_id)
     if (
         result.applied
         and request.to_status == "Active"
         and changes
         and changes[0].old_status == "Challenged"
     ):
-        ports.store.apply_status_origin(request.item_id, "manual")
+        if group_id is None:
+            ports.store.apply_status_origin(request.item_id, "manual")
+        else:
+            ports.store.apply_status_origin(request.item_id, "manual", group_id)
     return result
 
 
@@ -201,7 +234,8 @@ def run_reverse_supersedes(
     `012` from the store. The reversal writes the item restore, the `status`
     row, the `reversed_at` column on the `links` row, and the `link_reversed`
     marker row in one transaction from one clock read (L2 §6 pairing rule). It
-    never sets the shield (step-03 §4.3).
+    never sets the shield (step-03 §4.3). Both ledger rows share ONE group
+    id (undo step 01).
     """
     snapshot = _load(ports.lookup)
     changes = validate_reverse_supersedes(
@@ -217,7 +251,11 @@ def run_reverse_supersedes(
         timestamp="",
         trigger_cause="reversal",
     )
-    applied = ports.store.apply_reversal(change, marker)
+    group_id = _next_group_id(ports)
+    if group_id is None:
+        applied = ports.store.apply_reversal(change, marker)
+    else:
+        applied = ports.store.apply_reversal(change, marker, group_id)
     return _build_result(changes, applied, snapshot)
 
 
@@ -239,7 +277,11 @@ def run_edit_item(
     )
     if not changes:
         return []
-    ports.store.apply_item_edit(changes[0])
+    group_id = _next_group_id(ports)
+    if group_id is None:
+        ports.store.apply_item_edit(changes[0])
+    else:
+        ports.store.apply_item_edit(changes[0], group_id)
     return changes
 
 
@@ -257,7 +299,11 @@ def run_remove_link(
     """
     snapshot = _load(ports.lookup)
     changes = validate_remove_link(snapshot, request.link_id)
-    ports.store.apply_remove_link(changes[0])
+    group_id = _next_group_id(ports)
+    if group_id is None:
+        ports.store.apply_remove_link(changes[0])
+    else:
+        ports.store.apply_remove_link(changes[0], group_id)
     return changes
 
 
@@ -341,7 +387,11 @@ def run_close_proposals(ports: CloseProposalPorts, now: datetime) -> ProposalOut
                 rejected += 1
                 continue
             result = run_close_item(
-                MaintainPorts(lookup=ports.lookup, store=ports.store),
+                MaintainPorts(
+                    lookup=ports.lookup,
+                    store=ports.store,
+                    group_ids=ports.group_ids,
+                ),
                 MaintainRequest(
                     item_id=candidate.item_id, reason=response.proposal.reason
                 ),

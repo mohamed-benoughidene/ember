@@ -142,12 +142,20 @@ def test_migration_012_preserves_existing_schema(db_path) -> None:
     raw.close()
 
     # No object was renamed, rebuilt or dropped. ADD COLUMN rewrites the stored
-    # CREATE text of `items`, so its truth comes from the column diff below.
+    # CREATE text of `items` and `change_log`, so their truth comes from the
+    # column diff below.
     for name, sql in objects_before.items():
-        if name != "items":
+        if name not in {"items", "change_log"}:
             assert objects_after[name] == sql
     for table in tables:
         if table == "items":
+            continue
+        # change_log gains exactly one trailing nullable column from 013,
+        # which rides the same open.
+        if table == "change_log":
+            assert columns_after[table] == columns_before[table] + [
+                (8, "group_id", "INTEGER", 0, None, 0)
+            ]
             continue
         assert columns_after[table] == columns_before[table], table
     # items gains exactly one trailing nullable column.
@@ -177,7 +185,7 @@ def test_fresh_install_applies_all_migrations_through_012(db_path) -> None:
     conn = open_database(db_path)
 
     version = conn.execute("SELECT version FROM schema_version").fetchone()[0]
-    assert version == 12
+    assert version == 13
     triggers = {
         row["name"]
         for row in conn.execute(

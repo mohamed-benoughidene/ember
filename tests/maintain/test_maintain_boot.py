@@ -119,4 +119,4 @@ def test_open_maintain_database_applies_all_migrations(db_path) -> None:
     conn = open_maintain_database(db_path)
 
     version = conn.execute("SELECT version FROM schema_version").fetchone()["version"]
-    assert version == 12
+    assert version == 13

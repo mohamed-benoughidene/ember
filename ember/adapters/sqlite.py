@@ -53,7 +53,7 @@ from ember.relate.errors import (
     LinkWriteFailed,
     SchemaOutdated,
 )
-from ember.relate.rows import ChangeLogEntry, Link, NewItem
+from ember.relate.rows import ChangeLogEntry, GroupIdPort, Link, NewItem
 
 _MIGRATIONS_MODULE = "ember.adapters.migrations"
 
@@ -334,6 +334,30 @@ def _migration_scripts() -> list[tuple[int, str]]:
 
 def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+class SqliteGroupIdPort:
+    """`GroupIdPort` on SQLite: the next undo group id from `change_log`.
+
+    `MAX(group_id)+1` over the ledger, `1` when there is no group yet, so
+    ids grow monotonically and NULL (pre-013, sweep, capture, relate) rows
+    never join a group. One read, one call: the caller stamps every row of
+    one human action with the SAME returned id (engine-undo-plan §5.1).
+
+    A failed read raises the raw `sqlite3.Error` fail-fast (I5): the step's
+    error budget (§4) adds no new code, and a failure here means the opened
+    connection itself is broken, which no existing per-module code names.
+    """
+
+    def __init__(self, conn: sqlite3.Connection) -> None:
+        self._conn = conn
+
+    def next_group_id(self) -> int:
+        """Return `MAX(group_id)+1` over `change_log`, `1` when none."""
+        row = self._conn.execute(
+            "SELECT COALESCE(MAX(group_id), 0) FROM change_log"
+        ).fetchone()
+        return int(row[0]) + 1
 
 
 class SqliteSourceStore:
@@ -937,7 +961,9 @@ class SqliteMaintainStore:
         self._conn = conn
         self._clock = clock or _utc_now
 
-    def apply_status_changes(self, changes: list[StatusChange]) -> int:
+    def apply_status_changes(
+        self, changes: list[StatusChange], group_id: int | None = None
+    ) -> int:
         """Write every change's status and its `change_log` row in one batch.
 
         A `rearm` change (the timestamp-scoped shield's re-arm, L2 §13.4)
@@ -946,6 +972,10 @@ class SqliteMaintainStore:
         the observed prior origin (read, never hardcoded), `new_value`
         `'derived'`, `trigger_cause='sweep_rearm'`, `link_id` the causing
         link, all from the same ONE clock read, inside the same transaction.
+
+        `group_id` stamps every ledger row of this batch (one group id = one
+        user action, engine-undo-plan §5.1). The sweep passes nothing, so
+        sweep rows read NULL (undo step 01).
 
         Return `len(changes)`. Raise `StatusWriteFailed` (MAINTAIN-011) when an
         `items` UPDATE fails, and `ChangeLogWriteFailed` (MAINTAIN-012) when a
@@ -987,7 +1017,8 @@ class SqliteMaintainStore:
                 self._conn.execute(
                     "INSERT INTO change_log"
                     " (item_id, link_id, field_changed, old_value, new_value,"
-                    " timestamp, trigger_cause) VALUES (?, ?, 'status', ?, ?, ?, ?)",
+                    " timestamp, trigger_cause, group_id)"
+                    " VALUES (?, ?, 'status', ?, ?, ?, ?, ?)",
                     (
                         change.item_id,
                         change.link_id,
@@ -995,20 +1026,22 @@ class SqliteMaintainStore:
                         _status_new_value(change),
                         timestamp,
                         change.trigger_cause,
+                        group_id,
                     ),
                 )
                 if change.rearm:
                     self._conn.execute(
                         "INSERT INTO change_log"
                         " (item_id, link_id, field_changed, old_value, new_value,"
-                        " timestamp, trigger_cause)"
+                        " timestamp, trigger_cause, group_id)"
                         " VALUES (?, ?, 'status_origin', ?, 'derived', ?,"
-                        " 'sweep_rearm')",
+                        " 'sweep_rearm', ?)",
                         (
                             change.item_id,
                             change.link_id,
                             rearm_old_values.get(change.item_id),
                             timestamp,
+                            group_id,
                         ),
                     )
             except sqlite3.Error as exc:
@@ -1019,12 +1052,15 @@ class SqliteMaintainStore:
         self._conn.commit()
         return len(changes)
 
-    def apply_status_origin(self, item_id: int, origin: str) -> None:
+    def apply_status_origin(
+        self, item_id: int, origin: str, group_id: int | None = None
+    ) -> None:
         """Write one item's `status_origin` and its `change_log` row atomically.
 
-        Raise `StatusWriteFailed` (MAINTAIN-011) when the `items` UPDATE fails,
-        and `ChangeLogWriteFailed` (MAINTAIN-012) when the `change_log` INSERT
-        fails. Either failure rolls the whole write back.
+        `group_id` stamps the ledger row (undo step 01); `None` leaves it
+        NULL. Raise `StatusWriteFailed` (MAINTAIN-011) when the `items` UPDATE
+        fails, and `ChangeLogWriteFailed` (MAINTAIN-012) when the `change_log`
+        INSERT fails. Either failure rolls the whole write back.
         """
         try:
             row = self._conn.execute(
@@ -1044,10 +1080,10 @@ class SqliteMaintainStore:
             self._conn.execute(
                 "INSERT INTO change_log"
                 " (item_id, link_id, field_changed, old_value, new_value,"
-                " timestamp, trigger_cause)"
+                " timestamp, trigger_cause, group_id)"
                 " VALUES (?, NULL, 'status_origin', ?, ?, ?,"
-                " 'user_set_status')",
-                (item_id, old_origin, origin, self._clock()),
+                " 'user_set_status', ?)",
+                (item_id, old_origin, origin, self._clock(), group_id),
             )
         except sqlite3.Error as exc:
             self._conn.rollback()
@@ -1056,13 +1092,21 @@ class SqliteMaintainStore:
             ) from exc
         self._conn.commit()
 
-    def apply_reversal(self, change: StatusChange, marker: ChangeLogEntry) -> int:
+    def apply_reversal(
+        self,
+        change: StatusChange,
+        marker: ChangeLogEntry,
+        group_id: int | None = None,
+    ) -> int:
         """Restore one item and pair the reversal column with its marker.
 
         One implicit transaction, one `commit()` at the end: the `items`
         UPDATE, the `status` `change_log` row derived from `change`, the
         `reversed_at` column on the `links` row, and the `link_reversed`
         marker row taken from `marker` are all-or-nothing (L2 §6 pairing rule).
+
+        `group_id` stamps both ledger rows (undo step 01); `None` leaves
+        them NULL.
 
         The adapter owns time: it stamps all three writes from ONE
         `self._clock()` read and **overwrites** the passed `marker.timestamp`
@@ -1090,7 +1134,8 @@ class SqliteMaintainStore:
             self._conn.execute(
                 "INSERT INTO change_log"
                 " (item_id, link_id, field_changed, old_value, new_value,"
-                " timestamp, trigger_cause) VALUES (?, ?, 'status', ?, ?, ?, ?)",
+                " timestamp, trigger_cause, group_id)"
+                " VALUES (?, ?, 'status', ?, ?, ?, ?, ?)",
                 (
                     change.item_id,
                     change.link_id,
@@ -1098,6 +1143,7 @@ class SqliteMaintainStore:
                     _status_new_value(change),
                     timestamp,
                     change.trigger_cause,
+                    group_id,
                 ),
             )
         except sqlite3.Error as exc:
@@ -1119,7 +1165,8 @@ class SqliteMaintainStore:
             self._conn.execute(
                 "INSERT INTO change_log"
                 " (item_id, link_id, field_changed, old_value, new_value,"
-                " timestamp, trigger_cause) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                " timestamp, trigger_cause, group_id)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     marker.item_id,
                     marker.link_id,
@@ -1128,6 +1175,7 @@ class SqliteMaintainStore:
                     marker.new_value,
                     timestamp,
                     marker.trigger_cause,
+                    group_id,
                 ),
             )
         except sqlite3.Error as exc:
@@ -1138,7 +1186,7 @@ class SqliteMaintainStore:
         self._conn.commit()
         return 1
 
-    def apply_item_edit(self, change: EditChange) -> int:
+    def apply_item_edit(self, change: EditChange, group_id: int | None = None) -> int:
         """Write one item's authorial column and its `change_log` row atomically.
 
         One implicit transaction, one `commit()` at the end: the `items`
@@ -1146,6 +1194,9 @@ class SqliteMaintainStore:
         `old_value` = the observed prior value, NULL stays NULL,
         trigger_cause from the change) are all-or-nothing, so the ledger row
         and the column can never diverge.
+
+        `group_id` stamps the ledger row (undo step 01); `None` leaves it
+        NULL.
 
         Return `1`. Raise `ItemEditWriteFailed` (MAINTAIN-016) when the
         `items` UPDATE fails, and `ChangeLogWriteFailed` (MAINTAIN-012) when
@@ -1175,7 +1226,8 @@ class SqliteMaintainStore:
             self._conn.execute(
                 "INSERT INTO change_log"
                 " (item_id, link_id, field_changed, old_value, new_value,"
-                " timestamp, trigger_cause) VALUES (?, NULL, ?, ?, ?, ?, ?)",
+                " timestamp, trigger_cause, group_id)"
+                " VALUES (?, NULL, ?, ?, ?, ?, ?, ?)",
                 (
                     change.item_id,
                     change.field,
@@ -1183,6 +1235,7 @@ class SqliteMaintainStore:
                     change.new_value,
                     self._clock(),
                     change.trigger_cause,
+                    group_id,
                 ),
             )
         except sqlite3.Error as exc:
@@ -1193,7 +1246,9 @@ class SqliteMaintainStore:
         self._conn.commit()
         return 1
 
-    def apply_remove_link(self, change: LinkChange) -> int:
+    def apply_remove_link(
+        self, change: LinkChange, group_id: int | None = None
+    ) -> int:
         """Write the ONE removal and its `link_removed` ledger row atomically.
 
         One implicit transaction, one `commit()` at the end: the `links`
@@ -1202,6 +1257,9 @@ class SqliteMaintainStore:
         INSERT (`field_changed='link_removed'`, `item_id` = the link's
         source, the `insert_link_with_log` discipline) are all-or-nothing,
         so the row can never flip without its ledger row (Constitution D3).
+
+        `group_id` stamps the ledger row (undo step 01); `None` leaves it
+        NULL.
 
         Return `1`. Raise `RemoveLinkWriteFailed` (MAINTAIN-017) when the
         `links` UPDATE fails, and `ChangeLogWriteFailed` (MAINTAIN-012) when
@@ -1222,8 +1280,8 @@ class SqliteMaintainStore:
             self._conn.execute(
                 "INSERT INTO change_log"
                 " (item_id, link_id, field_changed, old_value, new_value,"
-                " timestamp, trigger_cause) VALUES (?, ?, 'link_removed', ?,"
-                " ?, ?, ?)",
+                " timestamp, trigger_cause, group_id)"
+                " VALUES (?, ?, 'link_removed', ?, ?, ?, ?, ?)",
                 (
                     change.item_id,
                     change.link_id,
@@ -1231,6 +1289,7 @@ class SqliteMaintainStore:
                     change.new_status,
                     self._clock(),
                     change.trigger_cause,
+                    group_id,
                 ),
             )
         except sqlite3.Error as exc:
@@ -1274,9 +1333,14 @@ class SqliteItemGatekeeper:
         conn: sqlite3.Connection,
         *,
         clock: Callable[[], str] | None = None,
+        group_ids: GroupIdPort | None = None,
     ) -> None:
         self._conn = conn
         self._clock = clock or _utc_now
+        # The neutral undo-group id source (B2): injected, never invented
+        # here. The validated-flag human action stamps its ledger row with
+        # one id from this port (undo step 01).
+        self._group_ids = group_ids
         self._next_id: int | None = None
 
     def statements(self) -> list[ExistingItem]:
@@ -1393,10 +1457,13 @@ class SqliteItemGatekeeper:
         except sqlite3.Error as exc:
             raise ItemDbWriteError("db write fail") from exc
 
-    def save_validated_flag(self, item: StoredItem, *, validated: bool) -> None:
+    def save_validated_flag(
+        self, item: StoredItem, *, validated: bool, group_id: int | None = None
+    ) -> None:
         """Write the `validated` flag and append a `validated` change_log row.
 
-        Raise `ItemDbWriteError` (CAPTURE-013) on a write failure.
+        `group_id` stamps the ledger row (undo step 01); `None` leaves it
+        NULL. Raise `ItemDbWriteError` (CAPTURE-013) on a write failure.
         """
         try:
             self._conn.execute(
@@ -1406,13 +1473,14 @@ class SqliteItemGatekeeper:
             self._conn.execute(
                 "INSERT INTO change_log"
                 " (item_id, link_id, field_changed, old_value, new_value, timestamp,"
-                " trigger_cause)"
-                " VALUES (?, NULL, 'validated', ?, ?, ?, 'user_set_validated')",
+                " trigger_cause, group_id)"
+                " VALUES (?, NULL, 'validated', ?, ?, ?, 'user_set_validated', ?)",
                 (
                     item.id,
                     _flag_text(item.validated),
                     _flag_text(validated),
                     self._clock(),
+                    group_id,
                 ),
             )
             self._conn.commit()

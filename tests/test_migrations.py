@@ -78,6 +78,7 @@ def test_change_log_table_has_expected_columns(db_path) -> None:
         "new_value",
         "timestamp",
         "trigger_cause",
+        "group_id",
     ]
 
 
@@ -213,7 +214,7 @@ def test_migrations_008_009_preserve_existing_rows(db_path) -> None:
 
     conn = open_database(db_path)
 
-    assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == 12
+    assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == 13
     assert conn.execute(
         "SELECT COUNT(*) FROM change_log WHERE id = 7"
     ).fetchone()[0] == 1

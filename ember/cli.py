@@ -26,6 +26,7 @@ from ember.adapters.llm import (
 from ember.adapters.sqlite import (
     SqliteAiResponseStore,
     SqliteItemContext,
+    SqliteGroupIdPort,
     SqliteItemGatekeeper,
     SqliteLinkContext,
     SqliteLinkStore,
@@ -409,6 +410,7 @@ def maintain(dry_run: bool, db_path: str) -> None:
         ports = MaintainPorts(
             lookup=SqliteMaintainContext(conn),
             store=SqliteMaintainStore(conn),
+            group_ids=SqliteGroupIdPort(conn),
         )
         if dry_run:
             snapshot = _load(ports.lookup)
@@ -503,6 +505,7 @@ def close_item(item_id: int, reason: str, dry_run: bool, db_path: str) -> None:
         ports = MaintainPorts(
             lookup=SqliteMaintainContext(conn),
             store=SqliteMaintainStore(conn),
+            group_ids=SqliteGroupIdPort(conn),
         )
         if dry_run:
             snapshot = _load(ports.lookup)
@@ -552,6 +555,7 @@ def set_status(item_id: int, to_status: str, db_path: str) -> None:
         ports = MaintainPorts(
             lookup=SqliteMaintainContext(conn),
             store=SqliteMaintainStore(conn),
+            group_ids=SqliteGroupIdPort(conn),
         )
         result = run_set_status(
             ports, MaintainRequest(item_id=item_id, to_status=to_status)
@@ -597,6 +601,7 @@ def reverse_supersedes(item_id: int, link_id: int, db_path: str) -> None:
         ports = MaintainPorts(
             lookup=SqliteMaintainContext(conn),
             store=SqliteMaintainStore(conn),
+            group_ids=SqliteGroupIdPort(conn),
         )
         result = run_reverse_supersedes(
             ports, MaintainRequest(item_id=item_id, link_id=link_id)
@@ -656,6 +661,7 @@ def edit_item(
         ports = MaintainPorts(
             lookup=SqliteMaintainContext(conn),
             store=SqliteMaintainStore(conn),
+            group_ids=SqliteGroupIdPort(conn),
         )
         if dry_run:
             snapshot = _load(ports.lookup)
@@ -714,6 +720,7 @@ def remove_link(link_id: int, dry_run: bool, db_path: str) -> None:
         ports = MaintainPorts(
             lookup=SqliteMaintainContext(conn),
             store=SqliteMaintainStore(conn),
+            group_ids=SqliteGroupIdPort(conn),
         )
         # The display-only link line is read from the same Phase-1 snapshot
         # the command writes from, BEFORE the flip (a removed link leaves
@@ -1025,9 +1032,12 @@ def _write_validated_flag(item_id: int, db_path: str, *, new_value: bool) -> Non
     """Write the flag on an Assumption. `new_value` is data, not a mode switch."""
     try:
         conn = open_database(db_path)
-        gatekeeper = SqliteItemGatekeeper(conn)
+        ids = SqliteGroupIdPort(conn)
+        gatekeeper = SqliteItemGatekeeper(conn, group_ids=ids)
         item = validate_set_validated(gatekeeper.find_item(item_id), item_id)
-        gatekeeper.save_validated_flag(item, validated=new_value)
+        gatekeeper.save_validated_flag(
+            item, validated=new_value, group_id=ids.next_group_id()
+        )
     except EmberError as exc:
         click.echo(f"error: {exc.log_line()}", err=True)
         sys.exit(1)

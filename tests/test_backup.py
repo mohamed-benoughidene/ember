@@ -75,7 +75,7 @@ def test_backup_creates_usable_copy(db_path, target_path) -> None:
 
     assert isinstance(report, BackupReport)
     assert report.path == target_path
-    assert report.schema_version == 12
+    assert report.schema_version == 13
     assert report.item_count == count
     assert report.rotated is None
     conn = sqlite3.connect(target_path)
@@ -86,7 +86,7 @@ def test_backup_creates_usable_copy(db_path, target_path) -> None:
         rows = int(conn.execute("SELECT COUNT(*) FROM items").fetchone()[0])
     finally:
         conn.close()
-    assert version == 12
+    assert version == 13
     assert rows == count
 
 
@@ -98,7 +98,7 @@ def test_cli_backup_success_line(db_path, target_path) -> None:
     assert result.exit_code == 0
     expected = (
         f"backup written: {target_path}"
-        f" (schema v12, {count} items)"
+        f" (schema v13, {count} items)"
     )
     assert result.output.strip() == expected
 

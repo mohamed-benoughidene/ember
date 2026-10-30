@@ -118,12 +118,16 @@ def test_migration_011_preserves_all_rows_and_values(db_path) -> None:
 
     raw = sqlite3.connect(db_path)
     # 012 rides the same open, so every pre-existing items row gains one
-    # trailing NULL for the new metadata column (rows and values unchanged).
+    # trailing NULL for the new metadata column, and 013 (undo step 01)
+    # rides too: every change_log row gains one trailing NULL for group_id
+    # (rows and values unchanged).
     assert _rows(raw, "SELECT * FROM items ORDER BY id") == [
         row + (None,) for row in items_before
     ]
     assert _rows(raw, _LINKS_SELECT) == links_before
-    assert _rows(raw, "SELECT * FROM change_log ORDER BY id") == log_before
+    assert _rows(raw, "SELECT * FROM change_log ORDER BY id") == [
+        row + (None,) for row in log_before
+    ]
     raw.close()
 
 
@@ -193,15 +197,16 @@ def test_migration_011_preserves_existing_schema(db_path) -> None:
     indexes_after = _index_lists(raw)
     fks_after = _fk_lists(raw)
 
-    # Every pre-011 object keeps its exact sqlite_master SQL, except `links`
-    # and `items`: ADD COLUMN rewrites the stored CREATE text, so their truth
-    # comes from the PRAGMA diffs below.
+    # Every pre-011 object keeps its exact sqlite_master SQL, except `links`,
+    # `items` and `change_log`: ADD COLUMN rewrites the stored CREATE text,
+    # so their truth comes from the PRAGMA diffs below.
     for name, sql in master_before.items():
-        if name not in {"links", "items"}:
+        if name not in {"links", "items", "change_log"}:
             assert master_after[name] == sql
 
     # Every pre-011 table keeps its columns, indexes and foreign keys, except
-    # `links` (011) and `items` (012), each gaining trailing nullable columns.
+    # `links` (011), `items` (012) and `change_log` (013), each gaining one
+    # trailing nullable column.
     for name, info in infos_before.items():
         if name == "links":
             assert [row[-1] for row in info] == [
@@ -220,6 +225,16 @@ def test_migration_011_preserves_existing_schema(db_path) -> None:
             added = infos_after[name][-1]
             assert added[1] == "metadata"
             assert added[2] == "TEXT"
+            assert added[3] == 0  # notnull
+            assert added[4] is None  # no default
+            assert added[5] == 0  # not pk
+        elif name == "change_log":
+            assert [row[-1] for row in info] == [
+                row[-1] for row in infos_after[name][:-1]
+            ]
+            added = infos_after[name][-1]
+            assert added[1] == "group_id"
+            assert added[2] == "INTEGER"
             assert added[3] == 0  # notnull
             assert added[4] is None  # no default
             assert added[5] == 0  # not pk
@@ -343,7 +358,7 @@ def test_fresh_install_applies_all_migrations_through_012(db_path) -> None:
     conn = open_database(db_path)
 
     version = conn.execute("SELECT version FROM schema_version").fetchone()[0]
-    assert version == 12
+    assert version == 13
     triggers = {
         row["name"]
         for row in conn.execute(
