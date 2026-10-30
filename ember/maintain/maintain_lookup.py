@@ -24,6 +24,30 @@ class MaintainLookupPort(Protocol):
         """
         ...
 
+    def list_all_links(self) -> list[Link]:
+        """Return every `links` row, ANY status, carrying `reversed_at`.
+
+        Undo step 04 (the binding step-03 deviation U3-3): the undo refusal
+        rule compares each grouped ledger row against the LIVE link state,
+        so the snapshot needs links of any status with the `reversed_at`
+        column — the Confirmed-only `list_confirmed_links` read cannot
+        supply that for a removed or reversed link.
+
+        Raise `MAINTAIN-010 ItemsReadFailed` on a read failure.
+        """
+        ...
+
+    def has_ungrouped_rows(self) -> bool:
+        """Return whether `change_log` rows WITHOUT a `group_id` exist.
+
+        Undo step 04: the one bit the grouped read cannot see by definition
+        (story 123) — the `MAINTAIN-023` message must tell the user whether
+        older ledger changes are invisible to undo.
+
+        Raise `MAINTAIN-010 ItemsReadFailed` on a read failure.
+        """
+        ...
+
     def list_reversed_link_ids(self) -> set[int]:
         """Return the link ids whose reversal state reads "reversed": the
         highest-id marker among `link_reversed` / `link_unreversed` is a

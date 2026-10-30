@@ -4,8 +4,9 @@ Step 02 adds `MaintainPorts` / `MaintainRequest` / `MaintainResult` and the
 `run_sweep` entry point here (it owns the store port). Step 03 adds the three
 validators and their human entry points. Step 04 adds `run_edit_item`, which
 returns the edit changes directly (`MaintainResult` stays the sweep's shape).
-Step 05 adds `run_remove_link`, the same single-element shape. This module
-owns the read step.
+Step 05 adds `run_remove_link`, the same single-element shape. Undo step 04
+adds `run_undo` / `run_redo` and `UndoRequest` (the snapshot loader rides
+`_load_undo_snapshot`). This module owns the read step.
 """
 
 from __future__ import annotations
@@ -40,7 +41,10 @@ from ember.maintain.rows import (
     LinkChange,
     MaintainSnapshot,
     StatusChange,
+    UndoResult,
+    UndoSnapshot,
 )
+from ember.maintain.undo import derive_redo, derive_undo
 from ember.relate.ai_response_store import AiResponseStorePort
 from ember.relate.rows import ChangeLogEntry, GroupIdPort
 
@@ -305,6 +309,66 @@ def run_remove_link(
     else:
         ports.store.apply_remove_link(changes[0], group_id)
     return changes
+
+
+@dataclass(frozen=True)
+class UndoRequest:
+    """The data for one undo or redo run (undo step 04).
+
+    `dry_run` is the maintainer's D3-locked `--dry-run` flag (an
+    acknowledged I2 exception like the four existing dry-run commands):
+    True loads and derives only and writes ZERO rows.
+    """
+
+    dry_run: bool = False
+
+
+def _load_undo_snapshot(lookup: MaintainLookupPort) -> UndoSnapshot:
+    """Read the whole world the pure undo core needs (undo step 04).
+
+    The grouped ledger, every item, ALL links (any status, with
+    `reversed_at`, the binding step-03 deviation U3-3 — the refusal rule
+    compares rows against LIVE link state) and whether pre-013 ledger rows
+    exist. Raises `MAINTAIN-010 ItemsReadFailed` when any read fails (I7).
+    """
+    return UndoSnapshot(
+        groups=lookup.list_grouped_ledger(),
+        items=lookup.list_items(),
+        links=lookup.list_all_links(),
+        ungrouped_rows_exist=lookup.has_ungrouped_rows(),
+    )
+
+
+def run_undo(ports: MaintainPorts, request: UndoRequest) -> UndoResult:
+    """Undo the newest still-undoable human change (undo step 04, L2 §4/§5).
+
+    Load, derive the inverse plan with the pure `derive_undo`, then apply it
+    through the store in ONE transaction — unless `request.dry_run`, which
+    derives only and writes zero rows. Refusals are raised, never returned
+    (I4): `MAINTAIN-023` NothingToUndo, `MAINTAIN-025` UndoRefused,
+    `MAINTAIN-027` GroupRecordInvalid from the core, `MAINTAIN-010` on a
+    read, `MAINTAIN-026` / `MAINTAIN-012` from the store. The returned
+    `UndoResult` carries `source_group_id`, `source_action` and
+    `target_label` for the report line (story 113).
+    """
+    plan = derive_undo(_load_undo_snapshot(ports.lookup))
+    if not request.dry_run:
+        ports.store.apply_inverse_group(plan)
+    return plan
+
+
+def run_redo(ports: MaintainPorts, request: UndoRequest) -> UndoResult:
+    """Re-apply the most recent undone human change (undo step 04, L2 §4/§5).
+
+    `run_undo`'s mirror: `derive_redo` derives the plan, the store applies
+    it in ONE transaction, `request.dry_run` writes zero rows. Raises the
+    same codes with `MAINTAIN-024` NothingToRedo in place of `MAINTAIN-023`
+    (a newer original action clears the redo, spec 12.6 rule 2).
+    """
+    plan = derive_redo(_load_undo_snapshot(ports.lookup))
+    if not request.dry_run:
+        ports.store.apply_inverse_group(plan)
+    return plan
 
 
 @dataclass(frozen=True)

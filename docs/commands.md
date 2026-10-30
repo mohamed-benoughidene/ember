@@ -84,6 +84,14 @@ The authorial-slot editor. `rationale` is writable on a `Decision`, `source` on 
 
 Remove one confirmed link by status flip (`Confirmed` -> `Rejected`) plus its `link_removed` ledger row, in one transaction. The row is never deleted, so the history stays complete. A missing or already-rejected link exits 1. `--dry-run` prints `link <id>: Confirmed -> Rejected (dry-run)`.
 
+### `ember undo [--dry-run] [--db PATH]` - no key
+
+Reverse the newest human change (`close-item`, `set-status`, `set-validated`, `clear-validated`, `edit-item`, `remove-link`, or `reverse-supersedes`) by appending its inverse rows to the ledger as a NEW group: nothing is erased, the ledger only grows. The sweep's own changes carry no undo group and are never undoable; older rows written before the grouping upgrade are refused with a note saying so (`MAINTAIN-023`). A change whose target moved since (a sweep, a newer edit) is refused and nothing is written (`MAINTAIN-025`). A one-line report names the group undone, its new group id, action and target, then one segment per changed item or link. `--dry-run` prints that line, ends it in `(dry-run)`, and writes zero rows.
+
+### `ember redo [--dry-run] [--db PATH]` - no key
+
+Re-apply the change you just undid, the same append-only way (a new group with the original values restored). A newer human change clears the redo (`MAINTAIN-024`): run `ember undo` again to make it available. Same refusal rule (`MAINTAIN-025`), same one-line report, same `--dry-run` as `ember undo`.
+
 ---
 
 ## Engine D: Query (read-only views)

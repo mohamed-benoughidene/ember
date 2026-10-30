@@ -67,20 +67,23 @@ from ember.maintain.human_actions import (
     validate_edit_item,
     validate_remove_link,
 )
-from ember.maintain.report import format_report
+from ember.maintain.report import format_report, format_undo_line
 from ember.maintain.rows import MaintainSnapshot
 from ember.maintain.run_maintain import (
     CloseProposalPorts,
     MaintainPorts,
     MaintainRequest,
+    UndoRequest,
     _load,
     run_close_item,
     run_close_proposals,
     run_edit_item,
+    run_redo,
     run_remove_link,
     run_reverse_supersedes,
     run_set_status,
     run_sweep,
+    run_undo,
 )
 from ember.query.rows import HistoryPage, TopicFilter
 from ember.query.run_query import (
@@ -762,6 +765,97 @@ def _confirmed_link(snapshot: MaintainSnapshot, link_id: int) -> Link | None:
         if link.id == link_id and link.status == "Confirmed":
             return link
     return None
+
+
+def _undo_ports(conn) -> tuple[MaintainPorts, SqliteMaintainContext]:
+    """Open the write path one undo/redo runs through (undo step 04).
+
+    Returns the ports plus the lookup, so the command can make its one
+    display-only read (the group the write just appended) afterwards.
+    """
+    context = SqliteMaintainContext(conn)
+    ports = MaintainPorts(
+        lookup=context,
+        store=SqliteMaintainStore(conn),
+        group_ids=SqliteGroupIdPort(conn),
+    )
+    return ports, context
+
+
+def _newest_group_id(context: SqliteMaintainContext) -> int:
+    """The ledger's newest group id: the one an undo/redo just wrote.
+
+    Display-only read (the remove-link link-line precedent). `apply_inverse_group`
+    appends the new group, so after a successful run it is the last one.
+    """
+    return context.list_grouped_ledger()[-1].group_id
+
+
+@main.command("undo")
+@click.option(
+    "--dry-run",
+    is_flag=True,
+    default=False,
+    help="Print the planned changes and write nothing.",
+)
+@click.option(
+    "--db",
+    "db_path",
+    default=DEFAULT_DB_PATH,
+    help="SQLite database path.",
+)
+def undo(dry_run: bool, db_path: str) -> None:
+    """Undo the newest human change by appending its inverse to the ledger.
+
+    Nothing is erased: the ledger only grows. The sweep's own changes carry
+    no undo group and are never undoable. A refusal (the change's target
+    moved since) exits 1 and writes nothing. `--dry-run` prints the same
+    line and writes zero rows.
+    """
+    try:
+        conn = open_maintain_database(db_path)
+        ports, context = _undo_ports(conn)
+        result = run_undo(ports, UndoRequest(dry_run=dry_run))
+        new_group_id = (
+            None if dry_run else _newest_group_id(context)
+        )
+    except EmberError as exc:
+        click.echo(f"error: {exc.log_line()}", err=True)
+        raise SystemExit(1)
+    click.echo(format_undo_line(result, new_group_id, dry_run))
+
+
+@main.command("redo")
+@click.option(
+    "--dry-run",
+    is_flag=True,
+    default=False,
+    help="Print the planned changes and write nothing.",
+)
+@click.option(
+    "--db",
+    "db_path",
+    default=DEFAULT_DB_PATH,
+    help="SQLite database path.",
+)
+def redo(dry_run: bool, db_path: str) -> None:
+    """Re-apply the change you just undid, the same append-only way.
+
+    A newer human change clears the redo (exit 1, `MAINTAIN-024`): undo
+    again to make it available. Same refusals and `--dry-run` as
+    `ember undo`.
+    """
+    try:
+        conn = open_maintain_database(db_path)
+        ports, context = _undo_ports(conn)
+        result = run_redo(ports, UndoRequest(dry_run=dry_run))
+        new_group_id = (
+            None if dry_run else _newest_group_id(context)
+        )
+    except EmberError as exc:
+        click.echo(f"error: {exc.log_line()}", err=True)
+        raise SystemExit(1)
+    click.echo(format_undo_line(result, new_group_id, dry_run))
 
 
 @main.command("current-state")

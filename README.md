@@ -165,6 +165,8 @@ All other commands run only on your computer. After its first download, the `rel
 | `reverse-supersedes` | Undoes a `supersedes` link | No |
 | `edit-item` | Edits the rationale of a Decision or the source of a Finding | No |
 | `remove-link` | Removes one confirmed link by marking it Rejected | No |
+| `undo` | Undoes the newest change by writing its reverse to the ledger | No |
+| `redo` | Re-applies the change you just undid | No |
 | `current-state` | Lists live items, Challenged first | No |
 | `topic-search` | Searches item statements by topic | No |
 | `why` | Shows the reasons behind an item | No |

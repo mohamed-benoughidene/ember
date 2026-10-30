@@ -805,6 +805,37 @@ class SqliteMaintainContext:
             for row in rows
         ]
 
+    def list_all_links(self) -> list[Link]:
+        """Return every `links` row, any status, carrying `reversed_at`.
+
+        Undo step 04 (deviation U3-3): the undo refusal rule compares each
+        grouped row against the LIVE link state, so the snapshot needs
+        links of ANY status with the `reversed_at` column, which the
+        Confirmed-only read above cannot give for a removed or reversed
+        link. Read-only.
+
+        Raise `ItemsReadFailed` (MAINTAIN-010) on a read failure.
+        """
+        try:
+            rows = self._conn.execute(
+                "SELECT id, source_item_id, target_item_id, link_type, status,"
+                " created_at, reversed_at FROM links"
+            ).fetchall()
+        except sqlite3.Error as exc:
+            raise MaintainItemsReadFailed("link read fail") from exc
+        return [
+            Link(
+                id=row["id"],
+                source_item_id=row["source_item_id"],
+                target_item_id=row["target_item_id"],
+                link_type=row["link_type"],
+                status=row["status"],
+                created_at=row["created_at"],
+                reversed_at=row["reversed_at"],
+            )
+            for row in rows
+        ]
+
     def list_reversed_link_ids(self) -> set[int]:
         """Return the link ids whose reversal state reads "reversed".
 
@@ -920,6 +951,23 @@ class SqliteMaintainContext:
                 LedgerGroup(group_id=group_id, rows=by_id[group_id])
             )
         return groups
+
+    def has_ungrouped_rows(self) -> bool:
+        """Return whether `change_log` rows WITHOUT a `group_id` exist.
+
+        Undo step 04 (story 123): the grouped read can never see these by
+        definition, so the `MAINTAIN-023` user message is told about them
+        separately.
+
+        Raise `ItemsReadFailed` (MAINTAIN-010) on a read failure.
+        """
+        try:
+            row = self._conn.execute(
+                "SELECT 1 FROM change_log WHERE group_id IS NULL LIMIT 1"
+            ).fetchone()
+        except sqlite3.Error as exc:
+            raise MaintainItemsReadFailed("change_log read fail") from exc
+        return row is not None
 
 
 class SqliteQueryContext:
