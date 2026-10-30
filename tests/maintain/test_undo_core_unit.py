@@ -564,6 +564,29 @@ def test_unknown_row_shape_raises_027() -> None:
     assert excinfo.value.context["group_id"] == 7
 
 
+def test_backwards_marker_raises_027_with_both_ids() -> None:
+    """A corrupt `undo_of` marker naming a group not EARLIER than its own
+    fails closed with both ids (L2 §5.3 rule 1): a healthy ledger only ever
+    writes the marker after the group it names, so the pointer id must be
+    strictly lower (here marker group 3 names original group 5)."""
+    original = _group(
+        5, _row(4, "status", "Active", "Challenged", "user_set_status")
+    )
+    corrupt = _group(
+        3,
+        _row(4, "status", "Challenged", "Active", "user_undo"),
+        _undo_marker(5),
+    )
+    snapshot = _snap(
+        [original, corrupt], [_item(4, status="Active")]
+    )
+    with pytest.raises(GroupRecordInvalid) as excinfo:
+        derive_undo(snapshot)
+    error = excinfo.value
+    assert error.code == "MAINTAIN-027"
+    assert error.context == {"group_id": 3, "target_group_id": 5}
+
+
 def test_pre013_rows_invisible_but_023_says_so() -> None:
     """Pre-013 rows carry no group id: invisible to the stack, named in 023."""
     with pytest.raises(NothingToUndo) as with_old_rows:

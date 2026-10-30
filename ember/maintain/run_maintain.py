@@ -160,16 +160,13 @@ def _apply_and_report(
     """Write the batch through the store port, then build the result.
 
     `group_id` stamps every ledger row of the batch (undo step 01); the
-    sweep passes nothing. With `group_id` None the store is called exactly
-    as before the port grew, byte for byte (undo step 01 contract). Raises
+    sweep passes None and its rows read NULL — the store's parameter default
+    is None, so passing it explicitly is the same call byte for byte
+    (undo step 01 contract). Raises
     `MAINTAIN-011 StatusWriteFailed` / `MAINTAIN-012 ChangeLogWriteFailed`
     from the store, which rolls the whole batch back (I7).
     """
-    applied = (
-        ports.store.apply_status_changes(changes)
-        if group_id is None
-        else ports.store.apply_status_changes(changes, group_id)
-    )
+    applied = ports.store.apply_status_changes(changes, group_id)
     return _build_result(changes, applied, snapshot)
 
 
@@ -221,10 +218,7 @@ def run_set_status(ports: MaintainPorts, request: MaintainRequest) -> MaintainRe
         and changes
         and changes[0].old_status == "Challenged"
     ):
-        if group_id is None:
-            ports.store.apply_status_origin(request.item_id, "manual")
-        else:
-            ports.store.apply_status_origin(request.item_id, "manual", group_id)
+        ports.store.apply_status_origin(request.item_id, "manual", group_id)
     return result
 
 
@@ -256,10 +250,7 @@ def run_reverse_supersedes(
         trigger_cause="reversal",
     )
     group_id = _next_group_id(ports)
-    if group_id is None:
-        applied = ports.store.apply_reversal(change, marker)
-    else:
-        applied = ports.store.apply_reversal(change, marker, group_id)
+    applied = ports.store.apply_reversal(change, marker, group_id)
     return _build_result(changes, applied, snapshot)
 
 
@@ -282,10 +273,7 @@ def run_edit_item(
     if not changes:
         return []
     group_id = _next_group_id(ports)
-    if group_id is None:
-        ports.store.apply_item_edit(changes[0])
-    else:
-        ports.store.apply_item_edit(changes[0], group_id)
+    ports.store.apply_item_edit(changes[0], group_id)
     return changes
 
 
@@ -304,10 +292,7 @@ def run_remove_link(
     snapshot = _load(ports.lookup)
     changes = validate_remove_link(snapshot, request.link_id)
     group_id = _next_group_id(ports)
-    if group_id is None:
-        ports.store.apply_remove_link(changes[0])
-    else:
-        ports.store.apply_remove_link(changes[0], group_id)
+    ports.store.apply_remove_link(changes[0], group_id)
     return changes
 
 

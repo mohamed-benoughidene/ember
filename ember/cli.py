@@ -767,19 +767,18 @@ def _confirmed_link(snapshot: MaintainSnapshot, link_id: int) -> Link | None:
     return None
 
 
-def _undo_ports(conn) -> tuple[MaintainPorts, SqliteMaintainContext]:
+def _undo_ports(conn) -> MaintainPorts:
     """Open the write path one undo/redo runs through (undo step 04).
 
-    Returns the ports plus the lookup, so the command can make its one
-    display-only read (the group the write just appended) afterwards.
+    The ports carry the lookup themselves (`ports.lookup`), so the command
+    can make its one display-only read (the group the write just appended)
+    afterwards without a second object to pass around.
     """
-    context = SqliteMaintainContext(conn)
-    ports = MaintainPorts(
-        lookup=context,
+    return MaintainPorts(
+        lookup=SqliteMaintainContext(conn),
         store=SqliteMaintainStore(conn),
         group_ids=SqliteGroupIdPort(conn),
     )
-    return ports, context
 
 
 def _newest_group_id(context: SqliteMaintainContext) -> int:
@@ -814,10 +813,10 @@ def undo(dry_run: bool, db_path: str) -> None:
     """
     try:
         conn = open_maintain_database(db_path)
-        ports, context = _undo_ports(conn)
+        ports = _undo_ports(conn)
         result = run_undo(ports, UndoRequest(dry_run=dry_run))
         new_group_id = (
-            None if dry_run else _newest_group_id(context)
+            None if dry_run else _newest_group_id(ports.lookup)
         )
     except EmberError as exc:
         click.echo(f"error: {exc.log_line()}", err=True)
@@ -847,10 +846,10 @@ def redo(dry_run: bool, db_path: str) -> None:
     """
     try:
         conn = open_maintain_database(db_path)
-        ports, context = _undo_ports(conn)
+        ports = _undo_ports(conn)
         result = run_redo(ports, UndoRequest(dry_run=dry_run))
         new_group_id = (
-            None if dry_run else _newest_group_id(context)
+            None if dry_run else _newest_group_id(ports.lookup)
         )
     except EmberError as exc:
         click.echo(f"error: {exc.log_line()}", err=True)

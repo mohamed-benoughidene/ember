@@ -38,7 +38,11 @@ from ember.adapters.sqlite import (
 )
 from ember.capture.item_gatekeeper import StoredItem
 from ember.maintain.derive import derive_status_changes
-from ember.maintain.errors import ChangeLogWriteFailed, UndoWriteFailed
+from ember.maintain.errors import (
+    ChangeLogWriteFailed,
+    GroupRecordInvalid,
+    UndoWriteFailed,
+)
 from ember.maintain.rows import MaintainSnapshot, UndoSnapshot
 from ember.maintain.run_maintain import (
     MaintainPorts,
@@ -49,6 +53,8 @@ from ember.maintain.run_maintain import (
     run_reverse_supersedes,
     run_set_status,
     run_sweep,
+    run_undo,
+    UndoRequest,
 )
 from ember.maintain.undo import derive_redo, derive_undo
 from ember.query.rows import ChangeRow
@@ -654,4 +660,37 @@ def test_injected_insert_failure_raises_012_and_rolls_back(db_path) -> None:
     assert _ledger_count(conn) == count
     assert _state(conn) == state_after_action
     assert check_database(db_path).result == OK
+    conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Corrupt ledger: a marker pointing at itself fails closed, zero rows written.
+# ---------------------------------------------------------------------------
+
+
+def test_corrupt_self_pointing_marker_raises_027_and_writes_nothing(
+    db_path,
+) -> None:
+    conn = _open(db_path)
+    ports = _ports(conn, StepClock())
+    source_id = insert_source(conn)
+    insert_item(conn, source_id=source_id, item_id=1, status="Active")
+    conn.commit()
+    run_close_item(ports, MaintainRequest(item_id=1, reason="expired"))
+    count = _ledger_count(conn)
+    # A corrupt row a healthy write can never produce: marker group 2 names
+    # its OWN group. `run_undo` must refuse with both ids, writing nothing.
+    conn.execute(
+        "INSERT INTO change_log"
+        " (item_id, link_id, field_changed, old_value, new_value, timestamp,"
+        "  trigger_cause, group_id)"
+        " VALUES (1, NULL, 'undo_of', NULL, '2', ?, 'user_undo', 2)",
+        ("2026-01-01T00:00:59+00:00",),
+    )
+    conn.commit()
+    with pytest.raises(GroupRecordInvalid) as excinfo:
+        run_undo(ports, UndoRequest(dry_run=True))
+    assert excinfo.value.code == "MAINTAIN-027"
+    assert excinfo.value.context == {"group_id": 2, "target_group_id": 2}
+    assert _ledger_count(conn) == count + 1  # only the corrupt row itself
     conn.close()

@@ -121,7 +121,10 @@ def _active_undos(groups: list[LedgerGroup]) -> dict[int, int]:
 
     "Standing" = the `undo_of` marker is LATER (higher id) than the group it
     names, and no later `redo_of` marker re-applied that undo (L2 §5.3
-    rule 1). A later undo of the same group wins.
+    rule 1). A later undo of the same group wins. A pointer naming a group
+    not strictly earlier than its own cannot exist in a healthy ledger (a
+    group is only ever written after the group it points at): fail closed
+    (MAINTAIN-027, both ids) rather than let a corrupt ledger flip the stack.
     """
     redone: set[int] = set()
     active: dict[int, int] = {}
@@ -136,6 +139,7 @@ def _active_undos(groups: list[LedgerGroup]) -> dict[int, int]:
             ),
             group,
         )
+        _require_earlier(group, undone_by)
         redone.add(undone_by)
     for group in groups:
         if _kind(group) != "undo":
@@ -148,10 +152,25 @@ def _active_undos(groups: list[LedgerGroup]) -> dict[int, int]:
             ),
             group,
         )
+        _require_earlier(group, undo_id)
         if group.group_id in redone:
             continue
         active[undo_id] = group.group_id
     return active
+
+
+def _require_earlier(group: LedgerGroup, target_id: int) -> None:
+    """Fail closed (MAINTAIN-027) when a pointer names an earlier-or-equal id.
+
+    The pointer row's own group must be written AFTER the group it names,
+    so its id must be strictly higher (L2 §5.3 rule 1, rule-6 fail-closed).
+    """
+    if target_id >= group.group_id:
+        raise GroupRecordInvalid(
+            "marker names a group not earlier than its own",
+            group_id=group.group_id,
+            target_group_id=target_id,
+        )
 
 
 # --------------------------------------------------------------------------
@@ -384,13 +403,16 @@ def _target_label(group: LedgerGroup) -> str:
     return f"item {row.item_id}"
 
 
-def _source_action(rows: list[ChangeLogEntry], redo: bool) -> str:
-    """Name the action a group's rows describe.
+def _source_action(
+    group: LedgerGroup, rows: list[ChangeLogEntry], redo: bool
+) -> str:
+    """Name the action `group`'s rows describe (its id on every 027 raise).
 
     `redo=False` (an original group) reads the original causes; `redo=True`
     (an undo group) reads the value the redo re-applies, because an inverse
     row's cause is always `user_undo` (L2 §5.2) and cannot say what the
-    original action was. Unknown shapes fail closed (MAINTAIN-027).
+    original action was. Unknown shapes fail closed (MAINTAIN-027), naming
+    the group (I19).
     """
     fields = {row.field_changed for row in rows}
     if redo:
@@ -412,7 +434,9 @@ def _source_action(rows: list[ChangeLogEntry], redo: bool) -> str:
             if split_status_value(applied or "").status == "Closed":
                 return "close-item"
             return "set-status"
-        raise GroupRecordInvalid("unknown row shape in grouped ledger")
+        raise GroupRecordInvalid(
+            "unknown row shape in grouped ledger", group_id=group.group_id
+        )
 
     if "user_closed" in {row.trigger_cause for row in rows}:
         return "close-item"
@@ -431,7 +455,9 @@ def _source_action(rows: list[ChangeLogEntry], redo: bool) -> str:
         return "edit-item"
     if "status" in fields:
         return "set-status"
-    raise GroupRecordInvalid("unknown row shape in grouped ledger")
+    raise GroupRecordInvalid(
+        "unknown row shape in grouped ledger", group_id=group.group_id
+    )
 
 
 # --------------------------------------------------------------------------
@@ -489,7 +515,7 @@ def derive_undo(snapshot: UndoSnapshot) -> UndoResult:
     )
     return UndoResult(
         source_group_id=target.group_id,
-        source_action=_source_action(rows, redo=False),
+        source_action=_source_action(target, rows, redo=False),
         target_label=_target_label(target),
         direction="undo",
         changes=changes,
@@ -547,7 +573,7 @@ def derive_redo(snapshot: UndoSnapshot) -> UndoResult:
     )
     return UndoResult(
         source_group_id=target.group_id,
-        source_action=_source_action(rows, redo=True),
+        source_action=_source_action(target, rows, redo=True),
         target_label=_target_label(target),
         direction="redo",
         changes=changes,
