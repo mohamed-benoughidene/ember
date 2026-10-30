@@ -10,23 +10,11 @@ from ember.maintain.rows import (
 )
 
 
-def format_report(changes: list[StatusChange], total_items: int) -> list[str]:
-    """Return the report lines: one per change, then the summary last.
-
-    Line: `item <id>: <old_status> -> <new_status>` plus ` (<close_reason>)`
-    when the change is a close. Ordered by item_id ascending.
-
-    Summary: `closed: N, challenged: N, reopened: N, unchanged: N`.
-    `reopened` counts changes moving to `Active` from a non-`Active` status;
-    `unchanged` = total_items - the number of distinct items changed.
-    """
-    lines: list[str] = []
-    for change in sorted(changes, key=lambda item: item.item_id):
-        line = f"item {change.item_id}: {change.old_status} -> {change.new_status}"
-        if change.new_status == "Closed" and change.close_reason is not None:
-            line += f" ({change.close_reason})"
-        lines.append(line)
-
+def summary_counts(changes: list[StatusChange], total_items: int) -> dict[str, int]:
+    """The report summary as data: `closed`, `challenged`, `reopened`,
+    `unchanged` — the exact integers behind `format_report`'s summary line,
+    extracted so the text line and the bridge JSON summary are ONE rule with
+    one definition (D3)."""
     closed = sum(1 for change in changes if change.new_status == "Closed")
     challenged = sum(1 for change in changes if change.new_status == "Challenged")
     reopened = sum(
@@ -35,10 +23,34 @@ def format_report(changes: list[StatusChange], total_items: int) -> list[str]:
         if change.new_status == "Active" and change.old_status != "Active"
     )
     changed_items = len({change.item_id for change in changes})
-    unchanged = total_items - changed_items
+    return {
+        "closed": closed,
+        "challenged": challenged,
+        "reopened": reopened,
+        "unchanged": total_items - changed_items,
+    }
+
+
+def format_report(changes: list[StatusChange], total_items: int) -> list[str]:
+    """Return the report lines: one per change, then the summary last.
+
+    Line: `item <id>: <old_status> -> <new_status>` plus ` (<close_reason>)`
+    when the change is a close. Ordered by item_id ascending.
+
+    Summary: `closed: N, challenged: N, reopened: N, unchanged: N` — the
+    `summary_counts` numbers in a fixed order.
+    """
+    lines: list[str] = []
+    for change in sorted(changes, key=lambda item: item.item_id):
+        line = f"item {change.item_id}: {change.old_status} -> {change.new_status}"
+        if change.new_status == "Closed" and change.close_reason is not None:
+            line += f" ({change.close_reason})"
+        lines.append(line)
+
+    counts = summary_counts(changes, total_items)
     lines.append(
-        f"closed: {closed}, challenged: {challenged}, "
-        f"reopened: {reopened}, unchanged: {unchanged}"
+        f"closed: {counts['closed']}, challenged: {counts['challenged']}, "
+        f"reopened: {counts['reopened']}, unchanged: {counts['unchanged']}"
     )
     return lines
 

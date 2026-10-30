@@ -6,6 +6,9 @@ import json
 import os
 import sys
 from datetime import datetime, timezone
+from dataclasses import dataclass
+from functools import wraps
+from typing import Any, Callable
 
 import click
 
@@ -41,6 +44,7 @@ from ember.adapters.sqlite import (
     open_query_database,
     open_relate_database,
 )
+from ember.bridge.json_out import OutputDocument, render_document
 from ember.capture.confirm_write import run_confirm_loop
 from ember.capture.errors import UserAbort
 from ember.capture.input_reader import InputMode, read_raw_text
@@ -67,8 +71,12 @@ from ember.maintain.human_actions import (
     validate_edit_item,
     validate_remove_link,
 )
-from ember.maintain.report import format_report, format_undo_line
-from ember.maintain.rows import MaintainSnapshot
+from ember.maintain.report import (
+    format_report,
+    format_undo_line,
+    summary_counts,
+)
+from ember.maintain.rows import MaintainSnapshot, StatusChange
 from ember.maintain.run_maintain import (
     CloseProposalPorts,
     MaintainPorts,
@@ -100,6 +108,74 @@ from ember.relate.rows import Pool
 from ember.relate.run_relate import RelatePorts, RelateRequest, run_relate
 
 DEFAULT_DB_PATH = "ember.db"
+
+
+@dataclass(frozen=True)
+class OutputOptions:
+    """The output surface and run scope of one command, as ONE bundle (I3).
+
+    `--format` (`fmt`) is added in bridge step 01; `--confirm` is wired in
+    step 03 (the field exists already, default `terminal`); the `--dry-run`
+    flag and the `--db` path ride the bundle so every handler stays at
+    <= 4 inputs (the 5-input `edit_item` was the reason). The `fmt` default
+    is `text`, byte-identical to the pre-bridge output (I10).
+    """
+
+    fmt: str = "text"
+    confirm: str = "terminal"
+    dry_run: bool = False
+    db_path: str = DEFAULT_DB_PATH
+
+
+def _output_options(
+    *, dry_run: bool = False
+) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
+    """Shared Click decorator: binds `--db`, `--format` and (on the six
+    commands that have it, unchanged) `--dry-run` into ONE `OutputOptions`
+    bundle argument named `output` (I3).
+
+    The `--format [text|json]` choice is branched only inside `cli.py` (I2):
+    `json` renders the one `OutputDocument`; `text`, the default, prints the
+    exact pre-bridge text lines. An unknown value is Click's own usage error
+    (exit 2).
+    """
+
+    def decorate(func: Callable[..., Any]) -> Callable[..., Any]:
+        @wraps(func)
+        def wrapper(
+            *args: Any, output_fmt: str, db_path: str, dry_run: bool = False, **kwargs: Any
+        ) -> Any:
+            return func(
+                *args,
+                output=OutputOptions(
+                    fmt=output_fmt, dry_run=dry_run, db_path=db_path
+                ),
+                **kwargs,
+            )
+
+        if dry_run:
+            wrapper = click.option(
+                "--dry-run",
+                is_flag=True,
+                default=False,
+                help="Print the planned changes and write nothing.",
+            )(wrapper)
+        wrapper = click.option(
+            "--format",
+            "output_fmt",
+            type=click.Choice(("text", "json")),
+            default="text",
+            help="Output format: text lines (default) or one JSON document.",
+        )(wrapper)
+        wrapper = click.option(
+            "--db",
+            "db_path",
+            default=DEFAULT_DB_PATH,
+            help="SQLite database path.",
+        )(wrapper)
+        return wrapper
+
+    return decorate
 
 
 class TerminalConfirm:
@@ -382,19 +458,8 @@ def relate(item_id: int | None, latest: bool, db_path: str) -> None:
 
 
 @main.command("maintain")
-@click.option(
-    "--dry-run",
-    is_flag=True,
-    default=False,
-    help="Print the planned changes and write nothing.",
-)
-@click.option(
-    "--db",
-    "db_path",
-    default=DEFAULT_DB_PATH,
-    help="SQLite database path.",
-)
-def maintain(dry_run: bool, db_path: str) -> None:
+@_output_options(dry_run=True)
+def maintain(output: OutputOptions) -> None:
     """Run the maintain sweep, then propose AI closes for the stale shortlist.
 
     A plain run writes the derived status changes to `items` and appends one
@@ -408,45 +473,58 @@ def maintain(dry_run: bool, db_path: str) -> None:
     normally, 1 on an error, 2 when the user quits the proposal loop.
     """
     outcome = ProposalOutcome(stale=0, proposed=0, accepted=0, rejected=0)
+    json_mode = output.fmt == "json"
+    sweep_changes: list[StatusChange] = []
+    total_items = 0
+    stale_truncated = False
     try:
-        conn = open_maintain_database(db_path)
+        conn = open_maintain_database(output.db_path)
         ports = MaintainPorts(
             lookup=SqliteMaintainContext(conn),
             store=SqliteMaintainStore(conn),
             group_ids=SqliteGroupIdPort(conn),
         )
-        if dry_run:
+        if output.dry_run:
             snapshot = _load(ports.lookup)
             changes = derive_status_changes(snapshot)
-            for line in format_report(changes, len(snapshot.items)):
-                click.echo(line)
+            total_items = len(snapshot.items)
+            if not json_mode:
+                for line in format_report(changes, total_items):
+                    click.echo(line)
             # Nothing was applied, so this fresh load is still the pre-apply
             # view: the dry-run list deliberately names every candidate
             # before the human commits to a run (review fix 3).
             shortlist = stale_close_candidates(
                 _load(ports.lookup), now=datetime.now(timezone.utc)
             )
-            if shortlist.truncated:
+            stale_truncated = shortlist.truncated
+            if shortlist.truncated and not json_mode:
                 click.echo("stale shortlist capped at 10 items (list truncated)")
-            for candidate in shortlist.candidates:
-                click.echo(
-                    f"item {candidate.item_id}: stale {candidate.item_type}"
-                    f" (newest answers link"
-                    f" {candidate.newest_answers_link_id},"
-                    f" confirmed {candidate.newest_answer_created_at})"
-                    " (dry-run)"
-                )
+            if not json_mode:
+                for candidate in shortlist.candidates:
+                    click.echo(
+                        f"item {candidate.item_id}: stale {candidate.item_type}"
+                        f" (newest answers link"
+                        f" {candidate.newest_answers_link_id},"
+                        f" confirmed {candidate.newest_answer_created_at})"
+                        " (dry-run)"
+                    )
             outcome = ProposalOutcome(
                 stale=len(shortlist.candidates), proposed=0, accepted=0, rejected=0
             )
+            sweep_changes = changes
         else:
             result = run_sweep(ports, MaintainRequest())
-            for line in format_report(result.changed, result.total_items):
-                click.echo(line)
+            total_items = result.total_items
+            sweep_changes = result.changed
+            if not json_mode:
+                for line in format_report(result.changed, result.total_items):
+                    click.echo(line)
             shortlist = stale_close_candidates(
                 _load(ports.lookup), now=datetime.now(timezone.utc)
             )
-            if shortlist.truncated:
+            stale_truncated = shortlist.truncated
+            if shortlist.truncated and not json_mode:
                 click.echo("stale shortlist capped at 10 items (list truncated)")
             if shortlist.candidates:
                 outcome = run_close_proposals(
@@ -462,11 +540,32 @@ def maintain(dry_run: bool, db_path: str) -> None:
     except EmberError as exc:
         click.echo(f"error: {exc.log_line()}", err=True)
         raise SystemExit(1)
-    click.echo(
-        f"stale: {outcome.stale}, proposed: {outcome.proposed},"
-        f" accepted: {outcome.accepted}, rejected: {outcome.rejected},"
-        f" aborted: {str(outcome.aborted).lower()}"
-    )
+    if json_mode:
+        summary = summary_counts(sweep_changes, total_items)
+        summary.update(
+            stale=outcome.stale,
+            stale_truncated=stale_truncated,
+            proposed=outcome.proposed,
+            accepted=outcome.accepted,
+            rejected=outcome.rejected,
+            aborted=outcome.aborted,
+        )
+        click.echo(
+            render_document(
+                OutputDocument(
+                    command="maintain",
+                    changes=sweep_changes,
+                    summary=summary,
+                    dry_run=output.dry_run,
+                )
+            )
+        )
+    else:
+        click.echo(
+            f"stale: {outcome.stale}, proposed: {outcome.proposed},"
+            f" accepted: {outcome.accepted}, rejected: {outcome.rejected},"
+            f" aborted: {str(outcome.aborted).lower()}"
+        )
     if outcome.aborted:
         sys.exit(2)
 
@@ -485,45 +584,47 @@ def maintain(dry_run: bool, db_path: str) -> None:
     required=True,
     help="Close reason: invalidated or expired.",
 )
-@click.option(
-    "--dry-run",
-    is_flag=True,
-    default=False,
-    help="Print the planned changes and write nothing.",
-)
-@click.option(
-    "--db",
-    "db_path",
-    default=DEFAULT_DB_PATH,
-    help="SQLite database path.",
-)
-def close_item(item_id: int, reason: str, dry_run: bool, db_path: str) -> None:
+@_output_options(dry_run=True)
+def close_item(item_id: int, reason: str, output: OutputOptions) -> None:
     """Close an item by hand, challenging its live dependents.
 
     Prints the same report as `maintain`. `--dry-run` loads and validates only;
     it writes no `items` or `change_log` row.
     """
     try:
-        conn = open_maintain_database(db_path)
+        conn = open_maintain_database(output.db_path)
         ports = MaintainPorts(
             lookup=SqliteMaintainContext(conn),
             store=SqliteMaintainStore(conn),
             group_ids=SqliteGroupIdPort(conn),
         )
-        if dry_run:
+        if output.dry_run:
             snapshot = _load(ports.lookup)
             changes = validate_close_item(snapshot, item_id, reason)
-            report = format_report(changes, len(snapshot.items))
+            total_items = len(snapshot.items)
         else:
             result = run_close_item(
                 ports, MaintainRequest(item_id=item_id, reason=reason)
             )
-            report = format_report(result.changed, result.total_items)
+            changes = result.changed
+            total_items = result.total_items
     except EmberError as exc:
         click.echo(f"error: {exc.log_line()}", err=True)
         raise SystemExit(1)
-    for line in report:
-        click.echo(line)
+    if output.fmt == "json":
+        click.echo(
+            render_document(
+                OutputDocument(
+                    command="close-item",
+                    changes=changes,
+                    summary=summary_counts(changes, total_items),
+                    dry_run=output.dry_run,
+                )
+            )
+        )
+    else:
+        for line in format_report(changes, total_items):
+            click.echo(line)
 
 
 @main.command("set-status")
@@ -540,13 +641,8 @@ def close_item(item_id: int, reason: str, dry_run: bool, db_path: str) -> None:
     required=True,
     help="Target status: Active or Challenged.",
 )
-@click.option(
-    "--db",
-    "db_path",
-    default=DEFAULT_DB_PATH,
-    help="SQLite database path.",
-)
-def set_status(item_id: int, to_status: str, db_path: str) -> None:
+@_output_options()
+def set_status(item_id: int, to_status: str, output: OutputOptions) -> None:
     """Move an item between Active and Challenged by hand.
 
     Exactly one of those two values is accepted; a `--to Active` on a
@@ -554,7 +650,7 @@ def set_status(item_id: int, to_status: str, db_path: str) -> None:
     `maintain`.
     """
     try:
-        conn = open_maintain_database(db_path)
+        conn = open_maintain_database(output.db_path)
         ports = MaintainPorts(
             lookup=SqliteMaintainContext(conn),
             store=SqliteMaintainStore(conn),
@@ -563,12 +659,24 @@ def set_status(item_id: int, to_status: str, db_path: str) -> None:
         result = run_set_status(
             ports, MaintainRequest(item_id=item_id, to_status=to_status)
         )
-        report = format_report(result.changed, result.total_items)
+        changes = result.changed
+        total_items = result.total_items
     except EmberError as exc:
         click.echo(f"error: {exc.log_line()}", err=True)
         raise SystemExit(1)
-    for line in report:
-        click.echo(line)
+    if output.fmt == "json":
+        click.echo(
+            render_document(
+                OutputDocument(
+                    command="set-status",
+                    changes=changes,
+                    summary=summary_counts(changes, total_items),
+                )
+            )
+        )
+    else:
+        for line in format_report(changes, total_items):
+            click.echo(line)
 
 
 @main.command("reverse-supersedes")
@@ -586,13 +694,10 @@ def set_status(item_id: int, to_status: str, db_path: str) -> None:
     required=True,
     help="Confirmed supersedes link id to reverse.",
 )
-@click.option(
-    "--db",
-    "db_path",
-    default=DEFAULT_DB_PATH,
-    help="SQLite database path.",
-)
-def reverse_supersedes(item_id: int, link_id: int, db_path: str) -> None:
+@_output_options()
+def reverse_supersedes(
+    item_id: int, link_id: int, output: OutputOptions
+) -> None:
     """Undo a supersedes: restore the item and mark the link reversed.
 
     Writes the `reversed_at` column on the `links` row, the item restore, and
@@ -600,7 +705,7 @@ def reverse_supersedes(item_id: int, link_id: int, db_path: str) -> None:
     the same report as `maintain`.
     """
     try:
-        conn = open_maintain_database(db_path)
+        conn = open_maintain_database(output.db_path)
         ports = MaintainPorts(
             lookup=SqliteMaintainContext(conn),
             store=SqliteMaintainStore(conn),
@@ -609,12 +714,24 @@ def reverse_supersedes(item_id: int, link_id: int, db_path: str) -> None:
         result = run_reverse_supersedes(
             ports, MaintainRequest(item_id=item_id, link_id=link_id)
         )
-        report = format_report(result.changed, result.total_items)
+        changes = result.changed
+        total_items = result.total_items
     except EmberError as exc:
         click.echo(f"error: {exc.log_line()}", err=True)
         raise SystemExit(1)
-    for line in report:
-        click.echo(line)
+    if output.fmt == "json":
+        click.echo(
+            render_document(
+                OutputDocument(
+                    command="reverse-supersedes",
+                    changes=changes,
+                    summary=summary_counts(changes, total_items),
+                )
+            )
+        )
+    else:
+        for line in format_report(changes, total_items):
+            click.echo(line)
 
 
 @main.command("edit-item")
@@ -637,20 +754,9 @@ def reverse_supersedes(item_id: int, link_id: int, db_path: str) -> None:
     required=True,
     help="New text for the field. An empty string blanks it.",
 )
-@click.option(
-    "--dry-run",
-    is_flag=True,
-    default=False,
-    help="Print the planned old -> new change and write nothing.",
-)
-@click.option(
-    "--db",
-    "db_path",
-    default=DEFAULT_DB_PATH,
-    help="SQLite database path.",
-)
+@_output_options(dry_run=True)
 def edit_item(
-    item_id: int, field: str, value: str, dry_run: bool, db_path: str
+    item_id: int, field: str, value: str, output: OutputOptions
 ) -> None:
     """Edit an item's rationale or source by hand, ledger row always.
 
@@ -660,13 +766,13 @@ def edit_item(
     the command IS the confirmation and no AI runs in this path.
     """
     try:
-        conn = open_maintain_database(db_path)
+        conn = open_maintain_database(output.db_path)
         ports = MaintainPorts(
             lookup=SqliteMaintainContext(conn),
             store=SqliteMaintainStore(conn),
             group_ids=SqliteGroupIdPort(conn),
         )
-        if dry_run:
+        if output.dry_run:
             snapshot = _load(ports.lookup)
             changes = validate_edit_item(snapshot, item_id, field, value)
         else:
@@ -677,8 +783,20 @@ def edit_item(
     except EmberError as exc:
         click.echo(f"error: {exc.log_line()}", err=True)
         raise SystemExit(1)
+    if output.fmt == "json":
+        click.echo(
+            render_document(
+                OutputDocument(
+                    command="edit-item",
+                    changes=changes,
+                    summary={},
+                    dry_run=output.dry_run,
+                )
+            )
+        )
+        return
     for change in changes:
-        if dry_run:
+        if output.dry_run:
             old = change.old_value if change.old_value is not None else "<null>"
             click.echo(
                 f"item {change.item_id}: {change.field}:"
@@ -696,19 +814,8 @@ def edit_item(
     required=True,
     help="Link id to remove.",
 )
-@click.option(
-    "--dry-run",
-    is_flag=True,
-    default=False,
-    help="Print the planned status flip and write nothing.",
-)
-@click.option(
-    "--db",
-    "db_path",
-    default=DEFAULT_DB_PATH,
-    help="SQLite database path.",
-)
-def remove_link(link_id: int, dry_run: bool, db_path: str) -> None:
+@_output_options(dry_run=True)
+def remove_link(link_id: int, output: OutputOptions) -> None:
     """Remove one confirmed relationship edge, ledger row always.
 
     The removal is ONE status flip (`Confirmed -> Rejected`) plus its
@@ -719,7 +826,7 @@ def remove_link(link_id: int, dry_run: bool, db_path: str) -> None:
     invoking the command IS the confirmation and no AI runs in this path.
     """
     try:
-        conn = open_maintain_database(db_path)
+        conn = open_maintain_database(output.db_path)
         ports = MaintainPorts(
             lookup=SqliteMaintainContext(conn),
             store=SqliteMaintainStore(conn),
@@ -731,7 +838,7 @@ def remove_link(link_id: int, dry_run: bool, db_path: str) -> None:
         # not carried on LinkChange.
         snapshot = _load(ports.lookup)
         link = _confirmed_link(snapshot, link_id)
-        if dry_run:
+        if output.dry_run:
             changes = validate_remove_link(snapshot, link_id)
         else:
             changes = run_remove_link(
@@ -740,8 +847,20 @@ def remove_link(link_id: int, dry_run: bool, db_path: str) -> None:
     except EmberError as exc:
         click.echo(f"error: {exc.log_line()}", err=True)
         raise SystemExit(1)
+    if output.fmt == "json":
+        click.echo(
+            render_document(
+                OutputDocument(
+                    command="remove-link",
+                    changes=changes,
+                    summary={},
+                    dry_run=output.dry_run,
+                )
+            )
+        )
+        return
     for change in changes:
-        if dry_run:
+        if output.dry_run:
             click.echo(
                 f"link {change.link_id}: {change.old_status} ->"
                 f" {change.new_status} (dry-run)"
@@ -791,19 +910,8 @@ def _newest_group_id(context: SqliteMaintainContext) -> int:
 
 
 @main.command("undo")
-@click.option(
-    "--dry-run",
-    is_flag=True,
-    default=False,
-    help="Print the planned changes and write nothing.",
-)
-@click.option(
-    "--db",
-    "db_path",
-    default=DEFAULT_DB_PATH,
-    help="SQLite database path.",
-)
-def undo(dry_run: bool, db_path: str) -> None:
+@_output_options(dry_run=True)
+def undo(output: OutputOptions) -> None:
     """Undo the newest human change by appending its inverse to the ledger.
 
     Nothing is erased: the ledger only grows. The sweep's own changes carry
@@ -812,32 +920,39 @@ def undo(dry_run: bool, db_path: str) -> None:
     line and writes zero rows.
     """
     try:
-        conn = open_maintain_database(db_path)
+        conn = open_maintain_database(output.db_path)
         ports = _undo_ports(conn)
-        result = run_undo(ports, UndoRequest(dry_run=dry_run))
+        result = run_undo(ports, UndoRequest(dry_run=output.dry_run))
         new_group_id = (
-            None if dry_run else _newest_group_id(ports.lookup)
+            None if output.dry_run else _newest_group_id(ports.lookup)
         )
     except EmberError as exc:
         click.echo(f"error: {exc.log_line()}", err=True)
         raise SystemExit(1)
-    click.echo(format_undo_line(result, new_group_id, dry_run))
+    if output.fmt == "json":
+        click.echo(
+            render_document(
+                OutputDocument(
+                    command="undo",
+                    changes=result.changes,
+                    summary={
+                        "direction": result.direction,
+                        "source_group_id": result.source_group_id,
+                        "source_action": result.source_action,
+                        "target_label": result.target_label,
+                        "new_group_id": new_group_id,
+                    },
+                    dry_run=output.dry_run,
+                )
+            )
+        )
+    else:
+        click.echo(format_undo_line(result, new_group_id, output.dry_run))
 
 
 @main.command("redo")
-@click.option(
-    "--dry-run",
-    is_flag=True,
-    default=False,
-    help="Print the planned changes and write nothing.",
-)
-@click.option(
-    "--db",
-    "db_path",
-    default=DEFAULT_DB_PATH,
-    help="SQLite database path.",
-)
-def redo(dry_run: bool, db_path: str) -> None:
+@_output_options(dry_run=True)
+def redo(output: OutputOptions) -> None:
     """Re-apply the change you just undid, the same append-only way.
 
     A newer human change clears the redo (exit 1, `MAINTAIN-024`): undo
@@ -845,16 +960,34 @@ def redo(dry_run: bool, db_path: str) -> None:
     `ember undo`.
     """
     try:
-        conn = open_maintain_database(db_path)
+        conn = open_maintain_database(output.db_path)
         ports = _undo_ports(conn)
-        result = run_redo(ports, UndoRequest(dry_run=dry_run))
+        result = run_redo(ports, UndoRequest(dry_run=output.dry_run))
         new_group_id = (
-            None if dry_run else _newest_group_id(ports.lookup)
+            None if output.dry_run else _newest_group_id(ports.lookup)
         )
     except EmberError as exc:
         click.echo(f"error: {exc.log_line()}", err=True)
         raise SystemExit(1)
-    click.echo(format_undo_line(result, new_group_id, dry_run))
+    if output.fmt == "json":
+        click.echo(
+            render_document(
+                OutputDocument(
+                    command="redo",
+                    changes=result.changes,
+                    summary={
+                        "direction": result.direction,
+                        "source_group_id": result.source_group_id,
+                        "source_action": result.source_action,
+                        "target_label": result.target_label,
+                        "new_group_id": new_group_id,
+                    },
+                    dry_run=output.dry_run,
+                )
+            )
+        )
+    else:
+        click.echo(format_undo_line(result, new_group_id, output.dry_run))
 
 
 @main.command("current-state")
@@ -1021,13 +1154,8 @@ def history_command(
 
 @main.command("backup")
 @click.argument("target_path")
-@click.option(
-    "--db",
-    "db_path",
-    default=DEFAULT_DB_PATH,
-    help="SQLite database path.",
-)
-def backup(target_path: str, db_path: str) -> None:
+@_output_options()
+def backup(target_path: str, output: OutputOptions) -> None:
     """Copy the knowledge base to a restorable snapshot file.
 
     Uses SQLite's online backup API, so the copy is consistent even while
@@ -1039,16 +1167,33 @@ def backup(target_path: str, db_path: str) -> None:
     deliberately no restore command (GLOSSARY).
     """
     try:
-        report = create_backup(db_path, target_path)
+        report = create_backup(output.db_path, target_path)
     except EmberError as exc:
         click.echo(f"error: {exc.log_line()}", err=True)
         raise SystemExit(1)
+    # T9: the adapter report becomes a plain dict on the CLI side, before it
+    # could reach the bridge renderer.
+    report_dict = {
+        "path": report.path,
+        "schema_version": report.schema_version,
+        "item_count": report.item_count,
+        "rotated": report.rotated,
+    }
     if report.rotated:
         click.echo(f"rotated to {report.rotated}", err=True)
-    click.echo(
-        f"backup written: {report.path}"
-        f" (schema v{report.schema_version}, {report.item_count} items)"
-    )
+    if output.fmt == "json":
+        click.echo(
+            render_document(
+                OutputDocument(
+                    command="backup", changes=[], summary=report_dict
+                )
+            )
+        )
+    else:
+        click.echo(
+            f"backup written: {report.path}"
+            f" (schema v{report.schema_version}, {report.item_count} items)"
+        )
 
 
 @main.command("export")
@@ -1099,24 +1244,35 @@ def export(out_path: str | None, db_path: str) -> None:
 
 
 @main.command("db-check")
-@click.option(
-    "--db",
-    "db_path",
-    default=DEFAULT_DB_PATH,
-    help="SQLite database path.",
-)
-def db_check(db_path: str) -> None:
+@_output_options()
+def db_check(output: OutputOptions) -> None:
     """Report database health: version, floors, triggers, drift, replay.
 
     Read-only: the file is opened `mode=ro` and never migrated or written.
     One command, one job, no mode flags. Exit 0 when the report ends
     `result: OK`, 1 on `result: DRIFT` or `result: UNREADABLE`.
     """
-    report = check_database(db_path)
+    report = check_database(output.db_path)
+    # T9: the adapter report becomes a plain dict on the CLI side, before it
+    # could reach the bridge renderer.
+    report_dict = {
+        "result": report.result,
+        "detail": report.detail,
+        "lines": report.lines,
+    }
     if report.detail is not None:
         click.echo(f"detail: {report.detail}", err=True)
-    for line in report.lines:
-        click.echo(line)
+    if output.fmt == "json":
+        click.echo(
+            render_document(
+                OutputDocument(
+                    command="db-check", changes=[], summary=report_dict
+                )
+            )
+        )
+    else:
+        for line in report.lines:
+            click.echo(line)
     if report.result != "OK":
         sys.exit(1)
 

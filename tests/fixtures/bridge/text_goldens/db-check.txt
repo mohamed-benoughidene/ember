@@ -1,0 +1,8 @@
+version: 13
+floors: relate 12 ok, maintain 11 ok, query 10 ok, capture none
+triggers: links_compat_insert, links_compat_update, items_closed_reason_insert, items_closed_reason_update - present
+link_compat: 16 rows, matches TYPE_COMPAT
+foreign_key_check: 0 violations
+reversal replay: 0 reversed links, column == ledger
+group_id: 0 undo/redo pointers, all name existing groups
+result: OK

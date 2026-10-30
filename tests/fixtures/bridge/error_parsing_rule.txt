@@ -1,0 +1,1 @@
+\Aerror: (?P<code>[A-Z]+-\d{3}) (?P<name>\w+) \| (?P<where>[^|\n]+) \| (?P<rest>.*)\Z

@@ -59,3 +59,22 @@ class OverwriteRefused(ExportError):
 
     code = "EXPORT-002"
     name = "OverwriteRefused"
+
+
+class BridgeError(EmberError):
+    """Base error for every bridge failure. Never raised directly."""
+
+    code = "BRIDGE-000"
+    name = "BridgeError"
+
+
+class AnswerLineInvalid(BridgeError):
+    """A stdin answer line is not `{"answer": <string>}` (L2 §6).
+
+    Declared here in step 01; raised from step 03's JSON confirm adapter,
+    which re-asks once and aborts with the engine `UserAbort` on a second
+    bad line.
+    """
+
+    code = "BRIDGE-001"
+    name = "AnswerLineInvalid"
