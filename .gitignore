@@ -38,3 +38,6 @@ uv.lock
 # Local secrets and env files, never committed
 .env
 *.env
+
+# Desktop app deps (never tracked)
+app/node_modules/
