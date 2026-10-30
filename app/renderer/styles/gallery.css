@@ -1,0 +1,75 @@
+/*
+ * Gallery page styles, dev-only (step 03 check command). Layout for the
+ * component gallery only; component styles live in components.css.
+ */
+
+.demo-bar {
+  display: flex;
+  gap: var(--s3);
+  flex-wrap: wrap;
+  align-items: center;
+  padding: var(--s3) var(--s5);
+  background: var(--banner-bg);
+  color: var(--banner-ink);
+}
+.demo-bar :focus-visible { outline-color: var(--banner-ink); }
+
+.gallery-main {
+  padding: var(--s6);
+  max-width: 62rem;
+  margin: 0 auto;
+}
+
+.gallery-main h2 {
+  font-size: var(--type-heading-size);
+  font-weight: var(--type-heading-weight);
+  line-height: var(--type-heading-lh);
+  margin: var(--s7) 0 var(--s3);
+}
+
+.gallery-main h1 {
+  font-size: var(--type-title-size);
+  font-weight: var(--type-title-weight);
+  line-height: var(--type-title-lh);
+  letter-spacing: var(--type-title-ls);
+  margin: 0 0 var(--s1);
+}
+
+.gallery-main h1 + p { margin: 0; color: var(--ink-2); max-width: 62ch; }
+
+.label-sample {
+  font-size: var(--type-label-size);
+  font-weight: var(--type-label-weight);
+  line-height: var(--type-label-lh);
+}
+
+.figure-sample {
+  font-family: var(--font-mono);
+  font-size: var(--type-figure-size);
+  font-weight: var(--type-figure-weight);
+  line-height: var(--type-figure-lh);
+  font-variant-numeric: tabular-nums;
+}
+
+.font-note {
+  border: 1px dashed var(--line-strong);
+  border-radius: var(--radius);
+  padding: var(--s4) var(--s5);
+  color: var(--ink-2);
+  font-size: var(--type-label-size);
+  margin-top: var(--s7);
+}
+
+.gallery-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr));
+  gap: var(--s5);
+  align-items: start;
+}
+
+.details-out {
+  margin: var(--s2) 0 0;
+  font-size: var(--type-label-size);
+  color: var(--ink-2);
+  white-space: pre-wrap;
+}

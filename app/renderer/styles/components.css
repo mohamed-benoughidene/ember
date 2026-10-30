@@ -1,0 +1,249 @@
+/*
+ * Ember design components (L3 app step 03) — the CSS side of the fixed
+ * contracts in plans/steps/app/03-design-system.md §1: HeatMark,
+ * StatusPill, ProvenanceLine, ItemRow, ProposalBlock, StateBlock, Button,
+ * Banner, and the five UI states. Shapes and values follow the approved
+ * prototype (docs/PROTOTYPE-ember-interface-v3.html); tokens come only
+ * from tokens.css.
+ *
+ * Motion is ONE authored moment (DESIGN.md "Motion"): a heat mark settles
+ * when its item changes — ~240-260 ms, transform and opacity only, and
+ * completely off when the user turns Reduce Motion on.
+ */
+
+/* ---------- base ---------- */
+
+* { box-sizing: border-box; }
+* { scrollbar-color: var(--line-strong) transparent; }
+
+body {
+  margin: 0;
+  background: var(--ground);
+  color: var(--ink);
+  font: var(--type-body-weight) var(--type-body-size)/var(--type-body-lh) var(--font-body);
+  font-variant-numeric: tabular-nums;
+  min-height: 100vh;
+}
+
+/* ---------- the visible focus ring (every control, spec 96-104) ---------- */
+
+:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+button, input, select, textarea { font: inherit; color: inherit; }
+
+/* ---------- mono figures (data, not decoration) ---------- */
+
+.mono, td.num, th.num, .fig {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---------- the heat mark: Active full dot, Challenged half dot,
+     Closed ring. Status never depends on colour alone: the shape
+     differs and the word always follows (StatusPill). ---------- */
+
+.heat { flex: 0 0 auto; display: inline-block; vertical-align: -1px; }
+
+.st {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s2);
+  white-space: nowrap;
+}
+.st--challenged { font-weight: var(--type-heading-weight); }
+.st--closed { color: var(--ink-2); }
+
+/* ---------- THE one motion: a heat mark settles on status change
+     (~250 ms). Only transform and opacity move. Nothing animates on
+     page load: the settle classes are added only when a status CHANGES,
+     never on first render. ---------- */
+
+@keyframes heat-settle-heat {
+  0% { transform: scale(0.4); opacity: 0.25; }
+  60% { transform: scale(1.25); opacity: 1; }
+  100% { transform: none; opacity: 1; }
+}
+@keyframes heat-settle-half {
+  0% { transform: rotate(-120deg) scale(0.7); opacity: 0.4; }
+  100% { transform: none; opacity: 1; }
+}
+@keyframes heat-settle-cool {
+  0% { transform: scale(1.3); opacity: 0.35; }
+  100% { transform: none; opacity: 1; }
+}
+
+.heat--settle-heat { animation: heat-settle-heat 0.26s cubic-bezier(0.2, 0.8, 0.2, 1); }
+.heat--settle-half { animation: heat-settle-half 0.24s ease-out; }
+.heat--settle-cool { animation: heat-settle-cool 0.24s ease-out; }
+
+/* Reduce Motion: nothing moves (plan §5.8, DESIGN.md Motion rules). */
+@media (prefers-reduced-motion: reduce) {
+  .heat--settle-heat,
+  .heat--settle-half,
+  .heat--settle-cool {
+    animation: none !important;
+  }
+}
+
+/* ---------- buttons: one primary per screen ---------- */
+
+.btn {
+  background: var(--surface);
+  border: 1px solid var(--line-strong);
+  padding: var(--s3) var(--s4);
+  cursor: pointer;
+  font-weight: var(--type-heading-weight);
+  border-radius: var(--radius);
+  min-height: 2.4rem;
+}
+.btn:hover { background: var(--surface-2); }
+.btn--primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-ink);
+}
+.btn--primary:hover {
+  background: var(--accent-hover);
+  border-color: var(--accent-hover);
+}
+.btn--danger {
+  color: var(--danger);
+  border-color: var(--danger);
+}
+.btn--text {
+  border-color: transparent;
+  background: none;
+  padding: var(--s3) var(--s2);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.btn--text[disabled] {
+  background: none;
+  border-color: transparent;
+  opacity: 0.5;
+  text-decoration: none;
+}
+/* Disabled controls stay readable and say why (DESIGN.md). */
+.btn[disabled] {
+  opacity: 1;
+  background: var(--surface-2);
+  color: var(--ink-2);
+  border-color: var(--line);
+  cursor: not-allowed;
+}
+.btn .kbd {
+  font-size: 0.8rem;
+  font-weight: 400;
+  margin-left: var(--s2);
+  opacity: 0.85;
+}
+
+.actions {
+  display: flex;
+  gap: var(--s3);
+  flex-wrap: wrap;
+  margin-top: var(--s5);
+  align-items: center;
+}
+
+/* ---------- banner (notices) ---------- */
+
+.banner {
+  background: var(--banner-bg);
+  color: var(--banner-ink);
+  padding: var(--s3) var(--s6);
+  font-size: var(--type-label-size);
+}
+
+/* ---------- provenance lines: Source, Why, Challenged by, Replaced by,
+     Answered by (DESIGN.md "Provenance list") ---------- */
+
+.lineage { list-style: none; margin: var(--s2) 0 0; padding: 0; }
+.lineage li {
+  display: flex;
+  gap: var(--s3);
+  align-items: baseline;
+  padding: var(--s1) 0;
+}
+.lineage .k {
+  flex: 0 0 11rem;
+  color: var(--ink-2);
+}
+
+/* ---------- item row (the ledger table: 1px rules, no zebra,
+     mono numbers) ---------- */
+
+.ember-table { width: 100%; border-collapse: collapse; }
+.ember-table th {
+  text-align: left;
+  font-weight: var(--type-label-weight);
+  font-size: var(--type-label-size);
+  color: var(--ink-2);
+  padding: var(--s3) var(--s4);
+  border-bottom: 1px solid var(--line);
+}
+.ember-table td {
+  padding: var(--s3) var(--s4);
+  border-bottom: 1px solid var(--line);
+  vertical-align: top;
+}
+.ember-table tr:last-child td { border-bottom: 0; }
+.ember-table td.num, .ember-table th.num { text-align: right; }
+
+.dim { color: var(--ink-2); }
+
+/* ---------- proposal block ---------- */
+
+.panel {
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+.panel.tone { background: var(--surface-2); border-color: transparent; }
+.panel > .pad { padding: var(--s5); }
+.quote {
+  border-left: 1px solid var(--line-strong);
+  margin: var(--s3) 0;
+  padding: var(--s1) var(--s4);
+  color: var(--ink-2);
+  font-style: italic;
+}
+
+/* ---------- the five UI states (DESIGN.md "Empty, loading, error"):
+     normal = the regular screen frame; loading = grey bars at real
+     size; empty = one sentence, frame kept; error = in the failed
+     block, with Retry and Details; no-key = points at the AI pane. --- */
+
+.skel {
+  background: var(--surface-3);
+  border-radius: 3px;
+  display: block;
+}
+
+.empty {
+  border: 1px dashed var(--line-strong);
+  border-radius: var(--radius);
+  padding: var(--s6);
+  color: var(--ink-2);
+  text-align: center;
+}
+
+.errbox {
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius);
+  padding: var(--s4) var(--s5);
+  background: var(--surface);
+}
+.errbox strong { display: block; }
+.errbox .detail { display: block; color: var(--ink-2); }
+.hint { color: var(--ink-2); font-size: var(--type-label-size); margin: var(--s2) 0 0; }
+
+.ok {
+  padding: var(--s4) var(--s5);
+  background: var(--surface-2);
+  border-radius: var(--radius);
+  margin-top: var(--s4);
+}

@@ -7,8 +7,12 @@
   "license": "BUSL-1.1",
   "scripts": {
     "start": "electron .",
-    "test": "node --test test/*.test.js",
+    "test": "node test/run.js",
+    "test:design": "node test/run.js design",
+    "e2e": "node test/e2e/smoke.js && node test/e2e/design.js",
     "test:e2e": "node test/e2e/smoke.js",
+    "test:e2e:design": "node test/e2e/design.js",
+    "gallery": "electron gallery/main.js",
     "check:launch": "node test/launch-check.js"
   },
   "devDependencies": {

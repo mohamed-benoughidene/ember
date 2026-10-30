@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en" data-theme="light">
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; script-src 'self'; style-src 'self'; font-src 'self'; img-src 'self'"
+    />
+    <title>Ember design gallery</title>
+    <link rel="stylesheet" href="styles/fonts.css" />
+    <link rel="stylesheet" href="styles/tokens.css" />
+    <link rel="stylesheet" href="styles/components.css" />
+    <link rel="stylesheet" href="styles/gallery.css" />
+  </head>
+  <body>
+    <!--
+      The step-03 component gallery: every component in every state, both
+      themes, all five text sizes. Dev-only. `npm run gallery` opens it;
+      the e2e design check drives the same page.
+    -->
+    <div class="demo-bar" data-testid="demo-bar">
+      <button type="button" data-testid="theme-toggle">Colours: light</button>
+      <span aria-hidden="true">|</span>
+      <span class="hint">Text size:</span>
+      <button type="button" data-testid="size-small">Small</button>
+      <button type="button" data-testid="size-default">Default</button>
+      <button type="button" data-testid="size-large">Large</button>
+      <button type="button" data-testid="size-larger">Larger</button>
+      <button type="button" data-testid="size-largest">Largest</button>
+      <span aria-hidden="true">|</span>
+      <button type="button" data-testid="motion-again" title="Item 5 changes status again">See the heat settle again</button>
+    </div>
+    <main class="gallery-main" id="gallery" data-testid="gallery">
+      <h1>Ember design gallery</h1>
+      <p>Every component in every state, both themes, all five text sizes.</p>
+      <div id="content"></div>
+      <p class="font-note" data-testid="font-note">
+        Typeface: Atkinson Hyperlegible Next and Mono (Braille Institute), self-hosted, SIL OFL 1.1 —
+        the licence text ships next to the font files and no font is loaded from the network.
+        These are the Latin subsets; more languages are additive when their need is named.
+      </p>
+    </main>
+    <script type="module" src="gallery.js"></script>
+  </body>
+</html>

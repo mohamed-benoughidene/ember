@@ -130,7 +130,7 @@ Earlier logo and character images, kept for history.
 - `plans/steps/query/05-history-window.md`: L3 Query Step 5. History window (`--limit`, `--offset`, `--since`).
 
 ## Interface App (`app/`)
-- `app/package.json`: The desktop app's npm manifest. Exactly two packages, both pinned (electron@45.1.0, playwright dev-only). Scripts: `npm test` (node built-in runner), `npm run test:e2e` (Playwright Electron smoke), `npm run check:launch` (the S1 walking skeleton), `npm start`.
+- `app/package.json`: The desktop app's npm manifest. Exactly two packages, both pinned (electron@45.1.0, playwright dev-only). Scripts: `npm test` (node built-in runner via test/run.js; `npm test -- design` filters the design tests), `npm run e2e` (both Playwright E2Es), `npm run test:e2e` / `test:e2e:design` (each one), `npm run gallery` (opens the design gallery window), `npm run check:launch` (the S1 walking skeleton), `npm start`.
 - `app/package-lock.json`: The lockfile for the two pinned packages, so installs reproduce byte for byte.
 - `app/main/main.js`: Electron main process: app lifecycle, the one window (contextIsolation on, nodeIntegration off, sandbox on), boot-time store wiring, and the `EMBER_APP_LAUNCH_CHECK=1` walking-skeleton mode.
 - `app/main/ipc.js`: The ONE narrow IPC surface the renderer may call: eight named handlers, each validating its input once and returning plain data or plain `APP-` error info (never the key, never raw errors).
@@ -148,6 +148,31 @@ Earlier logo and character images, kept for history.
 - `app/renderer/index.html`: The placeholder window (the smallest end-to-end proof): shows "Ember is starting", then the item count from one real read command; carries the content-security policy.
 - `app/renderer/renderer.js`: The placeholder's script. Uses ONLY the `window.ember` preload allowlist (no Node, no Electron) — asserted by test/preload-allowlist.test.js and the e2e smoke. Real screens are steps 04+.
 - `app/renderer/renderer.css`: Placeholder styles only; the real design system is step 03.
+- `app/renderer/styles/tokens.css`: The design tokens (step 03), defined ONCE (D3): the Ledger Page and Soot palettes from DESIGN.md, the role variables per theme (values from the approved prototype), the seven rem spacing steps, the one 6px radius, the five type styles, the five text-size steps to 200%. Pinned name-for-name against DESIGN.md by test/design-tokens.test.js.
+- `app/renderer/styles/fonts.css`: The @font-face declarations for the self-hosted Atkinson Hyperlegible Next/Mono files (weights 400/500/600 and 400/600, Latin subsets); points only into app/assets/fonts, no font CDN.
+- `app/renderer/styles/components.css`: The design components' CSS (step 03): base, the visible focus ring, heat mark shapes, the ONE settle motion (three keyframes, transform/opacity only, off under prefers-reduced-motion), buttons, banner, provenance list, table, proposal block, and the five-UI-state blocks.
+- `app/renderer/styles/gallery.css`: Dev-only layout styles for the design gallery page (not part of the component layer).
+- `app/renderer/design/escape-html.mjs`: Pure text escaping shared by the design component renderers.
+- `app/renderer/design/text-scale.mjs`: The Text Size Rule as pure helpers: the five steps (14/15/17/22/30px, Largest = 200% of Default), `textScale(step)`, and the rem conversion the spacing tokens are built on.
+- `app/renderer/design/color-contrast.mjs`: Pure WCAG contrast maths (hex -> luminance -> ratio) used by the design contrast test.
+- `app/renderer/components/heat-mark.mjs`: The heat mark (the signature move): full dot Active, half dot Challenged, ring Closed; accessible name; `settleClass` (the ONE motion classifier: animates only a real status change, never a first render) and the `renderHeatMark` DOM helper.
+- `app/renderer/components/status-pill.mjs`: The heat mark followed by its word (status never depends on colour alone); `renderStatusPill` re-renders with the settle motion on change.
+- `app/renderer/components/state-block.mjs`: The five UI states helper every screen step (04+) consumes: loading (grey bars), empty (one sentence), error (with Retry and Details), no-key (points at Settings); normal renders content with no block; `bindStateBlock` wires data-action buttons.
+- `app/renderer/components/button.mjs`: The button: primary (one per screen), secondary, text, danger; the label is required, disabled keeps readable text saying why.
+- `app/renderer/components/banner.mjs`: The quiet notice bar with an optional one action.
+- `app/renderer/components/provenance-line.mjs`: The provenance list: label column + value column (Source, Why, Challenged by, Replaced by, Answered by).
+- `app/renderer/components/item-row.mjs`: One ledger table row (mono number, escaped text, status pill) and the no-zebra table around it.
+- `app/renderer/components/proposal-block.mjs`: What Add proposes: type, statement, quote, gatekeeper warning; buttons in the pinned order Stop (Esc), Edit (e), Reject (n), Confirm (Return).
+- `app/renderer/gallery.html`: The design gallery page (dev-only, step 03 check): every component in every state, both themes, all five text sizes; carries its own CSP including `font-src 'self'`; has a visible note about the shipped Latin subsets.
+- `app/renderer/gallery.js`: The gallery script: builds the components into the page, the theme/text-size/motion-replay demo bar, and wires the state blocks.
+- `app/gallery/main.js`: Dev-only Electron entry for `npm run gallery`: a plain window on gallery.html, no preload, no bridge, no stores; the same entry the e2e design check drives.
+- `app/assets/fonts/atkinson-hyperlegible-next-latin-400-normal.woff2`: Self-hosted Atkinson Hyperlegible Next, Latin subset, weight 400 (sha256-pinned by test/design-fonts.test.js).
+- `app/assets/fonts/atkinson-hyperlegible-next-latin-500-normal.woff2`: Self-hosted Atkinson Hyperlegible Next, Latin subset, weight 500 (pinned).
+- `app/assets/fonts/atkinson-hyperlegible-next-latin-600-normal.woff2`: Self-hosted Atkinson Hyperlegible Next, Latin subset, weight 600 (pinned).
+- `app/assets/fonts/atkinson-hyperlegible-mono-latin-400-normal.woff2`: Self-hosted Atkinson Hyperlegible Mono, Latin subset, weight 400 (pinned).
+- `app/assets/fonts/atkinson-hyperlegible-mono-latin-600-normal.woff2`: Self-hosted Atkinson Hyperlegible Mono, Latin subset, weight 600 (pinned).
+- `app/assets/fonts/atkinson-hyperlegible-next-OFL.txt`: The SIL OFL 1.1 licence text and copyright notice for Atkinson Hyperlegible Next — must ship with the font (story 108); pinned by hash.
+- `app/assets/fonts/atkinson-hyperlegible-mono-OFL.txt`: The SIL OFL 1.1 licence text and copyright notice for Atkinson Hyperlegible Mono — must ship with the font (story 108); pinned by hash.
 - `app/test/util.js`: Shared test helpers: repo/app root paths, the fake-ember path, and the shared error-pattern fixture reader.
 - `app/test/fake-ember.js`: A tiny stand-in `ember` executable for the app tests: contract-shaped JSON, house error lines, garbage, hang and `--confirm json` session modes. Not a contract test; the real contract lives with pytest.
 - `app/test/error-line.test.js`: The error-line parser table (anti-drift pin: fixture == fallback; pipes, newlines, continuation, non-matching lines).
@@ -161,6 +186,15 @@ Earlier logo and character images, kept for history.
 - `app/test/shortcuts.test.js`: The shortcut and tray seams on fakes: granted/refused/thrown registration with APP-005, the pinned three-item fallback menu, honest tray failure.
 - `app/test/errors.test.js`: The APP- namespace pins: codes 000-008 and their stable names, the AppError shape, unknown codes refused.
 - `app/test/launch-check.js`: `npm run check:launch`: builds a throwaway real knowledge base (venv `capture-source`, no key), launches the real Electron shell, and passes only when the window started, `items: N` was printed and the app exited 0.
+- `app/test/run.js`: The thin node-test runner wrapper: `node --test` over test/'s *.test.js files; a first argument filters by filename, so the step-03 command `npm test -- design` runs the design tests.
+- `app/test/design-tokens.test.js`: The token contract: every DESIGN.md colour/spacing/radius/type token exists in tokens.css with the exact value, no orphan tokens, no invented hex values, plain CSS only.
+- `app/test/design-type-scale.test.js`: The Text Size Rule as maths: the five steps, Largest = 200% of Default, and the rem conversion reproducing the seven spacing steps.
+- `app/test/design-contrast.test.js`: The contrast check: every text/background pair in BOTH palettes at a real computed ratio >= 4.5:1 (marks >= 3:1), and the DESIGN.md quoted numbers printed and confirmed.
+- `app/test/design-motion.test.js`: The ONE motion's contract: settle classes only on real status changes, three keyframes moving transform/opacity only, ~250 ms durations, and the prefers-reduced-motion block that turns them off.
+- `app/test/design-components.test.js`: The component contracts (pure HTML strings): heat mark shapes + names, pill-mark-then-word, the four state blocks with Retry/Details, button variants, banner, provenance labels, item rows, the Stop/Edit/Reject/Confirm order, and no imports outside the design layer.
+- `app/test/design-fonts.test.js`: Fonts and licence: the five woff2 files exist byte-for-byte (sha256 + wOF2 magic), the two OFL licence texts ship next to them (pinned hashes, OFL text + copyright notice present), fonts.css references exactly those files and no remote URL.
+- `app/test/helpers/a11y-scan.mjs`: The shared accessibility scan (plan §7 item 3): unnamed interactive elements, missing focus rings via a real TAB-key walk, and horizontal overflow measured at the Largest size; every screen step (04-11) runs `runAccessibilityScan(page)` in its own e2e.
+- `app/test/e2e/design.js`: The design E2E (dev-only, Linux): drives the gallery through the real Electron entry and proves fonts load from app/assets/fonts with no outside request, the settle motion runs and Reduce Motion kills it, and the a11y scan is clean at Default and Largest while catching all three planted violations.
 - `app/test/e2e/smoke.js`: The first Playwright E2E (dev-only, Linux): placeholder renders through "Ember is running", `items: 3` reaches the DOM, the preload seam answers with exactly the allowlist, and no `process`/`require` exists in the page world.
 
 ## Python Implementation (`ember/`)
