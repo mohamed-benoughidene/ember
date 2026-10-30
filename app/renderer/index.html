@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'"
+    />
+    <title>Ember</title>
+    <link rel="stylesheet" href="renderer.css" />
+  </head>
+  <body>
+    <main id="app">
+      <h1>Ember</h1>
+      <p id="status" data-testid="status">Ember is starting</p>
+      <p id="items" data-testid="items"></p>
+      <p id="error" data-testid="error"></p>
+    </main>
+    <script src="renderer.js"></script>
+  </body>
+</html>

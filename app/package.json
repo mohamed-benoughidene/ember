@@ -1,0 +1,18 @@
+{
+  "name": "ember-app",
+  "version": "0.2.0",
+  "private": true,
+  "description": "Ember desktop app shell (L3 app step 02): Electron shell, bridge client, settings and key stores.",
+  "main": "main/main.js",
+  "license": "BUSL-1.1",
+  "scripts": {
+    "start": "electron .",
+    "test": "node --test test/*.test.js",
+    "test:e2e": "node test/e2e/smoke.js",
+    "check:launch": "node test/launch-check.js"
+  },
+  "devDependencies": {
+    "electron": "45.1.0",
+    "playwright": "1.64.1"
+  }
+}

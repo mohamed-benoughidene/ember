@@ -3,7 +3,7 @@
 This file lists every file and its purpose in the repository. Update it when files or folders are added or removed.
 
 ## Root Files
-- `.gitignore`: Ignore rules for Python build files and local database files.
+- `.gitignore`: Ignore rules for Python build files, local database files, the local ticket scratch space, and the desktop app's `node_modules`.
 - `AGENTS.md`: Rules for AI coding agents working in this repository.
 - `CLA.md`: Contributor License Agreement (license-grant style): contributors keep copyright, grant the project a permanent license, signed with a `Signed-off-by:` commit line.
 - `Constitution.md`: Core build rules for modules, data, interfaces and tests (AI caveman version).
@@ -128,6 +128,40 @@ Earlier logo and character images, kept for history.
 - `plans/steps/query/03-history-and-closeout.md`: L3 Query Step 3. `history` and the Query engine closeout.
 - `plans/steps/query/04-topic-filters.md`: L3 Query Step 4. Topic-search filters (`--status`, `--type`, `--limit`).
 - `plans/steps/query/05-history-window.md`: L3 Query Step 5. History window (`--limit`, `--offset`, `--since`).
+
+## Interface App (`app/`)
+- `app/package.json`: The desktop app's npm manifest. Exactly two packages, both pinned (electron@45.1.0, playwright dev-only). Scripts: `npm test` (node built-in runner), `npm run test:e2e` (Playwright Electron smoke), `npm run check:launch` (the S1 walking skeleton), `npm start`.
+- `app/package-lock.json`: The lockfile for the two pinned packages, so installs reproduce byte for byte.
+- `app/main/main.js`: Electron main process: app lifecycle, the one window (contextIsolation on, nodeIntegration off, sandbox on), boot-time store wiring, and the `EMBER_APP_LAUNCH_CHECK=1` walking-skeleton mode.
+- `app/main/ipc.js`: The ONE narrow IPC surface the renderer may call: eight named handlers, each validating its input once and returning plain data or plain `APP-` error info (never the key, never raw errors).
+- `app/main/bridge-client.js`: The bridge client (app plan §5.1): `runCommand` (reads: timeout + one retry; writes: timeout, never retried, APP-008) and `runConfirmSession` (validated block/prompt/message/summary events, `answer(text)`, `stop()`). One child process per call, `--db` always passed, every stdout line untrusted and parsed once (D4). Pure Node, no Electron import.
+- `app/main/settings-store.js`: The settings store (app plan §5.3): one JSON file in the user-data folder, atomic write (temp + rename), corrupt or foreign file gives defaults plus an APP-004 notice, never a crash.
+- `app/main/key-store.js`: The key store (decision 4-A): Electron safeStorage into an encrypted 0600 file; weak or missing backend refuses with APP-003 and offers a session-only key in memory; the value leaves main only as the child's `EMBER_AI_API_KEY`.
+- `app/main/shortcuts.js`: The shortcut and tray managers behind small interfaces (plan §5.5): refused registration raises APP-005 and asks for the tray fallback menu (Quick add / Open Ember / Quit). Real wiring is step 11; here the seams are shipped and unit-tested.
+- `app/main/ember-command.js`: Where the app finds `ember` (env override, app plan §5.1) and the knowledge-base guard: APP-007 when the configured program path is missing, APP-006 when the chosen file is missing, not a file, or has no SQLite header.
+- `app/main/error-pattern.js`: Loads the shared error-line regex from `tests/fixtures/bridge/error_parsing_rule.txt`, the same file the Python contract test reads, so the two sides cannot drift.
+- `app/preload/preload.js`: The preload seam (B5): exposes exactly the eight named calls over `contextBridge`; no Node primitive, no raw ipcRenderer. The allowlist constant is pinned by a node test.
+- `app/shared/errors.js`: The `APP-` error namespace (plan §6, codes 000-008): stable codes and names, `AppError` carrying code/name/where/detail, never a secret.
+- `app/shared/parse-error-line.js`: Pure parser for the house stderr line (bridge L2 §5.2): code/name/where/detail with continuation lines folded into detail; non-house lines return null (the client then raises APP-002).
+- `app/shared/parse-event-line.js`: Pure parser for `--confirm json` event lines: the four pinned events validated, everything else APP-002; `answerLine` writes exactly `{"answer": "<text>"}`.
+- `app/shared/settings-schema.js`: The versioned settings schema (D5/D6): the four spec-decision-8 settings plus last pane and knowledge-base path; per-field repair, foreign schema number costs the full defaults.
+- `app/renderer/index.html`: The placeholder window (the smallest end-to-end proof): shows "Ember is starting", then the item count from one real read command; carries the content-security policy.
+- `app/renderer/renderer.js`: The placeholder's script. Uses ONLY the `window.ember` preload allowlist (no Node, no Electron) — asserted by test/preload-allowlist.test.js and the e2e smoke. Real screens are steps 04+.
+- `app/renderer/renderer.css`: Placeholder styles only; the real design system is step 03.
+- `app/test/util.js`: Shared test helpers: repo/app root paths, the fake-ember path, and the shared error-pattern fixture reader.
+- `app/test/fake-ember.js`: A tiny stand-in `ember` executable for the app tests: contract-shaped JSON, house error lines, garbage, hang and `--confirm json` session modes. Not a contract test; the real contract lives with pytest.
+- `app/test/error-line.test.js`: The error-line parser table (anti-drift pin: fixture == fallback; pipes, newlines, continuation, non-matching lines).
+- `app/test/event-line.test.js`: The event-line parser table: the four events, garbage lines refusing as APP-002, the exact answer-line shape.
+- `app/test/settings.test.js`: Settings schema and store: exact field set, field-by-field repair, foreign-schema defaults, corrupt file -> APP-004 + defaults, round trip, atomic write with no leftovers.
+- `app/test/key-store.test.js`: The key store on a safeStorage fake: strong backend round trip, disk never holds the plain key (even base64), 0600 mode, weak/missing backend -> APP-003 + nothing written, the session-only offer, remove, corrupt file reads as absent.
+- `app/test/bridge-client.test.js`: The bridge client against the fake ember: result shapes, `--db` on every call, house error parsing, APP-002 on garbage, APP-001 on spawn failure, hung read (retry exactly once) and hung write (no retry) both APP-008, session event order, answer/stop/idle-pin pins.
+- `app/test/bridge-contract.test.js`: The contract test (step file §2): the client reads a real temp knowledge base seeded by the Python test helpers and its total equals `ember list-items` output exactly.
+- `app/test/ember-command.test.js`: APP-006/APP-007 guards: env command resolution, missing program, missing/directory/non-SQLite knowledge base, and a real venv-seeded base passing the cheap check.
+- `app/test/preload-allowlist.test.js`: The app's own T9 equivalent (static): the preload exposes exactly the pinned list requiring only electron; renderer files contain no Node; the window builds with contextIsolation/nodeIntegration/sandbox pinned; every preloaded channel has a real handler.
+- `app/test/shortcuts.test.js`: The shortcut and tray seams on fakes: granted/refused/thrown registration with APP-005, the pinned three-item fallback menu, honest tray failure.
+- `app/test/errors.test.js`: The APP- namespace pins: codes 000-008 and their stable names, the AppError shape, unknown codes refused.
+- `app/test/launch-check.js`: `npm run check:launch`: builds a throwaway real knowledge base (venv `capture-source`, no key), launches the real Electron shell, and passes only when the window started, `items: N` was printed and the app exited 0.
+- `app/test/e2e/smoke.js`: The first Playwright E2E (dev-only, Linux): placeholder renders through "Ember is running", `items: 3` reaches the DOM, the preload seam answers with exactly the allowlist, and no `process`/`require` exists in the page world.
 
 ## Python Implementation (`ember/`)
 - `pyproject.toml`: Package metadata, locked stack deps (click, openai, pydantic; pytest is a dev dep), the optional `relate` extra (`sentence-transformers`), pytest config.

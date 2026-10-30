@@ -1,0 +1,10 @@
+/* Placeholder styles only — the real design system is step 03. */
+body {
+  font-family: sans-serif;
+  color: #222;
+  background: #faf7f2;
+  padding: 2rem;
+}
+h1 {
+  font-size: 1.5rem;
+}
