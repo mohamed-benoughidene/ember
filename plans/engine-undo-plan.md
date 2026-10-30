@@ -1,6 +1,6 @@
 # L2 Plan: Undo and Redo (Maintain engine extension)
 
-Status: DRAFT 2, 2026-10-30. Revised after the first review round (4 reviewers). Not yet approved. Nothing is built.
+Status: BUILT (2026-10-30). Maintainer gate passed (2026-10-30: migration 013 = A, D3 dry-run = A). Steps 01-05 + code review (2 axes) + fix round 1. Commits `52e3e38..ba2c920` on `ember-interface`; suite 984 passed, 4 deselected. Known handoffs: deviation U3-3/U4-1 (all-links read), U5-1 new history kinds (`undone`/`redone`/`item_edited`/`link_unreversed`) feed the app's kind-label table; a v13 file opened by a pre-013 build stays unchecked (spec 12.8).
 Origin: `docs/ember-interface-spec.md` section 12 and user stories 111 to 123. Founder decisions: option A (undo appends ledger rows), grouping Option 2 (one group id column), rule amendments confirmed, all 2026-10-30.
 L1: `plans/master-plan.md` §8, "Interface module amendment" items 5 to 8.
 Branch: `ember-interface`.
