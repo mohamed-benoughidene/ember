@@ -85,6 +85,38 @@ function bootNoticeFor(services) {
 }
 
 function wireIpc(services) {
+  // [app 10] Settings panes: the quick-popup shortcut re-registration
+  // seam and the tray fallback (stories 85-86; the popup window itself
+  // is step 11 — for now the shortcut raises the main window). The
+  // Electron edge effects stay here, at the edge (T2).
+  const { Tray, Menu } = require('electron');
+  const { createShortcutManager, createTrayManager, registerSettingsShortcut } = require('./shortcuts');
+
+  const focusMainWindow = () => {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      if (mainWindow.isMinimized()) mainWindow.restore();
+      mainWindow.show();
+      mainWindow.focus();
+    }
+  };
+  let tray = null;
+  const showTrayFallback = () => {
+    if (tray !== null) return; // the fallback is built once per run
+    tray = createTrayManager({ TrayCtor: Tray, MenuBuilder: Menu, iconPath: services.iconPath });
+    const shown = tray.show({
+      onQuickAdd: focusMainWindow,
+      onOpenEmber: focusMainWindow,
+      onQuit: () => app.quit(),
+    });
+    if (!shown.ok) process.stderr.write(`launch-note: ${shown.error.code} ${shown.error.detail}\n`);
+  };
+  const shortcutManager = createShortcutManager({
+    globalShortcut: require('electron').globalShortcut,
+    onQuickAdd: focusMainWindow,
+    onFailure: () => showTrayFallback(),
+  });
+  const maskedKeyHint = require('./key-hint');
+
   return registerIpcHandlers({
     ipcMain,
     settingsStore: services.settingsStore,
@@ -105,6 +137,9 @@ function wireIpc(services) {
       if (!chosen || chosen.length === 0) return null;
       return { path: chosen[0] };
     },
+    // [app 10] the Settings seams (stories 85-89)
+    shortcutRegistrar: (accelerator) => registerSettingsShortcut({ manager: shortcutManager, accelerator }),
+    keyHintProvider: () => maskedKeyHint.maskKey(services.keyStore.get()),
   });
 }
 

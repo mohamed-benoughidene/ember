@@ -63,6 +63,11 @@ function registerIpcHandlers(options) {
     bootNotice = null,
     kbChooser = () => null,
     onCommand = () => {},
+    // [app 10] Settings panes: the shortcut re-registration seam
+    // (stories 85-86) and the masked key hint provider. Both default
+    // to null so the step-02/04 wirings and tests stay untouched.
+    shortcutRegistrar = null,
+    keyHintProvider = null,
   } = options;
 
   let cachedClient = null;
@@ -118,7 +123,13 @@ function registerIpcHandlers(options) {
       return settingsStore.save(patch);
     },
 
-    'ember:kbStatus': () => knowledgeBaseStatus(dbPath()),
+    'ember:kbStatus': (payload) =>
+      // [app 10] an optional path argument lets the knowledge-base
+      // pane verify a TYPED path before any settings change; without
+      // one it reads the chosen knowledge base as before.
+      knowledgeBaseStatus(
+        typeof payload === 'string' && payload.trim() !== '' ? payload : dbPath(),
+      ),
 
     'ember:pickKnowledgeBaseFile': () => {
       const chosen = kbChooser();
@@ -259,6 +270,35 @@ function registerIpcHandlers(options) {
     },
 
     'ember:removeKey': () => keyStore.remove(),
+
+    /* ------------- [app 10] Settings panes (stories 85-89) ------------- */
+
+    /**
+     * Re-register the quick-popup shortcut from Settings. On refusal the
+     * registrar has already told the shell to build the tray fallback
+     * (plan §5.5); the pane shows the APP-005 words.
+     */
+    'ember:registerShortcut': (accelerator) => {
+      if (typeof accelerator !== 'string' || accelerator.trim() === '') {
+        return { ok: false, error: appErrorInfo('APP-005', `${WHERE}.registerShortcut`, 'no quick-popup shortcut was given') };
+      }
+      if (shortcutRegistrar === null) {
+        return { ok: false, error: appErrorInfo('APP-005', `${WHERE}.registerShortcut`, 'the shortcut manager is not available in this build') };
+      }
+      return shortcutRegistrar(accelerator);
+    },
+
+    /**
+     * The masked key status for the AI connection pane: {hint} is the
+     * key's LAST FOUR characters (main/key-hint.js) — never the key.
+     */
+    'ember:keyHint': () => {
+      const hint = keyHintProvider === null ? null : keyHintProvider();
+      if (hint === null || hint === undefined) {
+        return { ok: false, noKey: true };
+      }
+      return { ok: true, hint: String(hint) };
+    },
   };
 
   const names = Object.keys(handlers);

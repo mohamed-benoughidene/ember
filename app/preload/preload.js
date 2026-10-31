@@ -13,6 +13,7 @@
 const { contextBridge, ipcRenderer } = require('electron');
 
 /** The allowlist, exported for the pinning test (not used at runtime). */
+// [app 10] the Settings panes add the two calls at the end.
 const EMBER_PRELOAD_API = Object.freeze([
   'ember:ping',
   'ember:getState',
@@ -29,6 +30,8 @@ const EMBER_PRELOAD_API = Object.freeze([
   'ember:setKey',
   'ember:setSessionKey',
   'ember:removeKey',
+  'ember:registerShortcut',
+  'ember:keyHint',
 ]);
 
 contextBridge.exposeInMainWorld('ember', {
@@ -41,8 +44,10 @@ contextBridge.exposeInMainWorld('ember', {
   /** Merge a settings patch (validated again in the main process). */
   saveSettings: (patch) => ipcRenderer.invoke('ember:saveSettings', patch),
 
-  /** Knowledge-base status: {path, exists, looksValid} — no command runs. */
-  kbStatus: () => ipcRenderer.invoke('ember:kbStatus'),
+  /** Knowledge-base status: {path, exists, looksValid} — no command
+   *  runs. With a path argument it verifies THAT file (the Settings
+   *  pane's typed-path check); without, the chosen knowledge base. */
+  kbStatus: (path) => ipcRenderer.invoke('ember:kbStatus', path ?? null),
 
   /** Open an existing knowledge-base file through the OS file picker. */
   pickKnowledgeBaseFile: () => ipcRenderer.invoke('ember:pickKnowledgeBaseFile'),
@@ -76,4 +81,11 @@ contextBridge.exposeInMainWorld('ember', {
 
   /** Remove the saved key (careful action, story 89). */
   removeKey: () => ipcRenderer.invoke('ember:removeKey'),
+
+  // [app 10] Re-register the quick-popup shortcut from Settings
+  // (APP-005 + tray fallback when the OS refuses it).
+  registerShortcut: (accelerator) => ipcRenderer.invoke('ember:registerShortcut', accelerator),
+
+  // [app 10] The masked key status: how the key ends, never the key.
+  keyHint: () => ipcRenderer.invoke('ember:keyHint'),
 });

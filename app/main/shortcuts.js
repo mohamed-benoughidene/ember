@@ -117,4 +117,24 @@ function createTrayManager(options) {
   return { show, destroy, get builtCount() { return built; } };
 }
 
-module.exports = { createShortcutManager, createTrayManager };
+/* ---------- [app 10] the Settings re-registration flow ---------- */
+
+/**
+ * Re-register the quick-popup shortcut from the Settings pane
+ * (story 85): forget every registered shortcut first (an old choice
+ * must not keep working), then try the new one. On refusal the APP-005
+ * error comes back to the pane AND the manager's onFailure ran, which
+ * is where the shell builds the tray fallback (plan §5.5).
+ *
+ * @param {object} args
+ * @param {{register: (a: string, cb: () => void) => boolean, unregisterAll: () => void}} args.manager
+ *   the createShortcutManager instance
+ * @param {string} args.accelerator the new shortcut
+ * @returns {{ok: true} | {ok: false, error: info}}
+ */
+function registerSettingsShortcut({ manager, accelerator }) {
+  manager.unregisterAll();
+  return manager.register(accelerator);
+}
+
+module.exports = { createShortcutManager, createTrayManager, registerSettingsShortcut };

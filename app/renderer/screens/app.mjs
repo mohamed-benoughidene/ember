@@ -10,6 +10,8 @@
  */
 
 import { textScale } from '../design/text-scale.mjs';
+// [app 10] the real Settings screen replaces the interim placeholder
+import { createSettingsScreen } from './settings.mjs';
 import { bannerHtml } from '../components/banner.mjs';
 import { sentenceFor } from '../../shared/plain-sentences.mjs';
 import { createFirstRunScreen } from './first-run.mjs';
@@ -49,6 +51,9 @@ const ctx = {
   },
   navigate(id, params = null) {
     ctx.params = params;
+    // [app 10] the settings screen retitles the window to name its
+    // open pane (story 80); every other pane carries the plain title.
+    document.title = 'Ember';
     if (!firstRunActive) {
       navEl.querySelectorAll('button').forEach((b) => b.setAttribute('aria-current', b.dataset.job === id ? 'true' : 'false'));
       window.ember.saveSettings({ lastPane: id }).catch(() => {});
@@ -79,7 +84,26 @@ const ctx = {
   },
 };
 
+// [app 10] the re-appliers the Settings screen drives after it saves
+// (its changes must apply at once: stories 82-88) and the Comma
+// shortcut that opens Settings from any pane (story 79).
+ctx.applySettingsNow = () => applySettings();
+ctx.rebuildNav = () => buildNav();
+document.addEventListener('keydown', (event) => {
+  if (event.key !== ',' || !(event.metaKey || event.ctrlKey)) return;
+  if (firstRunActive) return;
+  event.preventDefault();
+  ctx.navigate('settings');
+});
+
 function renderPane(id) {
+  // [app 10] Settings is a real screen now; the other interim panes
+  // keep their honest placeholders until their build steps.
+  if (id === 'settings') {
+    screens.settings = createSettingsScreen(ctx);
+    screens.settings.refresh();
+    return;
+  }
   if (id === 'home') {
     screens.home = createHomeScreen(ctx);
     screens.home.render();

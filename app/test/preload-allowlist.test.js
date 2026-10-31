@@ -41,6 +41,9 @@ const EXPECTED_CHANNELS = [
   'ember:setKey',
   'ember:setSessionKey',
   'ember:removeKey',
+  // [app 10] the Settings panes
+  'ember:registerShortcut',
+  'ember:keyHint',
 ];
 
 function readRendererSources() {

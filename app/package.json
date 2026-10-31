@@ -13,6 +13,7 @@
     "test:e2e": "node test/e2e/smoke.js",
     "test:e2e:design": "node test/e2e/design.js",
     "test:e2e:04": "node test/e2e/first-run-home-lookup.js",
+    "test:e2e:10": "node test/e2e/settings.js",
     "gallery": "electron gallery/main.js",
     "check:launch": "node test/launch-check.js"
   },
