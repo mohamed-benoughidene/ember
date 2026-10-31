@@ -83,6 +83,8 @@ const EXPECTED_API = [
   'openQuickPopup',
   'quickOpenMain',
   'onOpenRequest',
+  // App 12 (ticket A41): the application menu's one push subscription.
+  'onMenuRequest',
 ];
 
 async function main() {

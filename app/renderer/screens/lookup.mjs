@@ -107,6 +107,13 @@ export function createLookupScreen(ctx) {  const view = {
         const body = root.querySelector('[data-testid="lookup-body"]');
         if (view.tab === 'items') renderItemsTab(body);
         else renderLedgerTab(body);
+        /* --- [app 12] Edit -> Find (Command/Ctrl+F) lands here: the
+           search box takes the focus (spec §9 Edit menu). --- */
+        if (ctx.params && ctx.params.focus === 'search') {
+          ctx.params = null;
+          body.querySelector('[data-testid="lookup-q"]')?.focus();
+        }
+        /* --- App 12 block ends --- */
       },
     );
   }

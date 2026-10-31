@@ -115,6 +115,30 @@ window.ember.onOpenRequest((ask) => {
 });
 /* --- App 11 block ends --- */
 
+/* --- [app 12] the application menu's one push channel (ticket A41):
+   main only ASKS; this window's router and screens decide (B4). A
+   menu Undo/Redo lands on the Fix and close screen's own controls
+   (one code path with the bar and Ctrl/Cmd+Z), Find lands on the
+   Look up search box, and the sidebar toggle is this window's own
+   nav. First run owns the screen, so every menu request waits. --- */
+window.ember.onMenuRequest((ask) => {
+  if (!ask || typeof ask !== 'object' || firstRunActive) return;
+  if (ask.kind === 'navigate' && typeof ask.pane === 'string') {
+    ctx.navigate(ask.pane);
+  } else if (ask.kind === 'find') {
+    ctx.navigate('lookup', { focus: 'search' });
+  } else if (ask.kind === 'undo' || ask.kind === 'redo') {
+    // The keys stay with text editing while a field has them (the
+    // step-07 rule), and navigation never fires mid-first-run.
+    const tag = document.activeElement ? document.activeElement.tagName : null;
+    if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+    ctx.navigate('fix', { menuAction: ask.kind });
+  } else if (ask.kind === 'toggle-sidebar') {
+    navEl.hidden = ask.visible !== true;
+  }
+});
+/* --- App 12 block ends --- */
+
 /* --- App 08 (Clean up): the pending-count badge on the sidebar job
    (story 68; plan §1: shown only when the last preview count > 0,
    refreshed after any write; the number is a real `maintain --dry-run`

@@ -77,6 +77,14 @@ const WHERE = 'main.ipc';
  * @param {({view?: string}) => {ok: boolean, view?: string}|null}
  *   [options.openMainRequest] the popup's route to the full window
  *   (app 11; story 93/94; null likewise)
+ * @param {((name: string) => void)|null} [options.onBridgeActivity] app
+ *   step 12: called with the command name after each bridge command or
+ *   confirm-session settles, so the shell can re-derive the Edit-menu
+ *   Undo/Redo labels (null keeps the step-11 behaviour)
+ * @param {(() => void)|null} [options.onSettingsSaved] app step 12:
+ *   called after a successful settings save (the Menu pane's
+ *   hide/reorder, a knowledge-base switch), so the menu rebuilds and
+ *   the undo labels re-derive against the current file (null likewise)
  */
 function registerIpcHandlers(options) {
   const {
@@ -97,6 +105,9 @@ function registerIpcHandlers(options) {
     // [app 11] the quick popup seams; default null (see the JSDoc above)
     openQuickPopup = null,
     openMainRequest = null,
+    // [app 12] the menu's re-derive hooks; null keeps step-11 behaviour
+    onBridgeActivity = null,
+    onSettingsSaved = null,
     bootNotice = null,
     kbChooser = () => null,
     saveChooser = () => null,
@@ -120,6 +131,9 @@ function registerIpcHandlers(options) {
         dbPath,
         errorPattern,
         apiKeyProvider,
+        // [app 12] every settled command may mean a changed ledger: the
+        // shell re-derives the Edit-menu Undo/Redo labels from the hook.
+        onActivity: onBridgeActivity,
       });
       cachedDbPath = dbPath;
     }
@@ -159,7 +173,12 @@ function registerIpcHandlers(options) {
       if (typeof patch !== 'object' || patch === null || Array.isArray(patch)) {
         return { ok: false, error: appErrorInfo('APP-004', `${WHERE}.saveSettings`, 'the settings change was not a plain object') };
       }
-      return settingsStore.save(patch);
+      const result = settingsStore.save(patch);
+      // [app 12] a saved Menu/KB change is a menu-context change: the
+      // shell rebuilds the menu (Jobs order/hide) and re-derives the
+      // undo labels against the current knowledge base.
+      if (result && result.ok && typeof onSettingsSaved === 'function') onSettingsSaved();
+      return result;
     },
 
     'ember:kbStatus': (payload) =>
@@ -428,6 +447,9 @@ function registerIpcHandlers(options) {
           ? saved
           : { ok: false, error: appErrorInfo('APP-004', `${WHERE}.switchKnowledgeBase`, 'the choice could not be saved to the settings file') };
       }
+      // [app 12] a different knowledge base file is a different ledger:
+      // the menu (and its undo labels) must follow the new file.
+      if (typeof onSettingsSaved === 'function') onSettingsSaved();
       return { ok: true, data: { path: chosen, check: { result: report.data.result, detail: report.data.detail, lines: report.data.lines } } };
     },
 
@@ -684,6 +706,7 @@ function registerIpcHandlers(options) {
         errorPattern,
         apiKeyProvider,
         sessionIdleMs: RELATE_SESSION_IDLE_MS,
+        onActivity: onBridgeActivity, // [app 12] a relate confirm changes the ledger
       });
       cachedLinkDb = db;
     }

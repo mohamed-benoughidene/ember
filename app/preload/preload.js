@@ -287,4 +287,15 @@ contextBridge.exposeInMainWorld('ember', {
     ipcRenderer.on('ember:openRequest', handler);
     return () => ipcRenderer.removeListener('ember:openRequest', handler);
   },
+
+  /* ==== App 12 (ticket A41): the application menu's one push channel.
+     Main asks; this window's router decides (B4). Kinds: navigate
+     {pane}, find, undo, redo, toggle-sidebar {visible}. ==== */
+
+  /** Subscribe to menu requests; returns an unsubscribe. */
+  onMenuRequest: (callback) => {
+    const handler = (_event, data) => callback(data);
+    ipcRenderer.on('ember:menuRequest', handler);
+    return () => ipcRenderer.removeListener('ember:menuRequest', handler);
+  },
 });

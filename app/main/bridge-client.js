@@ -85,6 +85,12 @@ const MAX_OUTPUT_BYTES = 32 * 1024 * 1024;
  * @param {number} [options.sessionIdleMs] confirm-session inactivity
  *   limit, default 120000 (I15: a time limit on every call)
  * @param {typeof import('node:child_process').spawn} [options.spawnFn] test seam
+ * @param {((name: string) => void) | null} [options.onActivity] app step
+ *   12: called with the command name after every one-shot command
+ *   settles and after every confirm-session ends — the ONE hook the
+ *   shell uses to know the knowledge base may have changed (the
+ *   Edit-menu Undo/Redo labels re-derive from it). The hook never
+ *   blocks or changes the result; a throwing hook is the caller's bug.
  */
 function createBridgeClient(options) {
   const {
@@ -96,6 +102,7 @@ function createBridgeClient(options) {
     timeoutWriteMs = 120_000,
     sessionIdleMs = 120_000,
     spawnFn = spawn,
+    onActivity = null,
   } = options;
 
   function childEnv() {
@@ -259,12 +266,20 @@ function createBridgeClient(options) {
     const argv = buildArgv(name, args, []);
     for (let attempt = 1; attempt <= attempts; attempt += 1) {
       const run = await spawnOnce(argv, timeoutMs, 'ignore');
-      if (run.failed) return { ok: false, error: run.error };
-      if (!run.timedOut) return interpret(name, run);
+      if (run.failed) {
+        if (onActivity) onActivity(name);
+        return { ok: false, error: run.error };
+      }
+      if (!run.timedOut) {
+        const result = interpret(name, run);
+        if (onActivity) onActivity(name);
+        return result;
+      }
     }
     const detail = isRead
       ? `ember ${name} timed out after ${timeoutMs} ms, and the one allowed retry timed out too`
       : `ember ${name} (a write) timed out after ${timeoutMs} ms; it was NOT retried; re-read state before offering Retry`;
+    if (onActivity) onActivity(name);
     return { ok: false, error: appErrorInfo('APP-008', `${WHERE}.runCommand`, detail) };
   }
 
@@ -317,6 +332,8 @@ function createBridgeClient(options) {
       const first = stderrLines[0] ?? '';
       const parsed = exitCode === 1 && errorPattern ? parseErrorLine(first, errorPattern, stderrLines.slice(1)) : null;
       if (parsed) emitError(parsed);
+      // [app 12] the session is over: the knowledge base may have changed.
+      if (onActivity) onActivity(name);
       for (const cb of listeners.exit) cb({ exitCode });
     }
 

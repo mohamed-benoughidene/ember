@@ -171,6 +171,202 @@ function wireIpc(services) {
   };
   /* === App 11 block ends === */
 
+  /* =================================================================
+     APP STEP 12 (ticket A41): the application menu (spec §9; plan
+     §5.7) as ONE pure definition (shared/menu-template.mjs) built by
+     the manager (main/app-menu.js) and consumed here. The dispatch
+     maps the template's action ids onto the OS effects; the Edit
+     menu's Undo/Redo labels re-derive from `undo --dry-run --format
+     json` (the step-07 derivation in shared/undo-labels.mjs — the
+     same words the Fix and close bar shows) whenever the knowledge
+     base may have changed: after any bridge command or session
+     settles (the ipc onBridgeActivity hook), after a settings save or
+     a knowledge-base switch (onSettingsSaved), and once at boot. The
+     requests reach the renderer over ONE new push channel
+     (ember:menuRequest); navigation is always the renderer's own
+     router (B4), and Undo/Redo land on the Fix and close screen's
+     own controls — one code path, no forked undo.
+     ================================================================= */
+  const { createAppMenuManager } = require('./app-menu');
+  const { deriveUndoMenuState, aboutCreditsText } = require('../shared/menu-template.mjs');
+  const { validateKnowledgeBasePath: menuKbGuard } = require('./ember-command');
+
+  /**
+   * Commands that CANNOT change the ledger: no label re-derive after
+   * them (the reads, and the file-producing backup/export). `maintain`
+   * is deliberately NOT skipped: its apply run writes. The refresh runs
+   * two short-lived child processes (one dry-run each way).
+   */
+  const MENU_ACTIVITY_SKIPS = new Set([
+    'list-items',
+    'show-item',
+    'current-state',
+    'topic-search',
+    'why',
+    'history',
+    'capture-source',
+    'db-check',
+    'backup',
+    'export',
+  ]);
+
+  /** The menu's own copy of the two labels' state (the pure derivation). */
+  const menuState = {
+    sidebarHidden: false,
+    undo: deriveUndoMenuState(null, 'undo'),
+    redo: deriveUndoMenuState(null, 'redo'),
+  };
+
+  let labelClient = null; // ONE client for the label dry-runs, per file
+  let labelClientDb = null;
+  function labelClientFor(db) {
+    if (labelClient === null || labelClientDb !== db) {
+      labelClient = createBridgeClient({
+        emberCommand: services.emberCommand,
+        dbPath: db,
+        errorPattern: services.errorPattern,
+        apiKeyProvider: () => services.keyStore.get(),
+        // Deliberately NO onActivity here: the refresh must not re-arm itself.
+      });
+      labelClientDb = db;
+    }
+    return labelClient;
+  }
+
+  let labelTimer = null;
+  let labelRefreshInFlight = false;
+  function scheduleUndoLabelRefresh() {
+    if (labelTimer) clearTimeout(labelTimer);
+    labelTimer = setTimeout(() => {
+      labelTimer = null;
+      refreshUndoLabels();
+    }, 250);
+  }
+
+  /** Re-derive both labels from the real engine (D3), then rebuild. */
+  async function refreshUndoLabels() {
+    if (labelRefreshInFlight) return; // one at a time; a queued timer follows up
+    labelRefreshInFlight = true;
+    try {
+      const db = DB_OVERRIDE ?? services.settingsStore.load().settings.knowledgeBasePath;
+      if (typeof db === 'string' && db !== '' && menuKbGuard(db).ok) {
+        const client = labelClientFor(db);
+        const [undoResult, redoResult] = await Promise.all([
+          client.runCommand('undo', ['--dry-run']),
+          client.runCommand('redo', ['--dry-run']),
+        ]);
+        menuState.undo = deriveUndoMenuState(undoResult, 'undo');
+        menuState.redo = deriveUndoMenuState(redoResult, 'redo');
+      } else {
+        // No usable knowledge base: first run owns the screen and the
+        // menu's job items are disabled anyway; the labels stay disabled-plain.
+        menuState.undo = deriveUndoMenuState(null, 'undo');
+        menuState.redo = deriveUndoMenuState(null, 'redo');
+      }
+    } catch (err) {
+      process.stderr.write(`launch-note: APP-000 AppError | the Edit menu's Undo and Redo labels could not be re-derived (${err instanceof Error ? err.message : 'unknown error'})\n`);
+    } finally {
+      labelRefreshInFlight = false;
+      menuManager.refresh();
+    }
+  }
+
+  /** One menu request into the main window's renderer (B4: the
+   * renderer owns its router; main only asks). */
+  const sendMenuRequest = (payload) => {
+    if (!mainWindow || mainWindow.isDestroyed()) return;
+    if (payload.kind !== 'undo' && payload.kind !== 'redo') focusMainWindow();
+    mainWindow.webContents.send('ember:menuRequest', payload);
+  };
+
+  /** Story 108: the About box carries the font/licence credits. */
+  const showAbout = () => {
+    const credits = aboutCreditsText({
+      version: appVersion(),
+      fontsPath: path.join(__dirname, '..', 'assets', 'fonts'),
+    });
+    if (process.platform === 'darwin') {
+      app.setAboutPanelOptions({ credits });
+      app.showAboutPanel();
+      return;
+    }
+    const owner = mainWindow && !mainWindow.isDestroyed() ? mainWindow : null;
+    dialog
+      .showMessageBox(owner, {
+        type: 'info',
+        title: 'About Ember',
+        message: `Ember ${appVersion()}`,
+        detail: credits,
+        buttons: ['OK'],
+      })
+      .catch(() => {}); // a closed window while showing is not an error
+  };
+
+  /** The action ids -> the OS effects (the only edge). */
+  const dispatchMenuAction = (id) => {
+    switch (id) {
+      case 'about':
+        showAbout();
+        break;
+      case 'settings':
+        sendMenuRequest({ kind: 'navigate', pane: 'settings' });
+        break;
+      // The always-available add route (plan §5.5): the SAME open/hide
+      // action the shortcut, the tray and `--quick-add` use. Never parks:
+      // the caller is Ember's own menu.
+      case 'file-add-text':
+        openQuickPopup({ action: 'toggle', park: false });
+        break;
+      case 'file-open-kb':
+      case 'file-backup':
+      case 'file-export':
+        // These jobs live on Keep safe (stories 70-76: the pickers, the
+        // story-76 confirmation, the report lines). The menu takes the
+        // user there; it never starts a write or a pick itself.
+        sendMenuRequest({ kind: 'navigate', pane: 'keepsafe' });
+        break;
+      case 'edit-undo':
+      case 'edit-redo':
+        sendMenuRequest({ kind: id === 'edit-undo' ? 'undo' : 'redo' });
+        break;
+      case 'edit-find':
+        sendMenuRequest({ kind: 'find' });
+        break;
+      case 'view-sidebar':
+        menuState.sidebarHidden = !menuState.sidebarHidden;
+        sendMenuRequest({ kind: 'toggle-sidebar', visible: !menuState.sidebarHidden });
+        menuManager.refresh();
+        break;
+      default:
+        if (typeof id === 'string' && id.startsWith('job-')) {
+          sendMenuRequest({ kind: 'navigate', pane: id.slice(4) });
+        }
+    }
+  };
+
+  const menuManager = createAppMenuManager({
+    MenuApi: Menu,
+    platform: process.platform === 'darwin' ? 'darwin' : 'other',
+    context: () => {
+      const s = services.settingsStore.load().settings;
+      const kbChosen =
+        DB_OVERRIDE !== null ||
+        (typeof s.knowledgeBasePath === 'string' && s.knowledgeBasePath.trim() !== '');
+      return {
+        kbChosen,
+        sidebarVisible: !menuState.sidebarHidden,
+        jobs: { order: s.menuOrder, hidden: s.menuHidden },
+        undo: menuState.undo,
+        redo: menuState.redo,
+      };
+    },
+    dispatch: dispatchMenuAction,
+  });
+  menuManager.refresh(); // the menu exists from boot (about/quit/Help work pre-window)
+  scheduleUndoLabelRefresh(); // the first real derivation, ~250 ms after boot
+  /* === App 12 menu block ends === */
+
+
   let tray = null;
   const showTrayFallback = () => {
     if (tray !== null) return; // the fallback is built once per run
@@ -260,6 +456,14 @@ function wireIpc(services) {
        the full window (93) with its path to fix a missing setup (94). --- */
     openQuickPopup: ({ action = 'toggle' } = {}) => openQuickPopup({ action, park: false }),
     openMainRequest,
+    // [app 12] the menu's re-derive hooks (see the step-12 block above).
+    onBridgeActivity: (name) => {
+      if (!MENU_ACTIVITY_SKIPS.has(name)) scheduleUndoLabelRefresh();
+    },
+    onSettingsSaved: () => {
+      menuManager.refresh();
+      scheduleUndoLabelRefresh();
+    },
   });
 
   // [app 11] The default global shortcut, registered at boot AFTER

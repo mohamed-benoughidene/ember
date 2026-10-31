@@ -78,6 +78,10 @@ const MAINTAIN_CHANNELS = [
    Fix and close, Settings, Clean up, Quick popup). The `ember:openRequest`
    push channel goes main -> main-window renderer (not an invoke). */
 const QUICK_POPUP_CHANNELS = ['ember:openQuickPopup', 'ember:quickOpenMain'];
+/* App 12 (ticket A41): the application menu's ONE push channel
+   (main -> main-window renderer). Not an invoke: subscribed via
+   onMenuRequest in the preload, pinned below like the other pushes. */
+const MENU_PUSH_CHANNELS = ['ember:menuRequest'];
 const ADD_PUSH_CHANNELS = ['ember:addEvent', 'ember:addExit'];
 /* App 06 (ticket A35): the Link items session channels, merged after
    the Fix and close block (the merged file's order: base, Add,
@@ -197,3 +201,18 @@ test('the relate-session channels are preloaded, registered and pushed by name',
   }
 });
 /* ==== end App 06 block ==== */
+
+/* ==== App 12 (ticket A41): the application menu's push channel is
+   subscribed by the preload, sent by main by name, and never an
+   invoke — pinned here so it cannot go dead or hidden. ==== */
+test('the menu push channel is preloaded, sent by name, and reachable', () => {
+  for (const channel of MENU_PUSH_CHANNELS) {
+    assert.ok(PRELOAD.includes(`'${channel}'`), `${channel} missing from the preload subscriptions`);
+    assert.ok(MAIN.includes(`'${channel}'`), `${channel} is never sent from main`);
+    assert.ok(PRELOAD.includes('onMenuRequest'), 'onMenuRequest missing from the preload');
+  }
+  // The push adds no invoke channel: ipc.js did not grow a handler for it.
+  const registered = [...IPC.matchAll(/'(ember:[a-zA-Z]+)':/g)].map((m) => m[1]);
+  assert.ok(!registered.includes('ember:menuRequest'), 'the push channel must not be an invoke handler');
+});
+/* ==== end App 12 block ==== */

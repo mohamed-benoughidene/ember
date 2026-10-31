@@ -139,6 +139,15 @@ export function createFixCloseScreen(ctx) {
           return;
         }
         await Promise.all([refreshUndoBar(), loadList()]);
+        /* --- [app 12] the Edit menu's Undo/Redo lands HERE — the same
+           controls as this bar, one code path (story 114). It runs once
+           per request; ctx.params is this navigation's own handoff. --- */
+        const menuAction = ctx.params && ctx.params.menuAction;
+        if (menuAction === 'undo' || menuAction === 'redo') {
+          ctx.params = null;
+          applyUndoRedo(menuAction);
+        }
+        /* --- App 12 block ends --- */
       },
     );
   }
