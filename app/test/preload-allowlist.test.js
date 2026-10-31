@@ -41,6 +41,12 @@ const EXPECTED_CHANNELS = [
   'ember:setKey',
   'ember:setSessionKey',
   'ember:removeKey',
+  // App step 09 (Keep safe) — appended as this step's own block.
+  'ember:pickSaveFile',
+  'ember:backupTo',
+  'ember:exportTo',
+  'ember:dbCheck',
+  'ember:switchKnowledgeBase',
 ];
 
 function readRendererSources() {
