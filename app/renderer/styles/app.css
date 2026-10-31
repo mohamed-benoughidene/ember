@@ -283,3 +283,15 @@ td.row-detail { border-top: 1px solid var(--line-strong); }
   .split > div { flex: 1 1 45%; }
   .titlerow, .finding { flex-wrap: wrap; }
 }
+
+/* ---------- app step 07 (Fix and close) — appended at the END: the
+   only new things the screen needs beyond the step-04 frame and the
+   step-03 components; values come only from tokens.css. ---------- */
+
+/* The undo bar sits in the title row (prototype); it may wrap inside
+   itself and takes the full row at the Largest text size. */
+.titlerow [data-testid='undo-bar'] { margin-top: 0; flex: 0 1 auto; min-width: 0; max-width: 100%; }
+:root.big .titlerow [data-testid='undo-bar'] { flex-basis: 100%; }
+:root.big [data-testid='undo-bar'] .kbd { display: none; }
+
+td.num .btn { margin-left: var(--s2); }

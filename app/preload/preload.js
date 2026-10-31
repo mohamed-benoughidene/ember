@@ -45,6 +45,8 @@ const EMBER_PRELOAD_API = Object.freeze([
   'ember:exportTo',
   'ember:dbCheck',
   'ember:switchKnowledgeBase',
+  'ember:fixAction',
+  'ember:undoPlan',
 ]);
 // The five names above are app step 09 (Keep safe), appended at the
 // END of the allowlist as this step's own bracketed block (ticket A38).
@@ -143,4 +145,13 @@ contextBridge.exposeInMainWorld('ember', {
 
   /** Story 76: open a DIFFERENT knowledge base file (db-check gate, then the setting). */
   switchKnowledgeBase: (path) => ipcRenderer.invoke('ember:switchKnowledgeBase', { path }),
+
+  // --- app step 07 (Fix and close) — appended at the END of the named
+  // --- call list; nothing else is exposed.
+
+  /** One Fix and close action: {action, args} runs the pinned command. */
+  fixAction: (payload) => ipcRenderer.invoke('ember:fixAction', payload ?? null),
+
+  /** The undo/redo dry-run plan ({command: 'undo'|'redo'}) for the label. */
+  undoPlan: (command) => ipcRenderer.invoke('ember:undoPlan', { command }),
 });

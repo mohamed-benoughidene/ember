@@ -18,6 +18,8 @@ import { createLookupScreen } from './lookup.mjs';
 // App step 09 (Keep safe) — added as its own import line (ticket A38).
 import { createKeepSafeScreen } from './keepsafe.mjs';
 import { createPlaceholderScreen, paneNames } from './placeholder.mjs';
+// app step 07 (Fix and close) — registered additively; nothing above moved.
+import { createFixCloseScreen } from './fix-close.mjs';
 import { createAddScreen } from './add.mjs'; /* App 05 (ticket A34) */
 
 const JOBS = [
@@ -111,6 +113,13 @@ function renderPane(id) {
     screens.keepsafe.render();
     return;
   }
+  // app step 07 (Fix and close): the real screen replaces the interim pane.
+  if (id === 'fix') {
+    screens.fix = createFixCloseScreen(ctx);
+    screens.fix.render();
+    return;
+  }
+  // -------------------------------------------------------------------
   if (paneNames().includes(id)) {
     createPlaceholderScreen(ctx, id).render();
     return;
