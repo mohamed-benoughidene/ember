@@ -61,6 +61,18 @@ const KEEP_SAFE_CHANNELS = [
    Fix and close). */
 const FIX_CLOSE_CHANNELS = ['ember:fixAction', 'ember:undoPlan'];
 const ADD_PUSH_CHANNELS = ['ember:addEvent', 'ember:addExit'];
+/* App 06 (ticket A35): the Link items session channels, merged after
+   the Fix and close block (the merged file's order: base, Add,
+   Keep safe, Fix and close, Link items). */
+const LINK_CHANNELS = [
+  'ember:relateStart',
+  'ember:relateAnswer',
+  'ember:relateStop',
+  'ember:relateAttach',
+  'ember:relateEvent',
+  'ember:relateExit',
+];
+const RELATE_SESSION_MODULE = fs.readFileSync(path.join(APP_ROOT, 'main', 'relate-session.js'), 'utf8');
 const ADD_SESSION_MODULE = fs.readFileSync(path.join(APP_ROOT, 'main', 'add-session.js'), 'utf8');
 /* ==== end App 05 block ==== */
 
@@ -85,10 +97,11 @@ test('the preload exposes exactly the pinned list over contextBridge', () => {
     .split(',')
     .map((s) => s.trim().replace(/^['"]|['"]$/g, ''))
     .filter(Boolean);
-  /* App 05 (ticket A34) + App step 09: the freeze list = the 15
+  /* App 05 (ticket A34) + steps 09/07/06: the freeze list = the 15
      handler channels, then the four Add invoke channels, then the
-     five Keep safe channels, then the two Fix and close channels */
-  assert.deepEqual(names, [...EXPECTED_CHANNELS, ...ADD_SESSION_CHANNELS, ...KEEP_SAFE_CHANNELS, ...FIX_CLOSE_CHANNELS]);
+     five Keep safe channels, then the two Fix and close channels,
+     then the six Link items channels (App 06). */
+  assert.deepEqual(names, [...EXPECTED_CHANNELS, ...ADD_SESSION_CHANNELS, ...KEEP_SAFE_CHANNELS, ...FIX_CLOSE_CHANNELS, ...LINK_CHANNELS]);
   assert.equal((PRELOAD.match(/contextBridge\.exposeInMainWorld/g) ?? []).length, 1, 'exactly one expose');
 });
 
@@ -145,3 +158,23 @@ test('the add-session channels are preloaded, registered and pushed by name', ()
   }
 });
 /* ==== end App 05 block ==== */
+
+/* ==== App 06 (ticket A35): the Link items session channels are
+   registered by wireRelateChannels inside ipc.js's App 06 block, and
+   the two push channels are subscribed in the preload — the same pin
+   as the Add block, so none can go dead or hidden. ==== */
+test('the relate-session channels are preloaded, registered and pushed by name', () => {
+  assert.ok(IPC.includes('wireRelateChannels'), 'ipc.js never wires the Link items session channels');
+  for (const channel of ['ember:relateStart', 'ember:relateAnswer', 'ember:relateStop', 'ember:relateAttach']) {
+    assert.ok(PRELOAD.includes(`'${channel}'`), `${channel} missing from the preload allowlist`);
+    assert.ok(
+      RELATE_SESSION_MODULE.includes(`ipcMain.handle('${channel}'`),
+      `${channel} not registered by wireRelateChannels`,
+    );
+  }
+  for (const channel of LINK_CHANNELS.slice(4)) {
+    assert.ok(PRELOAD.includes(`'${channel}'`), `${channel} missing from the preload subscriptions`);
+    assert.ok(RELATE_SESSION_MODULE.includes(`'${channel}'`), `${channel} missing from the main-process pushes`);
+  }
+});
+/* ==== end App 06 block ==== */

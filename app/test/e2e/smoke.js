@@ -59,6 +59,15 @@ const EXPECTED_API = [
   // app step 07 (Fix and close), appended at the END
   'fixAction',
   'undoPlan',
+  /* App 06 (ticket A35): the Link items confirm-session joins the
+     pinned surface at the END: four invoke calls, the buffered
+     attach, two event subscriptions. */
+  'startRelate',
+  'answerRelate',
+  'stopRelate',
+  'attachRelate',
+  'onRelateEvent',
+  'onRelateExit',
 ];
 
 async function main() {
@@ -103,7 +112,7 @@ async function main() {
     const banner = await win.locator('#top-banner').innerHTML();
     if (banner.trim() !== '') throw new Error(`a notice banner appeared: ${banner.slice(0, 200)}`);
 
-    process.stdout.write('e2e smoke OK: real shell boots into Home, the counts from list-items reach the DOM (total 5), the seam answers exactly the pinned 28-name allowlist, no Node in the page world\n');  } finally {
+    process.stdout.write('e2e smoke OK: real shell boots into Home, the counts from list-items reach the DOM (total 5), the seam answers exactly the pinned 34-name allowlist, no Node in the page world\n');  } finally {
     await app.close();
     fs.rmSync(workDir, { recursive: true, force: true });
   }

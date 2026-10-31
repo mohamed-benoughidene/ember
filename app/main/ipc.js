@@ -38,6 +38,9 @@ const { runDbCheck } = require('./db-check-runner');
 const { validateChosenPath } = require('../shared/keep-safe-paths.mjs');
 // App step 07 (Fix and close): the argv builders for its two channels.
 const { fixActionArgs, undoPlanArgs } = require('./fix-close-args');
+// App step 06 (Link items): its session channels, registered in the
+// bracketed block at the end of the list (see the allowlist test).
+const { wireRelateChannels, RELATE_SESSION_IDLE_MS } = require('./relate-session');
 
 const WHERE = 'main.ipc';
 
@@ -81,6 +84,10 @@ function registerIpcHandlers(options) {
 
   let cachedClient = null;
   let cachedDbPath = null;
+  /* App 06: the relate client lives beside the shared one (its longer
+     session idle limit, story 45); both are one-child-per-call. */
+  let cachedLinkClient = null;
+  let cachedLinkDb = null;
 
   /** One bridge client per knowledge-base path (one child per call inside). */
   function clientFor(dbPath) {
@@ -484,7 +491,53 @@ function registerIpcHandlers(options) {
   });
   /* ==== end App 05 block ==== */
 
-  return { names: [...names, ...addWiring.channels] };
+  /* ==== App 06 (ticket A35): the Link items confirm-session ========
+     Registered additively at the END of the IPC list, after the App 05
+     block; nothing above is moved or reformatted. The events and the
+     exit ride two push channels (`ember:relateEvent`,
+     `ember:relateExit`) sent to the invoking window. relate owns ONE
+     dedicated bridge client: the story-45 first run may sit silent for
+     MINUTES while a language model downloads, so its inactivity limit
+     is 10 min, not the default 120 s (I15 still holds — a frozen child
+     is still killed). */
+  const linkClientFor = (db) => {
+    if (cachedLinkClient === null || cachedLinkDb !== db) {
+      cachedLinkClient = createBridgeClient({
+        emberCommand,
+        dbPath: db,
+        errorPattern,
+        apiKeyProvider,
+        sessionIdleMs: RELATE_SESSION_IDLE_MS,
+      });
+      cachedLinkDb = db;
+    }
+    return cachedLinkClient;
+  };
+  const relateWiring = wireRelateChannels(ipcMain, {
+    startSession: (args) => linkClientFor(dbPath()).runConfirmSession('relate', args),
+    validateRelateTarget: () => {
+      // relate needs an EXISTING Ember file (RELATE-012 would otherwise
+      // surface raw): the app gates before any child is started (I9).
+      const status = knowledgeBaseStatus(dbPath());
+      if (!status.exists) {
+        return {
+          ok: false,
+          error: appErrorInfo('APP-006', `${WHERE}.relateStart`, `no knowledge base file exists yet: ${status.path}`),
+        };
+      }
+      if (!status.looksValid) {
+        return {
+          ok: false,
+          error: appErrorInfo('APP-006', `${WHERE}.relateStart`, `the chosen file is not an Ember knowledge base: ${status.path}`),
+        };
+      }
+      return { ok: true };
+    },
+    onCommand,
+  });
+  /* ==== end App 06 block ==== */
+
+  return { names: [...names, ...addWiring.channels, ...relateWiring.channels] };
 }
 
 /** The plain words for a shape refusal (shared rule, one wording). */

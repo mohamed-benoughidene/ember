@@ -375,3 +375,78 @@ export function dbCheckRowSentence(line) {
   if (/^result:\s*UNREADABLE$/.test(line)) return 'Verdict: the file could not be read.';
   return line.trim();
 }
+
+/* =====================================================================
+ * APP STEP 06 (Link items) — added at the END of the file as this
+ * step's own bracketed block (ticket A35; sibling lanes append their
+ * own blocks at the end; nothing above is moved or reformatted).
+ *
+ * Full ERROR_SENTENCES entries for the RELATE- codes the Link items
+ * screen can surface (stories 42-48; step file §1: "missing optional
+ * package (RELATE- code through the table with what to do)"). All of
+ * them exist in ember/relate/errors.py — the anti-drift walk in
+ * test/plain-sentences.test.js keeps chasing the source.
+ * ===================================================================== */
+
+Object.assign(ERROR_SENTENCES, {
+  'RELATE-001': {
+    title: 'There is no item with that number.',
+    what: 'The item Ember was asked to link is not in this knowledge base.',
+    next: 'Go back to the list and pick the item again.',
+  },
+  'RELATE-005': {
+    title: 'That link kind is not one Ember knows.',
+    what: 'A proposal used a link type outside the five kinds Ember keeps (supports, contradicts, supersedes, answers, depends on).',
+    next: 'Nothing was written. Run Link items again.',
+  },
+  'RELATE-006': {
+    title: 'Those two items cannot be linked that way.',
+    what: 'The kind of link does not fit the two items\' types; Ember\'s compatibility table refuses it.',
+    next: 'Nothing was written. You can skip such a proposal or run Link items again.',
+  },
+  'RELATE-007': {
+    title: 'That replacement could not be made.',
+    what: 'A supersedes link pointed at an item that is already Closed, which Ember never replaces.',
+    next: 'Nothing was written. Run Link items again.',
+  },
+  'RELATE-008': {
+    title: 'That link broke a premise rule.',
+    what: 'The proposal failed one of the ordered checks Ember runs before any link is written.',
+    next: 'Nothing was written. Run Link items again.',
+  },
+  'RELATE-009': {
+    title: 'That link already exists.',
+    what: 'A proposal repeated a link Ember already has (in either direction), however the old link ended up.',
+    next: 'Nothing was written. Nothing is duplicated.',
+  },
+  'RELATE-010': {
+    title: 'An item cannot link to itself.',
+    what: 'A proposal named the same item on both sides.',
+    next: 'Nothing was written. Run Link items again.',
+  },
+  'RELATE-012': {
+    title: 'The knowledge base file could not be opened.',
+    what: 'The file for linking is missing, was moved, or is not an Ember knowledge base.',
+    next: 'Check where the file is, then open it again in setup. Nothing was changed.',
+  },
+  'RELATE-014': {
+    title: 'This knowledge base is in an older format.',
+    what: 'Linking needs a newer file format than this knowledge base has.',
+    next: 'Open the file with the Ember command line once (a write migrates it), then try again. Nothing was changed.',
+  },
+  'RELATE-017': {
+    title: 'The linking brain is not installed.',
+    what: 'Linking needs the optional language package (sentence-transformers), which is missing on this computer.',
+    next: 'Install the relate extra: python -m pip install -e ".[relate]". Then run Link items again.',
+  },
+  'RELATE-032': {
+    title: 'The AI service could not answer.',
+    what: 'The request for link proposals failed; the service may be unreachable or it refused the key.',
+    next: 'Check the AI connection, then try again. Nothing was changed.',
+  },
+  'RELATE-035': {
+    title: 'Ember is missing a setting it needs.',
+    what: 'A needed value (the AI key, or the embedder settings) was not there.',
+    next: 'Check the AI connection in Settings, then try again. Nothing was changed.',
+  },
+});
