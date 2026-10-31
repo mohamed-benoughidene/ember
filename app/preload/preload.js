@@ -20,6 +20,12 @@
 const { contextBridge, ipcRenderer } = require('electron');
 
 /** The allowlist, exported for the pinning test (not used at runtime). */
+/* =================================================================
+   * App step 06 (ticket A35): the Link items confirm-session — six
+   * names, appended at the END of the allowlist as this step's own
+   * bracketed block: four invoke calls + two main-to-renderer push
+   * channels (one relate run at a time, buffered attach).
+   * ================================================================= */
 const EMBER_PRELOAD_API = Object.freeze([
   'ember:ping',
   'ember:getState',
@@ -53,6 +59,12 @@ const EMBER_PRELOAD_API = Object.freeze([
   'ember:maintainApply',
   'ember:maintainAnswer',
   'ember:maintainStop',
+  'ember:relateStart',
+  'ember:relateAnswer',
+  'ember:relateStop',
+  'ember:relateAttach',
+  'ember:relateEvent',
+  'ember:relateExit',
 ]);
 // The names after the base 15: Add (App 05), Keep safe (step 09),
 // Fix and close (step 07), Settings (app 10), Clean up (App 08) —
@@ -217,5 +229,37 @@ contextBridge.exposeInMainWorld('ember', {
       stop: () => ipcRenderer.invoke('ember:maintainStop'),
       done,
     };
+  },
+
+  /* =================================================================
+   * App step 06 (ticket A35): the Link items confirm-session — one
+   * relate run at a time, in the main process; the App 05 pattern
+   * (buffered attach, validated events, exact answer lines).
+   * ================================================================= */
+
+  /** Start `relate --item N|--latest --confirm json --db <kb>`. */
+  startRelate: (ask) => ipcRenderer.invoke('ember:relateStart', ask ?? null),
+
+  /** One answer (y / s / n / q): written as exactly {"answer": "<text>"}. */
+  answerRelate: (text) => ipcRenderer.invoke('ember:relateAnswer', text),
+
+  /** Stop: closes the session's stdin — a quiet quit, nothing half-written. */
+  stopRelate: () => ipcRenderer.invoke('ember:relateStop'),
+
+  /** Flush any session pushes that arrived before the renderer subscribed. */
+  attachRelate: () => ipcRenderer.invoke('ember:relateAttach'),
+
+  /** Subscribe to validated session events; returns an unsubscribe. */
+  onRelateEvent: (callback) => {
+    const handler = (_event, data) => callback(data);
+    ipcRenderer.on('ember:relateEvent', handler);
+    return () => ipcRenderer.removeListener('ember:relateEvent', handler);
+  },
+
+  /** Subscribe to the one exit message {exitCode, error}; returns an unsubscribe. */
+  onRelateExit: (callback) => {
+    const handler = (_event, data) => callback(data);
+    ipcRenderer.on('ember:relateExit', handler);
+    return () => ipcRenderer.removeListener('ember:relateExit', handler);
   },
 });

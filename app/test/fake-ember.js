@@ -91,6 +91,10 @@ if (mode === 'hang') {
   process.exit(1);
 } else if (mode === 'session') {
   runSession();
+} else if (mode === 'relate') {
+  /* App 06 (ticket A35): the scripted relate confirm session — see
+     runRelateSession at the end of this file. */
+  runRelateSession();
 } else {
   process.stderr.write('error: QUERY-003 DbOpenFailed | fake.ember | unknown FAKE_MODE | mode=\n');
   process.exit(1);
@@ -264,6 +268,120 @@ function runAppMode(argv) {
     process.exit(0);
   }
 
+  /* ==== App 06 (ticket A35) =========================================
+     relate runs THROUGH the app mode (one stub child serves the reads
+     AND the session, exactly like the real ember): the scripted
+     pinned `--confirm json` shapes in runRelateSession below. ==== */
+  if (name === 'relate') {
+    runRelateSession();
+    return;
+  }
+
   process.stderr.write(`error: APP-002 BridgeOutputInvalid | fake.ember.app | the app mode does not speak: ${name}\n`);
   process.exit(1);
+}
+
+/* ==== App 06 (ticket A35): the scripted relate confirm session ======
+   FAKE_MODE=relate serves the PINNED `ember relate --confirm json`
+   shapes (ember/bridge/block_parse.py + docs/commands.md): a
+   `link-preview` block BEFORE each choice prompt, the accepted
+   `link` block AFTER a write, `relate rejected: ...` lines as message
+   events, and the summary event (with accepted/rejected/skipped/
+   aborted) last. Env:
+
+   - FAKE_RELATE_EMPTY=1        -> the engine's documented empty-pool
+                                  print, then exit 0 (no summary).
+   - FAKE_RELATE_SLOW=1         -> emit NOTHING and go silent (the
+                                  story-45 preparing state); stdin
+                                  end (Stop) is a quiet exit 2.
+   - FAKE_RELATE_SCRIPT=<json>  -> the rounds. One array per proposal:
+                                  [preview block, choice prompt, (
+                                  accepted-block after a y)] and an
+                                  optional final round that carries
+                                  the message + summary events. The
+                                  stub waits for ONE answer line
+                                  between rounds and logs every
+                                  answer it received, one JSON line
+                                  per answer, to the file named by
+                                  FAKE_RELATE_ANSWERS (the e2e pins
+                                  the y/s/n/q mapping with it).
+   ==================================================================== */
+
+function runRelateSession() {
+  const answers = [];
+  const answerFile = process.env.FAKE_RELATE_ANSWERS;
+  let rounds = [];
+  if (process.env.FAKE_RELATE_SCRIPT) rounds = JSON.parse(process.env.FAKE_RELATE_SCRIPT);
+
+  function writeAnswers() {
+    if (answerFile) fs.writeFileSync(answerFile, answers.map((a) => `${a}\n`).join(''));
+  }
+
+  if (process.env.FAKE_RELATE_ERROR === '1') {
+    // The refused-at-boot path: one house error line on stderr, exit 1
+    // (e.g. the missing optional package, RELATE-017). The bridge
+    // client parses it; the screen shows the plain words.
+    process.stderr.write(
+      `error: ${process.env.FAKE_RELATE_ERROR_CODE ?? 'RELATE-017 EmbedderLoadFailed'} | fake.ember.relate | ${process.env.FAKE_RELATE_ERROR_DETAIL ?? 'sentence_transformers is not installed; install the optional extra with: python -m pip install -e ".[relate]"'}\n`,
+    );
+    process.exit(1);
+  }
+
+  if (process.env.FAKE_RELATE_EMPTY === '1') {
+    process.stdout.write(`${JSON.stringify({ event: 'message', text: 'no unrelated items' })}\n`);
+    setTimeout(() => process.exit(0), 20);
+    return;
+  }
+
+  if (process.env.FAKE_RELATE_SLOW === '1') {
+    // Silent forever, like a minutes-long model download, until the
+    // app stops the session (stdin end -> the story-45 quiet exit 2).
+    setInterval(() => {}, 10_000);
+    process.stdin.setEncoding('utf8');
+    process.stdin.resume(); // start consuming, so EOF fires 'end'
+    process.stdin.on('end', () => process.exit(2));
+    return;
+  }
+
+  let served = 0; // rounds emitted so far
+  process.stdin.setEncoding('utf8');
+  process.stdin.on('data', (chunk) => {
+    for (const line of String(chunk).split('\n')) {
+      if (line.trim() === '') continue;
+      answers.push(line);
+    }
+  });
+  process.stdin.on('end', () => {
+    // The app called stop(): a quiet, normal end (exit 2, no summary).
+    writeAnswers();
+    process.exit(2);
+  });
+
+  function emitNextRound() {
+    if (served >= rounds.length) {
+      writeAnswers();
+      process.exit(Number(process.env.FAKE_RELATE_EXIT ?? '0'));
+      return;
+    }
+    const round = rounds[served];
+    served += 1;
+    for (const e of round) {
+      process.stdout.write(`${JSON.stringify(e)}\n`);
+    }
+    if (round.some((e) => e.event === 'summary')) {
+      // The summary round needs no answer: the run is over.
+      writeAnswers();
+      setTimeout(() => process.exit(Number(process.env.FAKE_RELATE_EXIT ?? '0')), 20);
+      return;
+    }
+    // Wait for ONE answer, then serve the next round (stdin stays open).
+    const check = setInterval(() => {
+      if (answers.length >= served) {
+        clearInterval(check);
+        emitNextRound();
+      }
+    }, 10);
+  }
+
+  emitNextRound();
 }

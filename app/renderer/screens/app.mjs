@@ -26,6 +26,8 @@ import { createFixCloseScreen } from './fix-close.mjs';
 import { createCleanupScreen } from './cleanup.mjs';
 // --- App 08 import ends ---
 import { createAddScreen } from './add.mjs'; /* App 05 (ticket A34) */
+// app step 06 (Link items) — registered additively; nothing above moved.
+import { createLinkScreen } from './link.mjs'; /* App 06 (ticket A35) */
 
 const JOBS = [
   { id: 'home', name: 'Home', hint: 'What needs attention', fixed: true },
@@ -190,6 +192,16 @@ function renderPane(id) {
     return;
   }
   // --- App 08 branch ends ---
+  /* =================================================================
+   * APP STEP 06 (Link items) — this step's own clearly-bracketed
+   * block (ticket A35), directly above the placeholder catch-all
+   * (which would otherwise answer for `link` first).
+   * ================================================================= */
+  if (id === 'link') {
+    screens.link = createLinkScreen(ctx);
+    screens.link.render();
+    return;
+  }
   // -------------------------------------------------------------------
   if (paneNames().includes(id)) {
     createPlaceholderScreen(ctx, id).render();

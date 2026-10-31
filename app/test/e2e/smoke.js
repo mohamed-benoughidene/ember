@@ -68,6 +68,15 @@ const EXPECTED_API = [
   // ember:maintainEvent push channel (neither is a window-level name).
   'maintainPreview',
   'maintainApply',
+  /* App 06 (ticket A35): the Link items confirm-session joins the
+     pinned surface at the END: four invoke calls, the buffered
+     attach, two event subscriptions. */
+  'startRelate',
+  'answerRelate',
+  'stopRelate',
+  'attachRelate',
+  'onRelateEvent',
+  'onRelateExit',
 ];
 
 async function main() {
@@ -112,9 +121,19 @@ async function main() {
     const banner = await win.locator('#top-banner').innerHTML();
     if (banner.trim() !== '') throw new Error(`a notice banner appeared: ${banner.slice(0, 200)}`);
 
-    process.stdout.write('e2e smoke OK: real shell boots into Home, the counts from list-items reach the DOM (total 5), the seam answers exactly the pinned 32-name allowlist, no Node in the page world\n');
+    process.stdout.write('e2e smoke OK: real shell boots into Home, the counts from list-items reach the DOM (total 5), the seam answers exactly the pinned 38-name allowlist, no Node in the page world\n');
   } finally {
-    await app.close();
+    // The step-11 portal-registered global shortcut can hold the app
+    // past a plain close(): bound it, then SIGKILL the Electron process
+    // if it will not exit within 5s (dev-only harness; the assertions
+    // have all run by this point).
+    await Promise.race([
+      app.close(),
+      new Promise((resolve) => setTimeout(() => {
+        try { app.process().kill('SIGKILL'); } catch { /* already gone */ }
+        resolve();
+      }, 5000)),
+    ]);
     fs.rmSync(workDir, { recursive: true, force: true });
   }
 }
