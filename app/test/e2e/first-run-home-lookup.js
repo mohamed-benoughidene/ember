@@ -134,9 +134,14 @@ async function firstRun() {
     await assertCleanScan(win, 'first run step 3 (ready)');
 
     await win.click('[data-testid="setup-finish"]');
-    await win.waitForSelector('[data-testid="pane-add"]');
-    const addPane = await win.textContent('[data-testid="pane-add"]');
-    if (!/arrives in a later build step/.test(addPane)) fail(`the interim Add pane must say so honestly: ${addPane.slice(0, 200)}`);
+    /* App 05 (ticket A34): the Add pane is the real screen now —
+       the draft form replaces the step-04 interim placeholder. */
+    await win.waitForSelector('[data-testid="add-pane"]');
+    await win.waitForSelector('[data-testid="add-text-input"]');
+    const notice = await win.textContent('[data-testid="add-notice"]');
+    if (!/kept word for word/.test(notice) || !/sent to the AI service/.test(notice)) {
+      fail(`the real Add pane must open from first run with its notice: ${notice.slice(0, 200)}`);
+    }
     const effective = await win.evaluate(() => window.ember.getState().then((s) => s.effectiveKbPath));
     if (effective !== defaultPath) fail(`the chosen path must be saved in settings, saw ${JSON.stringify(effective)}`);
     await app.close();
@@ -155,7 +160,7 @@ async function firstRun() {
       const ready2 = await win2.textContent('.setup .form');
       if (!/not connected yet/.test(ready2)) fail(`skipping must keep the app usable without a key: ${ready2}`);
       await win2.click('[data-testid="setup-finish"]');
-      await win2.waitForSelector('[data-testid="pane-add"]');
+      await win2.waitForSelector('[data-testid="add-pane"]'); /* App 05: real Add pane */
       process.stdout.write('first run OK: the key path and the skip path both land in the app (stories 1-9)\n');
     } finally {
       await app2.close();
@@ -226,7 +231,7 @@ async function home() {
     await win.click('[data-action="setup-skip-key"]');
     await win.waitForSelector('[data-testid="setup-finish"]');
     await win.click('[data-testid="setup-finish"]');
-    await win.waitForSelector('[data-testid="pane-add"]');
+    await win.waitForSelector('[data-testid="add-pane"]'); /* App 05: real Add pane */
     await win.locator('#nav button[data-job="home"]').click();
     await win.waitForSelector('[data-testid="counts-panel"]');
     await assertCleanScan(win, 'Home (normal)');

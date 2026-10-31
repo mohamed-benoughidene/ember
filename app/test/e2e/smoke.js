@@ -41,6 +41,15 @@ const EXPECTED_API = [
   'setKey',
   'setSessionKey',
   'removeKey',
+  /* App 05 (ticket A34): the Add confirm-session joins the pinned
+     surface: three invoke calls, the buffered attach, two event
+     subscriptions. */
+  'startAdd',
+  'answerAdd',
+  'stopAdd',
+  'attachAdd',
+  'onAddEvent',
+  'onAddExit',
 ];
 
 async function main() {
@@ -65,6 +74,7 @@ async function main() {
     if (pong !== 'pong') throw new Error(`window.ember.ping() returned ${JSON.stringify(pong)}`);
 
     // 4. the runtime allowlist is EXACTLY the named list (B5)
+    //    (App 05 adds the six Add-session calls; see EXPECTED_API)
     const runtimeApi = await win.evaluate(() => Object.keys(window.ember).sort());
     if (JSON.stringify(runtimeApi) !== JSON.stringify([...EXPECTED_API].sort())) {
       throw new Error(`window.ember exposes ${JSON.stringify(runtimeApi)}, expected exactly ${JSON.stringify(EXPECTED_API)}`);
@@ -84,7 +94,7 @@ async function main() {
     const banner = await win.locator('#top-banner').innerHTML();
     if (banner.trim() !== '') throw new Error(`a notice banner appeared: ${banner.slice(0, 200)}`);
 
-    process.stdout.write('e2e smoke OK: real shell boots into Home, the counts from list-items reach the DOM (total 5), the seam answers exactly the 15-name allowlist, no Node in the page world\n');
+    process.stdout.write('e2e smoke OK: real shell boots into Home, the counts from list-items reach the DOM (total 5), the seam answers exactly the pinned 21-name allowlist, no Node in the page world\n');
   } finally {
     await app.close();
     fs.rmSync(workDir, { recursive: true, force: true });

@@ -28,6 +28,10 @@ const {
   showItemArgs,
   historyArgs,
 } = require('./command-args');
+// App 05 (ticket A34): the Add session channels and the pasted-text
+// temp file, registered in the bracketed block at the end of this list.
+const { wireAddChannels } = require('./add-session');
+const { writeTempText, removeTempFile, cleanStaleTempFiles } = require('./capture-temp');
 
 const WHERE = 'main.ipc';
 
@@ -277,7 +281,34 @@ function registerIpcHandlers(options) {
     });
   }
 
-  return { names };
+  /* ==== App 05 (ticket A34): the Add confirm-session channels =====
+     Registered additively at the END of the IPC list. The session
+     events and the exit ride two push channels (`ember:addEvent`,
+     `ember:addExit`) sent to the invoking window; the temp pasted-text
+     file lives in the user-data folder and is cleaned on every exit. */
+  const addWiring = wireAddChannels(ipcMain, {
+    startSession: (args) => clientFor(dbPath()).runConfirmSession('capture', args),
+    validateAddTarget: () => {
+      // Add may CREATE the knowledge base (capture opens and migrates
+      // it): a not-yet-existing file is fine. An existing file must be
+      // an Ember file (APP-006).
+      const status = knowledgeBaseStatus(dbPath());
+      if (status.exists && !status.looksValid) {
+        return {
+          ok: false,
+          error: appErrorInfo('APP-006', `${WHERE}.addStart`, `the chosen file is not an Ember knowledge base: ${status.path}`),
+        };
+      }
+      return { ok: true };
+    },
+    writeTempText: (text) => writeTempText(userDataPath, text),
+    removeTempFile,
+    cleanStaleTempFiles: () => cleanStaleTempFiles(userDataPath),
+    onCommand,
+  });
+  /* ==== end App 05 block ==== */
+
+  return { names: [...names, ...addWiring.channels] };
 }
 
 /** The plain words for a shape refusal (shared rule, one wording). */

@@ -43,6 +43,15 @@ const EXPECTED_CHANNELS = [
   'ember:removeKey',
 ];
 
+/* ==== App 05 (ticket A34): the Add confirm-session channels =====
+   The three invoke channels are registered by wireAddChannels
+   (main/add-session.js) at the end of the ipc list, not in the
+   handlers table; the two push channels go main -> renderer. */
+const ADD_SESSION_CHANNELS = ['ember:addStart', 'ember:addAnswer', 'ember:addStop', 'ember:addAttach'];
+const ADD_PUSH_CHANNELS = ['ember:addEvent', 'ember:addExit'];
+const ADD_SESSION_MODULE = fs.readFileSync(path.join(APP_ROOT, 'main', 'add-session.js'), 'utf8');
+/* ==== end App 05 block ==== */
+
 function readRendererSources() {
   const dir = path.join(APP_ROOT, 'renderer');
   const files = [];
@@ -64,7 +73,9 @@ test('the preload exposes exactly the pinned list over contextBridge', () => {
     .split(',')
     .map((s) => s.trim().replace(/^['"]|['"]$/g, ''))
     .filter(Boolean);
-  assert.deepEqual(names, EXPECTED_CHANNELS);
+  /* App 05 (ticket A34): the freeze list = the 15 handler channels
+     plus the three Add invoke channels. */
+  assert.deepEqual(names, [...EXPECTED_CHANNELS, ...ADD_SESSION_CHANNELS]);
   assert.equal((PRELOAD.match(/contextBridge\.exposeInMainWorld/g) ?? []).length, 1, 'exactly one expose');
 });
 
@@ -101,3 +112,23 @@ test('every preloaded call has a registered handler in main/ipc.js (no dead, no 
   }
   assert.deepEqual(registered.sort(), [...EXPECTED_CHANNELS].sort(), 'ipc.js registered a channel outside the allowlist');
 });
+
+/* ==== App 05 (ticket A34): the Add session channels are registered by
+   wireAddChannels inside ipc.js's App 05 block, and the two push
+   channels are subscribed in the preload — all pinned here so none can
+   go dead or hidden. ==== */
+test('the add-session channels are preloaded, registered and pushed by name', () => {
+  assert.ok(IPC.includes('wireAddChannels'), 'ipc.js never wires the Add session channels');
+  for (const channel of ADD_SESSION_CHANNELS) {
+    assert.ok(PRELOAD.includes(`'${channel}'`), `${channel} missing from the preload allowlist`);
+    assert.ok(
+      ADD_SESSION_MODULE.includes(`ipcMain.handle('${channel}'`),
+      `${channel} not registered by wireAddChannels`,
+    );
+  }
+  for (const channel of ADD_PUSH_CHANNELS) {
+    assert.ok(PRELOAD.includes(`'${channel}'`), `${channel} missing from the preload subscriptions`);
+    assert.ok(ADD_SESSION_MODULE.includes(`'${channel}'`), `${channel} missing from the main-process pushes`);
+  }
+});
+/* ==== end App 05 block ==== */

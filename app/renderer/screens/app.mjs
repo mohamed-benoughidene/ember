@@ -16,6 +16,7 @@ import { createFirstRunScreen } from './first-run.mjs';
 import { createHomeScreen } from './home.mjs';
 import { createLookupScreen } from './lookup.mjs';
 import { createPlaceholderScreen, paneNames } from './placeholder.mjs';
+import { createAddScreen } from './add.mjs'; /* App 05 (ticket A34) */
 
 const JOBS = [
   { id: 'home', name: 'Home', hint: 'What needs attention', fixed: true },
@@ -90,6 +91,13 @@ function renderPane(id) {
     screens.lookup.render();
     return;
   }
+  /* ==== App 05 (ticket A34): the real Add screen ================ */
+  if (id === 'add') {
+    screens.add = createAddScreen(ctx);
+    screens.add.render();
+    return;
+  }
+  /* ==== end App 05 block ==== */
   if (paneNames().includes(id)) {
     createPlaceholderScreen(ctx, id).render();
     return;

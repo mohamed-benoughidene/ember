@@ -5,9 +5,16 @@
  *
  * THE ONE narrow, named call list the renderer may use. It exposes no
  * Node primitive, no raw ipcRenderer, no fs, no child_process — only
- * these fifteen functions over `contextBridge`. The full list is pinned
+ * these functions over `contextBridge`. The full list is pinned
  * by a node test (test/preload-allowlist.test.js) so nothing can be
  * added quietly.
+ *
+ * App 05 (ticket A34) adds the Add confirm-session: the three invoke
+ * channels (addStart/addAnswer/addStop) and two main-to-renderer push
+ * channels (ember:addEvent carries the validated session events,
+ * ember:addExit the one exit message) subscribed through
+ * onAddEvent/onAddExit — one add session at a time, in the main
+ * process, one child per session.
  */
 
 const { contextBridge, ipcRenderer } = require('electron');
@@ -29,6 +36,10 @@ const EMBER_PRELOAD_API = Object.freeze([
   'ember:setKey',
   'ember:setSessionKey',
   'ember:removeKey',
+  'ember:addStart',
+  'ember:addAnswer',
+  'ember:addStop',
+  'ember:addAttach',
 ]);
 
 contextBridge.exposeInMainWorld('ember', {
@@ -76,4 +87,33 @@ contextBridge.exposeInMainWorld('ember', {
 
   /** Remove the saved key (careful action, story 89). */
   removeKey: () => ipcRenderer.invoke('ember:removeKey'),
+
+  /* ==== App 05 (ticket A34): the Add confirm-session ================
+     One add session at a time, in the main process: the pasted text in,
+     the validated session events back out, answers one at a time. */
+  /** Start `capture --file <temp> --confirm json --db <kb>`. */
+  startAdd: (text) => ipcRenderer.invoke('ember:addStart', { text }),
+
+  /** One answer: written to the child as exactly {"answer": "<text>"}. */
+  answerAdd: (text) => ipcRenderer.invoke('ember:addAnswer', text),
+
+  /** Stop: closes the session's stdin — a quiet quit, nothing half-written. */
+  stopAdd: () => ipcRenderer.invoke('ember:addStop'),
+
+  /** Flush any session pushes that arrived before the renderer subscribed. */
+  attachAdd: () => ipcRenderer.invoke('ember:addAttach'),
+
+  /** Subscribe to validated session events; returns an unsubscribe. */
+  onAddEvent: (callback) => {
+    const handler = (_event, data) => callback(data);
+    ipcRenderer.on('ember:addEvent', handler);
+    return () => ipcRenderer.removeListener('ember:addEvent', handler);
+  },
+
+  /** Subscribe to the one exit message {exitCode, error}; returns an unsubscribe. */
+  onAddExit: (callback) => {
+    const handler = (_event, data) => callback(data);
+    ipcRenderer.on('ember:addExit', handler);
+    return () => ipcRenderer.removeListener('ember:addExit', handler);
+  },
 });

@@ -116,6 +116,15 @@ function runSession() {  const events = process.env.FAKE_SESSION_SCRIPT
   for (const e of events) {
     process.stdout.write(`${JSON.stringify(e)}\n`);
   }
+
+  /* ==== App 05 (ticket A34): die mid-session, for the add e2e ======
+     The child emits its scripted events and then dies without ever
+     reading stdin — the app must show the error state, never hang. */
+  if (process.env.FAKE_SESSION_DIE === '1') {
+    process.exit(Number(process.env.FAKE_SESSION_DIE_CODE ?? '1'));
+  }
+  /* ==== end App 05 block ==== */
+
   if (process.env.FAKE_SESSION_IDLE === '1') {
     // Test mode: produce output once, then go silent forever — the
     // client's inactivity limit (APP-008) is what must end this.
