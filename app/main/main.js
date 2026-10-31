@@ -32,6 +32,7 @@ const { createBridgeClient } = require('./bridge-client');
 const { createSettingsStore } = require('./settings-store');
 const { createKeyStore } = require('./key-store');
 const { registerIpcHandlers } = require('./ipc');
+const { schemaVersionIsAtLeast } = require('./kb-schema-version');
 
 // App 11 (ticket A40): the quick popup manager + its pure parts, and
 // the `--quick-add` launch route (plan §5.5).
@@ -313,28 +314,14 @@ function wireIpc(services) {
   }
 
   /**
-   * Read-only schema-version probe for the undo-label gate: the undo
-   * dry-run is a READ-shaped derivation but runs through the write
-   * command path (which migrates), so on a schema < 13 file it must
-   * never run (spec 12.8's one-way rule protects the founder's file).
-   * Read-only open of user_version — no migration is possible here.
+   * The undo-label gate (the review verdict's fix, ticket A43): the
+   * decision itself lives in main/kb-schema-version.js so it can be
+   * tested directly on real files (`schemaVersionIsAtLeast`); this
+   * one-line wrapper stays at the use site where the label derivation
+   * lives.
    */
   function undoLabelsSafeForFile(dbPath) {
-    try {
-      const { DatabaseSync } = require('node:sqlite');
-      const db = new DatabaseSync(dbPath, { readOnly: true });
-      try {
-        // Ember stores its schema version in the schema_version TABLE
-        // (ember/adapters/sqlite.py), not in PRAGMA user_version.
-        const row = db.prepare('SELECT version FROM schema_version').get();
-        return Number(row && row.version) >= 13;
-      } finally {
-        db.close();
-      }
-    } catch (err) {
-      process.stderr.write(`launch-note: APP-000 AppError | the undo-label gate could not read the file's schema version (${err instanceof Error ? err.message : 'unknown error'})\n`);
-      return false; // fail closed: an unreadable file is never migrated
-    }
+    return schemaVersionIsAtLeast(dbPath, 13);
   }
 
   /** One menu request into the main window's renderer (B4: the
