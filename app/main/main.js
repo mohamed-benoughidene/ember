@@ -160,6 +160,14 @@ function wireIpc(services) {
       if (!chosen || chosen === '') return null;
       return { path: chosen };
     },
+    /* --- App 08 (Clean up): the sweep-session event push (additive; ticket A37).
+       The apply session streams its validated events to the one window over the
+       named channel below. A closing window is not an error: the app is quitting. --- */
+    sweepNotify: (payload) => {
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('ember:maintainEvent', payload);
+      }
+    },
     // [app 10] the Settings seams (stories 85-89)
     shortcutRegistrar: (accelerator) => registerSettingsShortcut({ manager: shortcutManager, accelerator }),
     keyHintProvider: () => maskedKeyHint.maskKey(services.keyStore.get()),

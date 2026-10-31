@@ -62,6 +62,12 @@ const EXPECTED_API = [
   // App 10 (ticket A39): the Settings panes join the pinned surface.
   'registerShortcut',
   'keyHint',
+  // App 08 (ticket A37): the Clean up screen joins the pinned surface —
+  // preview and apply only; the session's answer()/stop() ride the
+  // handle maintainApply returns, and its events ride the
+  // ember:maintainEvent push channel (neither is a window-level name).
+  'maintainPreview',
+  'maintainApply',
 ];
 
 async function main() {
@@ -106,7 +112,7 @@ async function main() {
     const banner = await win.locator('#top-banner').innerHTML();
     if (banner.trim() !== '') throw new Error(`a notice banner appeared: ${banner.slice(0, 200)}`);
 
-    process.stdout.write('e2e smoke OK: real shell boots into Home, the counts from list-items reach the DOM (total 5), the seam answers exactly the pinned 30-name allowlist, no Node in the page world\n');
+    process.stdout.write('e2e smoke OK: real shell boots into Home, the counts from list-items reach the DOM (total 5), the seam answers exactly the pinned 32-name allowlist, no Node in the page world\n');
   } finally {
     await app.close();
     fs.rmSync(workDir, { recursive: true, force: true });

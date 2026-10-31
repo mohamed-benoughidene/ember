@@ -49,10 +49,14 @@ const EMBER_PRELOAD_API = Object.freeze([
   'ember:undoPlan',
   'ember:registerShortcut',
   'ember:keyHint',
+  'ember:maintainPreview',
+  'ember:maintainApply',
+  'ember:maintainAnswer',
+  'ember:maintainStop',
 ]);
 // The names after the base 15: Add (App 05), Keep safe (step 09),
-// Fix and close (step 07), Settings (app 10) — each appended at the
-// END of the allowlist as its own bracketed block.
+// Fix and close (step 07), Settings (app 10), Clean up (App 08) —
+// each appended at the END of the allowlist as its own bracketed block.
 
 contextBridge.exposeInMainWorld('ember', {
   /** Smallest proof the seam is alive: string in, string out. */
@@ -165,4 +169,53 @@ contextBridge.exposeInMainWorld('ember', {
 
   /** The masked key hint (last four characters), for the AI pane's status. */
   keyHint: () => ipcRenderer.invoke('ember:keyHint'),
+
+  /* --- App 08 (Clean up): the sweep preview and the stepwise apply
+     session (additive; ticket A37). maintainApply returns its own small
+     handle — { answer, stop, done } — so the loop's two controls never
+     land on the window-level allowlist: answer(text) sends exactly
+     `{"answer": "<text>"}` through main, stop() closes the session's
+     input (the engine reads that as a quit), and done settles when main
+     has started (or refused) the run; the EVENTS themselves arrive on
+     the 'ember:maintainEvent' push channel, forwarded to onEvent. --- */
+  maintainPreview: () => ipcRenderer.invoke('ember:maintainPreview'),
+  maintainApply: (onEvent) => {
+    if (typeof onEvent !== 'function') throw new Error('maintainApply needs an event handler (onEvent)');
+    const listener = (_event, payload) => {
+      try {
+        onEvent(payload);
+      } catch (err) {
+        // A screen bug in the event handler must not silently break the
+        // pipe: report it back through the same channel shape.
+        onEvent({
+          kind: 'error',
+          info: {
+            code: 'APP-000',
+            name: 'AppError',
+            where: 'preload.maintainApply',
+            detail: err instanceof Error ? err.message : 'the screen could not handle a sweep event',
+          },
+        });
+      }
+      if (payload && payload.kind === 'exit') {
+        // The session ended: the pipe listener goes with it. (The
+        // invoke resolves EARLY — when main starts (or refuses) the
+        // run — so the exit event, not the invoke, ends the listen.)
+        ipcRenderer.removeListener('ember:maintainEvent', listener);
+      }
+    };
+    ipcRenderer.on('ember:maintainEvent', listener);
+    const done = ipcRenderer.invoke('ember:maintainApply').then((result) => {
+      if (!result || !result.ok) {
+        // The run never started, so no exit event will come.
+        ipcRenderer.removeListener('ember:maintainEvent', listener);
+      }
+      return result;
+    });
+    return {
+      answer: (text) => ipcRenderer.invoke('ember:maintainAnswer', { answer: text }),
+      stop: () => ipcRenderer.invoke('ember:maintainStop'),
+      done,
+    };
+  },
 });

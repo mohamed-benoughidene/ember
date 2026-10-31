@@ -22,6 +22,9 @@ import { createKeepSafeScreen } from './keepsafe.mjs';
 import { createPlaceholderScreen, paneNames } from './placeholder.mjs';
 // app step 07 (Fix and close) — registered additively; nothing above moved.
 import { createFixCloseScreen } from './fix-close.mjs';
+// --- App 08 (Clean up): screen registration import (additive; ticket A37) ---
+import { createCleanupScreen } from './cleanup.mjs';
+// --- App 08 import ends ---
 import { createAddScreen } from './add.mjs'; /* App 05 (ticket A34) */
 
 const JOBS = [
@@ -101,6 +104,42 @@ document.addEventListener('keydown', (event) => {
   ctx.navigate('settings');
 });
 
+/* --- App 08 (Clean up): the pending-count badge on the sidebar job
+   (story 68; plan §1: shown only when the last preview count > 0,
+   refreshed after any write; the number is a real `maintain --dry-run`
+   count handed up by the Clean up screen — never recomputed here). --- */
+function mountCleanupBadge() {
+  const button = navEl.querySelector('button[data-job="cleanup"]');
+  if (!button || button.querySelector('[data-testid="cleanup-badge"]')) return;
+  const badge = document.createElement('span');
+  badge.className = 'count';
+  badge.setAttribute('data-testid', 'cleanup-badge');
+  badge.setAttribute('aria-label', '0 changes pending');
+  badge.hidden = true;
+  button.appendChild(badge);
+}
+
+ctx.setCleanupBadge = (count) => {
+  mountCleanupBadge();
+  const badge = navEl.querySelector('[data-testid="cleanup-badge"]');
+  if (!badge) return;
+  const n = typeof count === 'number' && Number.isFinite(count) && count > 0 ? Math.floor(count) : 0;
+  badge.hidden = n === 0;
+  badge.textContent = String(n);
+  badge.setAttribute('aria-label', `${n} ${n === 1 ? 'change' : 'changes'} pending`);
+};
+/* --- App 08 badge block ends --- */
+
+/* --- App 08 (Clean up) registration: renderCleanupPane is a named
+   function so the router branch stays one line. The branch must sit
+   BEFORE the placeholder router below, because the interim pane list
+   still carries 'cleanup' (placeholder.mjs is untouched). --- */
+function renderCleanupPane() {
+  screens.cleanup = createCleanupScreen(ctx);
+  screens.cleanup.render();
+}
+// --- App 08 registration ends ---
+
 function renderPane(id) {
   // [app 10] Settings is a real screen now; the other interim panes
   // keep their honest placeholders until their build steps.
@@ -143,6 +182,14 @@ function renderPane(id) {
     screens.fix.render();
     return;
   }
+  // --- App 08 (Clean up): the real screen replaces the interim pane
+  // (additive branch; ticket A37). This branch sits BEFORE the
+  // placeholder router below.
+  if (id === 'cleanup') {
+    renderCleanupPane();
+    return;
+  }
+  // --- App 08 branch ends ---
   // -------------------------------------------------------------------
   if (paneNames().includes(id)) {
     createPlaceholderScreen(ctx, id).render();

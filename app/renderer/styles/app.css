@@ -328,3 +328,18 @@ td.num .btn { margin-left: var(--s2); }
 }
 :root.big .setrow { flex-direction: column; gap: var(--s3); }
 :root.big .setrow .l { flex-basis: auto; }
+
+/* ---------- App 08 (Clean up): the sidebar pending-count badge
+   (story 68; the approved prototype's .count rules, tokens only). The
+   badge sets no display of its own, so the hidden attribute truly
+   hides it. ---------- */
+.nav .count {
+  margin-left: auto;
+  font-size: 0.8rem;
+  font-weight: 600;
+  background: var(--sel-bg);
+  color: var(--sel-ink);
+  padding: 0 var(--s2);
+  border-radius: 9px;
+}
+.nav button[aria-current='true'] .count { background: var(--sel-ink); color: var(--sel-bg); }

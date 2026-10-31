@@ -64,6 +64,15 @@ const FIX_CLOSE_CHANNELS = ['ember:fixAction', 'ember:undoPlan'];
    Fix and close block (merged file order: base, Add, Keep safe,
    Fix and close, Settings). */
 const SETTINGS_CHANNELS = ['ember:registerShortcut', 'ember:keyHint'];
+/* App 08 (ticket A37): the Clean up screen's four invoke channels,
+   merged after the Settings block (merged file order: base, Add,
+   Keep safe, Fix and close, Settings, Clean up). */
+const MAINTAIN_CHANNELS = [
+  'ember:maintainPreview',
+  'ember:maintainApply',
+  'ember:maintainAnswer',
+  'ember:maintainStop',
+];
 const ADD_PUSH_CHANNELS = ['ember:addEvent', 'ember:addExit'];
 const ADD_SESSION_MODULE = fs.readFileSync(path.join(APP_ROOT, 'main', 'add-session.js'), 'utf8');
 /* ==== end App 05 block ==== */
@@ -92,7 +101,7 @@ test('the preload exposes exactly the pinned list over contextBridge', () => {
   /* App 05 (ticket A34) + App step 09: the freeze list = the 15
      handler channels, then the four Add invoke channels, then the
      five Keep safe channels, then the two Fix and close channels */
-  assert.deepEqual(names, [...EXPECTED_CHANNELS, ...ADD_SESSION_CHANNELS, ...KEEP_SAFE_CHANNELS, ...FIX_CLOSE_CHANNELS, ...SETTINGS_CHANNELS]);
+  assert.deepEqual(names, [...EXPECTED_CHANNELS, ...ADD_SESSION_CHANNELS, ...KEEP_SAFE_CHANNELS, ...FIX_CLOSE_CHANNELS, ...SETTINGS_CHANNELS, ...MAINTAIN_CHANNELS]);
   assert.equal((PRELOAD.match(/contextBridge\.exposeInMainWorld/g) ?? []).length, 1, 'exactly one expose');
 });
 
@@ -127,7 +136,7 @@ test('every preloaded call has a registered handler in main/ipc.js (no dead, no 
   for (const channel of EXPECTED_CHANNELS) {
     assert.ok(registered.includes(channel), `${channel} is preloaded but never handled`);
   }
-  assert.deepEqual(registered.sort(), [...EXPECTED_CHANNELS, ...KEEP_SAFE_CHANNELS, ...FIX_CLOSE_CHANNELS, ...SETTINGS_CHANNELS].sort(), 'ipc.js registered a channel outside the allowlist');
+  assert.deepEqual(registered.sort(), [...EXPECTED_CHANNELS, ...KEEP_SAFE_CHANNELS, ...FIX_CLOSE_CHANNELS, ...SETTINGS_CHANNELS, ...MAINTAIN_CHANNELS].sort(), 'ipc.js registered a channel outside the allowlist');
 });
 
 /* ==== App 05 (ticket A34): the Add session channels are registered by
