@@ -60,6 +60,10 @@ const KEEP_SAFE_CHANNELS = [
    Keep safe block (the merged file's order: base, Add, Keep safe,
    Fix and close). */
 const FIX_CLOSE_CHANNELS = ['ember:fixAction', 'ember:undoPlan'];
+/* App 10 (ticket A39): the Settings channels, merged after the
+   Fix and close block (merged file order: base, Add, Keep safe,
+   Fix and close, Settings). */
+const SETTINGS_CHANNELS = ['ember:registerShortcut', 'ember:keyHint'];
 const ADD_PUSH_CHANNELS = ['ember:addEvent', 'ember:addExit'];
 const ADD_SESSION_MODULE = fs.readFileSync(path.join(APP_ROOT, 'main', 'add-session.js'), 'utf8');
 /* ==== end App 05 block ==== */
@@ -88,7 +92,7 @@ test('the preload exposes exactly the pinned list over contextBridge', () => {
   /* App 05 (ticket A34) + App step 09: the freeze list = the 15
      handler channels, then the four Add invoke channels, then the
      five Keep safe channels, then the two Fix and close channels */
-  assert.deepEqual(names, [...EXPECTED_CHANNELS, ...ADD_SESSION_CHANNELS, ...KEEP_SAFE_CHANNELS, ...FIX_CLOSE_CHANNELS]);
+  assert.deepEqual(names, [...EXPECTED_CHANNELS, ...ADD_SESSION_CHANNELS, ...KEEP_SAFE_CHANNELS, ...FIX_CLOSE_CHANNELS, ...SETTINGS_CHANNELS]);
   assert.equal((PRELOAD.match(/contextBridge\.exposeInMainWorld/g) ?? []).length, 1, 'exactly one expose');
 });
 
@@ -123,7 +127,7 @@ test('every preloaded call has a registered handler in main/ipc.js (no dead, no 
   for (const channel of EXPECTED_CHANNELS) {
     assert.ok(registered.includes(channel), `${channel} is preloaded but never handled`);
   }
-  assert.deepEqual(registered.sort(), [...EXPECTED_CHANNELS, ...KEEP_SAFE_CHANNELS, ...FIX_CLOSE_CHANNELS].sort(), 'ipc.js registered a channel outside the allowlist');
+  assert.deepEqual(registered.sort(), [...EXPECTED_CHANNELS, ...KEEP_SAFE_CHANNELS, ...FIX_CLOSE_CHANNELS, ...SETTINGS_CHANNELS].sort(), 'ipc.js registered a channel outside the allowlist');
 });
 
 /* ==== App 05 (ticket A34): the Add session channels are registered by

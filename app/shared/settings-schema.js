@@ -11,7 +11,11 @@
 
 const SCHEMA_NUMBER = 1;
 
-const TEXT_SIZES = Object.freeze(['smallest', 'small', 'default', 'large', 'largest']);
+// [app 10] The five text-size values are the DESIGN.md steps Small,
+// Default, Large, Larger, Largest (stories 82-83): Largest must be
+// savable or the 200% floor (story 82) is unreachable. The earlier
+// list carried `smallest` and no `larger`; see archive/interface-deviations.md.
+const TEXT_SIZES = Object.freeze(['small', 'default', 'large', 'larger', 'largest']);
 const COLOUR_THEMES = Object.freeze(['system', 'light', 'dark']);
 
 const DEFAULT_MENU_ORDER = Object.freeze([

@@ -295,3 +295,36 @@ td.row-detail { border-top: 1px solid var(--line-strong); }
 :root.big [data-testid='undo-bar'] .kbd { display: none; }
 
 td.num .btn { margin-left: var(--s2); }
+
+/* ---------- [app 10] Settings (the approved prototype's .setrow,
+      .seg, .menu-list, .saved, .kbdkey — tokens only) ---------- */
+
+.setrow { display: flex; gap: var(--s7); padding: var(--s6) 0; border-bottom: 1px solid var(--line); }
+.setrow:last-child { border-bottom: 0; }
+.setrow .l { flex: 0 0 15rem; }
+.setrow .l b { display: block; }
+.setrow .l span { color: var(--ink-2); font-size: var(--type-label-size); }
+.setrow .r { flex: 1; min-width: 0; max-width: 34rem; }
+
+.seg { display: inline-flex; border: 1px solid var(--line-strong); border-radius: var(--radius); overflow: hidden; flex-wrap: wrap; }
+.seg button { background: var(--surface); border: 0; padding: var(--s3) var(--s5); cursor: pointer; font-weight: var(--type-heading-weight); min-height: 2.4rem; }
+.seg button + button { border-left: 1px solid var(--line-strong); }
+.seg button[aria-pressed='true'] { background: var(--ink); color: var(--surface); }
+
+.menu-list { list-style: none; margin: 0; padding: 0; }
+.menu-list li { display: flex; align-items: center; gap: var(--s3); padding: var(--s2) 0; border-bottom: 1px solid var(--line); }
+.menu-list li:last-child { border-bottom: 0; }
+.menu-list label { display: flex; align-items: center; gap: var(--s3); margin: 0; font-weight: 400; flex: 1; }
+
+.saved { color: var(--ink-2); font-size: var(--type-label-size); min-height: 1.2rem; margin: var(--s1) 0 0; }
+/* The Settings tab row holds five labels: it wraps instead of scrolling
+   at the Largest text step (the 200% floor, story 82). */
+.settings-tabs { flex-wrap: wrap; row-gap: 0; }
+.kbdkey { display: inline-block; padding: 0.1rem var(--s3); background: var(--surface-2); border: 1px solid var(--line-strong); border-radius: var(--radius); font-size: var(--type-label-size); font-weight: var(--type-heading-weight); margin-right: var(--s1); }
+.menu-list .btn--text { padding: var(--s1) var(--s2); }
+
+@media (max-width: 900px) {
+  .setrow { flex-direction: column; gap: var(--s4); }
+}
+:root.big .setrow { flex-direction: column; gap: var(--s3); }
+:root.big .setrow .l { flex-basis: auto; }

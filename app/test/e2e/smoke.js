@@ -59,6 +59,9 @@ const EXPECTED_API = [
   // app step 07 (Fix and close), appended at the END
   'fixAction',
   'undoPlan',
+  // App 10 (ticket A39): the Settings panes join the pinned surface.
+  'registerShortcut',
+  'keyHint',
 ];
 
 async function main() {
@@ -103,7 +106,8 @@ async function main() {
     const banner = await win.locator('#top-banner').innerHTML();
     if (banner.trim() !== '') throw new Error(`a notice banner appeared: ${banner.slice(0, 200)}`);
 
-    process.stdout.write('e2e smoke OK: real shell boots into Home, the counts from list-items reach the DOM (total 5), the seam answers exactly the pinned 28-name allowlist, no Node in the page world\n');  } finally {
+    process.stdout.write('e2e smoke OK: real shell boots into Home, the counts from list-items reach the DOM (total 5), the seam answers exactly the pinned 30-name allowlist, no Node in the page world\n');
+  } finally {
     await app.close();
     fs.rmSync(workDir, { recursive: true, force: true });
   }

@@ -47,9 +47,12 @@ const EMBER_PRELOAD_API = Object.freeze([
   'ember:switchKnowledgeBase',
   'ember:fixAction',
   'ember:undoPlan',
+  'ember:registerShortcut',
+  'ember:keyHint',
 ]);
-// The five names above are app step 09 (Keep safe), appended at the
-// END of the allowlist as this step's own bracketed block (ticket A38).
+// The names after the base 15: Add (App 05), Keep safe (step 09),
+// Fix and close (step 07), Settings (app 10) — each appended at the
+// END of the allowlist as its own bracketed block.
 
 contextBridge.exposeInMainWorld('ember', {
   /** Smallest proof the seam is alive: string in, string out. */
@@ -62,7 +65,7 @@ contextBridge.exposeInMainWorld('ember', {
   saveSettings: (patch) => ipcRenderer.invoke('ember:saveSettings', patch),
 
   /** Knowledge-base status: {path, exists, looksValid} — no command runs. */
-  kbStatus: () => ipcRenderer.invoke('ember:kbStatus'),
+  kbStatus: (path) => ipcRenderer.invoke('ember:kbStatus', path ?? null),
 
   /** Open an existing knowledge-base file through the OS file picker. */
   pickKnowledgeBaseFile: () => ipcRenderer.invoke('ember:pickKnowledgeBaseFile'),
@@ -154,4 +157,12 @@ contextBridge.exposeInMainWorld('ember', {
 
   /** The undo/redo dry-run plan ({command: 'undo'|'redo'}) for the label. */
   undoPlan: (command) => ipcRenderer.invoke('ember:undoPlan', { command }),
+
+  // [app 10] Settings panes (stories 85-89).
+
+  /** Re-register the quick-popup shortcut from the Settings pane. */
+  registerShortcut: (accelerator) => ipcRenderer.invoke('ember:registerShortcut', { accelerator }),
+
+  /** The masked key hint (last four characters), for the AI pane's status. */
+  keyHint: () => ipcRenderer.invoke('ember:keyHint'),
 });
