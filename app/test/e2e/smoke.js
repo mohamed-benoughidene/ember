@@ -1,17 +1,21 @@
 'use strict';
 
 /**
- * The first Playwright E2E smoke (dev-only, Linux; the CI story is
- * step 13). It launches the REAL Electron shell,
+ * The Playwright E2E walking skeleton (dev-only, Linux) — same
+ * guarantees as the step-02 smoke, now over the real step-04 shell:
  *
- *  1. the placeholder renders ("Ember is starting" -> "Ember is running"),
+ *  1. the app boots into Home (settings seeded with the KB override),
  *  2. the preload seam answers (`window.ember.ping()` and the full
  *     runtime allowlist — the renderer sees EXACTLY the named calls),
- *  3. one real read command's count reaches the DOM ("items: N"),
- *  4. the page world has no `process` (sandbox + contextIsolation).
+ *  3. real read-command data reaches the DOM (the counts panel),
+ *  4. the page world has no `process`/`require` (sandbox +
+ *     contextIsolation),
+ *  5. no error banner.
  *
- * The bridge runs against the fake ember stub so the smoke is
- * deterministic and independent of the Python venv.
+ * The bridge runs against the fake ember stub (FAKE_MODE=app) so the
+ * smoke is deterministic and independent of the Python venv. The
+ * XDG_CONFIG_HOME points into a throwaway directory, so the smoke
+ * never touches the developer's own settings.
  */
 
 const { _electron } = require('playwright');
@@ -19,60 +23,42 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { APP_ROOT } = require('../util');
+const { launchShell } = require('./helpers/shell.js');
 
 const EXPECTED_API = [
   'ping',
   'getState',
   'saveSettings',
+  'kbStatus',
+  'pickKnowledgeBaseFile',
   'listItems',
+  'topicSearch',
+  'showItem',
+  'history',
+  'currentState',
+  'maintainDryRun',
   'keyStatus',
   'setKey',
   'setSessionKey',
   'removeKey',
 ];
 
-async function waitFor(predicate, timeoutMs, what) {
-  const start = Date.now();
-  while (!(await predicate())) {
-    if (Date.now() - start > timeoutMs) throw new Error(`timed out waiting for ${what}`);
-    await new Promise((r) => setTimeout(r, 100));
-  }
-}
-
 async function main() {
-  const workDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ember-e2e-'));
-  // A throwaway "knowledge base" with the SQLite header: the fake
-  // ember never reads it, but the APP-006 guard may.
-  const kbPath = path.join(workDir, 'kb.db');
-  fs.writeFileSync(kbPath, Buffer.concat([Buffer.from('SQLite format 3\x00'), Buffer.alloc(96, 0)]));
-
-  const app = await _electron.launch({
-    args: ['.'],
-    cwd: APP_ROOT,
-    env: {
-      ...process.env,
-      EMBER_APP_DB: kbPath,
-      EMBER_APP_COMMAND: `node ${path.join(APP_ROOT, 'test', 'fake-ember.js')}`,
-      FAKE_MODE: 'list',
-      FAKE_TOTAL: '3',
-    },
-  });
+  const workDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ember-smoke-'));
+  const { app, workDir: work } = await launchShell({ workDir, mode: 'app' });
+  void work;
   try {
     const win = await app.firstWindow();
 
-    // 1. the placeholder renders, from starting to running
-    await win.waitForSelector('[data-testid="status"]');
-    await waitFor(
-      async () => (await win.textContent('[data-testid="status"]')) === 'Ember is running',
-      15000,
-      'the placeholder to reach "Ember is running"',
-    );
+    // 1. the shell renders: sidebar + Home pane
+    await win.waitForSelector('[data-testid="home-pane"]');
+    const navButtons = await win.locator('#nav button').count();
+    if (navButtons !== 8) throw new Error(`expected the eight job buttons in the sidebar, saw ${navButtons}`);
 
-    // 2. one real read command's data reached the DOM
-    const itemsText = await win.textContent('[data-testid="items"]');
-    if (itemsText !== 'items: 3') {
-      throw new Error(`the placeholder shows ${JSON.stringify(itemsText)}, expected "items: 3"`);
-    }
+    // 2. real read-command data reaches the DOM (5 items in the fixture)
+    await win.waitForSelector('[data-testid="counts-panel"]');
+    const total = await win.textContent('[data-testid="count-total"]');
+    if (total.trim() !== '5') throw new Error(`the total count from list-items should be 5, saw ${total.trim()}`);
 
     // 3. the preload seam answers from the PAGE world
     const pong = await win.evaluate(() => window.ember.ping());
@@ -94,12 +80,11 @@ async function main() {
       throw new Error(`Node leaked into the renderer: ${JSON.stringify(leaked)}`);
     }
 
-    const errorText = await win.textContent('[data-testid="error"]');
-    if (errorText.trim() !== '') {
-      throw new Error(`the placeholder surfaced an error: ${errorText}`);
-    }
+    // 6. no notice banner, no boot error
+    const banner = await win.locator('#top-banner').innerHTML();
+    if (banner.trim() !== '') throw new Error(`a notice banner appeared: ${banner.slice(0, 200)}`);
 
-    process.stdout.write('e2e smoke OK: placeholder renders, seam answers exactly the allowlist, items: 3 shown, no Node in the page world\n');
+    process.stdout.write('e2e smoke OK: real shell boots into Home, the counts from list-items reach the DOM (total 5), the seam answers exactly the 15-name allowlist, no Node in the page world\n');
   } finally {
     await app.close();
     fs.rmSync(workDir, { recursive: true, force: true });

@@ -1,0 +1,285 @@
+/*
+ * The app frame (L3 app step 04): sidebar + content, title rows, tabs,
+ * filters, the setup (first-run) frame. Layout and values come from the
+ * approved prototype (docs/PROTOTYPE-ember-interface-v3.html); every
+ * colour/spacing/type value comes ONLY from tokens.css — this file
+ * never invents one. The step-03 component styles (components.css) are
+ * consumed, never restyled.
+ */
+
+.app {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+}
+
+.app-notice:empty { display: none; }
+
+.shell {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+}
+
+/* ---------- the sidebar (dark: --nav-bg, DESIGN.md) ---------- */
+
+.nav {
+  width: 15rem;
+  flex: 0 0 15rem;
+  background: var(--nav-bg);
+  color: var(--nav-ink);
+  padding: var(--s4) var(--s3);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  overflow: auto;
+}
+.nav[hidden] { display: none; } /* first run: the setup uses the whole frame */
+.nav button {
+  display: flex;
+  align-items: center;
+  gap: var(--s3);
+  text-align: left;
+  background: none;
+  border: 0;
+  padding: var(--s3) var(--s4);
+  cursor: pointer;
+  color: var(--nav-ink);
+  border-radius: var(--radius);
+  width: 100%;
+}
+.nav button .t small {
+  display: block;
+  font-size: 0.8rem;
+  opacity: 0.85;
+  font-weight: 400;
+}
+.nav button:hover { background: rgba(255, 255, 255, 0.09); }
+.nav button[aria-current='true'] {
+  background: var(--sel-bg);
+  color: var(--sel-ink);
+  font-weight: var(--type-heading-weight);
+}
+.nav button[aria-current='true'] small { opacity: 1; }
+
+/* Largest text: the sidebar narrows and hides its hints (DESIGN.md). */
+@media (max-width: 800px) {
+  .nav { width: 4rem; flex-basis: 4rem; }
+  .nav .t small { display: none; }
+}
+
+/* ---------- the content column ---------- */
+
+.main {
+  flex: 1;
+  padding: var(--s6) var(--s7);
+  overflow: auto;
+  min-width: 0;
+  outline: none; /* the pane itself is not a stop; controls carry the ring */
+}
+
+.titlerow {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--s5);
+  margin-bottom: var(--s6);
+}
+.titlerow .grow { flex: 1; min-width: 0; }
+h1 {
+  font-size: var(--type-title-size);
+  line-height: var(--type-title-lh);
+  font-weight: var(--type-title-weight);
+  letter-spacing: var(--type-title-ls);
+  margin: 0 0 var(--s1);
+}
+h2 {
+  font-size: var(--type-heading-size);
+  font-weight: var(--type-heading-weight);
+  margin: var(--s7) 0 var(--s3);
+}
+.sub {
+  color: var(--ink-2);
+  margin: 0;
+  max-width: 62ch;
+  font-size: var(--type-label-size);
+}
+label {
+  display: block;
+  font-weight: var(--type-heading-weight);
+  font-size: 0.93rem;
+  margin: var(--s5) 0 var(--s2);
+}
+.help {
+  color: var(--ink-2);
+  font-size: var(--type-label-size);
+  margin: var(--s2) 0 0;
+}
+
+textarea,
+input[type='text'],
+input[type='password'],
+input[type='date'],
+input[type='number'],
+select {
+  width: 100%;
+  padding: var(--s3) var(--s4);
+  background: var(--surface);
+  color: var(--ink);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius);
+  min-height: 2.4rem;
+}
+textarea { min-height: 7rem; resize: vertical; }
+select { width: auto; }
+input:disabled,
+textarea:disabled {
+  background: var(--surface-2);
+  color: var(--ink-2);
+}
+
+/* ---------- home: the attention finding and the counts ---------- */
+
+.finding {
+  margin: 0 0 var(--s6);
+  padding: var(--s4) var(--s5);
+  background: var(--surface-2);
+  border-radius: var(--radius);
+  display: flex;
+  gap: var(--s5);
+  align-items: center;
+}
+.finding .grow { flex: 1; }
+.finding strong { display: block; font-size: 1.05rem; }
+.finding span { color: var(--ink-2); }
+
+.split { display: flex; }
+.split > div { flex: 1; padding: var(--s4) var(--s5); }
+.split > div + div { border-left: 1px solid var(--line); }
+.fig {
+  font-size: var(--type-title-size);
+  font-weight: var(--type-heading-weight);
+  line-height: 1.2;
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+.lbl-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s2);
+  color: var(--ink-2);
+  font-size: var(--type-label-size);
+}
+
+/* ---------- tabs, filters, paging ---------- */
+
+.tabs {
+  display: flex;
+  gap: var(--s5);
+  border-bottom: 1px solid var(--line);
+  margin: var(--s5) 0;
+}
+.tabs button {
+  background: none;
+  border: 0;
+  padding: var(--s3) 0;
+  cursor: pointer;
+  color: var(--ink-2);
+  font-weight: var(--type-heading-weight);
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+}
+.tabs button[aria-selected='true'] {
+  color: var(--ink);
+  border-bottom-color: var(--ink);
+}
+.filters {
+  display: flex;
+  gap: var(--s3);
+  flex-wrap: wrap;
+  align-items: center;
+}
+.filters input[type='text'] { flex: 1; min-width: 10rem; width: auto; }
+.filters input[type='date'], .filters input[type='number'] { width: 10rem; min-width: 8rem; }
+.ledger-narrow { width: 7rem; min-width: 6rem; }
+
+.pager {
+  display: flex;
+  gap: var(--s3);
+  align-items: center;
+  margin-top: var(--s4);
+}
+
+/* selectable rows (Look up table) */
+tr.row-click { cursor: pointer; }
+tr.row-click:hover { background: var(--surface-2); }
+tr.row-click[aria-selected='true'] { background: var(--worn-paper); }
+td.row-detail { border-top: 1px solid var(--line-strong); }
+
+/* source text shown verbatim in the detail pane */
+.source-verbatim {
+  font-family: var(--font-mono);
+  font-size: var(--type-label-size);
+  white-space: pre-wrap;
+  background: var(--surface-2);
+  border-radius: var(--radius);
+  padding: var(--s3) var(--s4);
+  margin: var(--s2) 0 0;
+}
+
+/* ---------- first run (setup): prototype .setup-grid frame ---------- */
+
+.setup-grid {
+  display: grid;
+  grid-template-columns: minmax(14rem, 17rem) minmax(0, 1fr);
+  gap: var(--s7);
+  align-items: start;
+}
+.setup-grid .form { max-width: 38rem; }
+.steps { list-style: none; margin: 0; padding: 0; }
+.steps li {
+  padding: var(--s3) 0;
+  color: var(--ink-2);
+  display: flex;
+  gap: var(--s3);
+}
+.steps li[aria-current='step'] {
+  color: var(--ink);
+  font-weight: var(--type-heading-weight);
+}
+.steps li .n { min-width: 1.4rem; font-weight: var(--type-heading-weight); }
+.progress {
+  height: 6px;
+  background: var(--surface-3);
+  border-radius: 3px;
+  overflow: hidden;
+  margin: var(--s4) 0 var(--s6);
+}
+.progress i { display: block; height: 100%; background: var(--ink); }
+
+.actions.end { justify-content: flex-end; }
+.actions.center { justify-content: center; }
+
+/* Largest/Larger text (the DESIGN.md Text Size Rule): the
+      sidebar narrows to 11rem, hints hide, rows and notices wrap. */
+
+:root.big .nav { width: 11rem; flex-basis: 11rem; }
+:root.big .nav .t small { display: none; }
+:root.big .split { flex-wrap: wrap; }
+:root.big .split > div { flex: 1 1 40%; }
+:root.big .titlerow { flex-wrap: wrap; }
+:root.big .finding { flex-wrap: wrap; }
+:root.big .setup-grid { grid-template-columns: 1fr; gap: var(--s6); }
+:root.big .nowrap { white-space: normal; }
+:root.big td, :root.big .sub { overflow-wrap: anywhere; }
+:root.big .ember-table th, :root.big .ember-table td { padding-left: var(--s3); padding-right: var(--s3); }
+:root.big .lineage li { flex-wrap: wrap; }
+:root.big .lineage .k { flex: 0 1 auto; flex-basis: 9rem; min-width: 0; }
+
+.nowrap { white-space: nowrap; }
+
+@media (max-width: 900px) {
+  .setup-grid { grid-template-columns: 1fr; gap: var(--s6); }
+  .split { flex-wrap: wrap; }
+  .split > div { flex: 1 1 45%; }
+  .titlerow, .finding { flex-wrap: wrap; }
+}

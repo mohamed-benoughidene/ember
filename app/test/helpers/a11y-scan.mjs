@@ -125,12 +125,20 @@ export function focusRingOfActive() {
  * (empty = the screen passed) and how much was checked. The page is
  * temporarily switched to the Largest text size for the whole scan and
  * restored afterwards.
+ *
+ * `prepare(page)` / `cleanup(page)` (both optional, step 04): run
+ * around the scan so a screen's own Largest-text adaptations — the
+ * Text Size Rule's :root.big state, DESIGN.md — are in force while the
+ * scan measures overflow, exactly as a real user sees them. Both are
+ * plain driver functions; the default is nothing, which keeps the
+ * step-03 behaviour byte for byte.
  */
-export async function runAccessibilityScan(page, { rootPx = LARGEST_ROOT_PX } = {}) {
+export async function runAccessibilityScan(page, { rootPx = LARGEST_ROOT_PX, prepare = null, cleanup = null } = {}) {
   await page.evaluate((px) => {
     document.documentElement.dataset.a11yScanPrevSize = document.documentElement.style.fontSize;
     document.documentElement.style.fontSize = `${px}px`;
   }, rootPx);
+  if (prepare) await prepare(page);
   await page.waitForTimeout(120); // let rem-based layout reflow
 
   const { unnamed, overflow, tabbableCount } = await page.evaluate(scanInPage);
@@ -152,6 +160,7 @@ export async function runAccessibilityScan(page, { rootPx = LARGEST_ROOT_PX } = 
     }
   }
 
+  if (cleanup) await cleanup(page);
   await page.evaluate(() => {
     const prev = document.documentElement.dataset.a11yScanPrevSize;
     if (prev === undefined) delete document.documentElement.style.fontSize;

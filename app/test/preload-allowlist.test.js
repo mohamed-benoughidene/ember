@@ -6,10 +6,10 @@
  * child_process").
  *
  * Three pins:
- * 1. the preload file exposes EXACTLY the named list, over
- *    contextBridge, requiring only `electron`;
- * 2. the renderer files contain no Node access at all (no require, no
- *    process, no Electron import);
+ * 1. the preload file exposes EXACTLY the named list (15 after step
+ *    04), over contextBridge, requiring only `electron`;
+ * 2. every renderer file (any subfolder, .js and .mjs) contains no
+ *    Node access at all (no require, no process, no Electron import);
  * 3. the window is built with contextIsolation on, nodeIntegration
  *    off, sandbox on; and every channel the preload calls is really
  *    registered in main/ipc.js (no silent dead calls, no hidden ones).
@@ -29,7 +29,14 @@ const EXPECTED_CHANNELS = [
   'ember:ping',
   'ember:getState',
   'ember:saveSettings',
+  'ember:kbStatus',
+  'ember:pickKnowledgeBaseFile',
   'ember:listItems',
+  'ember:topicSearch',
+  'ember:showItem',
+  'ember:history',
+  'ember:currentState',
+  'ember:maintainDryRun',
   'ember:keyStatus',
   'ember:setKey',
   'ember:setSessionKey',
@@ -38,10 +45,16 @@ const EXPECTED_CHANNELS = [
 
 function readRendererSources() {
   const dir = path.join(APP_ROOT, 'renderer');
-  return fs
-    .readdirSync(dir)
-    .filter((f) => f.endsWith('.js'))
-    .map((f) => ({ file: f, source: fs.readFileSync(path.join(dir, f), 'utf8') }));
+  const files = [];
+  (function walk(d) {
+    for (const entry of fs.readdirSync(d, { withFileTypes: true })) {
+      if (entry.isDirectory()) walk(path.join(d, entry.name));
+      else if (entry.name.endsWith('.js') || entry.name.endsWith('.mjs')) {
+        files.push({ file: path.relative(dir, path.join(d, entry.name)), source: fs.readFileSync(path.join(d, entry.name), 'utf8') });
+      }
+    }
+  })(dir);
+  return files;
 }
 
 test('the preload exposes exactly the pinned list over contextBridge', () => {

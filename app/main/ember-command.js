@@ -83,4 +83,30 @@ function validateKnowledgeBasePath(dbPath) {
   return { ok: true };
 }
 
-module.exports = { resolveEmberCommand, checkEmberCommand, validateKnowledgeBasePath };
+/**
+ * A plain status for the chosen knowledge base, so the screens can
+ * tell "no file yet (normal before the first Add)" from "chosen file
+ * is not an Ember file (APP-006 state)" WITHOUT calling any command
+ * (app step file §1 fact: until the first Add the file may not exist).
+ * Reads the file: an edge effect (T2), but the same cheap check
+ * `validateKnowledgeBasePath` does.
+ *
+ * @param {string} dbPath
+ * @returns {{path: string, exists: boolean, looksValid: boolean}}
+ */
+function knowledgeBaseStatus(dbPath) {
+  if (typeof dbPath !== 'string' || dbPath.trim() === '') {
+    return { path: '', exists: false, looksValid: false };
+  }
+  let stat = null;
+  try {
+    stat = fs.statSync(dbPath);
+  } catch {
+    return { path: dbPath, exists: false, looksValid: false };
+  }
+  if (!stat.isFile()) return { path: dbPath, exists: false, looksValid: false };
+  return { path: dbPath, exists: true, looksValid: validateKnowledgeBasePath(dbPath).ok };
+}
+
+module.exports = { resolveEmberCommand, checkEmberCommand, validateKnowledgeBasePath, knowledgeBaseStatus };
+

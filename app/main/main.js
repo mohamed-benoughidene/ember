@@ -17,7 +17,7 @@
  * `launch-check-error: CODE ...` and exit 1.
  */
 
-const { app, BrowserWindow, safeStorage, ipcMain } = require('electron');
+const { app, BrowserWindow, safeStorage, ipcMain, dialog } = require('electron');
 const path = require('node:path');
 const {
   resolveEmberCommand,
@@ -73,6 +73,7 @@ function buildServices(env = process.env) {
     keyStore: createKeyStore({ file: path.join(userData, 'key.enc'), safeStorage }),
     errorPattern: loadErrorPattern(appDir),
     emberCommand: resolveEmberCommand(env),
+    userDataPath: userData,
     iconPath: null, // step 03/11 pick the real icon; the tray menu works without one
   };
 }
@@ -93,7 +94,17 @@ function wireIpc(services) {
     emberCommand: services.emberCommand,
     dbOverride: DB_OVERRIDE,
     appVersion: appVersion(),
+    userDataPath: services.userDataPath,
     bootNotice: bootNoticeFor(services),
+    kbChooser: () => {
+      const chosen = dialog.showOpenDialogSync({
+        title: 'Open a knowledge base file',
+        properties: ['openFile'],
+        filters: [{ name: 'Ember knowledge base', extensions: ['db', 'sqlite', '*'] }],
+      });
+      if (!chosen || chosen.length === 0) return null;
+      return { path: chosen[0] };
+    },
   });
 }
 
