@@ -68,6 +68,12 @@ const WHERE = 'main.ipc';
  *   "not available in this build" words)
  * @param {(() => string|null)} [options.keyHintProvider] the masked key hint
  *   (app 10; the key's LAST FOUR characters, never the key)
+ * @param {({action?: string}) => {ok: boolean, visible?: boolean, parked?: boolean}|null}
+ *   [options.openQuickPopup] the quick popup's open/hide action (app 11;
+ *   null keeps the honest "not available in this build" words)
+ * @param {({view?: string}) => {ok: boolean, view?: string}|null}
+ *   [options.openMainRequest] the popup's route to the full window
+ *   (app 11; story 93/94; null likewise)
  */
 function registerIpcHandlers(options) {
   const {
@@ -85,6 +91,9 @@ function registerIpcHandlers(options) {
     // to null so the step-02/04 wirings and tests stay untouched.
     shortcutRegistrar = null,
     keyHintProvider = null,
+    // [app 11] the quick popup seams; default null (see the JSDoc above)
+    openQuickPopup = null,
+    openMainRequest = null,
     bootNotice = null,
     kbChooser = () => null,
     saveChooser = () => null,
@@ -566,6 +575,47 @@ function registerIpcHandlers(options) {
   });
 
   /* --- App 08 block ends --- */
+
+  /* =================================================================
+     APP STEP 11 (ticket A40) — the quick popup's two invoke channels,
+     added at the END of the registration list as this step's own
+     bracketed block. Both validate their one shape at this edge (I9)
+     and both degrade to an honest refusal (never silence) when the
+     shell wiring did not provide the action.
+     ================================================================= */
+  Object.assign(handlers, {
+    /**
+     * Open (or hide) the quick popup — the renderer-safe route that
+     * always works (plan §5.5's "two more routes": step 12's File ->
+     * Add text menu item points at this handler, and the e2e drives
+     * the same seam). NEVER parks the main window: the caller is the
+     * main window's own page (the parking rule is the OS routes').
+     * payload {action?: 'toggle'|'hide'}.
+     */
+    'ember:openQuickPopup': (payload) => {
+      const ask = typeof payload === 'object' && payload !== null ? payload : {};
+      if (typeof openQuickPopup !== 'function') {
+        return { ok: false, error: appErrorInfo('APP-000', `${WHERE}.openQuickPopup`, 'the quick popup is not available in this build') };
+      }
+      return openQuickPopup({ action: ask.action === 'hide' ? 'hide' : 'toggle' });
+    },
+
+    /**
+     * The popup's one route back into the full window: `view: 'ember'`
+     * is story 93's "Open Ember" link; `view: 'setup'` is story 94's
+     * path to fix a missing setup or key (the main window is told on
+     * the `ember:openRequest` push channel and opens the setup).
+     */
+    'ember:quickOpenMain': (payload) => {
+      const ask = typeof payload === 'object' && payload !== null ? payload : {};
+      const view = ask.view === 'setup' ? 'setup' : 'ember';
+      if (typeof openMainRequest !== 'function') {
+        return { ok: false, error: appErrorInfo('APP-000', `${WHERE}.quickOpenMain`, 'the main window is not available in this build') };
+      }
+      return openMainRequest({ view });
+    },
+  });
+  /* --- App 11 block ends --- */
 
   const names = Object.keys(handlers);
   for (const name of names) {

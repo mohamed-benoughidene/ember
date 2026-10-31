@@ -73,6 +73,11 @@ const MAINTAIN_CHANNELS = [
   'ember:maintainAnswer',
   'ember:maintainStop',
 ];
+/* App 11 (ticket A40): the quick popup's two invoke channels, merged
+   after the Clean up block (merged file order: base, Add, Keep safe,
+   Fix and close, Settings, Clean up, Quick popup). The `ember:openRequest`
+   push channel goes main -> main-window renderer (not an invoke). */
+const QUICK_POPUP_CHANNELS = ['ember:openQuickPopup', 'ember:quickOpenMain'];
 const ADD_PUSH_CHANNELS = ['ember:addEvent', 'ember:addExit'];
 const ADD_SESSION_MODULE = fs.readFileSync(path.join(APP_ROOT, 'main', 'add-session.js'), 'utf8');
 /* ==== end App 05 block ==== */
@@ -100,8 +105,10 @@ test('the preload exposes exactly the pinned list over contextBridge', () => {
     .filter(Boolean);
   /* App 05 (ticket A34) + App step 09: the freeze list = the 15
      handler channels, then the four Add invoke channels, then the
-     five Keep safe channels, then the two Fix and close channels */
-  assert.deepEqual(names, [...EXPECTED_CHANNELS, ...ADD_SESSION_CHANNELS, ...KEEP_SAFE_CHANNELS, ...FIX_CLOSE_CHANNELS, ...SETTINGS_CHANNELS, ...MAINTAIN_CHANNELS]);
+     five Keep safe channels, then the two Fix and close channels,
+     the two Settings channels, the four Clean up channels, and the
+     two Quick popup channels (app 11). */
+  assert.deepEqual(names, [...EXPECTED_CHANNELS, ...ADD_SESSION_CHANNELS, ...KEEP_SAFE_CHANNELS, ...FIX_CLOSE_CHANNELS, ...SETTINGS_CHANNELS, ...MAINTAIN_CHANNELS, ...QUICK_POPUP_CHANNELS]);
   assert.equal((PRELOAD.match(/contextBridge\.exposeInMainWorld/g) ?? []).length, 1, 'exactly one expose');
 });
 
@@ -136,8 +143,21 @@ test('every preloaded call has a registered handler in main/ipc.js (no dead, no 
   for (const channel of EXPECTED_CHANNELS) {
     assert.ok(registered.includes(channel), `${channel} is preloaded but never handled`);
   }
-  assert.deepEqual(registered.sort(), [...EXPECTED_CHANNELS, ...KEEP_SAFE_CHANNELS, ...FIX_CLOSE_CHANNELS, ...SETTINGS_CHANNELS, ...MAINTAIN_CHANNELS].sort(), 'ipc.js registered a channel outside the allowlist');
+  assert.deepEqual(
+    registered.sort(),
+    [...EXPECTED_CHANNELS, ...KEEP_SAFE_CHANNELS, ...FIX_CLOSE_CHANNELS, ...SETTINGS_CHANNELS, ...MAINTAIN_CHANNELS, ...QUICK_POPUP_CHANNELS].sort(),
+    'ipc.js registered a channel outside the allowlist',
+  );
 });
+
+/* ==== App 11 (ticket A40): the quick popup's push channel rides
+   main/main.js (the ONE main-to-window push this step adds), pinned
+   like the Add push channels so it cannot go dead or hidden. ==== */
+test('the quick-open push channel exists in preload and main', () => {
+  assert.ok(PRELOAD.includes("'ember:openRequest'"), 'ember:openRequest missing from the preload subscriptions');
+  assert.ok(MAIN.includes("'ember:openRequest'"), 'main.js never pushes ember:openRequest');
+});
+/* ==== end App 11 block ==== */
 
 /* ==== App 05 (ticket A34): the Add session channels are registered by
    wireAddChannels inside ipc.js's App 05 block, and the two push

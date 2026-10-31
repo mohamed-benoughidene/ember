@@ -53,10 +53,13 @@ const EMBER_PRELOAD_API = Object.freeze([
   'ember:maintainApply',
   'ember:maintainAnswer',
   'ember:maintainStop',
+  'ember:openQuickPopup',
+  'ember:quickOpenMain',
 ]);
 // The names after the base 15: Add (App 05), Keep safe (step 09),
-// Fix and close (step 07), Settings (app 10), Clean up (App 08) —
-// each appended at the END of the allowlist as its own bracketed block.
+// Fix and close (step 07), Settings (app 10), Clean up (App 08),
+// Quick popup (app 11) — each appended at the END of the allowlist
+// as its own bracketed block.
 
 contextBridge.exposeInMainWorld('ember', {
   /** Smallest proof the seam is alive: string in, string out. */
@@ -217,5 +220,27 @@ contextBridge.exposeInMainWorld('ember', {
       stop: () => ipcRenderer.invoke('ember:maintainStop'),
       done,
     };
+  },
+
+  /* ==== App 11 (ticket A40): the quick popup's channels (additive;
+     the allowlist test and the smoke pin the list). The popup page
+     uses the SAME preload allowlist as the main window (B5). ==== */
+
+  /**
+   * Open (or hide) the quick popup — the route that always works
+   * (plan §5.5): step 12's File -> Add text menu item lands on the
+   * same handler, as does the e2e. From the popup page itself the
+   * popup calls this with {action: 'hide'} to close.
+   */
+  openQuickPopup: (ask) => ipcRenderer.invoke('ember:openQuickPopup', ask ?? null),
+
+  /** Popup -> main: open the full window (93) or its setup path (94). */
+  quickOpenMain: (ask) => ipcRenderer.invoke('ember:quickOpenMain', ask ?? null),
+
+  /** Main window: the popup asked for the setup view (story 94). */
+  onOpenRequest: (callback) => {
+    const handler = (_event, data) => callback(data);
+    ipcRenderer.on('ember:openRequest', handler);
+    return () => ipcRenderer.removeListener('ember:openRequest', handler);
   },
 });

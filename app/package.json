@@ -17,6 +17,7 @@
     "test:e2e:07": "node test/e2e/fix-close-undo.js",
     "test:e2e:09": "node test/e2e/keep-safe.js",
     "test:e2e:10": "node test/e2e/settings.js",
+    "test:e2e:11": "node test/e2e/popup.js",
     "test:e2e:08": "node test/e2e/cleanup.js",
     "gallery": "electron gallery/main.js",
     "check:launch": "node test/launch-check.js"

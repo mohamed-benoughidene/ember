@@ -104,6 +104,15 @@ document.addEventListener('keydown', (event) => {
   ctx.navigate('settings');
 });
 
+/* --- [app 11] the quick popup's route back into this window (ticket
+   A40): main pushes `ember:openRequest` when the popup asks for the
+   full window (story 93) or for the setup path with story 94's words.
+   Appends only; the popup page decides what to ask for. --- */
+window.ember.onOpenRequest((ask) => {
+  if (ask && ask.view === 'setup') ctx.openSetup();
+});
+/* --- App 11 block ends --- */
+
 /* --- App 08 (Clean up): the pending-count badge on the sidebar job
    (story 68; plan §1: shown only when the last preview count > 0,
    refreshed after any write; the number is a real `maintain --dry-run`
