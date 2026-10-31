@@ -50,6 +50,12 @@ const EXPECTED_API = [
   'attachAdd',
   'onAddEvent',
   'onAddExit',
+  // App step 09 (Keep safe) — appended as this step's own block.
+  'pickSaveFile',
+  'backupTo',
+  'exportTo',
+  'dbCheck',
+  'switchKnowledgeBase',
 ];
 
 async function main() {
@@ -94,7 +100,7 @@ async function main() {
     const banner = await win.locator('#top-banner').innerHTML();
     if (banner.trim() !== '') throw new Error(`a notice banner appeared: ${banner.slice(0, 200)}`);
 
-    process.stdout.write('e2e smoke OK: real shell boots into Home, the counts from list-items reach the DOM (total 5), the seam answers exactly the pinned 21-name allowlist, no Node in the page world\n');
+    process.stdout.write('e2e smoke OK: real shell boots into Home, the counts from list-items reach the DOM (total 5), the seam answers exactly the pinned 26-name allowlist, no Node in the page world\n');
   } finally {
     await app.close();
     fs.rmSync(workDir, { recursive: true, force: true });

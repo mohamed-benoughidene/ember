@@ -15,6 +15,8 @@ import { sentenceFor } from '../../shared/plain-sentences.mjs';
 import { createFirstRunScreen } from './first-run.mjs';
 import { createHomeScreen } from './home.mjs';
 import { createLookupScreen } from './lookup.mjs';
+// App step 09 (Keep safe) — added as its own import line (ticket A38).
+import { createKeepSafeScreen } from './keepsafe.mjs';
 import { createPlaceholderScreen, paneNames } from './placeholder.mjs';
 import { createAddScreen } from './add.mjs'; /* App 05 (ticket A34) */
 
@@ -98,6 +100,17 @@ function renderPane(id) {
     return;
   }
   /* ==== end App 05 block ==== */
+  /* =================================================================
+   * APP STEP 09 (Keep safe) — this step's own clearly-bracketed
+   * block (ticket A38). It sits DIRECTLY ABOVE the placeholder
+   * catch-all because that catch-all answers for `keepsafe` too;
+   * placed after it, the real screen would be unreachable.
+   * ================================================================= */
+  if (id === 'keepsafe') {
+    screens.keepsafe = createKeepSafeScreen(ctx);
+    screens.keepsafe.render();
+    return;
+  }
   if (paneNames().includes(id)) {
     createPlaceholderScreen(ctx, id).render();
     return;

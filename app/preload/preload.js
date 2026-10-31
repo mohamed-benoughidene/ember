@@ -40,7 +40,14 @@ const EMBER_PRELOAD_API = Object.freeze([
   'ember:addAnswer',
   'ember:addStop',
   'ember:addAttach',
+  'ember:pickSaveFile',
+  'ember:backupTo',
+  'ember:exportTo',
+  'ember:dbCheck',
+  'ember:switchKnowledgeBase',
 ]);
+// The five names above are app step 09 (Keep safe), appended at the
+// END of the allowlist as this step's own bracketed block (ticket A38).
 
 contextBridge.exposeInMainWorld('ember', {
   /** Smallest proof the seam is alive: string in, string out. */
@@ -116,4 +123,24 @@ contextBridge.exposeInMainWorld('ember', {
     ipcRenderer.on('ember:addExit', handler);
     return () => ipcRenderer.removeListener('ember:addExit', handler);
   },
+
+  /* =================================================================
+   * App step 09 (Keep safe) — added at the END of the exposure object
+   * as this step's own bracketed block (ticket A38).
+   * ================================================================= */
+
+  /** The "where to save" OS dialog (backup target / export out). */
+  pickSaveFile: (ask) => ipcRenderer.invoke('ember:pickSaveFile', ask ?? null),
+
+  /** `ember backup TARGET --format json`: the verified copy's report. */
+  backupTo: (targetPath) => ipcRenderer.invoke('ember:backupTo', { targetPath }),
+
+  /** `ember export --out FILE`: exit-code result; the app reads no export JSON. */
+  exportTo: (outPath) => ipcRenderer.invoke('ember:exportTo', { outPath }),
+
+  /** `ember db-check --format json`: OK / DRIFT / UNREADABLE report. */
+  dbCheck: (dbPath) => ipcRenderer.invoke('ember:dbCheck', dbPath ? { dbPath } : null),
+
+  /** Story 76: open a DIFFERENT knowledge base file (db-check gate, then the setting). */
+  switchKnowledgeBase: (path) => ipcRenderer.invoke('ember:switchKnowledgeBase', { path }),
 });

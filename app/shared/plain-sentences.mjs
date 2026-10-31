@@ -244,3 +244,134 @@ function capitalize(text) {
   const s = String(text);
   return s.charAt(0).toUpperCase() + s.slice(1);
 }
+
+/* =====================================================================
+ * APP STEP 09 (Keep safe) — added at the END of the file as this
+ * step's own bracketed block (ticket A38; sibling lanes append their
+ * own blocks at the end; nothing above is moved or reformatted).
+ *
+ * - Full ERROR_SENTENCES entries for the BACKUP-/EXPORT- codes the
+ *   Keep safe screen can show (stories 70-77; all six exist in
+ *   ember/adapters/errors.py — the drift walk in
+ *   test/plain-sentences.test.js keeps chasing the sources).
+ * - The db-check report read-map (story 75): every report line the
+ *   engine prints (ember/adapters/db_check.py's `lines`) maps to one
+ *   plain sentence; an unknown line is shown as written, never blank.
+ * ===================================================================== */
+
+Object.assign(ERROR_SENTENCES, {
+  'BACKUP-001': {
+    title: 'The knowledge base could not be read for the backup.',
+    what: 'The knowledge base file is missing, or it is not a readable Ember file, so no backup was written.',
+    next: 'Check where your knowledge base file is, then try again. Your knowledge base file is unchanged.',
+  },
+  'BACKUP-002': {
+    title: 'This file is not a knowledge base Ember can back up.',
+    what: 'The file could be opened but its record of the format could not be read, so no backup was written.',
+    next: 'Check that this is your knowledge base file, then try again. Your knowledge base file is unchanged.',
+  },
+  'BACKUP-003': {
+    title: 'The backup was not written there.',
+    what: 'Ember refuses to write over your knowledge base file itself; otherwise the place chosen could not be written to.',
+    next: 'Choose a different location for the backup. Your knowledge base file is unchanged.',
+  },
+  'BACKUP-004': {
+    title: 'The backup copy did not read back.',
+    what: 'The copy was written but could not be read again as a whole file, so it was deleted rather than left broken.',
+    next: 'Try again. If it keeps happening, the disk may be full or faulty. Your knowledge base file is unchanged.',
+  },
+  'EXPORT-001': {
+    title: 'The text file could not be written.',
+    what: 'The place chosen refused the write: the folder may be full, read-only, or the name may not be allowed.',
+    next: 'Choose a different location for the export. Your knowledge base file is unchanged.',
+  },
+  'EXPORT-002': {
+    title: 'That location is your knowledge base file itself.',
+    what: 'An export cannot be restored into Ember, so writing it over your knowledge base would destroy it; Ember refused.',
+    next: 'Choose a different file name for the export. Your knowledge base file is unchanged.',
+  },
+});
+
+/**
+ * Report -> verdict words (story 75). `result` is the engine's own
+ * `result:` value: `OK` | `DRIFT` | `UNREADABLE`. Anything else reads
+ * with the generic words, never a blank.
+ *
+ * @param {string} result
+ * @returns {{title: string, what: string, next: string, kind: 'ok'|'drift'|'unreadable'|'unknown'}}
+ */
+export function dbCheckVerdictWords(result) {
+  if (result === 'OK') {
+    return {
+      kind: 'ok',
+      title: 'No problems found.',
+      what: 'Your knowledge base file opened and every check passed.',
+      next: 'You can rely on this file. The check read it only; nothing was changed.',
+    };
+  }
+  if (result === 'DRIFT') {
+    return {
+      kind: 'drift',
+      title: 'The check found things that do not match.',
+      what: 'The file opened and your items are readable, but some internal records do not match what this version of Ember expects.',
+      next: 'Try again. If it stays, tell whoever helps you with Ember — the lines below name what does not match. The check changed nothing.',
+    };
+  }
+  if (result === 'UNREADABLE') {
+    return {
+      kind: 'unreadable',
+      title: 'The file could not be read.',
+      what: 'The knowledge base file is missing, was moved, or is not a readable Ember file.',
+      next: 'Check where your knowledge base file is, or open a different file below. The check changed nothing.',
+    };
+  }
+  return {
+    kind: 'unknown',
+    title: 'The check ended without a known verdict.',
+    what: `The check reported "${String(result)}", which this version of the app has no words for.`,
+    next: 'Try again. The check changed nothing.',
+  };
+}
+
+/**
+ * One report line -> one plain sentence (story 75: "problems in plain
+ * words"). The known line shapes come from ember/adapters/db_check.py;
+ * an unknown line is returned as written (the renderer escapes it), so
+ * a future report can never show a blank row.
+ *
+ * @param {string} line
+ * @returns {string}
+ */
+export function dbCheckRowSentence(line) {
+  if (typeof line !== 'string' || line.trim() === '') return 'The check printed an empty line.';
+  let m = line.match(/^version:\s*(\d+)$/);
+  if (m) return `File format version ${m[1]}.`;
+  if (/^floors:.*unmet/.test(line)) return 'The file is older than some parts of Ember need.';
+  if (/^floors:/.test(line)) return "Every part's minimum file format is met.";
+  m = line.match(/^triggers:\s*missing\s+(.+)$/);
+  if (m) return `Some safety triggers are missing: ${m[1]}.`;
+  if (/^triggers:/.test(line)) return 'The safety triggers are in place.';
+  m = line.match(/^link_compat:\s*(\d+) rows,\s*drift/);
+  if (m) return `The link compatibility table does not match what Ember expects (${m[1]} rows).`;
+  m = line.match(/^link_compat:\s*(\d+) rows/);
+  if (m) return `The link compatibility table matches the rules (${m[1]} rows).`;
+  m = line.match(/^foreign_key_check:\s*(\d+) violations?$/);
+  if (m) {
+    const n = Number(m[1]);
+    return n === 0
+      ? 'No item or link points at a record that is gone.'
+      : `${n} ${n === 1 ? 'record points' : 'records point'} at other records that are gone.`;
+  }
+  m = line.match(/^reversal replay:\s*(\d+) reversed links,\s*column != ledger/);
+  if (m) return `Replacement records disagree with the ledger (${m[1]} reversed ${m[1] === '1' ? 'link' : 'links'}).`;
+  m = line.match(/^reversal replay:\s*(\d+) reversed links/);
+  if (m) return `Replacement records agree with the ledger (${m[1]} reversed ${m[1] === '1' ? 'link' : 'links'}).`;
+  m = line.match(/^group_id:\s*(\d+) undo\/redo pointers, all name existing groups$/);
+  if (m) return `Every undo record points at a real change (${m[1]} records).`;
+  if (/^group_id:.*not applicable/.test(line)) return 'The undo-record check does not apply to this older file format.';
+  if (/^group_id:/.test(line)) return 'Some undo records point at changes that are gone.';
+  if (/^result:\s*OK$/.test(line)) return 'Verdict: no problems found.';
+  if (/^result:\s*DRIFT$/.test(line)) return 'Verdict: things do not match.';
+  if (/^result:\s*UNREADABLE$/.test(line)) return 'Verdict: the file could not be read.';
+  return line.trim();
+}

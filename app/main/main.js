@@ -97,6 +97,13 @@ function wireIpc(services) {
     userDataPath: services.userDataPath,
     bootNotice: bootNoticeFor(services),
     kbChooser: () => {
+      // E2E seam (step 09), same family as EMBER_APP_COMMAND/EMBER_APP_DB:
+      // the native open dialog cannot be driven by Playwright, so a set
+      // EMBER_APP_PICK_PATH stands in for the user's pick. Unset, it is
+      // the real dialog.
+      if (typeof process.env.EMBER_APP_PICK_PATH === 'string' && process.env.EMBER_APP_PICK_PATH !== '') {
+        return { path: process.env.EMBER_APP_PICK_PATH };
+      }
       const chosen = dialog.showOpenDialogSync({
         title: 'Open a knowledge base file',
         properties: ['openFile'],
@@ -104,6 +111,22 @@ function wireIpc(services) {
       });
       if (!chosen || chosen.length === 0) return null;
       return { path: chosen[0] };
+    },
+    // Step 09: the `where to save` dialog for backup and export.
+    saveChooser: (ask) => {
+      // E2E seam: EMBER_APP_SAVE_PATH stands in for the user's save
+      // pick (the native save dialog cannot be driven by Playwright).
+      if (typeof process.env.EMBER_APP_SAVE_PATH === 'string' && process.env.EMBER_APP_SAVE_PATH !== '') {
+        return { path: process.env.EMBER_APP_SAVE_PATH };
+      }
+      const isBackup = ask && ask.kind === 'backup';
+      const chosen = dialog.showSaveDialogSync({
+        title: isBackup ? 'Where should the backup go?' : 'Where should the export go?',
+        defaultPath: ask && typeof ask.defaultName === 'string' && ask.defaultName !== '' ? ask.defaultName : undefined,
+        properties: ['createDirectory', 'showOverwriteConfirmation'],
+      });
+      if (!chosen || chosen === '') return null;
+      return { path: chosen };
     },
   });
 }
