@@ -41,7 +41,13 @@ const EXPECTED_API = [
   'setKey',
   'setSessionKey',
   'removeKey',
+  'maintainPreview',
+  'maintainApply',
 ];
+/* --- App 08 (Clean up, ticket A37): the last two names are the sweep
+   preview + the stepwise apply session (additive). The session's
+   answer/stop ride the handle maintainApply returns, not the
+   window-level allowlist. --- */
 
 async function main() {
   const workDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ember-smoke-'));
@@ -84,7 +90,7 @@ async function main() {
     const banner = await win.locator('#top-banner').innerHTML();
     if (banner.trim() !== '') throw new Error(`a notice banner appeared: ${banner.slice(0, 200)}`);
 
-    process.stdout.write('e2e smoke OK: real shell boots into Home, the counts from list-items reach the DOM (total 5), the seam answers exactly the 15-name allowlist, no Node in the page world\n');
+    process.stdout.write('e2e smoke OK: real shell boots into Home, the counts from list-items reach the DOM (total 5), the seam answers exactly the allowlist, no Node in the page world\n');
   } finally {
     await app.close();
     fs.rmSync(workDir, { recursive: true, force: true });

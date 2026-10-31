@@ -202,9 +202,19 @@ async function home() {
     if (!(await sweepButton.isVisible())) fail('the attention message must have a button to the sweep (story 15)');
     await sweepButton.click();
     await win.waitForSelector('[data-testid="pane-cleanup"]');
-    if (!/arrives in a later build step/.test(await win.textContent('[data-testid="pane-cleanup"]'))) {
-      fail('the interim Clean up pane must be honest about what exists');
+    // --- App 08 (Clean up, ticket A37): the real screen replaces the
+    // interim pane this file pinned before; the assertion now pins the
+    // real screen's honest idle state (story 65: Apply off until a
+    // preview is shown, with the why on the control). ---
+    if (!/Preview first, then apply/.test(await win.textContent('[data-testid="pane-cleanup"]'))) {
+      fail('the real Clean up screen must open from the attention button');
     }
+    const applyBtn = win.locator('[data-testid="cleanup-apply"]');
+    if (!(await applyBtn.isDisabled())) fail('story 65: Apply must stay off before a preview');
+    if (!/Preview the sweep first/.test((await applyBtn.getAttribute('title')) ?? '')) {
+      fail('story 103: the disabled Apply must say why (its title)');
+    }
+    // --- App 08 assertion ends ---
     await win.locator('#nav button[data-job="home"]').click();
     await win.waitForSelector('[data-testid="counts-panel"]');
 

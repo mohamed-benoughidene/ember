@@ -22,6 +22,7 @@ const {
 } = require('./ember-command');
 const { appErrorInfo } = require('../shared/errors');
 const { checkKeyShape } = require('../shared/key-shape.mjs');
+const { maintainDocumentFromMessage } = require('../shared/maintain-words.mjs');
 const {
   listItemsArgs,
   topicSearchArgs,
@@ -63,6 +64,8 @@ function registerIpcHandlers(options) {
     bootNotice = null,
     kbChooser = () => null,
     onCommand = () => {},
+    /* --- App 08 (Clean up): push stream for the sweep session (additive; ticket A37). --- */
+    sweepNotify = () => {},
   } = options;
 
   let cachedClient = null;
@@ -260,6 +263,83 @@ function registerIpcHandlers(options) {
 
     'ember:removeKey': () => keyStore.remove(),
   };
+
+  /* --- App 08 (Clean up): the sweep preview and the confirm session
+     (additive channels, ticket A37; registered with the others below).
+     Preview = `maintain --dry-run` and the FULL document the engine
+     prints (D3: rows, counts, and the stale shortlist come from the
+     command, never recomputed). Apply = a REAL `maintain --confirm
+     json` run through runConfirmSession (plan §5.1): its validated
+     events ride the sweepNotify push bridge; answers/stop come back as
+     invokes. ONE session at a time. --- */
+
+  let maintainSession = null; // the live apply session, or null
+
+  Object.assign(handlers, {
+    'ember:maintainPreview': async () => {
+      const kbCheck = guardKnowledgeBase();
+      if (!kbCheck.ok) return { ok: false, error: kbCheck.error };
+      onCommand('maintain', ['--dry-run']);
+      const session = clientFor(dbPath()).runConfirmSession('maintain', ['--dry-run']);
+      return new Promise((resolve) => {
+        let document = null;
+        let failure = null;
+        session.on('event', (event) => {
+          if (event.event !== 'message' || typeof event.text !== 'string') return;
+          const doc = maintainDocumentFromMessage(event.text);
+          if (doc !== null && doc.dry_run) document = doc;
+        });
+        session.on('error', (info) => {
+          failure = info;
+        });
+        session.on('exit', () => {
+          if (document !== null) return resolve({ ok: true, document });
+          if (failure !== null) return resolve({ ok: false, error: failure });
+          resolve({
+            ok: false,
+            error: appErrorInfo('APP-002', `${WHERE}.maintainPreview`, 'the sweep preview ended without a report document'),
+          });
+        });
+      });
+    },
+
+    'ember:maintainApply': async () => {
+      const kbCheck = guardKnowledgeBase();
+      if (!kbCheck.ok) return { ok: false, error: kbCheck.error };
+      if (maintainSession !== null) {
+        return { ok: false, error: appErrorInfo('APP-002', `${WHERE}.maintainApply`, 'a sweep is already running; answer or stop it first') };
+      }
+      onCommand('maintain', []);
+      const session = clientFor(dbPath()).runConfirmSession('maintain', []);
+      maintainSession = session;
+      session.on('event', (event) => sweepNotify({ kind: 'event', event }));
+      session.on('error', (info) => sweepNotify({ kind: 'error', info }));
+      session.on('exit', ({ exitCode }) => {
+        maintainSession = null;
+        sweepNotify({ kind: 'exit', exitCode });
+      });
+      return { ok: true };
+    },
+
+    'ember:maintainAnswer': async (payload) => {
+      const answer = typeof payload === 'object' && payload !== null ? payload.answer : null;
+      if (maintainSession === null || typeof answer !== 'string') {
+        return { ok: false, error: appErrorInfo('APP-002', `${WHERE}.maintainAnswer`, 'no sweep question is waiting for an answer') };
+      }
+      maintainSession.answer(answer);
+      return { ok: true };
+    },
+
+    'ember:maintainStop': async () => {
+      if (maintainSession === null) {
+        return { ok: false, error: appErrorInfo('APP-002', `${WHERE}.maintainStop`, 'no sweep is running') };
+      }
+      maintainSession.stop();
+      return { ok: true };
+    },
+  });
+
+  /* --- App 08 block ends --- */
 
   const names = Object.keys(handlers);
   for (const name of names) {

@@ -41,6 +41,13 @@ const EXPECTED_CHANNELS = [
   'ember:setKey',
   'ember:setSessionKey',
   'ember:removeKey',
+  'ember:maintainPreview',
+  'ember:maintainApply',
+  'ember:maintainAnswer',
+  'ember:maintainStop',
+  // App 08 (Clean up, ticket A37): the last four are the sweep preview
+  // + the confirm session (additive; kept comment-free inside the list
+  // above for the same textual-split reason as in preload.js).
 ];
 
 function readRendererSources() {
