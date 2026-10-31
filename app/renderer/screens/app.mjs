@@ -244,14 +244,21 @@ function renderPane(id) {
 }
 
 function buildNav() {
+  // The approved prototype's sidebar order (JOBS in the prototype):
+  // Home pinned FIRST, Settings pinned LAST, the movable jobs between
+  // them in the saved (Settings -> Menu) order, strays after their
+  // saved spot. (Founder fix 2026-10-31: Settings used to be pinned
+  // second; the prototype puts it at the bottom.)
   const order = [];
-  for (const job of JOBS) if (job.fixed) order.push(job);
+  for (const job of JOBS) if (job.id === 'home') order.push(job);
   const menuOrder = bootState.settings.menuOrder ?? [];
   for (const id of menuOrder) {
-    const job = JOBS.find((j) => j.id === id);
+    const job = JOBS.find((j) => j.id === id && j.id !== 'home' && j.id !== 'settings');
     if (job && !order.includes(job)) order.push(job);
   }
-  for (const job of JOBS) if (!order.includes(job)) order.push(job);
+  for (const job of JOBS) if (job.id !== 'home' && job.id !== 'settings' && !order.includes(job)) order.push(job);
+  const settings = JOBS.find((j) => j.id === 'settings');
+  if (settings) order.push(settings);
   const hidden = new Set(bootState.settings.menuHidden ?? []);
   navEl.innerHTML = order
     .filter((job) => job.fixed || !hidden.has(job.id))
