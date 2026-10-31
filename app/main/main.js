@@ -41,6 +41,9 @@ const DB_OVERRIDE = process.env.EMBER_APP_DB ?? null;
 const QUICK_ADD = quickAddRequested(process.argv);
 
 let mainWindow = null;
+// The popup's last "open the main window on setup" request, held when
+// the main window's renderer is still loading (see openMainRequest).
+let pendingOpenRequest = null;
 
 function appVersion() {
   try {
@@ -68,6 +71,14 @@ function createWindow({ showOnReady = true } = {}) {
   // popup until the popup's "Open Ember" link (or a route) asks for it.
   mainWindow.once('ready-to-show', () => {
     if (showOnReady) mainWindow.show();
+  });
+  // The popup's held "open setup" request re-sends once the page can
+  // hear it (the early-push race; see openMainRequest).
+  mainWindow.webContents.on('did-finish-load', () => {
+    if (pendingOpenRequest !== null && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('ember:openRequest', pendingOpenRequest);
+      pendingOpenRequest = null;
+    }
   });
   mainWindow.on('closed', () => {
     mainWindow = null;
@@ -166,7 +177,18 @@ function wireIpc(services) {
       return { ok: false, error: appErrorInfo('APP-007', 'main.main.quickOpenMain', 'the main window is not available') };
     }
     focusMainWindow();
-    if (view === 'setup') mainWindow.webContents.send('ember:openRequest', { view });
+    if (view === 'setup') {
+      // Under load the main window's renderer may still be booting when
+      // the popup asks (the same early-push race the Add session solved
+      // with its buffered attach): hold the LAST request and re-send it
+      // when the page finishes loading (main.js, the did-finish-load
+      // hook), instead of losing it (ticket A39-merge, lead fix).
+      if (mainWindow.webContents.isLoading()) {
+        pendingOpenRequest = { view };
+      } else {
+        mainWindow.webContents.send('ember:openRequest', { view });
+      }
+    }
     return { ok: true, view };
   };
   /* === App 11 block ends === */
@@ -249,7 +271,7 @@ function wireIpc(services) {
     labelRefreshInFlight = true;
     try {
       const db = DB_OVERRIDE ?? services.settingsStore.load().settings.knowledgeBasePath;
-      if (typeof db === 'string' && db !== '' && menuKbGuard(db).ok) {
+      if (typeof db === 'string' && db !== '' && menuKbGuard(db).ok && undoLabelsSafeForFile(db)) {
         const client = labelClientFor(db);
         const [undoResult, redoResult] = await Promise.all([
           client.runCommand('undo', ['--dry-run']),
@@ -258,8 +280,10 @@ function wireIpc(services) {
         menuState.undo = deriveUndoMenuState(undoResult, 'undo');
         menuState.redo = deriveUndoMenuState(redoResult, 'redo');
       } else {
-        // No usable knowledge base: first run owns the screen and the
-        // menu's job items are disabled anyway; the labels stay disabled-plain.
+        // No usable knowledge base, or a pre-undo file (schema < 13):
+        // the undo dry-run opens through the WRITE path and would
+        // silently migrate an older file (found by the keep-safe e2e).
+        // The labels stay in their honest disabled state instead.
         menuState.undo = deriveUndoMenuState(null, 'undo');
         menuState.redo = deriveUndoMenuState(null, 'redo');
       }
@@ -268,6 +292,31 @@ function wireIpc(services) {
     } finally {
       labelRefreshInFlight = false;
       menuManager.refresh();
+    }
+  }
+
+  /**
+   * Read-only schema-version probe for the undo-label gate: the undo
+   * dry-run is a READ-shaped derivation but runs through the write
+   * command path (which migrates), so on a schema < 13 file it must
+   * never run (spec 12.8's one-way rule protects the founder's file).
+   * Read-only open of user_version — no migration is possible here.
+   */
+  function undoLabelsSafeForFile(dbPath) {
+    try {
+      const { DatabaseSync } = require('node:sqlite');
+      const db = new DatabaseSync(dbPath, { readOnly: true });
+      try {
+        // Ember stores its schema version in the schema_version TABLE
+        // (ember/adapters/sqlite.py), not in PRAGMA user_version.
+        const row = db.prepare('SELECT version FROM schema_version').get();
+        return Number(row && row.version) >= 13;
+      } finally {
+        db.close();
+      }
+    } catch (err) {
+      process.stderr.write(`launch-note: APP-000 AppError | the undo-label gate could not read the file's schema version (${err instanceof Error ? err.message : 'unknown error'})\n`);
+      return false; // fail closed: an unreadable file is never migrated
     }
   }
 
