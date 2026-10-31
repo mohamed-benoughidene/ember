@@ -343,3 +343,31 @@ td.num .btn { margin-left: var(--s2); }
   border-radius: 9px;
 }
 .nav button[aria-current='true'] .count { background: var(--sel-ink); color: var(--sel-bg); }
+
+/* ---------- App 11 (ticket A40): the quick popup page (stories 90-95;
+   DESIGN.md Layout: "a 440px window with only Add and a path to the
+   full window". Frameless window, tokens only. The wrap rules keep the
+   step-03/05 components inside the 440px width at EVERY text size,
+   including the Largest step the a11y scan measures. ---------- */
+
+/* Everything is scoped to body.quick — the main window's body layout
+   (step 04's scrolled shell) must not feel this block at all. */
+body.quick { margin: 0; background: var(--ground); height: 100vh; overflow: hidden; }
+.quick-app { display: flex; flex-direction: column; height: 100vh; }
+.quick-top {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: var(--s3); padding: var(--s4) var(--s5);
+  background: var(--surface-2); border-bottom: 1px solid var(--line);
+}
+.quick-top .quick-title { font-weight: var(--type-heading-weight); }
+.quick-top .btn--text { padding: var(--s1) var(--s2); }
+.quick-pane { flex: 1; min-height: 0; overflow-y: auto; overflow-x: hidden; padding: var(--s5); }
+.quick-pane:focus { outline: none; } /* the frame's own focus target, not a control */
+
+/* Everything the Add screen reuses must wrap, never clip, in 440px: */
+.quick-pane .actions { flex-wrap: wrap; }
+.quick-pane .ember-table { table-layout: fixed; }
+.quick-pane .ember-table td, .quick-pane .ember-table th { word-break: break-word; }
+.quick-pane .source-verbatim { white-space: pre-wrap; word-break: break-word; }
+.quick-pane textarea, .quick-pane input[type='text'] { width: 100%; }
+.quick-pane .panel { max-width: 100%; }

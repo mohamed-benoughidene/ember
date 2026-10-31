@@ -30,8 +30,15 @@ const { createSettingsStore } = require('./settings-store');
 const { createKeyStore } = require('./key-store');
 const { registerIpcHandlers } = require('./ipc');
 
+// App 11 (ticket A40): the quick popup manager + its pure parts, and
+// the `--quick-add` launch route (plan §5.5).
+const { createPopupManager, popupBoundsFor, quickAddRequested, shouldParkMainWindow } = require('./popup');
+
 const LAUNCH_CHECK = process.env.EMBER_APP_LAUNCH_CHECK === '1';
 const DB_OVERRIDE = process.env.EMBER_APP_DB ?? null;
+// [app 11] `ember-app --quick-add`: boot straight into the popup; the
+// main window is created but stays parked until something opens it.
+const QUICK_ADD = quickAddRequested(process.argv);
 
 let mainWindow = null;
 
@@ -43,7 +50,7 @@ function appVersion() {
   }
 }
 
-function createWindow() {
+function createWindow({ showOnReady = true } = {}) {
   mainWindow = new BrowserWindow({
     width: 1000,
     height: 640,
@@ -57,7 +64,11 @@ function createWindow() {
     },
   });
   mainWindow.loadFile(path.join(__dirname, '..', 'renderer', 'index.html'));
-  mainWindow.once('ready-to-show', () => mainWindow.show());
+  // [app 11] with `--quick-add` the main window stays parked behind the
+  // popup until the popup's "Open Ember" link (or a route) asks for it.
+  mainWindow.once('ready-to-show', () => {
+    if (showOnReady) mainWindow.show();
+  });
   mainWindow.on('closed', () => {
     mainWindow = null;
   });
@@ -86,11 +97,11 @@ function bootNoticeFor(services) {
 
 function wireIpc(services) {
   // [app 10] Settings panes: the quick-popup shortcut re-registration
-  // seam and the tray fallback (stories 85-86; the popup window itself
-  // is step 11 — for now the shortcut raises the main window). The
+  // seam and the tray fallback (stories 85-86; app step 11 opens the
+  // real popup through this same seam). The
   // Electron edge effects stay here, at the edge (T2).
   const { Tray, Menu } = require('electron');
-  const { createShortcutManager, createTrayManager, registerSettingsShortcut } = require('./shortcuts');
+  const { createShortcutManager, createTrayManager, registerSettingsShortcut, bootShortcutFor } = require('./shortcuts');
 
   const focusMainWindow = () => {
     if (mainWindow && !mainWindow.isDestroyed()) {
@@ -99,25 +110,95 @@ function wireIpc(services) {
       mainWindow.focus();
     }
   };
+
+  /* =================================================================
+     APP STEP 11 (ticket A40): the quick popup (stories 90-95; plan
+     §5.5). Bracketed, additive: the window manager, the open/hide
+     action every route shares (the global shortcut, the tray's Quick
+     add, the `--quick-add` launch option, and from here step 12's
+     File -> Add text menu item), and the popup's one route back into
+     this window (stories 93/94).
+     ================================================================= */
+  const { screen } = require('electron');
+  const { appErrorInfo } = require('../shared/errors'); // also the launch-check failure path's missing import (see build notes)
+  const popup = createPopupManager({
+    BrowserWindowCtor: BrowserWindow,
+    screenApi: screen,
+    pagePath: path.join(__dirname, '..', 'renderer', 'quick.html'),
+    preloadPath: path.join(__dirname, '..', 'preload', 'preload.js'),
+    positionFor: () => services.settingsStore.load().settings.quickPopup.position,
+    alwaysOnTop: false, // the founder-review proposal (plan §5.5): default OFF, for the step gate to confirm
+  });
+  /**
+   * One open/hide action for every quick-add route. `park` (the
+   * shortcut, the tray, the launch option) tucks the main window away
+   * ONLY when Ember itself was the focused window, so Esc returns to
+   * the program the user came from (shouldParkMainWindow pins the rule).
+   * The renderer-facing route (the e2e seam, step 12's menu item) never
+   * parks. `action: 'hide'` is the popup page closing itself.
+   */
+  const openQuickPopup = ({ park = false, action = 'toggle' } = {}) => {
+    if (action === 'hide' || popup.visible()) {
+      popup.hide();
+      return { ok: true, visible: false, parked: false };
+    }
+    let parked = false;
+    if (
+      park &&
+      mainWindow &&
+      !mainWindow.isDestroyed() &&
+      shouldParkMainWindow({ focused: mainWindow.isFocused(), visible: mainWindow.isVisible() })
+    ) {
+      mainWindow.hide();
+      parked = true;
+    }
+    const shown = popup.show();
+    if (!shown.ok) process.stderr.write(`launch-note: ${shown.error.code} ${shown.error.name} | ${shown.error.detail}\n`);
+    return { ok: shown.ok, visible: shown.ok, parked };
+  };
+  /**
+   * The popup's route to the full window: story 93 ("Open Ember") and
+   * story 94's path to fix a missing setup. Focus (and restore) the
+   * main window, then tell its page which view was asked for.
+   */
+  const openMainRequest = ({ view = 'ember' } = {}) => {
+    if (!mainWindow || mainWindow.isDestroyed()) {
+      return { ok: false, error: appErrorInfo('APP-007', 'main.main.quickOpenMain', 'the main window is not available') };
+    }
+    focusMainWindow();
+    if (view === 'setup') mainWindow.webContents.send('ember:openRequest', { view });
+    return { ok: true, view };
+  };
+  /* === App 11 block ends === */
+
   let tray = null;
   const showTrayFallback = () => {
     if (tray !== null) return; // the fallback is built once per run
     tray = createTrayManager({ TrayCtor: Tray, MenuBuilder: Menu, iconPath: services.iconPath });
     const shown = tray.show({
-      onQuickAdd: focusMainWindow,
+      // [app 11] Quick add is the popup itself now (story 95); Open Ember stays the full window.
+      onQuickAdd: () => openQuickPopup({ park: true }),
       onOpenEmber: focusMainWindow,
       onQuit: () => app.quit(),
     });
     if (!shown.ok) process.stderr.write(`launch-note: ${shown.error.code} ${shown.error.detail}\n`);
   };
+  // [app 11] The e2e seam EMBER_APP_SHORTCUT_REFUSED=1 stands in for an
+  // OS refusal (same family as EMBER_APP_PICK_PATH) using the SAME fake
+  // shape the manager's unit tests already pin — no manager change.
+  const globalShortcutApi =
+    process.env.EMBER_APP_SHORTCUT_REFUSED === '1'
+      ? { register: () => false, unregisterAll: () => {} }
+      : require('electron').globalShortcut;
   const shortcutManager = createShortcutManager({
-    globalShortcut: require('electron').globalShortcut,
-    onQuickAdd: focusMainWindow,
+    globalShortcut: globalShortcutApi,
+    // [app 11] the keys open the quick popup now (story 90).
+    onQuickAdd: () => openQuickPopup({ park: true }),
     onFailure: () => showTrayFallback(),
   });
   const maskedKeyHint = require('./key-hint');
 
-  return registerIpcHandlers({
+  const registered = registerIpcHandlers({
     ipcMain,
     settingsStore: services.settingsStore,
     keyStore: services.keyStore,
@@ -171,15 +252,37 @@ function wireIpc(services) {
     // [app 10] the Settings seams (stories 85-89)
     shortcutRegistrar: (accelerator) => registerSettingsShortcut({ manager: shortcutManager, accelerator }),
     keyHintProvider: () => maskedKeyHint.maskKey(services.keyStore.get()),
+    /* --- [app 11] the quick popup's two renderer-facing channels
+       (stories 90-95): the renderer-safe route to the popup — the
+       SAME action object the shortcut, the tray and `--quick-add`
+       use (parking off; step 12's File -> Add text item will point
+       at this handler too) — and the popup's one route back into
+       the full window (93) with its path to fix a missing setup (94). --- */
+    openQuickPopup: ({ action = 'toggle' } = {}) => openQuickPopup({ action, park: false }),
+    openMainRequest,
   });
+
+  // [app 11] The default global shortcut, registered at boot AFTER
+  // first run is done (step file story 90: before that there is no
+  // knowledge base to add into). A changed choice from Settings re-
+  // registers through the step-10 seam. An OS refusal lands in the
+  // shipped APP-005 path above: the tray fallback appears and the
+  // launch-note goes to stderr — never a silent failure (I7).
+  const bootAccelerator = bootShortcutFor(services.settingsStore.load().settings);
+  if (bootAccelerator !== null) shortcutManager.register(bootAccelerator);
+
+  return { registered, openQuickPopup };
 }
 
 /** The normal boot: window + IPC, then idle until the window closes. */
 function boot() {
   const services = buildServices();
   services.settingsStore.load(); // I13: loaded once at boot, passed down
-  wireIpc(services);
-  createWindow();
+  const { openQuickPopup } = wireIpc(services);
+  // [app 11] `--quick-add`: the main window is created but parked; the
+  // popup is the app's front (the launch route that always works).
+  createWindow({ showOnReady: !QUICK_ADD });
+  if (QUICK_ADD) openQuickPopup({ park: false });
 }
 
 function onceReadyToShow(win) {

@@ -418,10 +418,16 @@ async function emptyAndError() {
     const win = await app2.firstWindow();
     await win.waitForSelector('[data-testid="home-pane"]');
     await win.waitForSelector('[data-testid="state-error"]');
+    // The three data blocks fail independently; under load their errors
+    // land a beat apart — wait for the count to stabilise at >= 2.
+    const errors = await win
+      .waitForFunction(
+        () => document.querySelectorAll('[data-testid="state-error"]').length >= 2,
+        { timeout: 15000 },
+      )
+      .then(() => win.locator('[data-testid="state-error"]').count());
     const visible = await win.evaluate(() => document.body.innerText);
     if (/QUERY-\d{3}|APP-\d{3}/.test(visible)) fail(`no bare code on screen (story 102), saw one in: ${visible.slice(0, 300)}`);
-    const errors = await win.locator('[data-testid="state-error"]').count();
-    if (errors < 2) fail(`Home has three data blocks; each failing block shows its own error, saw ${errors}`);
     await win.locator('[data-testid="state-error"] [data-action="show-details"]').first().click();
     await win.waitForSelector('[data-testid="error-code"]:not([hidden])');
     const code = await win.textContent('[data-testid="error-code"]');

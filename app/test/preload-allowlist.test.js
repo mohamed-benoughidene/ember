@@ -73,6 +73,11 @@ const MAINTAIN_CHANNELS = [
   'ember:maintainAnswer',
   'ember:maintainStop',
 ];
+/* App 11 (ticket A40): the quick popup's two invoke channels, merged
+   after the Clean up block (merged file order: base, Add, Keep safe,
+   Fix and close, Settings, Clean up, Quick popup). The `ember:openRequest`
+   push channel goes main -> main-window renderer (not an invoke). */
+const QUICK_POPUP_CHANNELS = ['ember:openQuickPopup', 'ember:quickOpenMain'];
 const ADD_PUSH_CHANNELS = ['ember:addEvent', 'ember:addExit'];
 /* App 06 (ticket A35): the Link items session channels, merged after
    the Fix and close block (the merged file's order: base, Add,
@@ -115,7 +120,7 @@ test('the preload exposes exactly the pinned list over contextBridge', () => {
      five Keep safe channels, then the two Fix and close channels,
      the two Settings channels (app 10), the four Clean up channels
      (App 08), then the six Link items channels (App 06). */
-  assert.deepEqual(names, [...EXPECTED_CHANNELS, ...ADD_SESSION_CHANNELS, ...KEEP_SAFE_CHANNELS, ...FIX_CLOSE_CHANNELS, ...SETTINGS_CHANNELS, ...MAINTAIN_CHANNELS, ...LINK_CHANNELS]);
+  assert.deepEqual(names, [...EXPECTED_CHANNELS, ...ADD_SESSION_CHANNELS, ...KEEP_SAFE_CHANNELS, ...FIX_CLOSE_CHANNELS, ...SETTINGS_CHANNELS, ...MAINTAIN_CHANNELS, ...LINK_CHANNELS, ...QUICK_POPUP_CHANNELS]);
   assert.equal((PRELOAD.match(/contextBridge\.exposeInMainWorld/g) ?? []).length, 1, 'exactly one expose');
 });
 
@@ -150,7 +155,7 @@ test('every preloaded call has a registered handler in main/ipc.js (no dead, no 
   for (const channel of EXPECTED_CHANNELS) {
     assert.ok(registered.includes(channel), `${channel} is preloaded but never handled`);
   }
-  assert.deepEqual(registered.sort(), [...EXPECTED_CHANNELS, ...KEEP_SAFE_CHANNELS, ...FIX_CLOSE_CHANNELS, ...SETTINGS_CHANNELS, ...MAINTAIN_CHANNELS].sort(), 'ipc.js registered a channel outside the allowlist');
+  assert.deepEqual(registered.sort(), [...EXPECTED_CHANNELS, ...KEEP_SAFE_CHANNELS, ...FIX_CLOSE_CHANNELS, ...SETTINGS_CHANNELS, ...MAINTAIN_CHANNELS, ...QUICK_POPUP_CHANNELS].sort(), 'ipc.js registered a channel outside the allowlist');
 });
 
 /* ==== App 05 (ticket A34): the Add session channels are registered by

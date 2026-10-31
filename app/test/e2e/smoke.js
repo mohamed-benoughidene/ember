@@ -77,6 +77,12 @@ const EXPECTED_API = [
   'attachRelate',
   'onRelateEvent',
   'onRelateExit',
+  // App 11 (ticket A40): the quick popup joins the pinned surface —
+  // the always-works route to it, the popup's route back to the full
+  // window (93/94), and the push subscription for the setup request.
+  'openQuickPopup',
+  'quickOpenMain',
+  'onOpenRequest',
 ];
 
 async function main() {
@@ -121,7 +127,7 @@ async function main() {
     const banner = await win.locator('#top-banner').innerHTML();
     if (banner.trim() !== '') throw new Error(`a notice banner appeared: ${banner.slice(0, 200)}`);
 
-    process.stdout.write('e2e smoke OK: real shell boots into Home, the counts from list-items reach the DOM (total 5), the seam answers exactly the pinned 38-name allowlist, no Node in the page world\n');
+    process.stdout.write('e2e smoke OK: real shell boots into Home, the counts from list-items reach the DOM (total 5), the seam answers exactly the pinned 41-name allowlist, no Node in the page world\n');
   } finally {
     // The step-11 portal-registered global shortcut can hold the app
     // past a plain close(): bound it, then SIGKILL the Electron process

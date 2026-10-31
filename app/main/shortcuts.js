@@ -137,4 +137,24 @@ function registerSettingsShortcut({ manager, accelerator }) {
   return manager.register(accelerator);
 }
 
-module.exports = { createShortcutManager, createTrayManager, registerSettingsShortcut };
+/* ---------- [app 11] the boot registration choice (stories 90/95) ---------- */
+
+/**
+ * The accelerator to register at boot, or null when registration must
+ * wait: before first run is done there is no knowledge base to add
+ * into, and first run owns the screen (step file: "registered at boot
+ * after first run is done"). An unreadable quickPopup shape falls back
+ * to the spec §10 default, never to silence. Pure (T1).
+ *
+ * @param {object} [settings] the settings-schema settings object
+ * @returns {string|null}
+ */
+function bootShortcutFor(settings) {
+  const s = settings && typeof settings === 'object' ? settings : {};
+  const kb = typeof s.knowledgeBasePath === 'string' ? s.knowledgeBasePath.trim() : '';
+  if (kb === '') return null;
+  const chosen = s.quickPopup && typeof s.quickPopup === 'object' ? s.quickPopup.shortcut : null;
+  return typeof chosen === 'string' && chosen.trim() !== '' ? chosen : 'CommandOrControl+Alt+E';
+}
+
+module.exports = { createShortcutManager, createTrayManager, registerSettingsShortcut, bootShortcutFor };
