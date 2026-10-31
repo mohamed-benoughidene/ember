@@ -16,3 +16,46 @@ jobs:
         run: pip install -e ".[dev]"
       - name: Run the test suite (includes the architecture test, rule T9)
         run: pytest
+
+  # App step 13 (decision 2, spec story 109): the desktop app is BUILT and
+  # LAUNCH-CHECKED on all three systems. Debian is the only real installer
+  # for V1 (no installer for Windows/macOS — deferred GitHub issue #38
+  # tracks them); these jobs prove only that the app starts, opens a
+  # throwaway knowledge base, runs one read command, prints the item
+  # count and exits 0. The full E2E suite stays Linux-only (step file §2).
+  app-launch-check:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: Create the venv the launch check reads
+        run: python -m venv .venv
+      - name: Install Ember into the venv (Linux/macOS)
+        if: runner.os != 'Windows'
+        run: .venv/bin/python -m pip install -e .
+      - name: Install Ember into the venv (Windows)
+        if: runner.os == 'Windows'
+        run: .venv\Scripts\python.exe -m pip install -e .
+      - name: Install the app's pinned dev dependencies (electron 45.1.0, playwright)
+        run: npm ci --prefix app
+      - name: The app's own import check (T9, renderer imports no Node) — Linux only
+        if: runner.os == 'Linux'
+        run: npm test --prefix app
+      - name: Install-size report (the bundled Electron runtime)
+        run: |
+          node -e "const fs=require('fs');function du(p){let s=0;for(const e of fs.readdirSync(p,{withFileTypes:true})){const f=p+'/'+e.name;s+=e.isDirectory()?du(f):fs.statSync(f).size}return s};for(const d of ['app/node_modules/electron/dist','app/node_modules/playwright']){try{console.log(d,Math.round(du(d)/1048576)+' MB')}catch(e){console.log(d,'missing')}}"
+      - name: Launch check (story 109) — Linux needs a virtual display
+        if: runner.os == 'Linux'
+        run: xvfb-run --auto-servernum npm run check:launch --prefix app
+      - name: Launch check (story 109) — macOS
+        if: runner.os == 'macOS'
+        run: npm run check:launch --prefix app
+      - name: Launch check (story 109) — Windows
+        if: runner.os == 'Windows'
+        run: npm run check:launch --prefix app

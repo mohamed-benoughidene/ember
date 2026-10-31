@@ -23,7 +23,10 @@ const {
   resolveEmberCommand,
   checkEmberCommand,
   validateKnowledgeBasePath,
+  bundledEmber,
+  bundledChildEnv,
 } = require('./ember-command');
+const { trayIconPath, windowIconPath } = require('./app-icon');
 const { loadErrorPattern } = require('./error-pattern');
 const { createBridgeClient } = require('./bridge-client');
 const { createSettingsStore } = require('./settings-store');
@@ -59,6 +62,9 @@ function createWindow({ showOnReady = true } = {}) {
     height: 640,
     show: false,
     title: 'Ember',
+    // [app 13] the real raster icon in the taskbar when the tree
+    // ships it; undefined keeps Electron's default otherwise.
+    icon: windowIconPath(path.join(__dirname, '..')) || undefined,
     webPreferences: {
       preload: path.join(__dirname, '..', 'preload', 'preload.js'),
       contextIsolation: true, // the renderer cannot reach Node (B5)
@@ -90,13 +96,24 @@ function createWindow({ showOnReady = true } = {}) {
 function buildServices(env = process.env) {
   const userData = app.getPath('userData');
   const appDir = path.join(__dirname, '..');
+  // [app 13] the bundled Ember runtime (decision 3-B): when this tree
+  // carries one (or is a packaged install with the bundle.json
+  // manifest), the app points at it; the children then read the model
+  // weights from INSIDE the app folder, offline (story 107).
+  const bundling = bundledEmber(appDir);
+  if (bundling.emberPath) {
+    Object.assign(process.env, bundledChildEnv(bundling.emberPath));
+  }
   return {
     settingsStore: createSettingsStore({ file: path.join(userData, 'settings.json') }),
     keyStore: createKeyStore({ file: path.join(userData, 'key.enc'), safeStorage }),
     errorPattern: loadErrorPattern(appDir),
-    emberCommand: resolveEmberCommand(env),
+    emberCommand: resolveEmberCommand(env, bundling),
     userDataPath: userData,
-    iconPath: null, // step 03/11 pick the real icon; the tray menu works without one
+    // [app 13] the real raster tray icon when the tree ships one
+    // (the step-11 honest placeholder debt); null keeps the old
+    // default-icon behaviour in trees without the asset.
+    iconPath: trayIconPath(appDir),
   };
 }
 

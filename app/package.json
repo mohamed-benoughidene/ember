@@ -19,10 +19,12 @@
     "test:e2e:10": "node test/e2e/settings.js",
     "test:e2e:11": "node test/e2e/popup.js",
     "test:e2e:12": "node test/e2e/menus.js",
+    "test:e2e:13": "node test/e2e/no-network.js",
     "test:e2e:08": "node test/e2e/cleanup.js",
     "test:e2e:link": "node test/e2e/link.js",
     "gallery": "electron gallery/main.js",
-    "check:launch": "node test/launch-check.js"
+    "check:launch": "node test/launch-check.js",
+    "package": "node scripts/pack.js"
   },
   "devDependencies": {
     "electron": "45.1.0",
