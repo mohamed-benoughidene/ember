@@ -41,6 +41,9 @@ const EXPECTED_API = [
   'setKey',
   'setSessionKey',
   'removeKey',
+  // app step 07 (Fix and close), appended at the END
+  'fixAction',
+  'undoPlan',
 ];
 
 async function main() {
@@ -84,7 +87,7 @@ async function main() {
     const banner = await win.locator('#top-banner').innerHTML();
     if (banner.trim() !== '') throw new Error(`a notice banner appeared: ${banner.slice(0, 200)}`);
 
-    process.stdout.write('e2e smoke OK: real shell boots into Home, the counts from list-items reach the DOM (total 5), the seam answers exactly the 15-name allowlist, no Node in the page world\n');
+    process.stdout.write('e2e smoke OK: real shell boots into Home, the counts from list-items reach the DOM (total 5), the seam answers exactly the 17-name allowlist, no Node in the page world\n');
   } finally {
     await app.close();
     fs.rmSync(workDir, { recursive: true, force: true });

@@ -16,6 +16,8 @@ import { createFirstRunScreen } from './first-run.mjs';
 import { createHomeScreen } from './home.mjs';
 import { createLookupScreen } from './lookup.mjs';
 import { createPlaceholderScreen, paneNames } from './placeholder.mjs';
+// app step 07 (Fix and close) — registered additively; nothing above moved.
+import { createFixCloseScreen } from './fix-close.mjs';
 
 const JOBS = [
   { id: 'home', name: 'Home', hint: 'What needs attention', fixed: true },
@@ -90,6 +92,13 @@ function renderPane(id) {
     screens.lookup.render();
     return;
   }
+  // app step 07 (Fix and close): the real screen replaces the interim pane.
+  if (id === 'fix') {
+    screens.fix = createFixCloseScreen(ctx);
+    screens.fix.render();
+    return;
+  }
+  // -------------------------------------------------------------------
   if (paneNames().includes(id)) {
     createPlaceholderScreen(ctx, id).render();
     return;

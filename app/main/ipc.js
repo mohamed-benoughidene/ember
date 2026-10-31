@@ -28,6 +28,7 @@ const {
   showItemArgs,
   historyArgs,
 } = require('./command-args');
+const { fixActionArgs, undoPlanArgs } = require('./fix-close-args');
 
 const WHERE = 'main.ipc';
 
@@ -259,6 +260,51 @@ function registerIpcHandlers(options) {
     },
 
     'ember:removeKey': () => keyStore.remove(),
+
+    // --- app step 07 (Fix and close) — new channels appended at the
+    // --- END of the registration list (additive; the allowlist test
+    // --- pins the full list).
+
+    /**
+     * One Fix and close write or preview, exactly as the contract
+     * table pins it: the action names the command; the argv comes
+     * ONLY from main/fix-close-args.js (bad values never reach a child
+     * process). Writes run with the same write-timeout/never-retry
+     * rule as every other write (runCommand).
+     */
+    'ember:fixAction': async (payload) => {
+      const kbCheck = guardKnowledgeBase();
+      if (!kbCheck.ok) return { ok: false, error: kbCheck.error };
+      const { action, args: payloadArgs = {} } = typeof payload === 'object' && payload !== null ? payload : {};
+      let args;
+      try {
+        args = fixActionArgs(action, payloadArgs);
+      } catch (err) {
+        return { ok: false, error: appErrorInfo('APP-002', `${WHERE}.fixAction`, err instanceof Error ? err.message : 'unknown error') };
+      }
+      onCommand(action, args);
+      return clientFor(dbPath()).runCommand(action, args);
+    },
+
+    /**
+     * The undo/redo LABEL derivation read (stories 113, 121): `undo
+     * --dry-run --format json` (a read-shaped call: it writes zero
+     * rows, D3). The parsed MAINTAIN refusals ride out as {ok:false,
+     * error} so the screen can show its honest disabled words.
+     */
+    'ember:undoPlan': async (payload) => {
+      const kbCheck = guardKnowledgeBase();
+      if (!kbCheck.ok) return { ok: false, error: kbCheck.error };
+      const command = typeof payload === 'object' && payload !== null ? payload.command : null;
+      let args;
+      try {
+        args = undoPlanArgs(command);
+      } catch (err) {
+        return { ok: false, error: appErrorInfo('APP-002', `${WHERE}.undoPlan`, err instanceof Error ? err.message : 'unknown error') };
+      }
+      onCommand(command, args);
+      return clientFor(dbPath()).runCommand(command, args);
+    },
   };
 
   const names = Object.keys(handlers);

@@ -29,6 +29,8 @@ const EMBER_PRELOAD_API = Object.freeze([
   'ember:setKey',
   'ember:setSessionKey',
   'ember:removeKey',
+  'ember:fixAction',
+  'ember:undoPlan',
 ]);
 
 contextBridge.exposeInMainWorld('ember', {
@@ -76,4 +78,13 @@ contextBridge.exposeInMainWorld('ember', {
 
   /** Remove the saved key (careful action, story 89). */
   removeKey: () => ipcRenderer.invoke('ember:removeKey'),
+
+  // --- app step 07 (Fix and close) — appended at the END of the named
+  // --- call list; nothing else is exposed.
+
+  /** One Fix and close action: {action, args} runs the pinned command. */
+  fixAction: (payload) => ipcRenderer.invoke('ember:fixAction', payload ?? null),
+
+  /** The undo/redo dry-run plan ({command: 'undo'|'redo'}) for the label. */
+  undoPlan: (command) => ipcRenderer.invoke('ember:undoPlan', { command }),
 });

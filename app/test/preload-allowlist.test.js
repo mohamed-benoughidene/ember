@@ -41,6 +41,9 @@ const EXPECTED_CHANNELS = [
   'ember:setKey',
   'ember:setSessionKey',
   'ember:removeKey',
+  // app step 07 (Fix and close): the two new channels.
+  'ember:fixAction',
+  'ember:undoPlan',
 ];
 
 function readRendererSources() {
