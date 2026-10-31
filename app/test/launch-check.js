@@ -26,19 +26,33 @@ function fail(message) {
 }
 
 function main() {
-  const venvEmber = path.join(REPO_ROOT, '.venv', 'bin', 'ember');
-  if (!fs.existsSync(venvEmber)) {
-    fail(`the project venv ember is missing at ${venvEmber} (this check reads a real knowledge base)`);
+  // The venv's ember: POSIX keeps the console script; Windows has no
+  // bin/ folder — there the SAME CLI runs as `python -m ember` (the
+  // spike note: the entry point is ember/__main__.py), and the matrix
+  // job builds the venv with the same layout on every OS.
+  // EMBER_APP_COMMAND is a space-split argv prefix (ember-command.js),
+  // so the child form is the same string on every platform.
+  const isWin = process.platform === 'win32';
+  const venvPython = isWin ? path.join(REPO_ROOT, '.venv', 'Scripts', 'python.exe') : path.join(REPO_ROOT, '.venv', 'bin', 'python');
+  const seedCmd = isWin ? venvPython : path.join(REPO_ROOT, '.venv', 'bin', 'ember');
+  const seedBaseArgs = isWin ? ['-m', 'ember', 'capture-source'] : ['capture-source'];
+  const commandEnv = isWin ? `${venvPython} -m ember` : path.join(REPO_ROOT, '.venv', 'bin', 'ember');
+  const emberPresent = isWin ? seedCmd : commandEnv;
+  if (!fs.existsSync(emberPresent)) {
+    fail(`the project venv ember is missing (${emberPresent}) — this check reads a real knowledge base`);
   }
-  const electronBin = path.join(APP_ROOT, 'node_modules', '.bin', 'electron');
-  if (!fs.existsSync(electronBin)) {
-    fail('electron is not installed — run `npm install` inside app/');
+  // The Electron binary, resolved the portable way: under PLAIN Node
+  // the electron npm package exports the path to the real binary on
+  // every OS (the node_modules/.bin shim is a POSIX-only shell script).
+  const electronBin = require('electron');
+  if (typeof electronBin !== 'string' || !fs.existsSync(electronBin)) {
+    fail(`electron is not installed — run \`npm install\` inside app/ (got: ${JSON.stringify(electronBin)})`);
   }
 
   const workDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ember-launch-check-'));
   const kbPath = path.join(workDir, 'kb.db');
   try {
-    execFileSync(venvEmber, ['capture-source', '--db', kbPath], {
+    execFileSync(seedCmd, [...seedBaseArgs, '--db', kbPath], {
       input: 'A throwaway source text for the app launch check.\n',
       stdio: ['pipe', 'ignore', 'inherit'],
     });
@@ -49,7 +63,7 @@ function main() {
         ...process.env,
         EMBER_APP_LAUNCH_CHECK: '1',
         EMBER_APP_DB: kbPath,
-        EMBER_APP_COMMAND: venvEmber,
+        EMBER_APP_COMMAND: commandEnv,
         RTI_FAKE_WORKDIR: workDir,
       },
       stdio: ['ignore', 'pipe', 'pipe'],
