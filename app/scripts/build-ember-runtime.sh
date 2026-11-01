@@ -174,15 +174,22 @@ if [ -n "$MODEL_CACHE" ]; then
   # links that would otherwise resurrect everything).
   find "$NEW_RUNTIME/models/hub" \( -name 'pytorch_model.bin' -o -type d -name 'onnx*' \) -exec rm -rf {} + 2>/dev/null || true
   hub="$NEW_RUNTIME/models/hub"
-  refs="$(find "$hub" -type l -path '*snapshots/*' -exec realpath {} \; | sort -u)"
+  # The snapshot-symlink targets that MUST survive the trim are kept in
+  # a temp FILE, not a shell variable: matching against a variable needs
+  # `echo "$refs" | grep -q`, and under `set -o pipefail` a MATCH can
+  # kill echo with SIGPIPE (grep -q exits on the first hit and stops
+  # reading) — the inverted status would delete a link the snapshot
+  # needs (finding 4.1 #19, story 25). No pipe, no SIGPIPE.
+  refs_file="$BUILD_DIR/kept-refs.txt"
+  find "$hub" -type l -path '*snapshots/*' -exec realpath {} \; | sort -u > "$refs_file"
   cd "$hub"
   while IFS= read -r link; do
     rp="$(realpath "$link")" || continue
-    echo "$refs" | grep -qxF "$rp" || rm -f "$link"
+    grep -qxF -- "$rp" "$refs_file" || rm -f "$link"
   done < <(find . -type l ! -path '*snapshots/*')
   while IFS= read -r blob; do
     rp="$(realpath "$blob")" || continue
-    echo "$refs" | grep -qxF "$rp" || rm -f "$blob"
+    grep -qxF -- "$rp" "$refs_file" || rm -f "$blob"
   done < <(find blobs -type f)
   find . -empty -type d -delete
   rm -rf .locks
@@ -191,6 +198,13 @@ if [ -n "$MODEL_CACHE" ]; then
 else
   echo "NO weights copied (EMBER_MODEL_CACHE unset) — a first `relate` would download them"
 fi
+
+# Bundle hygiene (finding 4.1 #21, story 23): the PyInstaller output and
+# the real --add-data copy of ember/adapters/migrations drag compiled
+# __pycache__ folders along — dead weight in a shipped bundle. They are
+# deleted from the NEW tree here, while it is still in the scratch, so
+# only the tree the gate then passes is ever swapped in.
+find "$NEW_RUNTIME" -type d -name '__pycache__' -prune -exec rm -rf {} +
 
 # Base smoke on the NEW tree while it is still in the scratch: the
 # frozen CLI answers --help with NO venv and NO repo source on the path
@@ -220,6 +234,10 @@ rm -rf "$RUNTIME_OUT"
 mv "$NEW_RUNTIME" "$RUNTIME_OUT"
 
 echo "== sizes =="
-du -sm "$RUNTIME_OUT" "$RUNTIME_OUT/_internal/torch" ${MODEL_CACHE:+"$RUNTIME_OUT/models"} 2>/dev/null || \
-  du -sm "$RUNTIME_OUT" "$RUNTIME_OUT/_internal/torch"
+# The report is INFORMATIVE ONLY (finding 4.1 #22, story 24): a failing
+# du must never change the build's exit code, and under `set -e` the old
+# `du A B C || du A B` fallback chain DID fail the build when both calls
+# failed. One call, `|| true`: the report is printed when du works and
+# silently skipped when it does not.
+du -sm "$RUNTIME_OUT" "$RUNTIME_OUT/_internal/torch" ${MODEL_CACHE:+"$RUNTIME_OUT/models"} 2>/dev/null || true
 echo "ember runtime ready at $RUNTIME_OUT"
