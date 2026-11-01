@@ -392,6 +392,11 @@ export function createAddScreen(ctx) {
         flowEl.querySelector('[data-action="add-reset-empty"]')?.addEventListener('click', () => resetToForm());
       }
     } else if (state.phase === 'error') {
+      // Batch 3 F2: the failed Add brings the draft form back next to
+      // the error — state.text still holds the draft (only
+      // resetToForm clears it), and renderGateAndForm restores the
+      // box's value with the input listener attached.
+      renderGateAndForm();
       flowEl.innerHTML = `<div data-testid="add-error">${errorBlockHtml(state.error)}</div>`;
       wireErrorBlock(flowEl, state.error);
     } else {
