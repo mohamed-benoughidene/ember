@@ -135,11 +135,15 @@ ask_secret() {
 }
 
 # write_env KEY VALUE upserts KEY='VALUE' into ENV_FILE (replaces any existing
-# line) and sets $KEY. Idempotent. Creates ENV_FILE at mode 0600; writes through
-# a symlink and keeps an existing file's mode.
+# line) and sets $KEY. Idempotent. Locks ENV_FILE to mode 0600 BEFORE any key
+# byte is written (no 644 window, decision I13); writes through a symlink.
 write_env() {
   local key="$1" value="$2" tmp sq="'\\''"
-  [[ -e "$ENV_FILE" ]] || (umask 077 && : > "$ENV_FILE")
+  # Lock the file BEFORE any key byte is written (decision I13: no 644
+  # window at any moment). Covers both a fresh file and a pre-existing
+  # wide-open file: the mode ends as 600 before the key line is appended.
+  umask 077
+  touch "$ENV_FILE" && chmod 600 "$ENV_FILE"
   tmp=$(mktemp)
   grep -vE "^${key}=" "$ENV_FILE" > "$tmp" || true
   printf "%s='%s'\n" "$key" "${value//\'/$sq}" >> "$tmp"
@@ -247,8 +251,8 @@ stage "Verify"
 if [[ -f "$ENV_FILE" ]] && grep -q "^EMBER_AI_API_KEY=" "$ENV_FILE"; then
   printf '  %s✓ file exists:%s %s (mode %s)\n' "$GREEN" "$RESET" "$ENV_FILE" "$(stat -c %a "$ENV_FILE")"
   local keylen
-  keylen=$(grep -oP '(?<=EMBER_AI_API_KEY=).*' "$ENV_FILE" | wc -c)
-  printf '  %s✓ key present:%s %s chars (length only, never the key)\n' "$GREEN" "$RESET" "$((keylen - 1))"
+  keylen=${#EMBER_AI_API_KEY}
+  printf '  %s✓ key present:%s %s chars (length only, never the key)\n' "$GREEN" "$RESET" "$keylen"
   if [[ "$(stat -c %a "$ENV_FILE")" == "600" ]]; then
     printf '  %s✓ permissions:%s 600 (only your user can read it)\n' "$GREEN" "$RESET"
   else

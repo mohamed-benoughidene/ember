@@ -8,6 +8,7 @@ repo: they always copy it into a throwaway git repo first.
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -21,16 +22,38 @@ FAKE_KEY = "sk-or-v1-TESTKEY000000000000000000000000000"
 # Piped answers: the banner pause, the key, an empty model line
 # (verified working, check report §3).
 PIPED_ANSWERS = f"yes\n{FAKE_KEY}\n\n"
+# A 29-character key of plain letters and digits, for the length test.
+FAKE_KEY_29 = ("abc123" * 5)[:29]
+# The wizard's open_url calls xdg-open, which would open the keys page in a
+# real desktop browser on every test run. A stub xdg-open is put FIRST on
+# PATH so the copy's open_url finds the stub and opens nothing.
+STUB_DIR = Path("/tmp/opencode/batch0/chunk4/stub")
+
+
+def _ensure_xdg_open_stub() -> None:
+    """Create the no-op xdg-open stub if it is missing (idempotent)."""
+    STUB_DIR.mkdir(parents=True, exist_ok=True)
+    stub = STUB_DIR / "xdg-open"
+    if not stub.exists():
+        stub.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        stub.chmod(0o755)
 
 
 def run_wizard_copy(
-    tmp_path: Path, gitignore: str
-) -> tuple[subprocess.CompletedProcess, bool]:
+    tmp_path: Path,
+    gitignore: str,
+    key: str = FAKE_KEY,
+    pre_env_mode: int | None = None,
+) -> tuple[subprocess.CompletedProcess, bool, int | None]:
     """Copy the wizard into a fresh temp git repo and run the COPY there.
 
-    Returns the completed run and whether an EMBER_AI_API_KEY= line was
-    found on disk (checked BEFORE the folder is removed).
+    pre_env_mode: when set, pre-create an empty repo/.env with this mode
+    before the run. Returns the completed run, whether an
+    EMBER_AI_API_KEY= line was found on disk, and the .env mode after the
+    run (None when .env does not exist) — all captured BEFORE the folder
+    is removed.
     """
+    _ensure_xdg_open_stub()
     repo = tmp_path / "repo"
     (repo / "scripts").mkdir(parents=True)
     # The helper owns the .gitignore content; callers choose whether it
@@ -41,6 +64,10 @@ def run_wizard_copy(
     # level below the repo root for the derivation to land inside the repo.
     shutil.copy2(WIZARD_SCRIPT, repo / "scripts" / "ember-key-wizard.sh")
     subprocess.run(["git", "init", str(repo)], check=True, capture_output=True)
+    if pre_env_mode is not None:
+        env_file = repo / ".env"
+        env_file.write_text("", encoding="utf-8")
+        env_file.chmod(pre_env_mode)
     # Isolate git's ignore lookup from the machine's global/system config so
     # only this repo's .gitignore decides whether .env is ignored.
     empty_gitconfig = tmp_path / "empty-gitconfig"
@@ -50,18 +77,21 @@ def run_wizard_copy(
         "TMPDIR": str(tmp_path),
         "GIT_CONFIG_GLOBAL": str(empty_gitconfig),
         "GIT_CONFIG_SYSTEM": str(empty_gitconfig),
+        "PATH": f"{STUB_DIR}:{os.environ.get('PATH', '')}",
     }
     try:
         proc = subprocess.run(
             ["bash", str(repo / "scripts" / "ember-key-wizard.sh")],
-            input=PIPED_ANSWERS,
+            input=f"yes\n{key}\n\n",
             text=True,
             capture_output=True,
             cwd=repo,
             env=env,
         )
         wrote_key = key_on_disk(repo)
-        return proc, wrote_key
+        env_file = repo / ".env"
+        env_mode = env_file.stat().st_mode & 0o777 if env_file.exists() else None
+        return proc, wrote_key, env_mode
     finally:
         # Removes the folder after the run, including any .env it wrote,
         # so a leaked key never survives the test.
@@ -88,8 +118,36 @@ def key_on_disk(repo: Path) -> bool:
 def test_not_gitignored_refuses_and_writes_nothing(tmp_path: Path):
     """A key file that .gitignore does not cover is refused; nothing is written."""
     # The .gitignore deliberately does NOT cover .env.
-    proc, wrote_key = run_wizard_copy(tmp_path, gitignore="__pycache__/\n")
+    proc, wrote_key, _env_mode = run_wizard_copy(tmp_path, gitignore="__pycache__/\n")
     assert proc.returncode != 0, (
         f"expected non-zero exit, got 0. stdout:\n{proc.stdout}\nstderr:\n{proc.stderr}"
     )
     assert not wrote_key, f"the key was written to disk. stderr:\n{proc.stderr}"
+
+
+def test_existing_env_file_644_ends_at_600(tmp_path: Path):
+    """Regression pin: a pre-existing 644 .env ends as 600, key present."""
+    proc, wrote_key, env_mode = run_wizard_copy(
+        tmp_path, gitignore=".env\n", pre_env_mode=0o644
+    )
+    assert proc.returncode == 0, (
+        f"expected zero exit, got {proc.returncode}. stderr:\n{proc.stderr}"
+    )
+    assert wrote_key, f"the key was not written to disk. stderr:\n{proc.stderr}"
+    assert env_mode == 0o600, f"expected .env mode 600, got {oct(env_mode) if env_mode else env_mode}"
+
+
+def test_reported_length_matches_the_key(tmp_path: Path):
+    """The printed \"N chars\" number is the real key length (29)."""
+    proc, wrote_key, _env_mode = run_wizard_copy(
+        tmp_path, gitignore=".env\n", key=FAKE_KEY_29
+    )
+    assert proc.returncode == 0, (
+        f"expected zero exit, got {proc.returncode}. stderr:\n{proc.stderr}"
+    )
+    assert wrote_key, f"the key was not written to disk. stderr:\n{proc.stderr}"
+    match = re.search(r"(\d+) chars", proc.stdout)
+    assert match, f"no \"N chars\" line in stdout:\n{proc.stdout}"
+    assert int(match.group(1)) == len(FAKE_KEY_29) == 29, (
+        f"reported {match.group(1)} chars for a 29-char key. stdout:\n{proc.stdout}"
+    )
