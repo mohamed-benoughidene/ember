@@ -7,7 +7,7 @@
  * APP-003 and offers the session-only path.
  */
 
-const test = require('node:test');
+const { test, after } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
@@ -44,8 +44,16 @@ function fakeSafeStorage(backend) {
 
 function tempFile() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ember-key-'));
+  tempDirs.push(dir);
   return path.join(dir, 'key.enc');
 }
+
+// I4: every mkdtemp folder above is tracked and removed once, at the
+// very end of the file (node:test's after() runs a single time).
+const tempDirs = [];
+after(() => {
+  for (const dir of tempDirs) fs.rmSync(dir, { recursive: true, force: true });
+});
 
 test('the backend rule: real keyrings pass, basic_text and nothing fail', () => {
   assert.equal(isBackendTrusted(fakeSafeStorage('kwallet6')), true);

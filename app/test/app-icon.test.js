@@ -28,9 +28,13 @@ test('the shipped tree carries the tray and window PNGs (real PNG magic, square)
 
 test('a tree without the assets gets null — the tray keeps its honest default (never a broken path)', () => {
   const empty = fs.mkdtempSync(path.join(os.tmpdir(), 'ember-icons-'));
-  assert.equal(trayIconPath(empty), null);
-  assert.equal(windowIconPath(empty), null);
-  // A directory in the icon's place is not a file either.
-  fs.mkdirSync(path.join(empty, 'assets', 'icons', 'ember-tray-32.png'), { recursive: true });
-  assert.equal(trayIconPath(empty), null);
+  try {
+    assert.equal(trayIconPath(empty), null);
+    assert.equal(windowIconPath(empty), null);
+    // A directory in the icon's place is not a file either.
+    fs.mkdirSync(path.join(empty, 'assets', 'icons', 'ember-tray-32.png'), { recursive: true });
+    assert.equal(trayIconPath(empty), null);
+  } finally {
+    fs.rmSync(empty, { recursive: true, force: true });
+  }
 });
