@@ -1280,7 +1280,7 @@ def backup(target_path: str, output: OutputOptions) -> None:
 @click.option(
     "--out",
     "out_path",
-    type=click.Path(dir_okay=False),
+    type=str,
     default=None,
     help="Write the export to this UTF-8 text file instead of STDOUT.",
 )
