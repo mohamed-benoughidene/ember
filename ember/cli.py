@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import traceback
 from datetime import datetime, timezone
 from dataclasses import dataclass
 from functools import wraps
@@ -71,6 +72,7 @@ from ember.capture.item_proposal import (
     read_context_mode,
 )
 from ember.capture.source_storage import StoredSource, store_source
+from ember.crash_report import write_crash_file
 from ember.errors import EmberError
 from ember.maintain.close_proposer import ProposalOutcome, stale_close_candidates
 from ember.maintain.derive import derive_status_changes
@@ -293,7 +295,68 @@ class MaintainTerminalConfirm:
         click.echo(text)
 
 
-@click.group()
+class EmberGroup(click.Group):
+    """The ONE edge handler at the program's exit door (Batch 2 Chunk 2).
+
+    Wraps the whole dispatch: an unexpected non-house exception becomes a
+    single `error: EMBER-000 InternalError | ...` line on stderr, exit 1,
+    and a crash file with the secrets scrubbed out. A known `EmberError`
+    still carries its own code and name (Chunk 4 moves the printing of
+    known errors here too); click's own usage errors and a user abort keep
+    their exit contract (N6: usage error 2, abort 2).
+    """
+
+    def invoke(self, ctx: click.Context) -> Any:
+        try:
+            return super().invoke(ctx)
+        except (
+            EmberError,
+            SystemExit,
+            click.ClickException,
+            click.exceptions.Exit,
+            click.exceptions.Abort,
+        ):
+            # House errors keep their own code; click usage errors and a
+            # user abort keep their exit contract (N6).
+            raise
+        except Exception as exc:
+            _handle_unexpected(exc, command=ctx.info_name)
+
+
+def _handle_unexpected(exc: Exception, *, command: str) -> None:
+    """Print the ONE EMBER-000 house line and exit 1 for an unexpected
+    exception. A broken pipe leaves NO crash file (nothing went wrong in
+    the engine — nobody is there to read the output); every other
+    unexpected exception writes a secret-scrubbed crash file and names it
+    in the line. The handler prints the `InternalError` name itself; the
+    base class `ember/errors.py` `code`/`name` stays untouched."""
+    if isinstance(exc, BrokenPipeError):
+        click.echo(
+            f"error: EMBER-000 InternalError | ember.cli.{command} | output pipe closed",
+            err=True,
+        )
+        sys.exit(1)
+
+    frames = traceback.extract_tb(exc.__traceback__)
+    innermost = frames[-1] if frames else None
+    if innermost is not None:
+        module = os.path.splitext(os.path.basename(innermost.filename))[0]
+        where = f"{module}.{innermost.name}"
+    else:
+        where = "ember.cli"
+
+    crash = write_crash_file(
+        command=command,
+        traceback_text=traceback.format_exc(),
+    )
+    click.echo(
+        f"error: EMBER-000 InternalError | {where} | crash={crash}",
+        err=True,
+    )
+    sys.exit(1)
+
+
+@click.group(cls=EmberGroup)
 @click.version_option(version=__version__, prog_name="ember")
 def main() -> None:
     """Ember: project context management system."""
