@@ -12,6 +12,7 @@ from typing import Any, Callable
 
 import click
 
+from ember import __version__
 from ember.adapters.backup import create_backup
 from ember.adapters.db_check import check_database
 from ember.adapters.export import (
@@ -293,6 +294,7 @@ class MaintainTerminalConfirm:
 
 
 @click.group()
+@click.version_option(version=__version__, prog_name="ember")
 def main() -> None:
     """Ember: project context management system."""
 
