@@ -119,9 +119,9 @@ test('a warning line before the house error line does not hide the real error (F
   const result = await client.runCommand('list-items', []);
   assert.equal(result.ok, false);
   assert.equal(result.error.code, 'RELATE-036');
-  assert.equal(result.error.name, 'ModelChanged');
+  assert.equal(result.error.name, 'AiResponseWriteFailed');
   assert.equal(result.error.where, 'fake.ember');
-  assert.ok(result.error.detail.startsWith('embeddings stale'), result.error.detail);
+  assert.ok(result.error.detail.startsWith('raw answer save failed'), result.error.detail);
   // The warning before the error is not the error: it must not be in
   // the detail, and the code must never degrade to APP-002.
   assert.ok(!result.error.detail.includes('warning:'), result.error.detail);

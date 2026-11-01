@@ -94,7 +94,7 @@ if (mode === 'hang') {
      real `ember relate` does this with its model-change warning), so
      the client must scan past it. */
   process.stderr.write('warning: embedding model changed since build\n');
-  process.stderr.write('error: RELATE-036 ModelChanged | fake.ember | embeddings stale | item_id=3\n');
+  process.stderr.write('error: RELATE-036 AiResponseWriteFailed | fake.ember | raw answer save failed | item_id=3\n');
   process.exit(1);
 } else if (mode === 'session') {
   runSession();
