@@ -67,6 +67,12 @@ const CRASH_ID = '20261101T120000Z-e2e14c';
 
 const NOTE = 'We decided to use SQLite for local storage. We assume the team ships weekly.';
 
+/* Batch 3 Chunk 2: a clearly different note the scenario types into the
+   box after the failure, so the Retry request can be pinned to the
+   EDITED text (not the original). No quote characters: the recorded
+   request body is JSON-escaped and the assert is a plain substring check. */
+const EDITED_NOTE = 'Edited after the failure: the retry must send exactly this edited note text.';
+
 /* ---------- the fake AI (OpenAI /chat/completions shape) ---------- */
 
 function startFakeAi() {
@@ -633,9 +639,27 @@ async function failKeepsForm(ai) {
     }
     const kept = await win.inputValue('[data-testid="add-text-input"]');
     if (kept !== NOTE) fail(`the box must still hold the sent text, saw: ${kept}`);
+    // Batch 3 Chunk 2 (story 3): the user edits the kept text, the AI
+    // comes back, Retry must send EXACTLY what is in the box now.
+    const bodiesBefore = ai.bodies.length;
+    await win.fill('[data-testid="add-text-input"]', EDITED_NOTE);
+    ai.set(() => ({
+      status: 200,
+      content: JSON.stringify([
+        { type: 'Decision', statement: 'The retry sent the edited text', source_quote: 'edited note text', confidence: 0.9 },
+      ]),
+    }));
+    await win.locator('[data-testid="state-error"] [data-action="add-retry"]').click();
+    await win.waitForSelector('[data-testid="proposal"]');
+    const retries = ai.bodies.slice(bodiesBefore);
+    if (retries.length !== 1) fail(`Retry must send exactly one request, saw ${retries.length}`);
+    if (!retries[0].includes(EDITED_NOTE)) {
+      fail(`the Retry request must contain the EDITED text, got: ${retries[0].slice(0, 400)}`);
+    }
+    if (retries[0].includes(NOTE)) fail(`the Retry request must NOT contain the original text, got: ${retries[0].slice(0, 400)}`);
     await assertNoBareCode(win);
     await app.close();
-    process.stdout.write('form kept OK: the error and the form show together, text still in the box\n');
+    process.stdout.write('form kept OK: the error and the form show together, text still in the box, Retry sent the edited text\n');
   } finally {
     await app.close().catch(() => {});
     fs.rmSync(workDir, { recursive: true, force: true });
