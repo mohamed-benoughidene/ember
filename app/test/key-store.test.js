@@ -61,7 +61,8 @@ test('a strong backend stores the key encrypted and round-trips it', () => {
   const store = createKeyStore({ file, safeStorage: fakeSafeStorage('kwallet6') });
   const result = store.set(KEY);
   assert.deepEqual(result, { ok: true });
-  assert.equal(store.get(), KEY, 'the same key comes back');
+  assert.equal(store.get().key, KEY, 'the same key comes back');
+  assert.equal(store.get().state, 'key');
 
   // THE security pin: the bytes on disk are NOT the key.
   const onDisk = fs.readFileSync(file, 'utf8');
@@ -80,8 +81,8 @@ test('the saved file is readable only by the owner (0600)', () => {
 
 test('no key stored yet: get() is null and status says so', () => {
   const store = createKeyStore({ file: tempFile(), safeStorage: fakeSafeStorage('kwallet6') });
-  assert.equal(store.get(), null);
-  assert.deepEqual(store.status(), { stored: false, sessionOnly: false, backend: 'kwallet6' });
+  assert.deepEqual(store.get(), { state: 'absent', key: null });
+  assert.deepEqual(store.status(), { stored: false, sessionOnly: false, unreadable: false, backend: 'kwallet6' });
 });
 
 test('a weak backend refuses to save with APP-003 and writes NOTHING (decision 4-A)', () => {
@@ -101,16 +102,17 @@ test('the session-only offer: the key works this session, the disk stays empty',
   const file = tempFile();
   const store = createKeyStore({ file, safeStorage: fakeSafeStorage('basic_text') });
   assert.deepEqual(store.setSessionOnly(KEY), { ok: true });
-  assert.equal(store.get(), KEY);
+  assert.equal(store.get().state, 'key');
+  assert.equal(store.get().key, KEY);
   assert.equal(fs.existsSync(file), false, 'the weak-backend path must not write the key');
-  assert.deepEqual(store.status(), { stored: false, sessionOnly: true, backend: 'basic_text' });
+  assert.deepEqual(store.status(), { stored: false, sessionOnly: true, unreadable: false, backend: 'basic_text' });
 });
 
 test('a session-only key does not survive a "restart" (a fresh store)', () => {
   const file = tempFile();
   createKeyStore({ file, safeStorage: fakeSafeStorage('basic_text') }).setSessionOnly(KEY);
   const revived = createKeyStore({ file, safeStorage: fakeSafeStorage('kwallet6') });
-  assert.equal(revived.get(), null, 'the key was never written, so a restart loses it');
+  assert.deepEqual(revived.get(), { state: 'absent', key: null }, 'the key was never written, so a restart loses it');
 });
 
 test('saving properly replaces a session-only key', () => {
@@ -119,7 +121,7 @@ test('saving properly replaces a session-only key', () => {
   store.setSessionOnly(KEY);
   store.set('sk-or-v1-real-saved-key');
   assert.equal(store.status().sessionOnly, false);
-  assert.equal(store.get(), 'sk-or-v1-real-saved-key');
+  assert.equal(store.get().key, 'sk-or-v1-real-saved-key');
 });
 
 test('remove deletes the file and the session copy (careful action, story 89)', () => {
@@ -128,15 +130,49 @@ test('remove deletes the file and the session copy (careful action, story 89)', 
   store.set(KEY);
   assert.deepEqual(store.remove(), { ok: true });
   assert.equal(fs.existsSync(file), false);
-  assert.equal(store.get(), null);
+  assert.deepEqual(store.get(), { state: 'absent', key: null });
   assert.deepEqual(store.remove(), { ok: true }, 'removing twice stays calm');
 });
 
-test('a corrupt key file reads as "no key", never a crash', () => {
+test('a corrupt key file reads as UNREADABLE (fix F6), never as "no key"', () => {
   const file = tempFile();
   fs.writeFileSync(file, 'not base64 at all');
   const store = createKeyStore({ file, safeStorage: fakeSafeStorage('kwallet6') });
-  assert.equal(store.get(), null);
+  // The distinct result: present but unreadable. No key bytes in it.
+  assert.deepEqual(store.get(), { state: 'unreadable', key: null });
+  // The status flag the screens read (a boolean only, never the key).
+  assert.equal(store.status().unreadable, true);
+  assert.equal(store.status().stored, true);
+});
+
+test('a missing file stays ABSENT, and a good key stays readable (fix F6)', () => {
+  const file = tempFile();
+  const store = createKeyStore({ file, safeStorage: fakeSafeStorage('kwallet6') });
+  assert.deepEqual(store.get(), { state: 'absent', key: null });
+  assert.equal(store.status().unreadable, false);
+  assert.equal(store.set('sk-or-v1-abcdef1234567890abcd').ok, true);
+  const held = store.get();
+  assert.equal(held.state, 'key');
+  assert.equal(held.key, 'sk-or-v1-abcdef1234567890abcd');
+  assert.equal(store.status().unreadable, false);
+  // A session-only key does not make the (missing) file "unreadable".
+  const fresh = createKeyStore({ file: tempFile(), safeStorage: fakeSafeStorage('kwallet6') });
+  fresh.setSessionOnly('sk-or-v1-abcdef1234567890abcd');
+  assert.deepEqual(fresh.get(), { state: 'key', key: 'sk-or-v1-abcdef1234567890abcd' });
+  assert.equal(fresh.status().unreadable, false);
+});
+
+test('the settings words for an unreadable key tell the user to paste again (fix F6)', async () => {
+  const { aiStatusWords } = await import('../renderer/screens/settings.mjs');
+  const words = aiStatusWords({ stored: true, unreadable: true });
+  assert.match(words.title, /could not be read/);
+  assert.match(words.help, /Paste the key again/);
+  // No key text can ever be part of the words (I21: zero secrets).
+  const fakeKey = 'sk-or-v1-abcdef1234567890abcd';
+  assert.ok(!words.title.includes(fakeKey) && !words.help.includes(fakeKey));
+  // The other states keep their pinned sentences (null = caller's own).
+  assert.equal(aiStatusWords({ stored: true }), null);
+  assert.equal(aiStatusWords(null), null);
 });
 
 test('an empty or non-string key is refused without touching the disk', () => {

@@ -265,7 +265,13 @@ function wireIpc(services) {
         emberCommand: services.emberCommand,
         dbPath: db,
         errorPattern: services.errorPattern,
-        apiKeyProvider: () => services.keyStore.get(),
+        // Fix F6: get() names its result now; only state 'key' hands
+        // the key to the child (never 'unreadable' — the engine then
+        // behaves exactly as with no key, which the screens say).
+        apiKeyProvider: () => {
+          const held = services.keyStore.get();
+          return held.state === 'key' ? held.key : null;
+        },
         // Deliberately NO onActivity here: the refresh must not re-arm itself.
       });
       labelClientDb = db;
@@ -451,7 +457,11 @@ function wireIpc(services) {
     ipcMain,
     settingsStore: services.settingsStore,
     keyStore: services.keyStore,
-    apiKeyProvider: () => services.keyStore.get(),
+    // Fix F6: same named-result rule as above (and site 2's note).
+    apiKeyProvider: () => {
+      const held = services.keyStore.get();
+      return held.state === 'key' ? held.key : null;
+    },
     errorPattern: services.errorPattern,
     emberCommand: services.emberCommand,
     dbOverride: DB_OVERRIDE,
@@ -500,7 +510,12 @@ function wireIpc(services) {
     },
     // [app 10] the Settings seams (stories 85-89)
     shortcutRegistrar: (accelerator) => registerSettingsShortcut({ manager: shortcutManager, accelerator }),
-    keyHintProvider: () => maskedKeyHint.maskKey(services.keyStore.get()),
+    // Fix F6: only a really readable key has a hint; an unreadable
+    // one shows no masked echo at all (the status pane says why).
+    keyHintProvider: () => {
+      const held = services.keyStore.get();
+      return maskedKeyHint.maskKey(held.state === 'key' ? held.key : null);
+    },
     /* --- [app 11] the quick popup's two renderer-facing channels
        (stories 90-95): the renderer-safe route to the popup — the
        SAME action object the shortcut, the tray and `--quick-add`
@@ -569,7 +584,11 @@ async function runLaunchCheck() {
     emberCommand: services.emberCommand,
     dbPath: db,
     errorPattern: services.errorPattern,
-    apiKeyProvider: () => services.keyStore.get(),
+    // Fix F6: only a readable key becomes the child's env variable.
+    apiKeyProvider: () => {
+      const held = services.keyStore.get();
+      return held.state === 'key' ? held.key : null;
+    },
   });
   const result = await client.runCommand('list-items', []);
   if (!result.ok) return failLaunchCheck(result.error);

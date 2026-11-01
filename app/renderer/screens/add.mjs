@@ -32,6 +32,7 @@ export function createAddScreen(ctx) {
     view: initialAddView(),
     error: null, // {code, name, where, detail}
     keyMissing: false,
+    keyUnreadable: false, // fix F6: distinct from keyMissing (see render)
     kbInvalid: false,
     unsub: [],
     busy: false, // an answer is on its way to the engine; one at a time
@@ -298,6 +299,14 @@ export function createAddScreen(ctx) {
       wireErrorBlock(flowEl, err);
       return;
     }
+    if (state.keyUnreadable) {
+      // Fix F6: the saved key's file cannot be read — say so and point
+      // at the pane where pasting the key again fixes it.
+      formEl.innerHTML = '';
+      gate.innerHTML = `<div class="state state--no-key" data-testid="state-key-unreadable"><div class="errbox"><strong>The saved key could not be read.</strong><span class="detail">Paste the key again. Your text below is kept; nothing was sent.</span><div class="actions">${buttonHtml({ label: 'Open the AI connection', action: 'add-open-setup', variant: 'primary' })}</div></div></div>`;
+      gate.querySelector('[data-action="add-open-setup"]')?.addEventListener('click', () => ctx.openSetup());
+      return;
+    }
     if (state.keyMissing) {
       // Story 29: without a key, Add says it needs the connection and
       // takes the user to the setting.
@@ -553,6 +562,10 @@ export function createAddScreen(ctx) {
     }
     const status = await ctx.api.keyStatus();
     state.keyMissing = !(status && (status.stored || status.sessionOnly));
+    // Fix F6: unreadable is DISTINCT from missing — the key was saved
+    // here but its file cannot be opened, so the honest words say to
+    // paste it again (never "no key yet", never the key).
+    state.keyUnreadable = Boolean(status && status.unreadable);
     renderGateAndForm();
   }
 

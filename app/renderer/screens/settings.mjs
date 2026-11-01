@@ -105,12 +105,35 @@ export function toggleJobHidden(hidden, id) {
   return hidden.includes(id) ? hidden.filter((h) => h !== id) : [...hidden, id];
 }
 
+/**
+ * Fix F6: the AI-connection status line's words as a pure picker, so
+ * the unreadable state is testable without a DOM. "Unreadable" is
+ * DISTINCT from "not connected": the key WAS saved here but its file
+ * cannot be opened, so the honest words tell the user to paste it
+ * again. No key text is ever part of these words (I21). The stored
+ * and session-only branches keep their original pinned HTML (the hint
+ * rides inside them), so only three shapes come back from here.
+ *
+ * @param {{stored?: boolean, sessionOnly?: boolean, unreadable?: boolean}|null} status
+ * @returns {{title: string, help: string} | null} null = the caller's
+ *   existing stored/session-only sentence stays.
+ */
+export function aiStatusWords(status) {
+  if (status && status.unreadable) {
+    return {
+      title: 'The saved key could not be read.',
+      help: 'The key file on this computer could not be opened (it may be from another keyring, or damaged). Paste the key again; the old file is replaced when you save.',
+    };
+  }
+  return null;
+}
+
 export function createSettingsScreen(ctx) {
   const state = {
     pane: 'appearance',
     saved: false, // the quiet "Saved." marker (81)
     error: null, // {title, detail} shown where it happened
-    aiStatus: null, // {stored, sessionOnly, backend} once read
+    aiStatus: null, // {stored, sessionOnly, unreadable, backend} once read
     aiHint: null, // the key's last four characters, or null
     aiLoading: true,
     aiStatusError: false,
@@ -631,7 +654,10 @@ function aiHtml(state) {
       <div class="actions">${buttonHtml({ label: 'Try again', action: 'ai-retry-status', variant: 'secondary' })}</div></div>`;
   }
   let statusHtml;
-  if (state.aiStatus?.stored) {
+  const unreadableWords = aiStatusWords(state.aiStatus);
+  if (unreadableWords) {
+    statusHtml = `<p data-testid="ai-status" style="margin:0"><strong>${esc(unreadableWords.title)}</strong><span class="detail">${esc(unreadableWords.help)}</span></p>`;
+  } else if (state.aiStatus?.stored) {
     statusHtml = `<p data-testid="ai-status" style="margin:0">Connected.<span class="help">The key is in this computer's keyring${
       state.aiHint ? `, and ends in <span class="kbdkey" data-testid="ai-hint">${esc(state.aiHint)}</span>` : ''
     }. Ember never shows the whole key.</span></p>`;
@@ -670,9 +696,10 @@ function aiHtml(state) {
     ${buttonHtml({ label: 'Replace key', action: 'ai-replace', variant: 'secondary', testid: 'ai-replace' })}
     ${buttonHtml({ label: 'Remove key…', action: 'ai-remove', variant: 'danger', testid: 'ai-remove', title: 'Careful: this asks first, then removes the key from the keyring' })}
   </div>`;
-  const connected = state.aiStatus?.stored || state.aiStatus?.sessionOnly;
   // Not connected: the pane's own path to fix it (the no-key state
-  // never dead-ends; stories 48/89).
+  // never dead-ends; stories 48/89). Unreadable keeps the actions too
+  // (fix F6): "Replace key" is exactly the paste-it-again path.
+  const connected = state.aiStatus?.stored || state.aiStatus?.sessionOnly || state.aiStatus?.unreadable;
   const controls = `${connected ? actions : buttonHtml({ label: 'Set up the connection', action: 'ai-replace', variant: 'primary', testid: 'ai-set-up' })}${replaceForm}${removeConfirm}`;
   return paneRow('AI connection', 'Adding text and linking items need it.', `${statusHtml}${controls}`);
 }

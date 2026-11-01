@@ -53,14 +53,20 @@ function createKeyStore(options) {
   let sessionKey = null; // the "use for this session only" fallback
 
   /**
-   * @returns {{stored: boolean, sessionOnly: boolean, backend: string|null}}
-   *   backend is the OS backend name for the status screen; it is not
-   *   a secret.
+   * @returns {{stored: boolean, sessionOnly: boolean, unreadable: boolean,
+   *   backend: string|null}}
+   *   `unreadable` (fix F6): a stored key file exists but its bytes
+   *   cannot be decrypted. It is a boolean only — no key bytes ever
+   *   appear here. `backend` is the OS backend name for the status
+   *   screen; it is not a secret.
    */
   function status() {
+    const stored = fsImpl.existsSync(file);
+    const sessionOnly = sessionKey !== null;
     return {
-      stored: fsImpl.existsSync(file),
-      sessionOnly: sessionKey !== null,
+      stored,
+      sessionOnly,
+      unreadable: stored && !sessionOnly && get().state === 'unreadable',
       backend:
         typeof safeStorage?.getSelectedStorageBackend === 'function'
           ? safeStorage.getSelectedStorageBackend()
@@ -68,22 +74,34 @@ function createKeyStore(options) {
     };
   }
 
-  /** @returns {string|null} the key, from the file or the session-only slot. */
+  /**
+   * The ONE named result the callers may read (fix F6). "absent" (no
+   * key stored) and "unreadable" (the stored file is there but its
+   * bytes cannot be decrypted — a different keyring or a damaged
+   * file) are DISTINCT: hiding an unreadable key as "absent" told the
+   * user to paste a key they already saved, with no hint why. The key
+   * bytes leave ONLY in state 'key' — never in a log, an error or a
+   * status answer (I19/I21).
+   *
+   * @returns {{state: 'key'|'absent'|'unreadable', key: string|null}}
+   */
   function get() {
-    if (sessionKey !== null) return sessionKey;
+    if (sessionKey !== null) return { state: 'key', key: sessionKey };
     let raw;
     try {
       raw = fsImpl.readFileSync(file);
     } catch {
-      return null; // no key stored yet
+      return { state: 'absent', key: null }; // no key stored yet
     }
     try {
       const decrypted = safeStorage.decryptString(Buffer.from(raw.toString('utf8'), 'base64'));
-      return decrypted === '' ? null : decrypted;
+      return decrypted === '' ? { state: 'absent', key: null } : { state: 'key', key: decrypted };
     } catch {
-      // Wrong backend or corrupt bytes: treat as absent, never crash,
-      // never echo the bytes anywhere. The user re-enters the key.
-      return null;
+      // Wrong backend or corrupt bytes: a distinct state the screens
+      // must show as "paste the key again". Never crash, never echo
+      // the bytes anywhere (AGENTS.md rule 2: an error is faced, not
+      // silenced into "absent").
+      return { state: 'unreadable', key: null };
     }
   }
 
