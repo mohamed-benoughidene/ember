@@ -21,7 +21,7 @@ const summary = (over = {}) => ({ direction: 'undo', source_action: 'close-item'
 test('undo labels', async (t) => {
   const { undoRedoLabel, undoActionWords, undoDoneSentence, undoDisabledReason, UNDO_ACTION_WORDS } = await import('../shared/undo-labels.mjs');
 
-  t.test('the label names the action, from the engine summary (story 113)', () => {
+  await t.test('the label names the action, from the engine summary (story 113)', () => {
     assert.equal(undoRedoLabel(summary()), 'Undo Close item 3');
     assert.equal(undoRedoLabel(summary({ direction: 'redo' })), 'Redo Close item 3');
     assert.equal(undoRedoLabel(summary({ source_action: 'remove-link', target_label: 'link 7' })), 'Undo Removal of link 7');
@@ -35,7 +35,7 @@ test('undo labels', async (t) => {
     }
   });
 
-  t.test('every engine source_action has a label; unknown ones fail loudly', () => {
+  await t.test('every engine source_action has a label; unknown ones fail loudly', () => {
     // The engine can return exactly these (ember/maintain/undo.py):
     for (const action of ['close-item', 'set-status', 'set-validated', 'clear-validated', 'edit-item', 'remove-link', 'reverse-supersedes']) {
       assert.ok(undoActionWords(action), action);
@@ -45,13 +45,13 @@ test('undo labels', async (t) => {
     assert.throws(() => undoRedoLabel(null), /missing/);
   });
 
-  t.test('the confirming sentences (story 62) and the honesty line', () => {
+  await t.test('the confirming sentences (story 62) and the honesty line', () => {
     assert.equal(undoDoneSentence(summary()), 'Undone Close item 3: nothing was erased; the ledger keeps both lines.');
     assert.equal(undoDoneSentence(summary({ direction: 'redo' })), 'Redone Close item 3: done again, the same append-only way.');
     assert.equal(undoDoneSentence(summary(), true), 'Undo Close item 3: nothing has changed yet.');
   });
 
-  t.test('the honest disabled states (111/112/123) and the enabled refusals', () => {
+  await t.test('the honest disabled states (111/112/123) and the enabled refusals', () => {
     assert.equal(undoDisabledReason({ code: 'MAINTAIN-023', detail: 'nothing to undo | ungrouped_rows_exist=False' }), 'Nothing to undo.');
     assert.equal(
       undoDisabledReason({ code: 'MAINTAIN-023', detail: 'nothing to undo: older ledger rows carry no undo group (they were written before the grouping upgrade) and are not undoable | ungrouped_rows_exist=True' }),
@@ -74,7 +74,7 @@ test('maintain plain sentences', async (t) => {
   const { MAINTAIN_SENTENCES, maintainSentenceFor, undoNoteFor } = await import('../shared/maintain-sentences.mjs');
   const { sentenceFor } = await import('../shared/plain-sentences.mjs');
 
-  t.test('the step-07 code range has full entries (step file §4)', () => {
+  await t.test('the step-07 code range has full entries (step file §4)', () => {
     for (const code of [
       'MAINTAIN-001', 'MAINTAIN-002', 'MAINTAIN-003', 'MAINTAIN-004', 'MAINTAIN-005', 'MAINTAIN-006',
       'MAINTAIN-013', 'MAINTAIN-014', 'MAINTAIN-015', 'MAINTAIN-016', 'MAINTAIN-017',
@@ -89,7 +89,7 @@ test('maintain plain sentences', async (t) => {
     }
   });
 
-  t.test('every code the table claims exists in ember/**/errors.py (no drift)', () => {
+  await t.test('every code the table claims exists in ember/**/errors.py (no drift)', () => {
     const real = new Set();
     for (const dir of ['ember', 'ember/capture', 'ember/maintain', 'ember/query', 'ember/relate', 'ember/adapters']) {
       const file = path.join(REPO_ROOT, dir, 'errors.py');
@@ -103,7 +103,7 @@ test('maintain plain sentences', async (t) => {
     assert.ok(real.has('CAPTURE-016') && real.has('MAINTAIN-025'));
   });
 
-  t.test('unknown codes fall through to the shared family sentence, never blank', () => {
+  await t.test('unknown codes fall through to the shared family sentence, never blank', () => {
     const generic = maintainSentenceFor('MAINTAIN-011');
     assert.equal(generic.title, sentenceFor('MAINTAIN-011').title, 'falls back to the shared table');
     assert.match(generic.title, /maintain engine/i);
@@ -112,7 +112,7 @@ test('maintain plain sentences', async (t) => {
     assert.match(named.title, /refused/i);
   });
 
-  t.test('the story-118/123 notes fire on the REAL engine detail strings', () => {
+  await t.test('the story-118/123 notes fire on the REAL engine detail strings', () => {
     assert.equal(undoNoteFor('MAINTAIN-023', 'nothing to undo | ungrouped_rows_exist=False'), null);
     assert.match(
       undoNoteFor('MAINTAIN-023', 'nothing to undo: older ledger rows carry no undo group (they were written before the grouping upgrade) and are not undoable | ungrouped_rows_exist=True'),

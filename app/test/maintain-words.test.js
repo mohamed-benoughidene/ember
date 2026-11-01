@@ -36,7 +36,7 @@ test('maintain words', async (t) => {
   };
   const messageText = JSON.stringify(document);
 
-  t.test('the document check accepts exactly the pinned shape from a message event', () => {
+  await t.test('the document check accepts exactly the pinned shape from a message event', () => {
     assert.deepEqual(maintainDocumentFromMessage(messageText), document);
     assert.equal(maintainDocumentFromMessage('item 3: Active -> Challenged'), null, 'plain report lines are not the document');
     assert.equal(maintainDocumentFromMessage('[]'), null);
@@ -44,7 +44,7 @@ test('maintain words', async (t) => {
     assert.equal(maintainDocumentFromMessage('{"command":"other"}'), null, 'another command is not a maintain document');
   });
 
-  t.test('the document check refuses every drifted top-level key', () => {
+  await t.test('the document check refuses every drifted top-level key', () => {
     for (const [key, value] of [
       ['command', 'drifted'],
       ['changes', 'not-a-list'],
@@ -57,7 +57,7 @@ test('maintain words', async (t) => {
     }
   });
 
-  t.test('the because cell names the rule and the link, never a blank', () => {
+  await t.test('the because cell names the rule and the link, never a blank', () => {
     assert.equal(causeSentence({ trigger_cause: 'supersedes_confirmed', link_id: 4 }), 'a confirmed supersedes link (link 4) replaces it');
     assert.equal(causeSentence({ trigger_cause: 'answers_confirmed', link_id: 11 }), 'a confirmed answers link (link 11) answers this question');
     assert.equal(causeSentence({ trigger_cause: 'contradicts_confirmed', link_id: 7 }), 'a confirmed contradicts link (link 7) contradicts it');
@@ -68,7 +68,7 @@ test('maintain words', async (t) => {
     assert.equal(causeSentence(null), 'the confirmed links say so');
   });
 
-  t.test('the counts sentence reads the engine summary only (D3)', () => {
+  await t.test('the counts sentence reads the engine summary only (D3)', () => {
     assert.equal(
       sweepCountsSentence({ closed: 1, challenged: 2, reopened: 0, unchanged: 5 }, 'would'),
       'The sweep would close 1 item, challenge 2 items, and leave 5 unchanged.',
@@ -82,7 +82,7 @@ test('maintain words', async (t) => {
     assert.equal(sweepCountsSentence(null), '');
   });
 
-  t.test('the stale note, the cap note and the candidate lines', () => {
+  await t.test('the stale note, the cap note and the candidate lines', () => {
     assert.equal(staleIntroSentence(0), '');
     assert.equal(staleIntroSentence(1), 'After the sweep, Ember may propose closing 1 old question that has an answer. You answer each one.');
     assert.ok(/2 old questions/.test(staleIntroSentence(2)));
@@ -92,7 +92,7 @@ test('maintain words', async (t) => {
     assert.equal(candidateLine({ item_id: 9, statement: null }), 'Item 9 — a question without text');
   });
 
-  t.test('the final outcome and headline sentences', () => {
+  await t.test('the final outcome and headline sentences', () => {
     assert.equal(phaseOutcomeSentence({ stale: 0, proposed: 0, accepted: 0, rejected: 0 }), '');
     assert.equal(phaseOutcomeSentence({ stale: 1, proposed: 1, accepted: 1, rejected: 0 }), 'Old questions: 1 proposal made, 1 accepted, 0 declined.');
     assert.equal(phaseOutcomeSentence({ stale: 2, proposed: 2, accepted: 1, rejected: 1 }), 'Old questions: 2 proposals made, 1 accepted, 1 declined.');
@@ -102,7 +102,7 @@ test('maintain words', async (t) => {
     assert.equal(resultHeadline({ closed: 0, challenged: 0, reopened: 0 }), 'Done. Nothing needed to change.');
   });
 
-  t.test('the answer mapping and the apply label', () => {
+  await t.test('the answer mapping and the apply label', () => {
     assert.equal(sweepAnswerFor('confirm'), 'y');
     assert.equal(sweepAnswerFor('reject'), 'n');
     assert.equal(sweepAnswerFor('stop'), null, 'stop closes the input; it is not a written answer');

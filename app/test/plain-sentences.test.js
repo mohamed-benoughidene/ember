@@ -26,7 +26,7 @@ test('plain sentences', async (t) => {
     await import('../shared/plain-sentences.mjs');
   const { NAMES } = require('../shared/errors');
 
-  t.test('every APP- code has a full sentence and the stable name', () => {
+  await t.test('every APP- code has a full sentence and the stable name', () => {
     for (let n = 0; n <= 8; n += 1) {
       const code = `APP-00${n}`;
       const entry = ERROR_SENTENCES[code];
@@ -40,7 +40,7 @@ test('plain sentences', async (t) => {
     }
   });
 
-  t.test('the step-04 query codes have full sentences', () => {
+  await t.test('the step-04 query codes have full sentences', () => {
     for (const code of ['QUERY-001', 'QUERY-003', 'QUERY-004', 'QUERY-006', 'QUERY-007']) {
       const entry = ERROR_SENTENCES[code];
       assert.ok(entry, `${code} has no entry`);
@@ -50,7 +50,7 @@ test('plain sentences', async (t) => {
     }
   });
 
-  t.test('every engine/bridge code the table claims exists in ember/**/errors.py', () => {
+  await t.test('every engine/bridge code the table claims exists in ember/**/errors.py', () => {
     const real = new Set();
     for (const dir of ['ember', 'ember/capture', 'ember/maintain', 'ember/query', 'ember/relate', 'ember/adapters']) {
       const file = path.join(REPO_ROOT, dir, 'errors.py');
@@ -70,7 +70,7 @@ test('plain sentences', async (t) => {
     }
   });
 
-  t.test('an unknown code falls back to a generic family sentence, never a blank', () => {
+  await t.test('an unknown code falls back to a generic family sentence, never a blank', () => {
     const unknownInKnownFamily = sentenceFor('QUERY-099');
     assert.match(unknownInKnownFamily.title, /query engine/i);
     assert.ok(unknownInKnownFamily.what.includes('QUERY-099'), 'the code must be visible in the generic sentence');
@@ -85,7 +85,7 @@ test('plain sentences', async (t) => {
     }
   });
 
-  t.test('every history kind ember/query/history.py can classify has a label (story 122)', () => {
+  await t.test('every history kind ember/query/history.py can classify has a label (story 122)', () => {
     const source = fs.readFileSync(path.join(REPO_ROOT, 'ember', 'query', 'history.py'), 'utf8');
     const kinds = new Set();
     const pairBlock = source.match(/_KIND_BY_PAIR[\s\S]*?}/);
@@ -107,7 +107,7 @@ test('plain sentences', async (t) => {
     }
   });
 
-  t.test('the undo-era ledger rows read in plain words (U5-1 handoff)', () => {
+  await t.test('the undo-era ledger rows read in plain words (U5-1 handoff)', () => {
     const undone = historyEventSentence({
       kind: 'undone', cause: 'user_undo', field_changed: 'undo_of', item_id: null, link_id: null,
       old_value: null, new_value: '7', close_reason: null,
