@@ -24,15 +24,17 @@
  *     warning.
  *  6. AI unreachable (27): plain words, text kept, nothing created,
  *     Retry and Details; DB untouched (0 items, one source).
- *  7. the key refused at the first Add (the decision 5-A refusal of
+ *  7. a failed Add (Batch 3 F2): the error AND the draft form show
+ *     together, the box still holding the text that was sent.
+ *  8. the key refused at the first Add (the decision 5-A refusal of
  *     stories 5/8): plain "refused the key" words.
- *  8. no key at all (29): Add says it needs the connection and opens
+ *  9. no key at all (29): Add says it needs the connection and opens
  *     the AI-connection setup.
- *  9. a child that dies mid-session: the error state and the temp
+ * 10. a child that dies mid-session: the error state and the temp
  *     file cleaned (fake ember stub; a real ember child cannot be
  *     killed mid-session from here — deviation logged). BRIDGE-001
  *     never reaches the user in any scenario.
- * 10. a fake EMBER-000 engine death (Batch 2 Chunk 14, story 2/3):
+ * 11. a fake EMBER-000 engine death (Batch 2 Chunk 14, story 2/3):
  *     the plain crash sentence (Chunk 12), and under it the two
  *     buttons "Copy crash report" and "Show file"; clicking Copy
  *     shows the "Copied." feedback and the crash text, and the shown
@@ -69,10 +71,13 @@ const NOTE = 'We decided to use SQLite for local storage. We assume the team shi
 
 function startFakeAi() {
   let responder = () => ({ status: 200, content: '[]' });
+  const bodies = []; // Batch 3 Chunk 1: every request body received (the fake-ai-server.js habit, body string only).
   const server = http.createServer((req, res) => {
     const chunks = [];
     req.on('data', (c) => chunks.push(c));
     req.on('end', () => {
+      const body = Buffer.concat(chunks).toString('utf8');
+      bodies.push(body);
       const r = responder();
       const payload = JSON.stringify({
         id: 'chatcmpl-ember-e2e-fake',
@@ -93,6 +98,7 @@ function startFakeAi() {
         set(fn) {
           responder = fn;
         },
+        bodies,
       });
     });
   });
@@ -606,7 +612,37 @@ async function aiUnreachable(unreachableUrl) {
   }
 }
 
-/* ---------------- scenario 7: the key refused at the first Add (5-A) ---------------- */
+/* ---------------- scenario 7: a failed Add keeps the form (Batch 3 F2) ---------------- */
+
+async function failKeepsForm(ai) {
+  process.stdout.write('--- add: the error and the form show together ---\n');
+  const workDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ember-e2e-addfail-'));
+  const { app, win } = await launchApp({ workDir, aiBaseUrl: ai.url });
+  try {
+    ai.set(() => ({ status: 500, content: JSON.stringify({ error: { message: 'the AI service failed' } }) }));
+    await goToAdd(win);
+    await addText(win, NOTE);
+    await win.waitForSelector('[data-testid="add-error"] [data-testid="state-error"]');
+    const error = await win.textContent('[data-testid="add-error"]');
+    if (!/could not answer/i.test(error)) fail(`the CAPTURE-008 words on a failed Add: ${error}`);
+    // Batch 3 F2: the draft form must come back WITH the error, the
+    // box still holding the text the user sent.
+    await win.waitForSelector('[data-testid="add-text-input"]');
+    if (!(await win.locator('[data-testid="add-text-input"]').isVisible())) {
+      fail('the draft form must be visible next to the error');
+    }
+    const kept = await win.inputValue('[data-testid="add-text-input"]');
+    if (kept !== NOTE) fail(`the box must still hold the sent text, saw: ${kept}`);
+    await assertNoBareCode(win);
+    await app.close();
+    process.stdout.write('form kept OK: the error and the form show together, text still in the box\n');
+  } finally {
+    await app.close().catch(() => {});
+    fs.rmSync(workDir, { recursive: true, force: true });
+  }
+}
+
+/* ---------------- scenario 8: the key refused at the first Add (5-A) ---------------- */
 
 async function keyRefused(ai) {
   process.stdout.write('--- add: the key refused at the first Add ---\n');
@@ -641,7 +677,7 @@ async function keyRefused(ai) {
   }
 }
 
-/* ---------------- scenario 8: no key at all (story 29) ---------------- */
+/* ---------------- scenario 9: no key at all (story 29) ---------------- */
 
 async function noKeyPath(ai) {
   process.stdout.write('--- add: no key, the path to the setting ---\n');
@@ -665,7 +701,7 @@ async function noKeyPath(ai) {
   }
 }
 
-/* ---------------- scenario 9: a child dies mid-session ---------------- */
+/* ---------------- scenario 10: a child dies mid-session ---------------- */
 
 async function childDiesMidSession(ai) {
   process.stdout.write('--- add: a child dies mid-session ---\n');
@@ -692,7 +728,7 @@ async function childDiesMidSession(ai) {
   }
 }
 
-/* ---------------- scenario 10: a fake EMBER-000 death (Chunk 14) ---------------- */
+/* ---------------- scenario 11: a fake EMBER-000 death (Chunk 14) ---------------- */
 
 async function crashReportButtons(ai) {
   process.stdout.write('--- add: EMBER-000 death, the crash report buttons ---\n');
@@ -763,6 +799,7 @@ async function main() {
     await zeroProposals(ai);
     await inlineMessages(ai);
     await aiUnreachable(unreachable);
+    await failKeepsForm(ai);
     await keyRefused(ai);
     await noKeyPath(ai);
     await childDiesMidSession(ai);
@@ -770,7 +807,7 @@ async function main() {
   } finally {
     ai.server.close();
   }
-  process.stdout.write('e2e add OK: all ten scenarios green (real ember child, fake AI server on EMBER_AI_BASE_URL)\n');
+  process.stdout.write('e2e add OK: all eleven scenarios green (real ember child, fake AI server on EMBER_AI_BASE_URL)\n');
 }
 
 main().catch((err) => {
