@@ -25,7 +25,7 @@ it (a new original action clears redo).
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Literal, NamedTuple
 
 from ember.maintain.rows import (
     InverseChange,
@@ -191,102 +191,99 @@ def _invert_row(
     just value: undoing a reversal appends `link_unreversed`, re-applying it
     appends `link_reversed` (L2 §5.4). An unknown shape fails closed.
     """
-    field = row.field_changed
-    if field == "status":
-        ledger = _row(row, cause, "status", row.new_value, row.old_value)
+    if row.field_changed == "status":
         return InverseChange(
             item_id=row.item_id,
             field="status",
             expected_value=row.new_value,
             new_value=row.old_value,
-            ledger_row=ledger,
+            ledger_row=_row(row, cause, _swapped(row, "status")),
         )
-    if field == "status_origin":
-        ledger = _row(
-            row, cause, "status_origin", row.new_value, row.old_value
-        )
+    if row.field_changed == "status_origin":
         return InverseChange(
             item_id=row.item_id,
             field="status_origin",
             expected_value=row.new_value,
             new_value=row.old_value,
-            ledger_row=ledger,
+            ledger_row=_row(row, cause, _swapped(row, "status_origin")),
         )
-    if field == "validated":
-        ledger = _row(
-            row, cause, "validated", row.new_value, row.old_value
-        )
+    if row.field_changed == "validated":
         return InverseChange(
             item_id=row.item_id,
             field="validated",
             expected_value=row.new_value,
             new_value=row.old_value,
-            ledger_row=ledger,
+            ledger_row=_row(row, cause, _swapped(row, "validated")),
         )
-    if field in ("rationale", "source"):
-        ledger = _row(row, cause, field, row.new_value, row.old_value)
+    if row.field_changed in ("rationale", "source"):
         return InverseChange(
             item_id=row.item_id,
-            field=field,
+            field=row.field_changed,
             expected_value=row.new_value,
             new_value=row.old_value,
-            ledger_row=ledger,
+            ledger_row=_row(row, cause, _swapped(row, row.field_changed)),
         )
-    if field == "link_removed":
-        ledger = _row(
-            row, cause, "link_removed", row.new_value, row.old_value
-        )
+    if row.field_changed == "link_removed":
         return InverseChange(
             link_id=row.link_id,
             field="status",
             expected_value=row.new_value,
             new_value=row.old_value,
-            ledger_row=ledger,
+            ledger_row=_row(row, cause, _swapped(row, "link_removed")),
         )
-    if field == "link_reversed":
-        ledger = _row(
-            row, cause, "link_unreversed", "Reversed", "Confirmed"
-        )
+    if row.field_changed == "link_reversed":
         return InverseChange(
             link_id=row.link_id,
             field="reversed_at",
             expected_value="Reversed",
             new_value=None,
-            ledger_row=ledger,
+            ledger_row=_row(
+                row, cause, LedgerValues("link_unreversed", "Reversed", "Confirmed")
+            ),
         )
-    if field == "link_unreversed":
-        ledger = _row(
-            row, cause, "link_reversed", "Confirmed", "Reversed"
-        )
+    if row.field_changed == "link_unreversed":
         return InverseChange(
             link_id=row.link_id,
             field="reversed_at",
             expected_value="Confirmed",
             new_value="Reversed",
-            ledger_row=ledger,
+            ledger_row=_row(
+                row, cause, LedgerValues("link_reversed", "Confirmed", "Reversed")
+            ),
         )
     raise GroupRecordInvalid(
         "unknown row shape in grouped ledger",
         group_id=group.group_id,
-        field_changed=field,
+        field_changed=row.field_changed,
         trigger_cause=row.trigger_cause,
     )
 
 
-def _row(
-    source: ChangeLogEntry,
-    cause: str,
-    field: str,
-    old_value: str | None,
-    new_value: str | None,
-) -> ChangeLogEntry:
-    """Build the appended ledger row: same item ids and field, swapped values."""
+class LedgerValues(NamedTuple):
+    """The three values one appended ledger row carries (fix C1, I3/I4).
+
+    The one named object `_row` takes instead of three loose values:
+    `field` is the ledger column, `old_value`/`new_value` the swapped
+    or re-applied pair."""
+
+    field: str
+    old_value: str | None
+    new_value: str | None
+
+
+def _swapped(row: ChangeLogEntry, field: str) -> LedgerValues:
+    """The row's own values, swapped — the common inverse shape."""
+    return LedgerValues(field=field, old_value=row.new_value, new_value=row.old_value)
+
+
+def _row(source: ChangeLogEntry, cause: str, values: LedgerValues) -> ChangeLogEntry:
+    """Build the appended ledger row: `source`'s item ids, `values`' content."""
     return ChangeLogEntry(
         item_id=source.item_id,
         link_id=source.link_id,
-        field_changed=field,
-        old_value=old_value,
-        new_value=new_value,
+        field_changed=values.field,
+        old_value=values.old_value,
+        new_value=values.new_value,
         # The store owns the clock (T1); the empty string is the same
         # placeholder the reversal marker passes today.
         timestamp="",
