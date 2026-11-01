@@ -1447,6 +1447,11 @@ def list_items_command(
     before `--limit`/`--offset` crop the printed window. Read-only: the
     database is opened read-only and never migrated, like every query
     command.
+
+    Rule I3 exception, recorded by the founder 2026-11-01 (fix C1): this
+    Click callback takes five parameters because Click binds one option to
+    one parameter; the rule's object bundling lives one layer down, where
+    the pure core takes the named `TopicFilter` and `ListPage` objects.
     """
     try:
         conn = open_query_database(db_path)
