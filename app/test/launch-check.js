@@ -51,6 +51,21 @@ function main() {
 
   const workDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ember-launch-check-'));
   const kbPath = path.join(workDir, 'kb.db');
+  // The check runs in a throwaway config: the child never sees the real
+  // `~/.config` (XDG_CONFIG_HOME points at a fresh folder inside the
+  // removed work dir) and never sees an inherited AI key — the sentinel
+  // spill below must fail the harness, not reach the app.
+  const configDir = path.join(workDir, 'config');
+  const childEnv = { ...process.env };
+  delete childEnv.EMBER_AI_API_KEY;
+  delete childEnv.OPENROUTER_API_KEY;
+  if (childEnv.EMBER_AI_API_KEY !== undefined) {
+    fail(`EMBER_AI_API_KEY survived the strip (${String(childEnv.EMBER_AI_API_KEY)}) — no AI key may reach the launch-check child`);
+  }
+  if (childEnv.OPENROUTER_API_KEY !== undefined) {
+    fail(`OPENROUTER_API_KEY survived the strip (${String(childEnv.OPENROUTER_API_KEY)}) — no AI key may reach the launch-check child`);
+  }
+  childEnv.XDG_CONFIG_HOME = configDir;
   try {
     execFileSync(seedCmd, [...seedBaseArgs, '--db', kbPath], {
       input: 'A throwaway source text for the app launch check.\n',
@@ -60,7 +75,7 @@ function main() {
     const child = spawn(electronBin, ['.'], {
       cwd: APP_ROOT,
       env: {
-        ...process.env,
+        ...childEnv,
         EMBER_APP_LAUNCH_CHECK: '1',
         EMBER_APP_DB: kbPath,
         EMBER_APP_COMMAND: commandEnv,
@@ -95,7 +110,7 @@ function main() {
       if (!itemsLine) {
         fail(`exit 0 but no "items: N" line on stdout (stdout: ${JSON.stringify(stdout.slice(0, 200))})`);
       }
-      process.stdout.write(`check:launch OK — window started, one read command answered: ${itemsLine}\n`);
+      process.stdout.write(`check:launch OK — window started, one read command answered: ${itemsLine}, config: ${configDir}\n`);
       fs.rmSync(workDir, { recursive: true, force: true });
       process.exit(0);
     });
