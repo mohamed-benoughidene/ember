@@ -2,12 +2,26 @@
 
 from __future__ import annotations
 
+import importlib.resources
 import sqlite3
 
 from ember.adapters.sqlite import open_database
 from ember.query.rows import ChangeRow, CurrentStateRow, QueryItem
 from ember.relate.rows import Link
 from tests.fakes import FIXED_TIME
+
+_V10_MIGRATIONS = (
+    "001_create_sources.sql",
+    "002_create_items.sql",
+    "003_create_change_log.sql",
+    "004_add_item_detail_columns.sql",
+    "005_create_ai_responses.sql",
+    "006_create_links.sql",
+    "007_create_item_embeddings.sql",
+    "008_add_change_log_link_fk.sql",
+    "009_drop_source_id_not_null_and_add_item_id.sql",
+    "010_add_item_close_reason.sql",
+)
 
 
 class FakeQueryLookup:
@@ -150,8 +164,29 @@ def make_link(
 
 
 def make_v10(db_path: str) -> sqlite3.Connection:
-    """Create a real schema-version-10 database and return a writing handle."""
-    return open_database(db_path)
+    """Create a real schema-version-10 database and return a writing handle.
+
+    The migration SQL scripts 001-010 are applied by hand and the version
+    is stamped 10, so nothing past 010 ever runs (finding 4.7 #10, story
+    44): the file is a genuine pre-011 database where `links.reversed_at`
+    and `items.metadata` do not exist, and the read-only boot accepts it
+    as-is without migrating. Calling it again on an already-built file
+    just returns a writing handle.
+    """
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    built = conn.execute(
+        "SELECT COUNT(*) FROM sqlite_master"
+        " WHERE type = 'table' AND name = 'schema_version'"
+    ).fetchone()[0]
+    if built:
+        return conn
+    conn.execute("CREATE TABLE schema_version (version INTEGER NOT NULL)")
+    conn.execute("INSERT INTO schema_version (version) VALUES (10)")
+    package = importlib.resources.files("ember.adapters.migrations")
+    for name in _V10_MIGRATIONS:
+        conn.executescript(package.joinpath(name).read_text(encoding="utf-8"))
+    return conn
 
 
 def make_v9(db_path: str) -> None:

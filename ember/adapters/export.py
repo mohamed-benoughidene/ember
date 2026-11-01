@@ -17,7 +17,10 @@ and reversed links carry their state, ledger values are never truncated.
 Since undo step 05 each ledger row also carries its `group_id` (the undo
 group stamp): read from the column only when the adapters shared `column_exists` shows it
 (never migrated), rendered `-` when NULL or when the column does not
-exist (a v12 file).
+exist (a v12 file). The same gate covers columns that arrived later than
+the file: `items.metadata` (migration 012) and `links.reversed_at`
+(migration 011) are selected only when the column exists, so a real v10
+file exports too, with the missing columns reading as `(null)`/`null`.
 `item_embeddings` and `ai_responses` are deliberately excluded: derived,
 rebuildable data (D2), declared in the header.
 
@@ -41,6 +44,17 @@ grieving-reader check).
 Markdown rule for this file: plain `---` lines would be ambiguous next to
 the markers, so sections start with `== name (count) ==` lines and the
 header lines start with `# `, matching the L2 §4 samples.
+
+Every value is delimited the same way (finding 4.3 #16): a value that
+spans lines renders its raw bytes verbatim between the field's own
+`----- <label> text begin -----` and
+`----- <label> text end (bytes=, sha256=) -----` markers, so a stored
+value can no more forge a section line than a source can forge its end
+marker (a value would have to carry the sha256 of a text that contains
+that very sha256). The emit is atomic (finding 4.3 #15): `write_export`
+lands the text in a temp file in the target's own folder, fsyncs it, and
+renames it over the target, so a failed export leaves any previous
+export byte-identical.
 """
 
 from __future__ import annotations
@@ -48,6 +62,7 @@ from __future__ import annotations
 import hashlib
 import os
 import sqlite3
+import tempfile
 
 from pydantic import BaseModel
 
@@ -110,7 +125,9 @@ def gather_export(conn: sqlite3.Connection) -> ExportData:
     `open_query_database` (floors QUERY-003/004 already enforced, never
     migrated). Output: an `ExportData` with the schema version, items,
     links, sources and the full ledger (each row's `group_id` when the
-    column exists, else `None`). Side effects: none, SELECT only
+    column exists, else `None`; `metadata` likewise gathered `None` on a
+    pre-012 file where the column does not exist). Side effects: none,
+    SELECT only
     (`item_embeddings` and `ai_responses` are never read, D2). Raised
     codes: `ItemsReadFailed` (QUERY-005) when any read fails — a damaged
     stored text (invalid UTF-8) included; a read failure closes cleanly
@@ -131,6 +148,14 @@ def _gather_export_reads(conn: sqlite3.Connection) -> ExportData:
     # file is never migrated here: on a v12 file the ledger rows gather with
     # `group_id=None` and the render prints `-`.
     has_group_id = column_exists(conn, "change_log", "group_id")
+    # The items.metadata column exists only from migration 012 (schema 12)
+    # (finding 4.3 #3): on a v10/v11 file the export must not select it —
+    # the column genuinely is not there, so every row gathers `None`.
+    has_metadata = column_exists(conn, "items", "metadata")
+    # `links.reversed_at` exists only from migration 011 (schema 11): on a
+    # pre-011 file every link gathers with `reversed_at=None`, the same
+    # answer the query reads give on such a file.
+    has_reversed_at = column_exists(conn, "links", "reversed_at")
     items = [
         ExportItem(
             id=row["id"],
@@ -141,15 +166,16 @@ def _gather_export_reads(conn: sqlite3.Connection) -> ExportData:
             created_at=row["created_at"],
             validated=row["validated"],
             close_reason=row["close_reason"],
-            metadata=row["metadata"],
+            metadata=row["metadata"] if has_metadata else None,
             rationale=row["rationale"],
             source=row["source"],
             source_id=row["source_id"],
         )
         for row in conn.execute(
             "SELECT id, type, statement, source_id, status, created_at,"
-            " validated, rationale, source, close_reason, status_origin,"
-            " metadata FROM items ORDER BY id"
+            " validated, rationale, source, close_reason, status_origin"
+            + (", metadata" if has_metadata else "")
+            + " FROM items ORDER BY id"
         )
     ]
     links = [
@@ -160,11 +186,13 @@ def _gather_export_reads(conn: sqlite3.Connection) -> ExportData:
             link_type=row["link_type"],
             status=row["status"],
             created_at=row["created_at"],
-            reversed_at=row["reversed_at"],
+            reversed_at=row["reversed_at"] if has_reversed_at else None,
         )
         for row in conn.execute(
             "SELECT id, source_item_id, target_item_id, link_type, status,"
-            " created_at, reversed_at FROM links ORDER BY id"
+            " created_at"
+            + (", reversed_at" if has_reversed_at else "")
+            + " FROM links ORDER BY id"
         )
     ]
     sources = [
@@ -242,17 +270,38 @@ def refuse_self_overwrite(db_path: str, out_path: str) -> None:
 
 
 def write_export(text: str, out_path: str) -> None:
-    """Phase 3. Write the rendered text to `out_path` as UTF-8.
+    """Phase 3. Write the rendered text to `out_path` as UTF-8, atomically.
 
     Input: the rendered text and a validated output path (guard already
-    run). Output: none. Side effects: creates or overwrites `out_path`
-    with the exact text, LF endings verbatim (`newline=""`, a text-file
-    transfer, S4). Raised codes: EXPORT-001 OutputWriteFailed when the
-    file cannot be written.
+    run). Output: none. Side effects: creates or replaces `out_path` with
+    the exact text, LF endings verbatim (`newline=""`, a text-file
+    transfer, S4). The write is atomic (finding 4.3 #15): the text first
+    lands in a temp file in the SAME folder as `out_path` (same
+    filesystem, so the last step is a rename, never a copy), the temp
+    file is flushed and fsynced to disk, and only then renamed over the
+    target with `os.replace` (atomic on POSIX). A failure at any step
+    raises before the old file is touched, so a previous export survives
+    byte-identical — the truncate-in-place `open("w")` it replaces could
+    destroy it the moment the open succeeded. Raised codes: EXPORT-001
+    OutputWriteFailed when the file cannot be written.
     """
+    folder = os.path.dirname(os.path.abspath(out_path))
     try:
-        with open(out_path, "w", encoding="utf-8", newline="") as handle:
-            handle.write(text)
+        fd, temp_path = tempfile.mkstemp(
+            dir=folder, prefix=os.path.basename(out_path) + ".", suffix=".tmp"
+        )
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8", newline="") as handle:
+                handle.write(text)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temp_path, out_path)
+        except BaseException:
+            try:
+                os.unlink(temp_path)
+            except OSError:
+                pass  # the temp file stays only if even the unlink fails
+            raise
     except OSError as exc:
         raise OutputWriteFailed("output write failed", out=out_path) from exc
 
@@ -377,15 +426,44 @@ def _ledger_lines(ledger: list[ChangeRow]) -> list[str]:
 
 
 def _field_lines(label: str, value: object) -> list[str]:
-    """One `  label: value` line, value at a fixed column 20, multi-line kind.
+    """One `  label: value` line, value at the documented column 20.
 
-    A value with newlines stays one logical field: the first line sits on
-    the label line, the rest continue under it, aligned to the same value
-    column. NULL is the literal `(null)`. Line values are never cut.
+    A single-line value starts exactly at column 20 (`_VALUE_COLUMN`,
+    finding 4.3 #28). A value with newlines is delimited like source text
+    (finding 4.3 #16, `_value_text_lines`): its raw bytes render verbatim
+    between the field's own hash-stamped markers, so no stored value can
+    forge a section line or a boundary. NULL is the literal `(null)`.
+    Line values are never cut.
     """
     text = _NULL if value is None else str(value)
-    prefix = f"  {label}:{' ' * (_VALUE_COLUMN - len(label) - 1)}"
-    parts = text.split("\n")
-    lines = [prefix + parts[0]]
-    lines.extend(" " * (_VALUE_COLUMN + 2) + part for part in parts[1:])
+    if "\n" in text:
+        return _value_text_lines(label, text)
+    prefix = f"  {label}:{' ' * max(1, _VALUE_COLUMN - len(label) - 3)}"
+    return [prefix + text]
+
+
+def _value_text_lines(label: str, text: str) -> list[str]:
+    """The D1 fence for a multi-line value, modelled on `_source_text_lines`.
+
+    The label line carries the begin marker, the raw UTF-8 bytes of the
+    value follow verbatim (column 0, leading whitespace preserved — the
+    L2 §5.2 rule "indentation would destroy leading whitespace"), with
+    exactly one added newline when the value does not end with one, and
+    the end marker line repeats the label plus the byte count and sha256
+    of the raw bytes. A value cannot forge its own end marker: the marker
+    carries the sha256 of a text that would itself contain that sha256
+    (module docstring, D1). The declared byte count makes the original
+    recoverable: the reader trims the final added newline only when the
+    remaining length matches `bytes=`. Returns the marker-fenced lines.
+    """
+    raw = text.encode("utf-8")
+    digest = hashlib.sha256(raw).hexdigest()
+    prefix = f"  {label}:{' ' * max(1, _VALUE_COLUMN - len(label) - 3)}"
+    lines = [prefix + f"----- {label} text begin -----"]
+    body = text if text.endswith("\n") else text + "\n"
+    lines.extend(body.split("\n")[:-1])
+    lines.append(
+        prefix
+        + f"----- {label} text end (bytes={len(raw)}, sha256={digest}) -----"
+    )
     return lines
