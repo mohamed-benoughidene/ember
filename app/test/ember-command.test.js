@@ -36,27 +36,35 @@ test('APP-006: an empty choice is reported, not swallowed', () => {
 
 test('APP-006: a missing file, a directory and a non-SQLite file are all refused', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ember-kb-'));
-  const results = [
-    validateKnowledgeBasePath(path.join(dir, 'missing.db')),
-    validateKnowledgeBasePath(dir),
-    validateKnowledgeBasePath(path.join(dir, 'garbage.db')),
-  ];
-  const notSqlite = (() => {
-    fs.writeFileSync(path.join(dir, 'garbage.db'), 'just some text, not a database');
-    return validateKnowledgeBasePath(path.join(dir, 'garbage.db'));
-  })();
-  for (const result of [...results, notSqlite]) {
-    assert.equal(result.ok, false);
-    assert.equal(result.error.code, 'APP-006');
+  try {
+    const results = [
+      validateKnowledgeBasePath(path.join(dir, 'missing.db')),
+      validateKnowledgeBasePath(dir),
+      validateKnowledgeBasePath(path.join(dir, 'garbage.db')),
+    ];
+    const notSqlite = (() => {
+      fs.writeFileSync(path.join(dir, 'garbage.db'), 'just some text, not a database');
+      return validateKnowledgeBasePath(path.join(dir, 'garbage.db'));
+    })();
+    for (const result of [...results, notSqlite]) {
+      assert.equal(result.ok, false);
+      assert.equal(result.error.code, 'APP-006');
+    }
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
   }
 });
 
 test('a file that carries the SQLite header passes the cheap check', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ember-kb-'));
-  const file = path.join(dir, 'kb.db');
-  const buf = Buffer.concat([Buffer.from('SQLite format 3\x00'), Buffer.alloc(96, 0)]);
-  fs.writeFileSync(file, buf);
-  assert.deepEqual(validateKnowledgeBasePath(file), { ok: true });
+  try {
+    const file = path.join(dir, 'kb.db');
+    const buf = Buffer.concat([Buffer.from('SQLite format 3\x00'), Buffer.alloc(96, 0)]);
+    fs.writeFileSync(file, buf);
+    assert.deepEqual(validateKnowledgeBasePath(file), { ok: true });
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test('a REAL knowledge base (made by the project venv) passes the check', () => {
@@ -64,10 +72,14 @@ test('a REAL knowledge base (made by the project venv) passes the check', () => 
   assert.ok(fs.existsSync(python), `the project venv python is missing at ${python}`);
   const { execFileSync } = require('node:child_process');
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ember-kb-'));
-  const file = path.join(dir, 'kb.db');
-  execFileSync(python, ['-c', `from tests.bridge import harness; harness.seed_pair(${JSON.stringify(file)})`], {
-    cwd: path.join(__dirname, '..', '..'),
-    stdio: ['ignore', 'pipe', 'inherit'],
-  });
-  assert.deepEqual(validateKnowledgeBasePath(file), { ok: true });
+  try {
+    const file = path.join(dir, 'kb.db');
+    execFileSync(python, ['-c', `from tests.bridge import harness; harness.seed_pair(${JSON.stringify(file)})`], {
+      cwd: path.join(__dirname, '..', '..'),
+      stdio: ['ignore', 'pipe', 'inherit'],
+    });
+    assert.deepEqual(validateKnowledgeBasePath(file), { ok: true });
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });

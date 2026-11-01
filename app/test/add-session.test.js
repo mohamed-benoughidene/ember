@@ -12,7 +12,7 @@
  * re-ask-once rule can never be triggered by a client bug.
  */
 
-const test = require('node:test');
+const { test, after } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
@@ -22,6 +22,16 @@ const { wireAddChannels } = require('../main/add-session');
 const { TEMP_PREFIX, tempName, writeTempText, removeTempFile, cleanStaleTempFiles } = require('../main/capture-temp');
 
 /* ---------- fakes ---------- */
+
+// I4: the writeTempText fake below mkdtemps its own ember-addsess-
+// folder for EVERY temp write (many tests never reach an exit, so the
+// wiring's removeTempFile never fires there). Track every fake folder
+// and remove them all once, at the very end of the file (node:test's
+// after() runs a single time).
+const fakeTempDirs = [];
+after(() => {
+  for (const dir of fakeTempDirs) fs.rmSync(dir, { recursive: true, force: true });
+});
 
 function fakeSession() {
   return {
@@ -73,6 +83,7 @@ function harness({ validate = () => ({ ok: true }), writeTemp = null } = {}) {
         const filePath = path.join(dir, 't.txt');
         fs.writeFileSync(filePath, text, 'utf8');
         tempCalls.push(filePath);
+        fakeTempDirs.push(dir);
         return { ok: true, path: filePath };
       }),
     removeTempFile: (p) => {
@@ -233,14 +244,18 @@ test('the wiring returns the channel names it registered (the allowlist pin)', (
 
 test('the temp file is written 0600 into the given folder, named add-text-*.txt', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ember-temptext-'));
-  const res = writeTempText(dir, 'some pasted text\nwith two lines\n');
-  assert.equal(res.ok, true);
-  assert.match(path.basename(res.path), /^add-text-\d+-\d{6}\.txt$/);
-  assert.equal(fs.readFileSync(res.path, 'utf8'), 'some pasted text\nwith two lines\n');
-  const mode = fs.statSync(res.path).mode & 0o777;
-  assert.equal(mode, 0o600, 'the pasted draft is owner-only');
-  removeTempFile(res.path);
-  assert.equal(fs.existsSync(res.path), false);
+  try {
+    const res = writeTempText(dir, 'some pasted text\nwith two lines\n');
+    assert.equal(res.ok, true);
+    assert.match(path.basename(res.path), /^add-text-\d+-\d{6}\.txt$/);
+    assert.equal(fs.readFileSync(res.path, 'utf8'), 'some pasted text\nwith two lines\n');
+    const mode = fs.statSync(res.path).mode & 0o777;
+    assert.equal(mode, 0o600, 'the pasted draft is owner-only');
+    removeTempFile(res.path);
+    assert.equal(fs.existsSync(res.path), false);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test('a failed write returns APP-000 and removes nothing', () => {
@@ -251,14 +266,18 @@ test('a failed write returns APP-000 and removes nothing', () => {
 
 test('cleanStaleTempFiles removes only its own leftovers (a crash at next start)', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ember-temptext-'));
-  fs.writeFileSync(path.join(dir, 'add-text-111-000001.txt'), 'crashed draft', 'utf8');
-  fs.writeFileSync(path.join(dir, 'add-text-111-000002.txt'), 'crashed draft', 'utf8');
-  fs.writeFileSync(path.join(dir, 'keep-me.txt'), 'not mine', 'utf8');
-  fs.mkdirSync(path.join(dir, 'add-text-dir.txt')); // a directory with our name: untouchable-ish
-  const removed = cleanStaleTempFiles(dir);
-  assert.equal(removed, 2);
-  assert.equal(fs.existsSync(path.join(dir, 'keep-me.txt')), true);
-  assert.equal(fs.existsSync(path.join(dir, 'add-text-dir.txt')), true, 'a directory named like a temp file is left alone');
+  try {
+    fs.writeFileSync(path.join(dir, 'add-text-111-000001.txt'), 'crashed draft', 'utf8');
+    fs.writeFileSync(path.join(dir, 'add-text-111-000002.txt'), 'crashed draft', 'utf8');
+    fs.writeFileSync(path.join(dir, 'keep-me.txt'), 'not mine', 'utf8');
+    fs.mkdirSync(path.join(dir, 'add-text-dir.txt')); // a directory with our name: untouchable-ish
+    const removed = cleanStaleTempFiles(dir);
+    assert.equal(removed, 2);
+    assert.equal(fs.existsSync(path.join(dir, 'keep-me.txt')), true);
+    assert.equal(fs.existsSync(path.join(dir, 'add-text-dir.txt')), true, 'a directory named like a temp file is left alone');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test('the temp name is always add-text-*.txt shaped', () => {
