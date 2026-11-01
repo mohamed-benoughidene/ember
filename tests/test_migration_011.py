@@ -14,6 +14,7 @@ import pytest
 
 import ember.adapters.sqlite as sqlite_adapter
 from ember.adapters.sqlite import open_database
+from ember.capture.errors import DbOpenFailed as CaptureDbOpenFailed
 from tests.fakes import FIXED_TIME, insert_item, insert_link, insert_source
 
 _MIGRATIONS_TO_10 = (
@@ -298,7 +299,7 @@ def test_migration_011_guard_rejects_closed_row_without_close_reason(db_path) ->
     raw.commit()
     raw.close()
 
-    with pytest.raises(sqlite3.IntegrityError):
+    with pytest.raises(CaptureDbOpenFailed):
         open_database(db_path)
 
     raw = sqlite3.connect(db_path)
@@ -327,7 +328,7 @@ def test_migration_011_links_guard_rejects_preexisting_illegal_pair(db_path) -> 
     raw.commit()
     raw.close()
 
-    with pytest.raises(sqlite3.IntegrityError):
+    with pytest.raises(CaptureDbOpenFailed):
         open_database(db_path)
 
     raw = sqlite3.connect(db_path)
@@ -390,7 +391,7 @@ def test_failed_migration_leaves_intact_prior_database(db_path, monkeypatch) -> 
         lambda: real_scripts[:10] + [(11, "CREATE TABLE half;\nTHIS IS NOT SQL;")],
     )
 
-    with pytest.raises(sqlite3.Error):
+    with pytest.raises(CaptureDbOpenFailed):
         open_database(db_path)
 
     # The prior database file is intact at v10, and the pre-migration backup

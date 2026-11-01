@@ -14,6 +14,7 @@ import pytest
 
 import ember.adapters.sqlite as sqlite_adapter
 from ember.adapters.sqlite import open_database
+from ember.capture.errors import DbOpenFailed as CaptureDbOpenFailed
 from tests.fakes import FIXED_TIME, insert_item, insert_link, insert_source
 
 _MIGRATIONS_TO_12 = (
@@ -222,7 +223,7 @@ def test_failed_migration_rolls_back_and_keeps_the_v12_file(
         lambda: real_scripts[:12] + [(13, "ALTER TABLE change_log RENAME TO x;\nTHIS IS NOT SQL;")],
     )
 
-    with pytest.raises(sqlite3.Error):
+    with pytest.raises(CaptureDbOpenFailed):
         open_database(db_path)
 
     # The prior database file is intact at v12, and the pre-migration backup
