@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ember"
-version = "0.1.0"
+dynamic = ["version"]
 description = "Ember: project context management system"
 requires-python = ">=3.12"
 dependencies = [
@@ -24,6 +24,9 @@ ember = "ember.cli:main"
 
 [tool.setuptools.packages.find]
 include = ["ember*"]
+
+[tool.setuptools.dynamic]
+version = {attr = "ember.__version__"}
 
 [tool.setuptools.package-data]
 "ember.adapters.migrations" = ["*.sql"]
