@@ -332,7 +332,7 @@ Earlier logo and character images, kept for history.
 - `ember/errors.py`: Base `EmberError`. Carries a stable code and the raising module.function, no secrets.
 - `ember/crash_report.py`: The engine's crash writer (Batch 2): `crash_id()` (UTC timestamp + 6 hex), `crash_dir()` (under `XDG_STATE_HOME`), `write_crash_file()` — the engine version, the command name WITHOUT arguments, the time, and the full traceback with full paths (N7), everything through `scrub_secrets`.
 - `ember/capture/__init__.py`: Marks the capture engine folder as a package.
-- `ember/capture/errors.py`: Capture error codes `CAPTURE-001` to `CAPTURE-016`.
+- `ember/capture/errors.py`: Capture error codes `CAPTURE-001` to `CAPTURE-019` (Batch 2 added `CAPTURE-017 DbOpenFailed`, `CAPTURE-018 TextNotEncodable`, `CAPTURE-019 BaseUrlInvalid`; every name equals its class name since Batch 2 chunk 3).
 - `ember/capture/source_storage.py`: Phase 1 core. SHA-256 dedup behind `SourceStorePort`, returns `{source_id, raw_text, content_hash}`.
 - `ember/capture/input_reader.py`: Edge reader for STDIN or file, 5 MiB file limit, UTF-8 decode.
 - `ember/capture/item_proposal.py`: Phase 2 core. The 4 item types, the AI port `ItemProposerPort`, the item-context port, context mode A/B, the AI system prompt, parse + validate the AI answer, retry once.
@@ -443,6 +443,7 @@ Earlier logo and character images, kept for history.
 - `tests/test_error_names.py`: The error-name walk (Batch 2): every error class's `name` equals its class name and owns a code, and opener error contexts carry the file NAME only, never a full path.
 - `tests/test_cli_error_boundary.py`: The edge-handler tests (Batch 2): a forced unexpected exception prints exactly one `error: EMBER-000 InternalError ... crash=<id>` line and writes a crash file (version, command without arguments, time, full traceback, NO secrets); a broken pipe gets one house line and NO crash file; a known house error stays exactly one stderr line with exit 1.
 - `tests/test_db_open_errors.py`: The database-open failure tests (Batch 2): capture/backup opens of a missing or non-SQLite path give one house line (CAPTURE-017 / BACKUP-001), exit 1, file-name-only detail; the query opener's busy and needs-recovery cases get their own codes (QUERY-008/009).
+- `tests/test_ai_base_url.py`: The AI base-URL and payload tests (Batch 2): a bad `EMBER_AI_BASE_URL` is refused at config load with CAPTURE-019 (no network call), the relate/maintain builders raise their own config codes for a bad URL, and a reply with no `choices` raises the family's schema code, never AttributeError.
 
 ### Bridge Tests (`tests/bridge/`)
 - `tests/bridge/__init__.py`: Marks the bridge tests folder as a package (S2: the bridge suite is isolated).
