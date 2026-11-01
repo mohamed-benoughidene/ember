@@ -222,6 +222,12 @@ open_url "https://openrouter.ai/settings/keys"
 step "If you still have an existing key, copy it (starts sk-or-v1-)."
 step "Otherwise click 'Create key', name it (e.g. ember-e2e), and copy it."
 note "New keys are shown exactly once; if you lost the old one, create a new one."
+# Refuse BEFORE the key is asked or written: if git could still see .env,
+# the key file must not be created at all. Nothing is written on refusal.
+if ! git -C "$REPO_ROOT" check-ignore -q "$ENV_FILE"; then
+  printf 'ERROR: %s is NOT gitignored. Add .env to .gitignore first, then re-run this wizard. Nothing was written.\n' "$ENV_FILE" >&2
+  exit 1
+fi
 ask_secret EMBER_AI_API_KEY "Paste the OpenRouter key:"
 write_env EMBER_AI_API_KEY "$EMBER_AI_API_KEY"
 
