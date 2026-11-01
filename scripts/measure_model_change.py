@@ -167,6 +167,22 @@ def delete_database(db_file: Path) -> None:
         backup.unlink()
 
 
+def accelerator_status() -> str:
+    """Ask the loaded setup whether an accelerator really exists.
+
+    "cpu only" is a claim, not an assumption (report finding 4.1 #24): it is
+    printed only when both CUDA and MPS are absent; otherwise the helper
+    reports what it found.
+    """
+    import torch
+
+    if torch.cuda.is_available():
+        return f"cuda accelerator present ({torch.cuda.get_device_name(0)})"
+    if torch.backends.mps.is_available():
+        return "MPS accelerator present"
+    return "CPU only"
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--items", type=int, default=500, help="items to seed (max 5000)")
@@ -206,51 +222,51 @@ def main() -> int:
     new_item_id = seed_database(conn, items=args.items)
     print(f"seeded {args.items} items + links + change_log rows in {db_file}")
 
-    # Warm-up run: model A encodes the whole corpus for real, the cache is full.
-    warm_start = time.perf_counter()
-    embedder_a = SentenceTransformerEmbedder(MODEL_A)
-    loaded_warm = load_latest_candidates(lookup)
-    if loaded_warm is None:
-        print("ERROR: no unlinked Active item after seeding, aborting", file=sys.stderr)
-        return 1
-    if loaded_warm.new_item.id != new_item_id:
-        print(
-            f"ERROR: unexpected new item id {loaded_warm.new_item.id} "
-            f"(expected {new_item_id}), aborting",
-            file=sys.stderr,
-        )
-        return 1
-    pool = build_candidate_pool(
-        loaded_warm,
-        link_lookup=lookup,
-        embedding_store=build_embedding_store(conn),
-        embedder=embedder_a,
-    )
-    warm_seconds = time.perf_counter() - warm_start
-    cached_model = build_embedding_store(conn).first_model_name()
-    if cached_model != MODEL_A:
-        print(f"ERROR: warm cache holds model {cached_model!r}, expected {MODEL_A!r}", file=sys.stderr)
-        return 1
-    print(f"warm run: pool of {len(pool.ranked)} built in {warm_seconds:.2f}s, cache holds {MODEL_A}")
-
-    # Measured run: model B re-points the cached model name, the real
-    # `_model_change_warning` wipes, and every item re-encodes for real.
-    model_b_load_start = time.perf_counter()
-    embedder_b = SentenceTransformerEmbedder(MODEL_B)
-    print(f"model B ({MODEL_B}) load took {time.perf_counter() - model_b_load_start:.2f}s (not part of the measurement)")
-    loaded = load_latest_candidates(lookup)
-    timed_store = TimedEmbeddingStore(build_embedding_store(conn))
-    timed_embedder = TimedEmbedder(embedder_b)
-    phase2_start = time.perf_counter()
-    pool = build_candidate_pool(
-        loaded,
-        link_lookup=lookup,
-        embedding_store=timed_store,
-        embedder=timed_embedder,
-    )
-    phase2_seconds = time.perf_counter() - phase2_start
-
     try:
+        # Warm-up run: model A encodes the whole corpus for real, the cache is full.
+        warm_start = time.perf_counter()
+        embedder_a = SentenceTransformerEmbedder(MODEL_A)
+        loaded_warm = load_latest_candidates(lookup)
+        if loaded_warm is None:
+            print("ERROR: no unlinked Active item after seeding, aborting", file=sys.stderr)
+            return 1
+        if loaded_warm.new_item.id != new_item_id:
+            print(
+                f"ERROR: unexpected new item id {loaded_warm.new_item.id} "
+                f"(expected {new_item_id}), aborting",
+                file=sys.stderr,
+            )
+            return 1
+        pool = build_candidate_pool(
+            loaded_warm,
+            link_lookup=lookup,
+            embedding_store=build_embedding_store(conn),
+            embedder=embedder_a,
+        )
+        warm_seconds = time.perf_counter() - warm_start
+        cached_model = build_embedding_store(conn).first_model_name()
+        if cached_model != MODEL_A:
+            print(f"ERROR: warm cache holds model {cached_model!r}, expected {MODEL_A!r}", file=sys.stderr)
+            return 1
+        print(f"warm run: pool of {len(pool.ranked)} built in {warm_seconds:.2f}s, cache holds {MODEL_A}")
+
+        # Measured run: model B re-points the cached model name, the real
+        # `_model_change_warning` wipes, and every item re-encodes for real.
+        model_b_load_start = time.perf_counter()
+        embedder_b = SentenceTransformerEmbedder(MODEL_B)
+        print(f"model B ({MODEL_B}) load took {time.perf_counter() - model_b_load_start:.2f}s (not part of the measurement)")
+        loaded = load_latest_candidates(lookup)
+        timed_store = TimedEmbeddingStore(build_embedding_store(conn))
+        timed_embedder = TimedEmbedder(embedder_b)
+        phase2_start = time.perf_counter()
+        pool = build_candidate_pool(
+            loaded,
+            link_lookup=lookup,
+            embedding_store=timed_store,
+            embedder=timed_embedder,
+        )
+        phase2_seconds = time.perf_counter() - phase2_start
+
         # The CLI prints `pool.warning` to stderr (cli.py `click.echo(..., err=True)`).
         # Mirror that exact path here and fail hard if the line is not the real one.
         print(pool.warning if pool.warning is not None else "(no warning)", file=sys.stderr)
@@ -258,6 +274,8 @@ def main() -> int:
             print(f"ERROR: expected MODEL_CHANGED_LINE, got {pool.warning!r}", file=sys.stderr)
             return 2
     finally:
+        # Every failure above (an embedder that will not load, an unexpected
+        # seed shape, a wrong warning line) must leave no database behind.
         conn.close()
         delete_database(db_file)
 
@@ -278,7 +296,7 @@ def main() -> int:
         f"model encode speed: {encode_speed:.1f} items/sec",
         f"end-to-end Phase-2 speed: {end_to_end_speed:.1f} items/sec",
         "MODEL_CHANGED_LINE on stderr: yes",
-        "environment: cpu only, no paid API key set, throwaway database deleted",
+        f"environment: {accelerator_status()}, no paid API key set, throwaway database deleted",
     )
     print("=" * 50)
     print("\n".join(report))
