@@ -101,3 +101,10 @@ class DbOpenFailed(CaptureError):
 
     code = "CAPTURE-017"
     name = "DbOpenFailed"
+
+
+class BaseUrlInvalid(CaptureError):
+    """`EMBER_AI_BASE_URL` is not a usable URL (decision I1)."""
+
+    code = "CAPTURE-019"
+    name = "BaseUrlInvalid"

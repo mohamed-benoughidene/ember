@@ -57,6 +57,10 @@ class _EmptyResponse:
     choices: list = []
 
 
+class _StrangeReply:
+    """A reply object with no `choices` attribute at all (Chunk 9c)."""
+
+
 class _Completions:
     def __init__(self, outcome: object) -> None:
         self._outcome = outcome
@@ -183,6 +187,17 @@ def test_no_choices_becomes_schema_error() -> None:
 
     with pytest.raises(AiSchemaError):
         proposer.propose(RAW_TEXT, [])
+
+
+def test_strange_reply_without_choices_attr_becomes_schema_error() -> None:
+    """A reply object with no `choices` attribute maps to CAPTURE-009
+    (Chunk 9c), it never leaks a raw `AttributeError`."""
+    proposer = _proposer(_StrangeReply())
+
+    with pytest.raises(AiSchemaError) as excinfo:
+        proposer.propose(RAW_TEXT, [])
+
+    assert excinfo.value.code == "CAPTURE-009"
 
 
 # --- config ---------------------------------------------------------------
