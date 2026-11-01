@@ -58,7 +58,10 @@ _ORIGINAL_CAUSES: frozenset[str] = frozenset(
         "reversal",
     }
 )
-"""The ledger causes the six undoable human actions stamp (L2 §5.1)."""
+"""The ledger causes the six undoable human actions stamp (L2 §5.1).
+Fix G1-B: a close that re-arms a shielded dependent also writes one
+`sweep_rearm` passenger row inside the same group (not an original
+action of its own — see derive_undo)."""
 
 
 # --------------------------------------------------------------------------
@@ -493,14 +496,26 @@ def derive_undo(snapshot: UndoSnapshot) -> UndoResult:
         )
     target = done[-1]
     rows = [row for row in target.rows if row.field_changed not in MARKER_FIELDS]
+    # Fix G1-B: a close that re-arms a shielded dependent writes ONE
+    # extra passenger row with cause `sweep_rearm` (the changed
+    # `status_origin`) inside the close's group. It is undoable WITH
+    # its group: the inverse restores the manual shield (derived ->
+    # manual), and a redo re-arms again. It never travels alone — a
+    # group with no original-cause row is a corrupt ledger (027).
+    known = _ORIGINAL_CAUSES | {"sweep_rearm"}
     for row in rows:
-        if row.trigger_cause not in _ORIGINAL_CAUSES:
+        if row.trigger_cause not in known:
             raise GroupRecordInvalid(
                 "unknown row shape in grouped ledger",
                 group_id=target.group_id,
                 field_changed=row.field_changed,
                 trigger_cause=row.trigger_cause,
             )
+    if not any(row.trigger_cause in _ORIGINAL_CAUSES for row in rows):
+        raise GroupRecordInvalid(
+            "group carries no original action, only re-arm rows",
+            group_id=target.group_id,
+        )
     changes = [_invert_row(row, target, "user_undo") for row in rows]
     _check_refusals(snapshot, target, changes)
     primary = _primary_row(target)
