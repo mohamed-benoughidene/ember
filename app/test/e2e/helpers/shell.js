@@ -26,9 +26,12 @@ const FIXTURE = path.join(__dirname, '..', 'fixtures', 'steps-04.json');
  * @param {string} [options.mode] FAKE_MODE (default 'app')
  * @param {boolean} [options.withDb] EMBER_APP_DB override (default true)
  * @param {string} [options.fixture] the fake-ember fixture file
+ * @param {object} [options.extraEnv] extra env entries (plain object,
+ *   merged after the defaults) — a scenario can set e.g. FAKE_APP_FAIL
+ *   or FAKE_SPAWN_LOG without touching the other callers.
  * @returns {Promise<{app: object, workDir: string, kbPath: string}>}
  */
-async function launchShell({ workDir, mode = 'app', withDb = true, fixture = FIXTURE }) {
+async function launchShell({ workDir, mode = 'app', withDb = true, fixture = FIXTURE, extraEnv = {} }) {
   const configDir = path.join(workDir, 'config');
   const stateDir = path.join(workDir, 'state');
   const { mkdirSync, writeFileSync } = require('node:fs');
@@ -46,6 +49,7 @@ async function launchShell({ workDir, mode = 'app', withDb = true, fixture = FIX
     EMBER_APP_COMMAND: `node ${FAKE_EMBER}`,
     FAKE_MODE: mode,
     FAKE_FIXTURE: fixture,
+    ...extraEnv,
   };
   if (withDb) env.EMBER_APP_DB = kbPath;
 

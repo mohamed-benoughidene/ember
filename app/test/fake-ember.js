@@ -25,7 +25,11 @@
  *                 show-item, history, maintain --dry-run) answered from
  *                 the JSON fixture file named by FAKE_FIXTURE, with the
  *                 same envelopes the contract table pins. Unknown item
- *                 ids get the real house line (QUERY-001).
+ *                 ids get the real house line (QUERY-001). Batch 3 F4:
+ *                 FAKE_APP_FAIL (e2e-only, same style as
+ *                 FAKE_ERROR_DETAIL) names a comma list of
+ *                 `command:CODE` pairs; a matching command answers with
+ *                 the one house line carrying that code and exits 1.
  * - crash      -> the REAL shape of an unexpected engine death (Batch 2
  *                 Chunk 14): a crash file named by FAKE_CRASH_ID into
  *                 $XDG_STATE_HOME/ember/crashes/, a raw traceback then
@@ -256,6 +260,25 @@ function runSession() {  const events = process.env.FAKE_SESSION_IDLE === '1'
 
 function runAppMode(argv) {
   const name = argv[0];
+  /* ==== Batch 3 F4 (e2e-only, same style as FAKE_ERROR_DETAIL) ======
+     FAKE_APP_FAIL holds a comma list of `command:CODE` pairs (e.g.
+     `list-items:QUERY-003,history:QUERY-005`): when the command name
+     matches a pair, answer with the one house error line carrying that
+     code and exit 1. The spawn is already logged (noteSpawn above), so
+     a failing command still shows up in the spawn log. */
+  const appFail = process.env.FAKE_APP_FAIL;
+  if (appFail) {
+    for (const pair of appFail.split(',')) {
+      const sep = pair.indexOf(':');
+      if (sep === -1) continue;
+      const [cmd, code] = [pair.slice(0, sep), pair.slice(sep + 1)];
+      if (cmd === name) {
+        process.stderr.write(`error: ${code} CommandFailed | fake.ember.${name} | the fake was told to fail this command\n`);
+        process.exit(1);
+        return;
+      }
+    }
+  }
   const flag = (flagName) => {
     const i = argv.indexOf(flagName);
     return i === -1 ? null : argv[i + 1];

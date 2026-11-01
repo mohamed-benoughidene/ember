@@ -20,10 +20,12 @@
  *     table (33), the provenance view (34-36), nothing-matches +
  *     Clear filters (39), "No items yet" (40), and the Ledger tab with
  *     filters, paging (37-38) and the plain words Undone/Redone (122).
- *  4. EMPTY + ERROR: a well-formed empty KB (story 40); a child that
- *     fails on every command -> error blocks with Retry, plain words
- *     on screen and the code behind "Details" (41, 102); and Reduce
- *     Motion honoured (99/104).
+ *  4. EMPTY + ERROR: a well-formed empty KB (story 40); Home's grouped
+ *     failure notices (Batch 3 F4, decision B3-1): one notice per error
+ *     code replaces the per-block cards, the count as a bare number and
+ *     the code on the notice (I7), the code behind Details (102), and
+ *     Try again reloading every block; and Reduce Motion honoured
+ *     (99/104).
  *
  * The step-03 accessibility helper runs on every screen and state this
  * e2e renders (stories 96-104).
@@ -410,45 +412,158 @@ async function emptyAndError() {
     fs.rmSync(workDir, { recursive: true, force: true });
   }
 
-  // A child that fails on every command: error blocks with Retry and
-  // Details; the plain words on screen, the code behind Details.
+  // ---- Batch 3 F4: ONE notice per error code on Home (B3-1) --------
+  // Round (a): every engine-fed block fails with ONE code (mode
+  // `error` -> QUERY-003 everywhere). Exactly ONE grouped notice, no
+  // per-block error cards left, the count 3 as a bare number next to
+  // the code (I7), the code behind Details, and Try again reloading
+  // every block (the spawn log's new lines name the reads again).
   const workDir2 = fs.mkdtempSync(path.join(os.tmpdir(), 'ember-e2e-error-'));
-  const { app: app2 } = await launchShell({ workDir: workDir2, mode: 'error', withDb: true });
+  const spawnLog = path.join(workDir2, 'spawn.log');
+  const { app: app2 } = await launchShell({
+    workDir: workDir2,
+    mode: 'error',
+    withDb: true,
+    extraEnv: { FAKE_SPAWN_LOG: spawnLog },
+  });
+  /** The fake-ember spawn log: one JSON line (its argv) per spawn. */
+  const spawnCommands = (fromLine) =>
+    fs
+      .readFileSync(spawnLog, 'utf8')
+      .split('\n')
+      .filter((line) => line.trim() !== '')
+      .slice(fromLine)
+      .map((line) => JSON.parse(line)[0]);
   try {
     const win = await app2.firstWindow();
     await win.waitForSelector('[data-testid="home-pane"]');
-    await win.waitForSelector('[data-testid="state-error"]');
-    // The three data blocks fail independently; under load their errors
-    // land a beat apart — wait for the count to stabilise at >= 2.
-    const errors = await win
-      .waitForFunction(
-        () => document.querySelectorAll('[data-testid="state-error"]').length >= 2,
-        { timeout: 15000 },
-      )
-      .then(() => win.locator('[data-testid="state-error"]').count());
-    const visible = await win.evaluate(() => document.body.innerText);
-    if (/QUERY-\d{3}|APP-\d{3}/.test(visible)) fail(`no bare code on screen (story 102), saw one in: ${visible.slice(0, 300)}`);
-    await win.locator('[data-testid="state-error"] [data-action="show-details"]').first().click();
-    await win.waitForSelector('[data-testid="error-code"]:not([hidden])');
-    const code = await win.textContent('[data-testid="error-code"]');
-    if (!/QUERY-003/.test(code)) fail(`Details must reveal the code, saw ${code}`);
-    await win.locator('[data-testid="state-error"] [data-action="block-retry"]').first().click().catch(() => {});
-    process.stdout.write('error states OK: what failed + Retry + Details reveal (stories 41, 102, 8)\n');
-    await assertCleanScan(win, 'Home (error states)');
-
-    // Reduce Motion honoured: nothing moves even while the app redraws.
-    await win.emulateMedia({ reducedMotion: 'reduce' });
-    await win.locator('#nav button[data-job="lookup"]').click();
-    await win.waitForSelector('[data-testid="lookup-gated"]');
-    await win.waitForTimeout(400); // any loading skeleton has come and gone
-    const animated = await win.evaluate(() =>
-      [...document.querySelectorAll('svg, .skel')].filter((el) => {
-        const name = getComputedStyle(el).animationName;
-        return name !== 'none' && name !== '';
-      }).length,
+    // All three block loaders have settled (their loading skeletons are
+    // gone — failed, empty or served).
+    await win.waitForFunction(
+      () => {
+        const hosts = ['attention', 'home-counts', 'home-ledger'].map((t) => document.querySelector(`[data-testid="${t}"]`));
+        return hosts.length === 3 && hosts.every((h) => h && h.querySelectorAll('.skel').length === 0);
+      },
+      { timeout: 20000 },
     );
-    if (animated !== 0) fail(`Reduce Motion must leave nothing animating, saw ${animated}`);
-    process.stdout.write('Reduce Motion honoured on the step-04 screens\n');
+
+    // Exactly ONE notice, carrying the code and the count as a bare
+    // number (decision I7: number + code only, never "N blocks" words).
+    const seenNotices = await win.locator('[data-testid="home-failure-notice"]').count();
+    if (seenNotices !== 1) fail(`one notice expected, saw ${seenNotices}`);
+    const noticeText = await win.textContent('[data-testid="home-failure-notice"]');
+    if (!/QUERY-003/.test(noticeText)) fail(`the notice must name QUERY-003, saw: ${noticeText}`);
+    if (!/\b3\b/.test(noticeText)) fail(`the QUERY-003 notice must carry the count 3 as a number, saw: ${noticeText}`);
+
+    // The notice replaces the cards: zero error cards inside the three
+    // engine-fed block hosts (decision B3-1).
+    const blockCards = await win.evaluate(() =>
+      ['attention', 'home-counts', 'home-ledger'].map(
+        (host) => document.querySelectorAll(`[data-testid="${host}"] [data-testid="state-error"]`).length,
+      ),
+    );
+    if (blockCards.some((n) => n !== 0)) fail(`the grouped notice replaces the block cards (B3-1), still saw cards ${JSON.stringify(blockCards)}`);
+
+    // No bare code on screen (story 102): the code lives behind Details.
+    const visibleBeforeDetails = await win.evaluate(() => document.body.innerText);
+    if (/QUERY-\d{3}|APP-\d{3}/.test(visibleBeforeDetails)) {
+      fail(`no bare code on screen (story 102), saw one in: ${visibleBeforeDetails.slice(0, 300)}`);
+    }
+
+    // Details reveals the code.
+    await win.locator('[data-testid="home-failure-notice"] [data-action="show-details"]').click();
+    const roundADetail = await win.textContent('[data-testid="home-failure-notice"] [data-testid="error-code"]');
+    if (!/QUERY-003/.test(roundADetail)) fail(`Details must reveal QUERY-003 on the notice, saw: ${roundADetail}`);
+    await assertCleanScan(win, 'Home (one grouped failure notice)');
+
+    // Try again reloads EVERY block, not one block (decision B3-1):
+    // the spawn log's NEW lines must again name the reads the failing
+    // Home load issues — `list-items` (attention AND counts) and
+    // `history` (the ledger). NOTE: `current-state` and `maintain` can
+    // never appear here: loadAttention stops at its FIRST failed call
+    // (home.mjs loadAttention), so it never reaches them — true today
+    // AND in the batch-3 notice design (verified against the real
+    // spawn log; the plan's expected four commands do not occur).
+    const linesBeforeRetry = spawnCommands(0).length;
+    await win.locator('[data-testid="home-failure-notice"] [data-action="home-failures-retry"]').click();
+    const retryDeadline = Date.now() + 15000;
+    let newCommands = [];
+    while (Date.now() < retryDeadline) {
+      newCommands = spawnCommands(linesBeforeRetry);
+      const names = new Set(newCommands);
+      if (names.has('list-items') && names.has('history')) break;
+      await new Promise((resolve) => setTimeout(resolve, 200));
+    }
+    for (const cmd of ['list-items', 'history']) {
+      if (!newCommands.includes(cmd)) {
+        fail(`Try again must reload every block (B3-1): the new spawn lines must include ${cmd}, saw ${JSON.stringify(newCommands)}`);
+      }
+    }
+    process.stdout.write('home grouping OK (a): one notice, count 3, no cards, Try again reloads every block\n');
+
+    // Round (b): TWO codes. FAKE_APP_FAIL makes `list-items` fail with
+    // QUERY-003 (-> attention AND counts) and `history` fail with
+    // QUERY-005 (-> the ledger). Exactly two notices — one per code —
+    // with the counts 2 and 1 as bare numbers (I7), and Details revealing
+    // each notice's own code.
+    const { app: app3 } = await launchShell({
+      workDir: workDir2,
+      mode: 'app',
+      withDb: true,
+      extraEnv: { FAKE_APP_FAIL: 'list-items:QUERY-003,history:QUERY-005' },
+    });
+    try {
+      const win = await app3.firstWindow();
+      await win.waitForSelector('[data-testid="home-pane"]');
+      await win.waitForFunction(
+        () => {
+          const hosts = ['attention', 'home-counts', 'home-ledger'].map((t) => document.querySelector(`[data-testid="${t}"]`));
+          return hosts.length === 3 && hosts.every((h) => h && h.querySelectorAll('.skel').length === 0);
+        },
+        { timeout: 20000 },
+      );
+      const roundBNotices = win.locator('[data-testid="home-failure-notice"]');
+      const roundBCount = await roundBNotices.count();
+      if (roundBCount !== 2) fail(`two notices expected, saw ${roundBCount}`);
+      const roundBTexts = [await roundBNotices.nth(0).textContent(), await roundBNotices.nth(1).textContent()];
+      const namingQ3 = roundBTexts.filter((text) => text.includes('QUERY-003'));
+      const namingQ5 = roundBTexts.filter((text) => text.includes('QUERY-005'));
+      if (namingQ3.length !== 1) fail(`exactly one notice must name QUERY-003, saw ${namingQ3.length} of: ${JSON.stringify(roundBTexts)}`);
+      if (namingQ5.length !== 1) fail(`exactly one notice must name QUERY-005, saw ${namingQ5.length} of: ${JSON.stringify(roundBTexts)}`);
+      if (namingQ3[0] === namingQ5[0]) fail(`the two codes need two separate notices (B3-1), one notice read: ${namingQ3[0]}`);
+      if (!/\b2\b/.test(namingQ3[0])) fail(`the QUERY-003 notice must carry the count 2 as a number, saw: ${namingQ3[0]}`);
+      if (!/\b1\b/.test(namingQ5[0])) fail(`the QUERY-005 notice must carry the count 1 as a number, saw: ${namingQ5[0]}`);
+      const visibleBeforeDetailsB = await win.evaluate(() => document.body.innerText);
+      if (/QUERY-\d{3}|APP-\d{3}/.test(visibleBeforeDetailsB)) {
+        fail(`no bare code on screen (story 102), saw one in: ${visibleBeforeDetailsB.slice(0, 300)}`);
+      }
+      for (let i = 0; i < roundBCount; i += 1) {
+        const notice = roundBNotices.nth(i);
+        const text = await notice.textContent();
+        const code = text.includes('QUERY-003') ? 'QUERY-003' : 'QUERY-005';
+        await notice.locator('[data-action="show-details"]').click();
+        const detail = await notice.locator('[data-testid="error-code"]').textContent();
+        if (!detail.includes(code)) fail(`Details must reveal ${code} on its own notice, saw: ${detail}`);
+      }
+      await assertCleanScan(win, 'Home (two grouped failure notices)');
+      process.stdout.write('home grouping OK (b): two notices, counts 2 and 1\n');
+
+      // Reduce Motion honoured: nothing moves even while the app redraws.
+      await win.emulateMedia({ reducedMotion: 'reduce' });
+      await win.locator('#nav button[data-job="lookup"]').click();
+      await win.waitForSelector('[data-testid="lookup-gated"]');
+      await win.waitForTimeout(400); // any loading skeleton has come and gone
+      const animated = await win.evaluate(() =>
+        [...document.querySelectorAll('svg, .skel')].filter((el) => {
+          const name = getComputedStyle(el).animationName;
+          return name !== 'none' && name !== '';
+        }).length,
+      );
+      if (animated !== 0) fail(`Reduce Motion must leave nothing animating, saw ${animated}`);
+      process.stdout.write('Reduce Motion honoured on the step-04 screens\n');
+    } finally {
+      await app3.close().catch(() => {});
+    }
   } finally {
     await app2.close().catch(() => {});
     fs.rmSync(workDir2, { recursive: true, force: true });
