@@ -59,3 +59,17 @@ class QuerySinceInvalid(QueryError):
 
     code = "QUERY-007"
     name = "QuerySinceInvalid"
+
+
+class DbBusy(QueryError):
+    """The database is locked by another process; it is healthy, just busy."""
+
+    code = "QUERY-008"
+    name = "DbBusy"
+
+
+class DbRecoveryNeeded(QueryError):
+    """The database file exists but cannot be read; it likely needs recovery."""
+
+    code = "QUERY-009"
+    name = "DbRecoveryNeeded"
