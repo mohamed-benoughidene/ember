@@ -557,6 +557,11 @@ Object.assign(ERROR_SENTENCES, {
     what: 'The item number asked for is not in this knowledge base.',
     next: 'Look the item up again and pick it from the list.',
   },
+  'CAPTURE-017': {
+    title: 'The knowledge base could not be opened.',
+    what: 'The knowledge base file could not be opened or made ready (it may be missing, not an Ember file, damaged, or unreadable).',
+    next: 'Check the file name and location, then try again. If it keeps happening, run the health check (Keep safe).',
+  },
   'RELATE-000': {
     title: 'A problem in the relate engine was reported.',
     what: 'Ember reported a general problem in the part that links items.',
