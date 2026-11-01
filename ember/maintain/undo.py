@@ -69,19 +69,6 @@ action of its own — see derive_undo)."""
 # --------------------------------------------------------------------------
 
 
-def _marker_target(group: LedgerGroup) -> int | None:
-    """Return the group id the group's `undo_of`/`redo_of` row names.
-
-    None when the group carries no pointer row, so it is an original action.
-    """
-    for row in group.rows:
-        if row.field_changed == UNDO_MARKER_FIELD:
-            return _marker_group_id(row, group)
-        if row.field_changed == REDO_MARKER_FIELD:
-            return _marker_group_id(row, group)
-    return None
-
-
 def _marker_group_id(row: ChangeLogEntry, group: LedgerGroup) -> int:
     """Parse the pointer row's `new_value`, or fail closed (MAINTAIN-027)."""
     value = row.new_value or ""
