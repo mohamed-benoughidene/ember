@@ -15,7 +15,7 @@
  *   stream raises APP-002 instead of reaching the renderer.
  */
 
-const test = require('node:test');
+const { test, after } = require('node:test');
 const assert = require('node:assert/strict');
 const { spawn } = require('node:child_process');
 const fs = require('node:fs');
@@ -25,8 +25,17 @@ const { createBridgeClient } = require('../main/bridge-client');
 const { FAKE_EMBER, errorPatternFixture } = require('./util');
 
 function tempPath(name) {
-  return path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'ember-bridge-')), name);
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ember-bridge-'));
+  tempDirs.push(dir);
+  return path.join(dir, name);
 }
+
+// I4: every mkdtemp folder above is tracked and removed once, at the
+// very end of the file (node:test's after() runs a single time).
+const tempDirs = [];
+after(() => {
+  for (const dir of tempDirs) fs.rmSync(dir, { recursive: true, force: true });
+});
 
 function makeClient(overrides = {}) {
   const { fakeMode = 'session', env = {}, ...rest } = overrides;
