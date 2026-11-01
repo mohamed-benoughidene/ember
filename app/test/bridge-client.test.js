@@ -191,6 +191,25 @@ test('a hung WRITE is NEVER retried and ends APP-008 (a repeated undo could run 
   assert.equal(fs.readFileSync(spawnLog, 'utf8').match(/spawn/g).length, 1, 'no retry on writes');
 }, 10000);
 
+test('a hung capture-source is treated as a WRITE: never retried (F7)', async () => {
+  const spawnLog = tempPath('spawns.log');
+  const client = createBridgeClient({
+    emberCommand: ['node', FAKE_EMBER],
+    dbPath: tempPath('kb.db'),
+    errorPattern: errorPatternFixture(),
+    timeoutWriteMs: 150,
+    spawnFn: (exe, args, opts) => {
+      fs.appendFileSync(spawnLog, 'spawn\n');
+      return spawn(exe, args, { ...opts, env: { ...opts.env, FAKE_MODE: 'hang' } });
+    },
+  });
+  const result = await client.runCommand('capture-source', []);
+  assert.equal(result.ok, false);
+  assert.equal(result.error.code, 'APP-008');
+  assert.ok(result.error.detail.includes('NOT retried'), result.error.detail);
+  assert.equal(fs.readFileSync(spawnLog, 'utf8').match(/spawn/g).length, 1, 'capture-source stores text: no retry');
+}, 10000);
+
 test('capture and relate may NOT go through runCommand (they are sessions)', async () => {
   const client = makeClient({ fakeMode: 'list' });
   await assert.rejects(() => client.runCommand('capture', []), TypeError);

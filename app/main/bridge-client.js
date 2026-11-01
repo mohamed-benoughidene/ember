@@ -56,9 +56,16 @@ const READ_COMMANDS = new Set([
   'topic-search',
   'why',
   'history',
-  'capture-source',
   'db-check',
 ]);
+
+/**
+ * Write-shaped one-shot commands: the write rule (timeout, NEVER
+ * retried) wins over the read list. Fix F7: `capture-source` stores
+ * the source text in the knowledge base, so a timeout retry could
+ * store it twice.
+ */
+const WRITE_COMMANDS = new Set(['capture-source']);
 
 /** One-shot commands that print the step-01 JSON document under `--format json`. */
 const FORMAT_JSON_COMMANDS = new Set([
@@ -290,7 +297,7 @@ function createBridgeClient(options) {
     ) {
       throw new TypeError(`unknown one-shot command: ${name}`);
     }
-    const isRead = READ_COMMANDS.has(name);
+    const isRead = READ_COMMANDS.has(name) && !WRITE_COMMANDS.has(name);
     const timeoutMs = isRead ? timeoutReadMs : timeoutWriteMs;
     const attempts = isRead ? 2 : 1; // reads retry once, writes never (I15)
     const argv = buildArgv(name, args, []);
