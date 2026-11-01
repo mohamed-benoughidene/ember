@@ -29,6 +29,7 @@
 const { execFileSync } = require('node:child_process');
 const fs = require('node:fs');
 const path = require('node:path');
+const crypto = require('node:crypto');
 
 const APP_ROOT = path.join(__dirname, '..');
 
@@ -61,6 +62,48 @@ function machineArch() {
  * (finding 4.1 #18). */
 function runtimeOut() {
   return process.env.EMBER_RUNTIME_OUT || path.join(APP_ROOT, 'dist', 'ember-runtime');
+}
+
+/** The ENGINE version, read from the one source (ember/__init__.py —
+ * the same file `ember --version` uses). The app version (package.json)
+ * and the engine version MAY differ; bundle.json records BOTH (story
+ * 18, finding 4.1 #16). */
+function engineVersion() {
+  const source = fs.readFileSync(path.join(APP_ROOT, '..', 'ember', '__init__.py'), 'utf8');
+  const match = source.match(/^__version__\s*=\s*["']([^"']+)["']/m);
+  if (!match) {
+    throw new Error('cannot read the engine version: no __version__ = "x.y.z" line in ember/__init__.py');
+  }
+  return match[1];
+}
+
+/** A deterministic CONTENT hash of a runtime tree: every entry (dirs,
+ * files, symlinks), sorted by relative path; files hash their bytes.
+ * The same tree hashes the same everywhere; one changed byte changes
+ * the hash. Recorded in bundle.json so a shipped package can be
+ * checked against the runtime the packer actually staged (finding
+ * 4.1 #16). */
+function runtimeContentHash(root) {
+  const lines = [];
+  const walk = (dir) => {
+    const entries = fs.readdirSync(dir, { withFileTypes: true }).sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+    for (const entry of entries) {
+      const p = path.join(dir, entry.name);
+      const rel = path.relative(root, p).split(path.sep).join('/');
+      if (entry.isSymbolicLink()) {
+        lines.push(`l ${rel} ${fs.readlinkSync(p)}`);
+      } else if (entry.isDirectory()) {
+        lines.push(`d ${rel}`);
+        walk(p);
+      } else if (entry.isFile()) {
+        lines.push(`f ${rel} ${crypto.createHash('sha256').update(fs.readFileSync(p)).digest('hex')}`);
+      }
+    }
+  };
+  walk(root);
+  const hash = crypto.createHash('sha256');
+  for (const line of lines) hash.update(`${line}\n`);
+  return hash.digest('hex');
 }
 
 /** Every regular file under directory `root` whose mode is
@@ -174,11 +217,22 @@ function stageBundle({ stage, entries, runtime, machineArch, version }) {
   normalizeModes(stage);
 
   // The bundle manifest: when present, the bundled runtime is REQUIRED
-  // (missing -> APP-007 at boot) and the model env points inside the app.
+  // (missing -> APP-007 at boot) and the model env points inside the
+  // app. It records BOTH versions (app from package.json via the
+  // `version` input; engine read here from ember/__init__.py — they
+  // may differ, story 18) and a sha256 content hash of the runtime
+  // tree (story 20, finding 4.1 #16).
   fs.writeFileSync(
     path.join(optApp, 'bundle.json'),
     `${JSON.stringify(
-      { kind: 'ember-app-bundle', version, emberRuntime: 'ember-runtime', model: 'BAAI/bge-base-en-v1.5' },
+      {
+        kind: 'ember-app-bundle',
+        version,
+        engineVersion: engineVersion(),
+        emberRuntime: 'ember-runtime',
+        model: 'BAAI/bge-base-en-v1.5',
+        runtimeHash: runtimeContentHash(runtime),
+      },
       null,
       2,
     )}\n`,
@@ -191,6 +245,34 @@ function stageBundle({ stage, entries, runtime, machineArch, version }) {
 
 function duMB(p) {
   return Number(execFileSync('du', ['-sm', p], { encoding: 'utf8' }).split('\t')[0]);
+}
+
+/**
+ * The .deb control file, as a small exported function (its output is
+ * data the pack-staging test checks directly). Depends carries every
+ * Electron base lib PLUS the four the shipped 0.2.0 missed (finding
+ * 4.1 #17, story 20): libnotify4 (desktop notifications), libatspi2.0-0
+ * (accessibility), libuuid1, and libsecret-1-0 — the secret-service
+ * backend Electron's safeStorage crypts the API key against.
+ */
+function buildControl({ version }) {
+  return [
+    'Package: ember-app',
+    `Version: ${version}-1`,
+    'Section: utils',
+    'Priority: optional',
+    'Architecture: amd64',
+    'Maintainer: Ember maintainer <maintainer@problem.invalid>',
+    'Depends: libgtk-3-0, libnss3, libxtst6, libxss1, libgbm1, libdrm2, libxkbcommon0, libasound2 | libasound2t64, libatk-bridge2.0-0 | libatk-bridge2.0-0t64, libcups2 | libcups2t64, libnotify4, libatspi2.0-0, libuuid1, libsecret-1-0',
+    'Recommends: kwalletd6',
+    'Installed-Size: <FILL>',
+    'Description: Ember - your knowledge base, with a window over it',
+    ' The Ember desktop app over the bundled `ember` CLI and relate embedder.',
+    ' Local-first: the only network use is the AI service you choose.',
+    ' Debian-only for V1 (Windows and macOS are launch-checked in CI).',
+    ' This package is UNSIGNED.',
+    '',
+  ].join('\n');
 }
 
 function main() {
@@ -264,23 +346,7 @@ function main() {
   );
   fs.chmodSync(path.join(debTree, 'DEBIAN', 'postinst'), 0o755);
 
-  const control = [
-    'Package: ember-app',
-    `Version: ${version}-1`,
-    'Section: utils',
-    'Priority: optional',
-    'Architecture: amd64',
-    'Maintainer: Ember maintainer <maintainer@problem.invalid>',
-    'Depends: libgtk-3-0, libnss3, libxtst6, libxss1, libgbm1, libdrm2, libxkbcommon0, libasound2 | libasound2t64, libatk-bridge2.0-0 | libatk-bridge2.0-0t64, libcups2 | libcups2t64',
-    'Recommends: kwalletd6',
-    'Installed-Size: <FILL>',
-    'Description: Ember - your knowledge base, with a window over it',
-    ' The Ember desktop app over the bundled `ember` CLI and relate embedder.',
-    ' Local-first: the only network use is the AI service you choose.',
-    ' Debian-only for V1 (Windows and macOS are launch-checked in CI).',
-    ' This package is UNSIGNED.',
-    '',
-  ].join('\n');
+  const control = buildControl({ version });
   fs.writeFileSync(path.join(debTree, 'DEBIAN', 'control'), `${control}\n`);
 
   fs.writeFileSync(
@@ -351,7 +417,7 @@ function main() {
   fs.writeFileSync(path.join(PACK_ROOT, 'sizes.txt'), `${lines.join('\n')}\n`);
 }
 
-module.exports = { stageBundle, assertNoWorldWritable, runtimeOut, machineArch };
+module.exports = { stageBundle, assertNoWorldWritable, runtimeOut, machineArch, buildControl };
 
 // Only the real `npm run package` runs the pack; merely requiring the
 // module (the pack-staging tests) builds nothing.
