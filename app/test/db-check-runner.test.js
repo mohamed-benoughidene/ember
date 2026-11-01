@@ -134,8 +134,9 @@ test('exit 2 without a house line -> APP-002 (usage/abort)', async () => {
 
 test('a timed-out child retries once, then comes back as APP-008 (a read, I15)', async () => {
   // The script ignores SIGTERM long enough for the SECOND attempt to be
-  // observed via a marker file; with a 150 ms limit the two attempts
-  // together cost ~300 ms.
+  // observed via a marker file; with a 1000 ms limit each attempt has
+  // time to start and write its marker before it is judged, so the
+  // marker count is the real number of tries.
   const marker = `${fs.mkdtempSync(path.join(os.tmpdir(), 'ember-dbrun-marker-'))}/calls`;
   const fake = fakeEmber(`
     const fs = require('node:fs');
@@ -144,11 +145,11 @@ test('a timed-out child retries once, then comes back as APP-008 (a read, I15)',
     while (Date.now() < end) {} // spin past any SIGTERM-then-settled window
   `);
   try {
-    const result = await runDbCheck({ emberCommand: fake.command, errorPattern: errorPatternFixture(), dbPath: '/tmp/x.db', attempts: 2, timeoutMs: 150 });
+    const result = await runDbCheck({ emberCommand: fake.command, errorPattern: errorPatternFixture(), dbPath: '/tmp/x.db', attempts: 2, timeoutMs: 1000 });
     assert.equal(result.ok, false);
     assert.equal(result.error.code, 'APP-008');
     const calls = (fs.readFileSync(marker, 'utf8').match(/1/g) ?? []).length;
-    assert.ok(calls >= 2, `a read retries once: saw ${calls} calls`);
+    assert.equal(calls, 2, `a read retries exactly once: saw ${calls} calls`);
   } finally {
     fake.cleanup();
   }
@@ -156,14 +157,21 @@ test('a timed-out child retries once, then comes back as APP-008 (a read, I15)',
 
 test('oversized stdout ends with the bridge-client kind of error (F8)', async () => {
   // 40 x 1 MB chunks = 40 MB > the 32 MB untrusted-output cap.
+  // Each 1 MB chunk is written with backpressure (wait for `drain`), so
+  // no byte sits in the child's buffer when it ends, and the child ends
+  // by closing its output — never by `process.exit(0)` (which would drop
+  // pending bytes and let the run finish under the cap). Every byte
+  // really reaches the reader, so the 32 MB cap is really hit.
   const fake = fakeEmber(`
     const big = Buffer.alloc(1024 * 1024, 0x78);
     let n = 0;
-    const iv = setInterval(() => {
-      process.stdout.write(big);
+    function writeChunk() {
+      if (n >= 40) { process.stdout.end(); return; }
       n += 1;
-      if (n >= 40) { clearInterval(iv); process.exit(0); }
-    }, 2);
+      if (process.stdout.write(big)) writeChunk();
+      else process.stdout.once('drain', writeChunk);
+    }
+    writeChunk();
   `);
   try {
     const result = await runDbCheck({ emberCommand: fake.command, errorPattern: errorPatternFixture(), dbPath: '/tmp/x.db', attempts: 1, timeoutMs: 20000 });
