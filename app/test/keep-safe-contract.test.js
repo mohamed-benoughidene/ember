@@ -15,6 +15,7 @@
  */
 
 const test = require('node:test');
+const { after } = require('node:test');
 const assert = require('node:assert/strict');
 const { execFileSync, spawnSync } = require('node:child_process');
 const crypto = require('node:crypto');
@@ -25,20 +26,32 @@ const { createBridgeClient } = require('../main/bridge-client');
 const { runDbCheck } = require('../main/db-check-runner');
 const { REPO_ROOT, errorPatternFixture } = require('./util');
 
-// The worktree has no .venv of its own; the interpreter lives in the
-// main checkout (setup instruction) while the CODE comes from the
-// worktree via the working directory.
-const PYTHON = fs.existsSync(path.join(REPO_ROOT, '.venv', 'bin', 'python'))
-  ? path.join(REPO_ROOT, '.venv', 'bin', 'python')
-  : '/home/mo/lab/ember/.venv/bin/python';
+// The interpreter, in order: EMBER_PYTHON when set, else the repo's own
+// .venv (in the worktree it is the setup symlink to the main checkout).
+// No machine-specific path anywhere: when neither exists, fail here with
+// one clear message naming what is missing and what to set.
+const PYTHON = process.env.EMBER_PYTHON || path.join(REPO_ROOT, '.venv', 'bin', 'python');
+if (!fs.existsSync(PYTHON)) {
+  throw new Error(
+    `the keep-safe tests need a Python interpreter: '${PYTHON}' does not exist — ` +
+      `create the repo's .venv at ${REPO_ROOT + path.sep}.venv or set EMBER_PYTHON to the python to use`,
+  );
+}
 const EMBER_ARGV = [PYTHON, '-m', 'ember'];
 
 // `python -m ember` resolves the package from the working directory:
 // pin it to the worktree root for every child, whatever dir npm ran in.
 if (!process.cwd().startsWith(REPO_ROOT)) process.chdir(REPO_ROOT);
 
+// Every seeded temp folder is tracked so the after() hook removes them
+// all — today nothing in the file ever removes one (the report's
+// temp-leak finding; Chunk 12). Tracked here, not per test, because some
+// tests destructure only dbPath out of seed().
+const seededDirs = [];
+
 function seed(kind) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), `ember-kscontract-${kind}-`));
+  seededDirs.push(dir);
   const dbPath = path.join(dir, 'kb.db');
   execFileSync(PYTHON, ['-c', `from tests.bridge import harness; harness.${kind}(${JSON.stringify(dbPath)})`], {
     cwd: REPO_ROOT,
@@ -46,6 +59,10 @@ function seed(kind) {
   });
   return { dir, dbPath };
 }
+
+after(() => {
+  for (const dir of seededDirs) fs.rmSync(dir, { recursive: true, force: true });
+});
 
 function sha256(file) {
   return crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');

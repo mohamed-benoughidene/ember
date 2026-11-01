@@ -152,6 +152,7 @@ test('a timed-out child retries once, then comes back as APP-008 (a read, I15)',
     assert.equal(calls, 2, `a read retries exactly once: saw ${calls} calls`);
   } finally {
     fake.cleanup();
+    fs.rmSync(path.dirname(marker), { recursive: true, force: true });
   }
 });
 

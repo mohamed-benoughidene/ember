@@ -76,12 +76,14 @@ test('a file that is not a database fails closed', async () => {
 });
 
 test('a missing path fails closed', async () => {
-  const dbPath = path.join(tempDir(), 'not-there.db');
+  const dir = tempDir();
+  const dbPath = path.join(dir, 'not-there.db');
   const ok = await schemaVersionIsAtLeast(dbPath, 13, {
     emberCommand: [EMBER],
     errorPattern: errorPatternFixture(),
   });
   assert.equal(ok, false);
+  fs.rmSync(dir, { recursive: true, force: true });
 });
 
 test('an engine that cannot answer fails closed (the injected seam)', async () => {
