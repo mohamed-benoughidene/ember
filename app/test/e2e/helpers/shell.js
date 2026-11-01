@@ -4,7 +4,9 @@
  * The shared e2e launcher (step 04): one real Electron shell per
  * scenario, with a throwaway XDG_CONFIG_HOME (settings never touch the
  * developer's own folder) and the fake ember stub speaking the pinned
- * step-04 shapes from a fixture file.
+ * step-04 shapes from a fixture file. The throwaway XDG_STATE_HOME
+ * beside it (Batch 2 Chunk 14) keeps engine crash reports in the
+ * scenario's own folder too — never in the developer's ~/.local/state.
  *
  * `withDb: true` (default) passes EMBER_APP_DB, so the app boots
  * straight into Home with a valid knowledge base. `withDb: false` and
@@ -28,8 +30,10 @@ const FIXTURE = path.join(__dirname, '..', 'fixtures', 'steps-04.json');
  */
 async function launchShell({ workDir, mode = 'app', withDb = true, fixture = FIXTURE }) {
   const configDir = path.join(workDir, 'config');
+  const stateDir = path.join(workDir, 'state');
   const { mkdirSync, writeFileSync } = require('node:fs');
   mkdirSync(configDir, { recursive: true });
+  mkdirSync(stateDir, { recursive: true });
   const kbPath = path.join(workDir, 'kb.db');
   // A throwaway "knowledge base" with the SQLite header: the fake
   // ember never reads it, but the APP-006 guard may.
@@ -38,6 +42,7 @@ async function launchShell({ workDir, mode = 'app', withDb = true, fixture = FIX
   const env = {
     ...process.env,
     XDG_CONFIG_HOME: configDir,
+    XDG_STATE_HOME: stateDir,
     EMBER_APP_COMMAND: `node ${FAKE_EMBER}`,
     FAKE_MODE: mode,
     FAKE_FIXTURE: fixture,
@@ -45,7 +50,7 @@ async function launchShell({ workDir, mode = 'app', withDb = true, fixture = FIX
   if (withDb) env.EMBER_APP_DB = kbPath;
 
   const app = await _electron.launch({ args: ['.'], cwd: APP_ROOT, env });
-  return { app, workDir, kbPath, configDir };
+  return { app, workDir, kbPath, configDir, stateDir };
 }
 
 /** The exact settings.json the store would write (schema 1). */

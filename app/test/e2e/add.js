@@ -32,6 +32,14 @@
  *     file cleaned (fake ember stub; a real ember child cannot be
  *     killed mid-session from here — deviation logged). BRIDGE-001
  *     never reaches the user in any scenario.
+ * 10. a fake EMBER-000 engine death (Batch 2 Chunk 14, story 2/3):
+ *     the plain crash sentence (Chunk 12), and under it the two
+ *     buttons "Copy crash report" and "Show file"; clicking Copy
+ *     shows the "Copied." feedback and the crash text, and the shown
+ *     crash text is word for word the fake crash file's content. The
+ *     REAL clipboard write is pinned by the injected-fake unit test
+ *     in Chunk 13 (app/test/crash-ipc.test.js); this e2e asserts the
+ *     visible feedback only.
  *
  * The step-03 accessibility helper runs on every screen and state this
  * e2e renders (stories 96-104).
@@ -49,6 +57,11 @@ const { APP_ROOT, REPO_ROOT, FAKE_EMBER, PYTHON } = require('../util');
 
 const EMBER = path.join(REPO_ROOT, '.venv', 'bin', 'ember');
 const KEY = 'sk-or-v1-ember-e2e-fake-key-0123456789';
+
+/* Batch 2 Chunk 14: the sentinel crash id the fake EMBER-000 death
+   names (a fake value only — a real report's id looks like
+   `20261101T120000Z-a1b2c3`; the shape here matches it). */
+const CRASH_ID = '20261101T120000Z-e2e14c';
 
 const NOTE = 'We decided to use SQLite for local storage. We assume the team ships weekly.';
 
@@ -115,7 +128,7 @@ function settingsText(kbPath) {
   )}\n`;
 }
 
-async function launchApp({ workDir, aiBaseUrl, withKey = true, childDies = false }) {
+async function launchApp({ workDir, aiBaseUrl, withKey = true, childDies = false, crash = false }) {
   const configDir = path.join(workDir, 'config');
   const userData = path.join(configDir, 'ember-app');
   fs.mkdirSync(userData, { recursive: true });
@@ -128,9 +141,20 @@ async function launchApp({ workDir, aiBaseUrl, withKey = true, childDies = false
   delete env.OPENROUTER_API_KEY;
   delete env.FAKE_SESSION_DIE;
   delete env.FAKE_SESSION_DIE_CODE;
+  delete env.FAKE_MODE;
+  delete env.FAKE_CRASH_ID;
   env.XDG_CONFIG_HOME = configDir;
+  // The crash-report state folder too (Batch 2 Chunk 14): crash files
+  // land in the scenario's own folder, never in ~/.local/state.
+  env.XDG_STATE_HOME = path.join(workDir, 'state');
+  fs.mkdirSync(env.XDG_STATE_HOME, { recursive: true });
   env.EMBER_APP_DB = kbPath;
-  if (childDies) {
+  if (crash) {
+    // A fake EMBER-000 engine death mid-session: the Chunks 2/14 shape.
+    env.EMBER_APP_COMMAND = `node ${FAKE_EMBER}`;
+    env.FAKE_MODE = 'crash';
+    env.FAKE_CRASH_ID = CRASH_ID;
+  } else if (childDies) {
     env.EMBER_APP_COMMAND = `node ${FAKE_EMBER}`;
     env.FAKE_MODE = 'session';
     // Mid-session death: one block + one prompt, then gone (no summary).
@@ -150,7 +174,7 @@ async function launchApp({ workDir, aiBaseUrl, withKey = true, childDies = false
     const kept = await win.evaluate((k) => window.ember.setSessionKey(k), KEY);
     if (!kept || !kept.ok) throw new Error('the session key could not be kept in the test app');
   }
-  return { app, win, kbPath, userData };
+  return { app, win, kbPath, userData, crashId: crash ? CRASH_ID : null };
 }
 
 function fail(what) {
@@ -668,6 +692,67 @@ async function childDiesMidSession(ai) {
   }
 }
 
+/* ---------------- scenario 10: a fake EMBER-000 death (Chunk 14) ---------------- */
+
+async function crashReportButtons(ai) {
+  process.stdout.write('--- add: EMBER-000 death, the crash report buttons ---\n');
+  const workDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ember-e2e-addcrash-'));
+  const crashFile = path.join(workDir, 'state', 'ember', 'crashes', `${CRASH_ID}.txt`);
+  const { app, win } = await launchApp({ workDir, aiBaseUrl: ai.url, crash: true });
+  try {
+    await goToAdd(win);
+    await addText(win, NOTE);
+    // The stub dies at once: the app must show the error state with
+    // the Chunk 12 EMBER-000 sentence, never a dangling prompt.
+    await win.waitForSelector('[data-testid="add-error"] [data-testid="state-error"]');
+    const error = await win.textContent('[data-testid="add-error"]');
+    if (!/unexpected problem happened inside Ember/i.test(error)) {
+      fail(`the Chunk 12 EMBER-000 sentence must show: ${error.slice(0, 200)}`);
+    }
+    if (!/report was saved/i.test(error)) fail(`the crash sentence's "report was saved" fact: ${error.slice(0, 200)}`);
+    await assertNoBareCode(win);
+    // The two crash buttons under the error block (visible without
+    // opening Details — the plain words already invite the user to
+    // "copy or open the crash report").
+    const copyBtn = win.locator('[data-testid="state-error"] [data-action="copy-crash"]');
+    const showBtn = win.locator('[data-testid="state-error"] [data-action="show-crash-file"]');
+    if (!(await copyBtn.isVisible())) fail('the "Copy crash report" button must show under Details');
+    if (!(await showBtn.isVisible())) fail('the "Show file" button must show under Details');
+    const copyLabel = (await copyBtn.textContent()).trim();
+    const showLabel = (await showBtn.textContent()).trim();
+    if (copyLabel !== 'Copy crash report') fail(`the first button must be called "Copy crash report": ${copyLabel}`);
+    if (showLabel !== 'Show file') fail(`the second button must be called "Show file": ${showLabel}`);
+    // Details reveals the engine code and the crash id the app took
+    // from the house line; the id must be the fake file's own name.
+    await win.locator('[data-testid="state-error"] [data-action="show-details"]').click();
+    await win.waitForSelector('[data-testid="add-error"] [data-testid="error-code"]:not([hidden])');
+    const code = await win.textContent('[data-testid="add-error"] [data-testid="error-code"]');
+    if (!/EMBER-000/.test(code) || !/InternalError/.test(code)) fail(`Details must reveal EMBER-000 InternalError, saw ${code}`);
+    if (!code.includes(`crash=${CRASH_ID}`)) fail(`the shown crash id must be the fake's (${CRASH_ID}), saw ${code}`);
+    // The crash file the fake wrote sits in the scenario's own
+    // XDG_STATE_HOME, and its content is the crash text the screen
+    // must show after Copy — compared word for word below.
+    if (!fs.existsSync(crashFile)) fail(`the fake crash file must exist at ${crashFile}`);
+    const fileText = fs.readFileSync(crashFile, 'utf8');
+    await assertCleanScan(win, 'Add (EMBER-000 crash state)');
+    // Click Copy: the visible feedback ("Copied.") and the crash text
+    // itself appear; the clipboard write itself is chunk 13's unit
+    // pin, never asserted here (the honest split).
+    await copyBtn.click();
+    await win.waitForSelector('[data-testid="add-error"] [data-testid="crash-copied"]');
+    const feedback = await win.textContent('[data-testid="add-error"] [data-testid="crash-copied"]');
+    if (!/Copied\./.test(feedback)) fail(`copy must say "Copied.": ${feedback}`);
+    const shown = await win.textContent('[data-testid="add-error"] [data-testid="crash-text"]');
+    if (shown !== fileText) {
+      fail(`the shown crash text must match the fake crash file word for word:\nshown:[${shown.slice(0, 160)}]\nfile:[${fileText.slice(0, 160)}]`);
+    }
+    process.stdout.write('crash report OK: the Chunk 12 sentence, both buttons, Copied. + the file\'s own text shown\n');
+  } finally {
+    await app.close().catch(() => {});
+    fs.rmSync(workDir, { recursive: true, force: true });
+  }
+}
+
 async function main() {
   const ai = await startFakeAi();
   const unreachable = await closedPortUrl();
@@ -681,10 +766,11 @@ async function main() {
     await keyRefused(ai);
     await noKeyPath(ai);
     await childDiesMidSession(ai);
+    await crashReportButtons(ai);
   } finally {
     ai.server.close();
   }
-  process.stdout.write('e2e add OK: all nine scenarios green (real ember child, fake AI server on EMBER_AI_BASE_URL)\n');
+  process.stdout.write('e2e add OK: all ten scenarios green (real ember child, fake AI server on EMBER_AI_BASE_URL)\n');
 }
 
 main().catch((err) => {

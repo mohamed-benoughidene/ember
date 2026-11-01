@@ -26,9 +26,15 @@
  *                 the JSON fixture file named by FAKE_FIXTURE, with the
  *                 same envelopes the contract table pins. Unknown item
  *                 ids get the real house line (QUERY-001).
+ * - crash      -> the REAL shape of an unexpected engine death (Batch 2
+ *                 Chunk 14): a crash file named by FAKE_CRASH_ID into
+ *                 $XDG_STATE_HOME/ember/crashes/, a raw traceback then
+ *                 the house line `error: EMBER-000 InternalError |
+ *                 fake-ember | crash=<id>`, exit 1.
  */
 
 const fs = require('node:fs');
+const path = require('node:path');
 
 function noteSpawn() {
   if (process.env.FAKE_SPAWN_LOG) {
@@ -45,6 +51,37 @@ if (!argv.includes('--db')) {
 }
 
 noteSpawn();
+
+/* Batch 2 Chunk 14 (see the crash mode above). Mirrors the real edge
+   handler's leave-behind loosely: the crash file keeps a raw traceback
+   shape; the last stderr line is the one house line naming the id. */
+function runCrashMode() {
+  const crashId = process.env.FAKE_CRASH_ID ?? '00000000T000000Z-e2ecr0';
+  const stateHome = process.env.XDG_STATE_HOME;
+  if (typeof stateHome !== 'string' || stateHome.trim() === '') {
+    process.stderr.write('error: EMBER-000 InternalError | fake-ember | crash mode needs XDG_STATE_HOME (the stub never touches the real state folder)\n');
+    process.exit(1);
+  }
+  const dir = path.join(stateHome, 'ember', 'crashes');
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(
+    path.join(dir, `${crashId}.txt`),
+    [
+      'engine version: 0.0.0-fake-ember',
+      'command: capture',
+      'time: 2026-11-01T12:00:00Z',
+      'Traceback (most recent call last):',
+      '  File "ember/capture/confirm_write.py", line 132, in run_confirm_loop',
+      'RuntimeError: fake crash injected by the e2e stub',
+      '',
+    ].join('\n'),
+  );
+  process.stderr.write('Traceback (most recent call last):\n');
+  process.stderr.write('  File "ember/capture/confirm_write.py", line 132, in run_confirm_loop\n');
+  process.stderr.write('RuntimeError: fake crash injected by the e2e stub\n');
+  process.stderr.write(`error: EMBER-000 InternalError | fake-ember | crash=${crashId}\n`);
+  process.exit(1);
+}
 
 function hangAndSleep() {
   // Stay alive until killed; print nothing (the client's timeout and
@@ -114,6 +151,14 @@ if (mode === 'hang') {
   process.stderr.write('  File "ember/adapters/sqlite.py", line 118, in open_database\n');
   process.stderr.write('sqlite3.OperationalError: database disk image is malformed\n');
   process.exit(1);
+} else if (mode === 'crash') {
+  /* Batch 2 Chunk 14: a session death the way the REAL edge handler
+     leaves it (Chunk 2): the crash file first, then a raw traceback,
+     then the EMBER-000 house line that names the crash id. The file
+     goes ONLY into the scenario's own $XDG_STATE_HOME — with the
+     variable unset this stub refuses (it must never touch the
+     developer's real ~/.local/state). */
+  runCrashMode();
 } else if (mode === 'session') {
   runSession();
 } else if (mode === 'relate') {
