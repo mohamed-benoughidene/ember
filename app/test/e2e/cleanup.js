@@ -455,7 +455,11 @@ async function noKeyFlow() {
     if (/\| ember\./.test(errText) || /(MAINTAIN|APP|QUERY)-\d{3} \|/.test(errText)) {
       fail(`the raw error line must not reach the screen: ${errText.slice(0, 300)}`);
     }
-    if (!/maintain engine \(the sweep\)/.test(errText)) fail(`the plain words must name the sweep's family: ${errText.slice(0, 300)}`);
+    // The exact-entry words (fix F5 + the honesty fix it forced): the
+    // sweep's post-apply failure says what is missing AND that the
+    // already-made sweep changes stay, recorded in the ledger. What
+    // must never show is the RAW house line or a lone code with no words.
+    if (!/AI key needed for close suggestions/.test(errText)) fail(`the plain words must name the missing key: ${errText.slice(0, 300)}`);
     if (!/ledger/.test(errText)) fail(`the error must point at the ledger for what was already written: ${errText.slice(0, 300)}`);
     await win.click('[data-testid="state-error"] [data-action="show-details"]');
     const code = await win.textContent('[data-testid="error-code"]');

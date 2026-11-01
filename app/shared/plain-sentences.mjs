@@ -688,23 +688,23 @@ Object.assign(ERROR_SENTENCES, {
   },
   'MAINTAIN-018': {
     title: 'The AI service could not answer.',
-    what: 'The request for close suggestions failed; the service may be unreachable or it refused the key.',
-    next: 'Check the AI connection, then run Clean up again. Nothing was changed.',
+    what: 'The request for close suggestions failed; the service may be unreachable or it refused the key. The changes the sweep already made stay in your file, and the ledger records them.',
+    next: 'Check the AI connection, then run Clean up again.',
   },
   'MAINTAIN-019': {
     title: 'The AI answer was not understandable.',
-    what: 'The AI service answered, but the close suggestion did not have the shape Ember expects.',
-    next: 'Run Clean up again. Nothing was changed.',
+    what: 'The AI service answered, but the close suggestion did not have the shape Ember expects. The changes the sweep already made stay in your file, and the ledger records them.',
+    next: 'Run Clean up again. Nothing new was added.',
   },
   'MAINTAIN-020': {
     title: 'Ember is missing a setting it needs.',
-    what: 'The AI key needed for close suggestions was not there.',
-    next: 'Check the AI connection in Settings, then run Clean up again. Nothing was changed.',
+    what: 'The AI key needed for close suggestions was not there. The changes the sweep already made stay in your file, and the ledger records them.',
+    next: 'Check the AI connection in Settings, then run Clean up again.',
   },
   'MAINTAIN-021': {
     title: 'Saving the raw AI answer failed.',
-    what: 'Ember keeps every raw AI answer on file; this save failed, so the run stopped.',
-    next: 'Run Clean up again. Nothing was changed.',
+    what: 'Ember keeps every raw AI answer on file; this save failed, so the run stopped. The changes already confirmed stay in your file, and the ledger records them.',
+    next: 'Run Clean up again.',
   },
   'MAINTAIN-022': {
     title: 'Clean up was stopped.',
