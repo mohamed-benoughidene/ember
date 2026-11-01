@@ -29,6 +29,8 @@ const EXPECTED_API = [
   'ping',
   'getState',
   'saveSettings',
+  'crashReport',
+  'crashReportFolder',
   'kbStatus',
   'pickKnowledgeBaseFile',
   'listItems',
