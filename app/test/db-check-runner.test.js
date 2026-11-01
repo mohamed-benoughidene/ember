@@ -121,6 +121,21 @@ test('a real house error line (exit outside 0/1) parses into its code', async ()
   }
 });
 
+test('a house line on stderr after line 1 is still parsed', async () => {
+  const fake = fakeEmber(
+    // REAL newline-terminated stderr lines (like the fake's
+    // warning-then-error mode): a warning, then the house line second.
+    `process.stderr.write('warning: embedding model changed since build\\n');\nprocess.stderr.write('error: QUERY-003 KnowledgeBaseMissing | ember.query.rows | db file missing\\n');\nprocess.exit(3);`,
+  );
+  try {
+    const result = await runDbCheck({ emberCommand: fake.command, errorPattern: errorPatternFixture(), dbPath: '/tmp/x.db', attempts: 1 });
+    assert.equal(result.ok, false);
+    assert.equal(result.error.code, 'QUERY-003');
+  } finally {
+    fake.cleanup();
+  }
+});
+
 test('exit 2 without a house line -> APP-002 (usage/abort)', async () => {
   const fake = fakeEmber(`process.exit(2);`);
   try {

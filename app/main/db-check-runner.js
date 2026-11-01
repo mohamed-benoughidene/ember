@@ -163,16 +163,30 @@ function runDbCheck(options) {
       const detail = typeof summary.detail === 'string' ? summary.detail : null;
       return { ok: true, data: { result: summary.result, detail, lines: summary.lines, exitCode: run.exitCode } };
     }
-    // Any other exit: the house error line is THE result (bridge L2 §5.2).
-    const first = run.stderrLines[0] ?? '';
-    const parsed = errorPattern ? parseErrorLine(first, errorPattern, run.stderrLines.slice(1)) : null;
+    // Any other exit: the house error line is THE result (bridge L2 §5.2),
+    // WHEREVER among the stderr lines it sits — scan every line with the
+    // same loop shape as the bridge client's findHouseError (a warning
+    // may print before the real house line).
+    let parsed = null;
+    if (errorPattern) {
+      for (let i = 0; i < run.stderrLines.length; i++) {
+        parsed = parseErrorLine(run.stderrLines[i], errorPattern, run.stderrLines.slice(i + 1));
+        if (parsed) break;
+      }
+    }
     if (parsed) return { ok: false, error: parsed };
+    // No house line anywhere (e.g. a raw Python traceback): the detail
+    // keeps the LAST non-empty line — a traceback ends with the real
+    // exception, its first line is only the `Traceback (most recent
+    // call last):` header.
+    const causeLines = run.stderrLines.filter((l) => l.trim() !== '');
+    const cause = causeLines[causeLines.length - 1] ?? '';
     return {
       ok: false,
       error: appErrorInfo(
         'APP-002',
         `${WHERE}.runDbCheck`,
-        `ember db-check exited ${run.exitCode === null ? 'without a code' : run.exitCode}${first ? `: ${first}` : ' (no stderr)'}`,
+        `ember db-check exited ${run.exitCode === null ? 'without a code' : run.exitCode}${cause ? `: ${cause}` : ' (no stderr)'}`,
       ),
     };
   }
