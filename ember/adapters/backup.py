@@ -109,23 +109,23 @@ def _open_source(source_path: str) -> sqlite3.Connection:
     is missing or empty.
     """
     if not os.path.exists(source_path):
-        raise SourceOpenFailed("db file missing", db_path=source_path)
+        raise SourceOpenFailed("db file missing", db_path=os.path.basename(source_path))
     try:
         conn = _connect_readonly(source_path)
         conn.execute("PRAGMA schema_version").fetchone()
     except sqlite3.Error as exc:
         raise SourceOpenFailed(
-            "db open fail", db_path=source_path
+            "db open fail", db_path=os.path.basename(source_path)
         ) from exc
     try:
         row = conn.execute("SELECT version FROM schema_version").fetchone()
     except sqlite3.Error as exc:
         raise SourceInvalid(
-            "schema unreadable", db_path=source_path
+            "schema unreadable", db_path=os.path.basename(source_path)
         ) from exc
     if row is None or row["version"] is None:
         raise SourceInvalid(
-            "schema_version is empty", db_path=source_path
+            "schema_version is empty", db_path=os.path.basename(source_path)
         )
     return conn
 
