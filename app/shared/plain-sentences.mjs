@@ -562,6 +562,11 @@ Object.assign(ERROR_SENTENCES, {
     what: 'The knowledge base file could not be opened or made ready (it may be missing, not an Ember file, damaged, or unreadable).',
     next: 'Check the file name and location, then try again. If it keeps happening, run the health check (Keep safe).',
   },
+  'CAPTURE-018': {
+    title: 'The edited text cannot be saved.',
+    what: 'Part of the edited text is broken inside (it cannot be written as UTF-8), so the edit was refused.',
+    next: 'Edit again with ordinary characters, or answer no to skip this item. Nothing was created.',
+  },
   'CAPTURE-019': {
     title: 'The AI address was not understood.',
     what: 'The AI service address (the base URL) set in the environment is not a valid web address.',
