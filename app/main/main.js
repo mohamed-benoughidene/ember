@@ -295,7 +295,7 @@ function wireIpc(services) {
     labelRefreshInFlight = true;
     try {
       const db = DB_OVERRIDE ?? services.settingsStore.load().settings.knowledgeBasePath;
-      if (typeof db === 'string' && db !== '' && menuKbGuard(db).ok && undoLabelsSafeForFile(db)) {
+      if (typeof db === 'string' && db !== '' && menuKbGuard(db).ok && (await undoLabelsSafeForFile(db))) {
         const client = labelClientFor(db);
         const [undoResult, redoResult] = await Promise.all([
           client.runCommand('undo', ['--dry-run']),
@@ -320,14 +320,18 @@ function wireIpc(services) {
   }
 
   /**
-   * The undo-label gate (the review verdict's fix, ticket A43): the
-   * decision itself lives in main/kb-schema-version.js so it can be
-   * tested directly on real files (`schemaVersionIsAtLeast`); this
-   * one-line wrapper stays at the use site where the label derivation
-   * lives.
+   * The undo-label gate (the review verdict's fix, ticket A43; the G2
+   * decision changed its mechanism 2026-11-01): the PROBE is now the
+   * engine's read-only `db-check` child — the app never opens the
+   * knowledge base file itself (rule B2). The decision stays here
+   * where the label derivation lives; the module is directly tested
+   * on real files (`schemaVersionIsAtLeast`).
    */
-  function undoLabelsSafeForFile(dbPath) {
-    return schemaVersionIsAtLeast(dbPath, 13);
+  async function undoLabelsSafeForFile(dbPath) {
+    return schemaVersionIsAtLeast(dbPath, 13, {
+      emberCommand: services.emberCommand,
+      errorPattern: services.errorPattern,
+    });
   }
 
   /** One menu request into the main window's renderer (B4: the
