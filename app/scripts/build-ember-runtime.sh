@@ -81,6 +81,15 @@ sys.exit(main())
 EOF
 
 cd "$REPO_ROOT"
+# Fix F1: collect-all ember ALONE shipped no ember.adapters.migrations.
+# The pack venv's ember is an EDITABLE install (the code lives in the
+# repo, not in site-packages), and the packer's data-file collector
+# cannot see an editable package's .sql sheets; the module itself also
+# needed naming. So: name the module (hidden-import) AND copy the .sql
+# files into the bundle by hand (add-data); the F1 build gate below
+# fails the build if either is missing again. The destination
+# 'ember/adapters/migrations' is the in-bundle path _migration_scripts
+# reads via importlib.resources.
 "$PACK_VENV/bin/pyinstaller" \
   --distpath "$BUILD_DIR/dist" \
   --workpath "$BUILD_DIR/work" \
@@ -96,6 +105,8 @@ cd "$REPO_ROOT"
   --collect-all safetensors \
   --collect-all huggingface_hub \
   --collect-all ember \
+  --hidden-import ember.adapters.migrations \
+  --add-data "$REPO_ROOT/ember/adapters/migrations:ember/adapters/migrations" \
   "$BUILD_DIR/entry.py"
 
 rm -rf "$RUNTIME_OUT"
@@ -147,6 +158,48 @@ fi
 cd /
 "$RUNTIME_OUT/ember" --help > /dev/null || fail "the frozen runtime does not run standalone"
 "$RUNTIME_OUT/ember" --version > /dev/null || true
+
+# == THE BUILD GATE (fix F1, founder order): the packed program must do
+# the two things the app's first run needs — migrate a fresh file, and
+# fail HONESTLY on a missing key. The F1 crash (a ModuleNotFoundError
+# traceback on every capture: the migrations package missing from the
+# bundle) must be impossible to ship again.
+#
+#  1. no-key capture on a fresh temp file. The env has EVERY AI key
+#     variable removed, so the gate can never make a real AI call. A
+#     healthy bundle exits 1 with ONE normal house line on stderr
+#     ("error: CAPTURE-008 ... ai api key missing") — never a traceback.
+#  2. db-check on the SAME file: the capture migrated it before the key
+#     check, so it must print "version: 13" and "result: OK".
+echo "== the build gate: the packed program must really work (fix F1) =="
+GATE_NOTE="$BUILD_DIR/gate-note.txt"
+GATE_KB="$BUILD_DIR/gate.kb"
+printf 'The gate note: setup sticks because the hinge is loose.' > "$GATE_NOTE"
+set +e
+env -u EMBER_AI_API_KEY -u OPENROUTER_API_KEY \
+  "$RUNTIME_OUT/ember" capture --format json --confirm json --file "$GATE_NOTE" --db "$GATE_KB" \
+  > "$BUILD_DIR/gate-capture.out" 2> "$BUILD_DIR/gate-capture.err"
+CAPTURE_RC=$?
+set -e
+[ "$CAPTURE_RC" -eq 1 ] || fail "the gate capture must end 1 (key missing) on a healthy bundle; got $CAPTURE_RC (stderr: $(head -c 200 "$BUILD_DIR/gate-capture.err"))"
+FIRST_ERR="$(head -n1 "$BUILD_DIR/gate-capture.err")"
+case "$FIRST_ERR" in
+  "error: "*) : ;;  # the one honest house line
+  *) fail "the gate capture's first stderr line must start 'error: ' (a Python traceback here means the F1 bug again): $FIRST_ERR" ;;
+esac
+DBCHECK_JSON="$("$RUNTIME_OUT/ember" db-check --db "$GATE_KB" --format json 2> "$BUILD_DIR/gate-dbcheck.err")" \
+  || fail "the gate db-check must end 0 (the capture migrated the file); got: $(head -c 200 "$BUILD_DIR/gate-dbcheck.err")"
+case "$DBCHECK_JSON" in
+  *'"version: 13"'*) : ;;
+  *) fail "the gate db-check must report the file migrated to version 13; its lines were: $(echo "$DBCHECK_JSON" | head -c 300)" ;;
+esac
+case "$DBCHECK_JSON" in
+  *'"result: OK"'*) : ;;
+  *) fail "the gate db-check must end 'result: OK'; its lines were: $(echo "$DBCHECK_JSON" | head -c 300)" ;;
+esac
+rm -f "$GATE_NOTE" "$GATE_KB" "$GATE_KB".bak-v*
+echo "gate capture: exit 1, first line ok ($FIRST_ERR)"
+echo "gate db-check: version 13, result OK"
 
 echo "== sizes =="
 du -sm "$RUNTIME_OUT" "$RUNTIME_OUT/_internal/torch" ${MODEL_CACHE:+"$RUNTIME_OUT/models"} 2>/dev/null || \

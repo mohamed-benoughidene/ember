@@ -63,3 +63,29 @@ test('the packer, the resolver and the docs agree on the bundle layout names', (
     assert.ok(command.includes(name), `main/ember-command.js does not name ${name}`);
   }
 });
+
+test('the runtime build bundles the migrations package and runs the F1 build gate', () => {
+  // Fix F1: collect-all ember alone shipped no ember.adapters.migrations,
+  // so EVERY capture in the installed app died in a Python traceback
+  // (ModuleNotFoundError) before it even read the key. The build script
+  // must name the package explicitly, and the gate must prove the
+  // packed program: a no-key capture ends on the honest house line
+  // (never a traceback) with every AI key variable stripped from its
+  // env, and db-check on the same file reports version 13, result OK.
+  const script = fs.readFileSync(path.join(APP_ROOT, 'scripts', 'build-ember-runtime.sh'), 'utf8');
+  for (const needle of [
+    '--hidden-import ember.adapters.migrations',
+    '--add-data "$REPO_ROOT/ember/adapters/migrations:ember/adapters/migrations"',
+  ]) {
+    assert.ok(script.includes(needle), `build-ember-runtime.sh misses ${needle}`);
+  }
+  for (const needle of [
+    'env -u EMBER_AI_API_KEY -u OPENROUTER_API_KEY',
+    'the build gate',
+    "must start 'error: '",
+    '"version: 13"',
+    '"result: OK"',
+  ]) {
+    assert.ok(script.includes(needle), `the F1 build gate is missing: ${needle}`);
+  }
+});
