@@ -151,3 +151,27 @@ def test_reported_length_matches_the_key(tmp_path: Path):
     assert int(match.group(1)) == len(FAKE_KEY_29) == 29, (
         f"reported {match.group(1)} chars for a 29-char key. stdout:\n{proc.stdout}"
     )
+
+
+def test_banner_states_linux_only_and_no_other_openers(tmp_path: Path):
+    """The wizard says it is Linux-only, and xdg-open is the only opener (D-22)."""
+    proc, wrote_key, _env_mode = run_wizard_copy(tmp_path, gitignore=".env\n")
+    assert proc.returncode == 0, (
+        f"expected zero exit, got {proc.returncode}. stderr:\n{proc.stderr}"
+    )
+    assert wrote_key, f"the key was not written to disk. stderr:\n{proc.stderr}"
+    assert "Linux only" in proc.stdout, (
+        f"no Linux-only statement in the wizard output. stdout:\n{proc.stdout}"
+    )
+    assert "WSL" not in proc.stdout, f"output still mentions WSL. stdout:\n{proc.stdout}"
+    assert "macOS" not in proc.stdout, (
+        f"output still mentions macOS. stdout:\n{proc.stdout}"
+    )
+    # The opener branches only run on other systems, so the removal cannot be
+    # observed here; pin it as text (same style as tests/test_architecture.py).
+    text = WIZARD_SCRIPT.read_text(encoding="utf-8")
+    # The warn fallback says "couldn't open a browser", so the plain `open`
+    # command is matched by its `command -v` check instead.
+    for gone in ("wslview", "explorer.exe", "command -v open "):
+        assert gone not in text, f"the opener branch {gone!r} is still in the script"
+    assert "xdg-open" in text, "the xdg-open opener is missing"
