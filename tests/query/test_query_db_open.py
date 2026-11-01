@@ -62,7 +62,7 @@ def test_missing_file_raises_003_and_is_never_created(tmp_path) -> None:
         open_query_database(str(missing))
 
     assert exc.value.code == "QUERY-003"
-    assert exc.value.context["db_path"] == str(missing)
+    assert exc.value.context["db_path"] == "missing.db"  # file name only (Chunk 3)
     assert not missing.exists()
 
 
@@ -125,7 +125,7 @@ def test_schema_version_read_failure_raises_003_with_the_db_path(
         open_query_database(str(target))
 
     assert exc.value.code == "QUERY-003"
-    assert exc.value.context["db_path"] == str(target)
+    assert exc.value.context["db_path"] == "test.db"  # file name only (Chunk 3)
 
 
 def test_query_leaves_the_database_byte_identical(db_path) -> None:
