@@ -9,15 +9,25 @@ broken pipe gives the house line only, exit 1, and no crash file.
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 
 import pytest
 from click.testing import CliRunner
 
 from ember.cli import _handle_unexpected, main
+from tests.bridge import harness
 
 _PLANTED_KEY = "sk-plant0987654321abcdef"
 _STATE_ROOT = Path("/tmp/opencode/batch2/chunk2")
+
+_RULE_FILE = (
+    Path(__file__).resolve().parents[1]
+    / "tests"
+    / "fixtures"
+    / "bridge"
+    / "error_parsing_rule.txt"
+)
 
 
 def _boom(store: object, raw_text: str) -> object:
@@ -70,3 +80,25 @@ def test_broken_pipe_ends_with_a_house_line(
     assert lines[0].startswith("error: EMBER-000 InternalError"), lines[0]
     assert "output pipe closed" in lines[0], lines[0]
     assert "crash=" not in lines[0], lines[0]
+
+
+def test_known_house_error_is_exactly_one_stderr_line_exit_1(tmp_path: Path) -> None:
+    """Chunk 4 pin: a known house error is exactly ONE stderr line, exit 1,
+    matching the app-side parsing rule with the code `MAINTAIN-002`. The
+    removal of the 19 per-command error blocks in `ember/cli.py` must keep
+    this contract (the edge handler in `EmberGroup` prints the line)."""
+    db_path = str(tmp_path / "x.db")
+    harness.seed_pair(db_path)
+
+    result = CliRunner().invoke(
+        main,
+        ["close-item", "--item", "1", "--reason", "a | b", "--db", db_path],
+    )
+
+    assert result.exit_code == 1
+    stderr_lines = (result.stderr or "").splitlines()
+    assert len(stderr_lines) == 1, stderr_lines
+    rule = re.compile(_RULE_FILE.read_text(encoding="utf-8"), re.S)
+    match = rule.match(stderr_lines[0])
+    assert match is not None, stderr_lines[0]
+    assert match["code"] == "MAINTAIN-002", stderr_lines[0]
