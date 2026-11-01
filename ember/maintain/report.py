@@ -86,20 +86,20 @@ def _undo_segment(change: InverseChange) -> str:
     return f"item {change.item_id}: {change.field}: {old} -> {new}"
 
 
-def format_undo_line(
-    result: UndoResult, new_group_id: int | None, dry_run: bool
-) -> str:
+def format_undo_line(result: UndoResult, new_group_id: int | None) -> str:
     """The one `ember undo` / `ember redo` report line (undo step 04).
 
     Shape (L2 §4 samples): first the group being undone or redone, its
     action and primary target — `undone group 7 as group 8 (close-item,
     item 3):` — then one segment per changed item or link, joined with
     `; `. `new_group_id` is None only for `--dry-run` (nothing was written,
-    so no new group exists) and the line then ends in `(dry-run)`.
+    so no new group exists); the dry-run-ness is DERIVED from that (fix
+    C2, I2: one fact, one parameter — no boolean restating it), and the
+    line then ends in `(dry-run)`.
     """
     label = f"({result.source_action}, {result.target_label})"
     segments = "; ".join(_undo_segment(change) for change in result.changes)
-    if dry_run:
+    if new_group_id is None:
         verb = "undo" if result.direction == "undo" else "redo"
         return (
             f"{verb} group {result.source_group_id} {label}:"

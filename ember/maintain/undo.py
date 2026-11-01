@@ -403,41 +403,13 @@ def _target_label(group: LedgerGroup) -> str:
     return f"item {row.item_id}"
 
 
-def _source_action(
-    group: LedgerGroup, rows: list[ChangeLogEntry], redo: bool
+def _source_action_of_original(
+    group: LedgerGroup, rows: list[ChangeLogEntry]
 ) -> str:
-    """Name the action `group`'s rows describe (its id on every 027 raise).
-
-    `redo=False` (an original group) reads the original causes; `redo=True`
-    (an undo group) reads the value the redo re-applies, because an inverse
-    row's cause is always `user_undo` (L2 §5.2) and cannot say what the
-    original action was. Unknown shapes fail closed (MAINTAIN-027), naming
-    the group (I19).
-    """
+    """Name the original action `group`'s rows describe (its id on every
+    027 raise). Reads the rows' original causes (L2 §5.2); unknown shapes
+    fail closed (MAINTAIN-027), naming the group (I19)."""
     fields = {row.field_changed for row in rows}
-    if redo:
-        if "link_unreversed" in fields:
-            return "reverse-supersedes"
-        if "link_removed" in fields:
-            return "remove-link"
-        if "validated" in fields:
-            applied = next(
-                row.old_value for row in rows if row.field_changed == "validated"
-            )
-            return "set-validated" if applied == "true" else "clear-validated"
-        if "rationale" in fields or "source" in fields:
-            return "edit-item"
-        if "status" in fields:
-            applied = next(
-                row.old_value for row in rows if row.field_changed == "status"
-            )
-            if split_status_value(applied or "").status == "Closed":
-                return "close-item"
-            return "set-status"
-        raise GroupRecordInvalid(
-            "unknown row shape in grouped ledger", group_id=group.group_id
-        )
-
     if "user_closed" in {row.trigger_cause for row in rows}:
         return "close-item"
     if "dependency_closed" in {row.trigger_cause for row in rows}:
@@ -454,6 +426,38 @@ def _source_action(
     if "rationale" in fields or "source" in fields:
         return "edit-item"
     if "status" in fields:
+        return "set-status"
+    raise GroupRecordInvalid(
+        "unknown row shape in grouped ledger", group_id=group.group_id
+    )
+
+
+def _source_action_of_undo(
+    group: LedgerGroup, rows: list[ChangeLogEntry]
+) -> str:
+    """Name the action a REDO's `rows` re-apply (its id on every 027 raise).
+
+    An inverse row's cause is always `user_undo` (L2 §5.2) and cannot say
+    what the original action was, so this reads the VALUE the redo
+    re-applies instead. Unknown shapes fail closed (MAINTAIN-027)."""
+    fields = {row.field_changed for row in rows}
+    if "link_unreversed" in fields:
+        return "reverse-supersedes"
+    if "link_removed" in fields:
+        return "remove-link"
+    if "validated" in fields:
+        applied = next(
+            row.old_value for row in rows if row.field_changed == "validated"
+        )
+        return "set-validated" if applied == "true" else "clear-validated"
+    if "rationale" in fields or "source" in fields:
+        return "edit-item"
+    if "status" in fields:
+        applied = next(
+            row.old_value for row in rows if row.field_changed == "status"
+        )
+        if split_status_value(applied or "").status == "Closed":
+            return "close-item"
         return "set-status"
     raise GroupRecordInvalid(
         "unknown row shape in grouped ledger", group_id=group.group_id
@@ -527,7 +531,7 @@ def derive_undo(snapshot: UndoSnapshot) -> UndoResult:
     )
     return UndoResult(
         source_group_id=target.group_id,
-        source_action=_source_action(target, rows, redo=False),
+        source_action=_source_action_of_original(target, rows),
         target_label=_target_label(target),
         direction="undo",
         changes=changes,
@@ -585,7 +589,7 @@ def derive_redo(snapshot: UndoSnapshot) -> UndoResult:
     )
     return UndoResult(
         source_group_id=target.group_id,
-        source_action=_source_action(target, rows, redo=True),
+        source_action=_source_action_of_undo(target, rows),
         target_label=_target_label(target),
         direction="redo",
         changes=changes,

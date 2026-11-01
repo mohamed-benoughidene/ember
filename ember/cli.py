@@ -1032,7 +1032,7 @@ def undo(output: OutputOptions) -> None:
             )
         )
     else:
-        click.echo(format_undo_line(result, new_group_id, output.dry_run))
+        click.echo(format_undo_line(result, new_group_id))
 
 
 @main.command("redo")
@@ -1078,7 +1078,7 @@ def redo(output: OutputOptions) -> None:
             )
         )
     else:
-        click.echo(format_undo_line(result, new_group_id, output.dry_run))
+        click.echo(format_undo_line(result, new_group_id))
 
 
 @main.command("current-state")
