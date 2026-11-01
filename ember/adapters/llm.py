@@ -30,6 +30,7 @@ from ember.maintain.errors import (
     CloseAiConfigMissing,
     CloseAiSchemaInvalid,
 )
+from ember.errors import scrub_secrets
 from ember.relate.errors import AiCallFailed, AiResponseSchemaInvalid, ConfigMissing
 from ember.relate.link_proposal import (
     SYSTEM_PROMPT as LINK_SYSTEM_PROMPT,
@@ -269,7 +270,7 @@ def _without_secret(detail: str, secret: str | None) -> str:
     """Trim the provider message and strip the API key if it was echoed back."""
     if secret:
         detail = detail.replace(secret, "REDACTED")
-    return detail[:200]
+    return scrub_secrets(detail)[:200]
 
 
 def _messages(raw_text: str, context: list[ContextItem]) -> list[dict[str, str]]:
