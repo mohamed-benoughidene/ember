@@ -278,6 +278,80 @@ test('an idle confirm session ends as APP-008 (I15: a limit on every call)', asy
   assert.ok(errors.some((e) => e.code === 'APP-008' && e.name === 'BridgeTimeout'), JSON.stringify(errors));
 }, 10000);
 
+// --- F4: the user may take longer than the output limit to answer -------
+
+test('a prompt the user has not answered outlives the normal output limit (F4)', async () => {
+  // The session ends in a prompt; the child then stays silent. The
+  // normal output limit (250 ms) must NOT kill it while the user
+  // thinks; the long prompt-wait limit (15 s) is what bounds it.
+  const client = makeClient({
+    sessionIdleMs: 250,
+    sessionPromptWaitMs: 15_000,
+    spawnFn: (exe, args, opts) =>
+      spawn(exe, args, {
+        ...opts,
+        env: {
+          ...opts.env,
+          FAKE_MODE: 'session',
+          FAKE_SESSION_SCRIPT: JSON.stringify([
+            { event: 'message', text: 'here is a question' },
+            { event: 'prompt', kind: 'choice', text: '[y]es / [n]o / [q]uit', choices: ['y', 'n', 'q'] },
+          ]),
+        },
+      }),
+  });
+  const { session, exitPromise } = openSession(client, 'maintain');
+  let exited = false;
+  exitPromise.then(() => {
+    exited = true;
+  });
+  await new Promise((r) => setTimeout(r, 1000)); // > 4x the output limit
+  assert.equal(exited, false, 'the unanswered prompt must still be waiting');
+  session.stop();
+  const exit = await exitPromise;
+  assert.equal(exit.exitCode, 2);
+}, 15000);
+
+test('after the answer the normal silence limit ends a hung engine again (F4)', async () => {
+  // The engine receives the answer and then hangs with no output: the
+  // POST-answer limit is the normal output limit, so APP-008 must
+  // arrive quickly even though a prompt was seen.
+  const client = makeClient({
+    sessionIdleMs: 250,
+    sessionPromptWaitMs: 60_000,
+    spawnFn: (exe, args, opts) =>
+      spawn(exe, args, { ...opts, env: { ...opts.env, FAKE_MODE: 'session', FAKE_SESSION_SILENT_AFTER_ANSWER: '1' } }),
+  });
+  const { session, events, errors, exitPromise } = openSession(client, 'maintain');
+  // Answer only once the prompt really arrived (the screen answers in
+  // response to a prompt event; this removes the queued-event race).
+  await testHelpers.waitFor(() => events.some((e) => e.event === 'prompt'), 3000);
+  session.answer('y');
+  await exitPromise;
+  assert.ok(errors.some((e) => e.code === 'APP-008' && /produced no output/.test(e.detail)), JSON.stringify(errors));
+}, 15000);
+
+test('a forgotten prompt still ends under the long prompt-wait limit (F4)', async () => {
+  const client = makeClient({
+    sessionIdleMs: 10_000,
+    sessionPromptWaitMs: 400,
+    spawnFn: (exe, args, opts) =>
+      spawn(exe, args, {
+        ...opts,
+        env: {
+          ...opts.env,
+          FAKE_MODE: 'session',
+          FAKE_SESSION_SCRIPT: JSON.stringify([
+            { event: 'prompt', kind: 'choice', text: '[y]es / [n]o / [q]uit', choices: ['y', 'n', 'q'] },
+          ]),
+        },
+      }),
+  });
+  const { errors, exitPromise } = openSession(client, 'maintain');
+  await exitPromise;
+  assert.ok(errors.some((e) => e.code === 'APP-008' && /waiting for an answer for 400 ms/.test(e.detail)), JSON.stringify(errors));
+}, 15000);
+
 test('garbage in a confirm stream raises APP-002 and never reaches the renderer', async () => {
   const client = createBridgeClient({
     emberCommand: ['node', FAKE_EMBER],

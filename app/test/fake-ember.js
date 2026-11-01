@@ -107,7 +107,11 @@ if (mode === 'hang') {
   process.exit(1);
 }
 
-function runSession() {  const events = process.env.FAKE_SESSION_SCRIPT
+function runSession() {  const events = process.env.FAKE_SESSION_IDLE === '1'
+    // Fix F4: a frozen engine has asked NO question — only non-prompt
+    // output, so the client's normal inactivity limit must end it.
+    ? [{ event: 'message', text: 'working' }]
+    : process.env.FAKE_SESSION_SCRIPT
     ? JSON.parse(process.env.FAKE_SESSION_SCRIPT)
     : [
         { event: 'message', text: 'reading the file' },
@@ -137,7 +141,7 @@ function runSession() {  const events = process.env.FAKE_SESSION_SCRIPT
   /* ==== end App 05 block ==== */
 
   if (process.env.FAKE_SESSION_IDLE === '1') {
-    // Test mode: produce output once, then go silent forever — the
+    // Test mode: output is above, then go silent forever — the
     // client's inactivity limit (APP-008) is what must end this.
     setInterval(() => {}, 10_000);
     return;
@@ -158,6 +162,14 @@ function runSession() {  const events = process.env.FAKE_SESSION_SCRIPT
   const check = setInterval(() => {
     if (answers.length > 0) {
       clearInterval(check);
+      if (process.env.FAKE_SESSION_SILENT_AFTER_ANSWER === '1') {
+        /* Fix F4 test mode: the answer was received and the engine
+           hangs forever with no output — the client's POST-answer
+           inactivity limit is what must end this, not the long
+           prompt-wait. */
+        setInterval(() => {}, 10_000);
+        return;
+      }
       let parsed = null;
       try {
         parsed = JSON.parse(answers[0]);

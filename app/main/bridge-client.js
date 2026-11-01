@@ -106,6 +106,12 @@ const MAX_OUTPUT_BYTES = 32 * 1024 * 1024;
  * @param {number} [options.timeoutWriteMs] default 120000
  * @param {number} [options.sessionIdleMs] confirm-session inactivity
  *   limit, default 120000 (I15: a time limit on every call)
+ * @param {number} [options.sessionPromptWaitMs] how long the app waits
+ *   for the USER while a prompt sits unanswered, default 1800000
+ *   (30 minutes) — fix F4: a person may take longer than the output
+ *   limit to decide; the child is still bounded (I15) and killed if
+ *   the prompt is forgotten. Any child OUTPUT restarts the normal
+ *   reading the answer.
  * @param {typeof import('node:child_process').spawn} [options.spawnFn] test seam
  * @param {((name: string) => void) | null} [options.onActivity] app step
  *   12: called with the command name after every one-shot command
@@ -123,6 +129,7 @@ function createBridgeClient(options) {
     timeoutReadMs = 30_000,
     timeoutWriteMs = 120_000,
     sessionIdleMs = 120_000,
+    sessionPromptWaitMs = 30 * 60_000,
     spawnFn = spawn,
     onActivity = null,
   } = options;
@@ -327,14 +334,32 @@ function createBridgeClient(options) {
 
     const listeners = { event: [], error: [], exit: [] };
     const stderrLines = [];
-    let idleTimer = setTimeout(() => finish(new Error('idle')), sessionIdleMs);
+    // Fix F4: two limits (I15 bounds both). `idle` = no child output
+    // for sessionIdleMs. `prompt-wait` = the child asked a question
+    // and the USER has not answered for sessionPromptWaitMs (default
+    // 30 minutes — a person may read and think longer than the output
+    // limit; a forgotten prompt still ends). Writing an answer hands
+    // control back to the engine: the normal output limit applies
+    // again. The SIGKILL backstop in finish() covers both.
+    let idleTimer = null;
+    let awaitingAnswer = false;
     let finished = false;
     let exitCode = null;
 
-    function bumpIdle() {
-      clearTimeout(idleTimer);
+    function armOutputIdle() {
       idleTimer = setTimeout(() => finish(new Error('idle')), sessionIdleMs);
     }
+
+    function armPromptWait() {
+      idleTimer = setTimeout(() => finish(new Error('prompt-wait')), sessionPromptWaitMs);
+    }
+
+    function bumpIdle() {
+      clearTimeout(idleTimer);
+      if (awaitingAnswer) armPromptWait();
+      else armOutputIdle();
+    }
+    armOutputIdle();
 
     function emitError(info) {
       for (const cb of listeners.error) cb(info);
@@ -351,6 +376,8 @@ function createBridgeClient(options) {
       }
       if (cause && cause.message === 'idle') {
         emitError(appErrorInfo('APP-008', `${WHERE}.runConfirmSession`, `ember ${name} produced no output for ${sessionIdleMs} ms and was stopped`));
+      } else if (cause && cause.message === 'prompt-wait') {
+        emitError(appErrorInfo('APP-008', `${WHERE}.runConfirmSession`, `ember ${name} has been waiting for an answer for ${sessionPromptWaitMs} ms and was stopped`));
       }
       const first = stderrLines[0] ?? '';
       const parsed = exitCode === 1 ? findHouseError(stderrLines, errorPattern) : null;
@@ -376,6 +403,12 @@ function createBridgeClient(options) {
           return;
         }
         for (const cb of listeners.event) cb(result.event);
+        // F4: a prompt means the engine waits for the USER now, not
+        // for output — arm the long prompt-wait limit.
+        if (result.event.event === 'prompt') {
+          awaitingAnswer = true;
+          bumpIdle();
+        }
         newlineAt = lineBuffer.indexOf('\n');
       }
     });
@@ -413,6 +446,10 @@ function createBridgeClient(options) {
           return;
         }
         child.stdin.write(line);
+        // F4: the answer hands control back to the engine — the
+        // normal output limit applies from here.
+        awaitingAnswer = false;
+        bumpIdle();
       },
       /** Stop: close stdin (the engine reads it as a quit, exit 2); a
        * backstop kill fires only if the child ignores the closed pipe. */
