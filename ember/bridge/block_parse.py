@@ -49,7 +49,7 @@ def _failed(text: str) -> ParsedBlock:
 #   near_dup_warning: null   (or {matching_item_id: 3, similarity: 0.91} —
 #                             deliberately NOT valid JSON)
 
-_CAPTURE_CAPTURE_KEYS = {
+_CAPTURE_BLOCK_FIELDS = {
     "id",
     "type",
     "statement",
@@ -72,7 +72,7 @@ def parse_capture_block(text: str) -> ParsedBlock:
     returns `parsed=False`."""
     lines = text.split("\n")
     id_match = _CAPTURE_ID_LINE.match(lines[0]) if lines else None
-    if id_match is None or len(lines) != len(_CAPTURE_CAPTURE_KEYS):
+    if id_match is None or len(lines) != len(_CAPTURE_BLOCK_FIELDS):
         return _failed(text)
     fields: dict[str, Any] = {"id": int(id_match.group(1))}
     try:
@@ -81,7 +81,7 @@ def parse_capture_block(text: str) -> ParsedBlock:
             if field is None:
                 raise ValueError(line)
             key, raw = field.group(1), field.group(2)
-            if key not in _CAPTURE_CAPTURE_KEYS or key in fields:
+            if key not in _CAPTURE_BLOCK_FIELDS or key in fields:
                 raise ValueError(line)
             if key == "confidence":
                 value: Any = float(raw)
@@ -96,7 +96,7 @@ def parse_capture_block(text: str) -> ParsedBlock:
             fields[key] = value
     except (ValueError, json.JSONDecodeError):
         return _failed(text)
-    if set(fields) != _CAPTURE_CAPTURE_KEYS:
+    if set(fields) != _CAPTURE_BLOCK_FIELDS:
         return _failed(text)
     return ParsedBlock(parsed=True, fields=fields, text=text)
 

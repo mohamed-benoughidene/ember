@@ -214,11 +214,21 @@ def _output_options(
 
 
 def _confirm_io(
-    output: OutputOptions, json_cls: type, terminal_cls: type
+    output: OutputOptions,
+    json_cls: type[JsonCaptureConfirm]
+    | type[JsonRelateConfirm]
+    | type[JsonMaintainConfirm],
+    terminal_cls: type[TerminalConfirm]
+    | type[RelateTerminalConfirm]
+    | type[MaintainTerminalConfirm],
 ) -> tuple[TerminalSink | JsonSink, Any]:
     """The ONE place the confirm adapter is chosen (P4): the composition
-    root. Returns the output sink every stdout line of the body flows
-    through plus the `ConfirmPort` for the engine loop. `terminal` echoes
+    root. `json_cls` is one of the three `--confirm json` adapters (each
+    constructed with the json sink), `terminal_cls` one of the three
+    terminal confirms (each constructed bare) — fix C6, I1: the
+    parameter types name the real classes instead of bare `type`.
+    Returns the output sink every stdout line of the body flows
+    through plus the confirm port for the engine loop. `terminal` echoes
     exactly as before the bridge; `json` emits events and `summary`."""
     if output.confirm == "json":
         sink: TerminalSink | JsonSink = JsonSink()
