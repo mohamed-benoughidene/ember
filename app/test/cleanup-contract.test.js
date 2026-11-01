@@ -96,14 +96,24 @@ finally:
     conn.close()
 `;
 
+// Every folder seed() created for the running test. Each test removes
+// them all in its `finally` (I4: mkdtemp folders are never orphaned).
+const seededDirs = [];
+
 function seed(script, name) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), `ember-cleanup-${name}-`));
+  seededDirs.push(dir);
   const dbPath = path.join(dir, 'kb.db');
   execFileSync(PYTHON, ['-c', script, dbPath], {
     cwd: REPO_ROOT,
     stdio: ['ignore', 'pipe', 'inherit'],
   });
   return dbPath;
+}
+
+/** Remove every seeded folder so far (seededDirs is drained). */
+function removeSeededDirs() {
+  for (const dir of seededDirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
 }
 
 function clientFor(dbPath) {
@@ -190,21 +200,25 @@ function withFakeAi(extra = {}) {
 
 test('the preview document equals `maintain --dry-run --format json` on the same KB', async () => {
   assert.ok(fs.existsSync(EMBER), 'the venv ember is missing — the contract test cannot run');
-  const dbPath = seed(SEED_MIXED, 'preview');
-  const direct = await directJson(['maintain', '--dry-run', '--format', 'json', '--db', dbPath]);
+  try {
+    const dbPath = seed(SEED_MIXED, 'preview');
+    const direct = await directJson(['maintain', '--dry-run', '--format', 'json', '--db', dbPath]);
 
-  const run = await driveSession(clientFor(dbPath), ['--dry-run']);
-  assert.equal(run.error, null, JSON.stringify(run.error ?? {}));
-  assert.equal(run.exitCode, 0);
-  assert.deepEqual(run.document, direct, 'the preview rows/counts/shortlist must be the command’s own document');
-  assert.equal(direct.dry_run, true);
-  assert.equal(direct.changes.length, 1, 'the seed has exactly one sweep change (item 3)');
-  assert.equal(direct.summary.stale, 1, 'the seed has exactly one stale shielded question');
-  assert.equal(direct.summary.stale_candidates.truncated, false);
-  assert.equal(direct.summary.stale_candidates.candidates[0].item_id, 7);
-  // The dump is untouched: a dry run writes nothing (B3, read side).
-  const after = seed(SEED_MIXED, 'preview2');
-  assert.equal(dump(dbPath), dump(after), 'a dry run leaves the database byte-identical');
+    const run = await driveSession(clientFor(dbPath), ['--dry-run']);
+    assert.equal(run.error, null, JSON.stringify(run.error ?? {}));
+    assert.equal(run.exitCode, 0);
+    assert.deepEqual(run.document, direct, 'the preview rows/counts/shortlist must be the command’s own document');
+    assert.equal(direct.dry_run, true);
+    assert.equal(direct.changes.length, 1, 'the seed has exactly one sweep change (item 3)');
+    assert.equal(direct.summary.stale, 1, 'the seed has exactly one stale shielded question');
+    assert.equal(direct.summary.stale_candidates.truncated, false);
+    assert.equal(direct.summary.stale_candidates.candidates[0].item_id, 7);
+    // The dump is untouched: a dry run writes nothing (B3, read side).
+    const after = seed(SEED_MIXED, 'preview2');
+    assert.equal(dump(dbPath), dump(after), 'a dry run leaves the database byte-identical');
+  } finally {
+    removeSeededDirs();
+  }
 }, 120000);
 
 test('the apply session equals the terminal run on a byte-identical copy (parity)', async () => {
@@ -262,6 +276,7 @@ test('the apply session equals the terminal run on a byte-identical copy (parity
     assert.equal(ai.calls.length, 2, 'the terminal run adds exactly one AI call of its own');
     assert.ok(ai.calls[1].body.includes('should we cache tokens?'));
   } finally {
+    removeSeededDirs();
     delete process.env.EMBER_AI_BASE_URL;
     delete process.env.EMBER_AI_API_KEY;
     await ai.close();
@@ -269,8 +284,9 @@ test('the apply session equals the terminal run on a byte-identical copy (parity
 }, 120000);
 
 test('a sweep with an empty shortlist never prompts and never needs the key', async () => {
-  const dbA = seed(
-    `
+  try {
+    const dbA = seed(
+      `
 import sys
 from pathlib import Path
 from ember.adapters.sqlite import open_maintain_database
@@ -278,30 +294,33 @@ from tests.bridge import harness
 db = sys.argv[1]
 harness.seed_contradicted_active(db)
 `,
-    'noai-a',
-  );
-  const dbB = path.join(path.dirname(dbA), 'noai-b.db');
-  fs.copyFileSync(dbA, dbB);
-  const env = { ...process.env };
-  delete env.EMBER_AI_API_KEY;
-  delete env.EMBER_AI_BASE_URL;
-  delete env.OPENROUTER_API_KEY;
+      'noai-a',
+    );
+    const dbB = path.join(path.dirname(dbA), 'noai-b.db');
+    fs.copyFileSync(dbA, dbB);
+    const env = { ...process.env };
+    delete env.EMBER_AI_API_KEY;
+    delete env.EMBER_AI_BASE_URL;
+    delete env.OPENROUTER_API_KEY;
 
-  const run = await driveSession(clientFor(dbA), [], () => undefined);
-  assert.equal(run.error, null, JSON.stringify(run.error ?? {}));
-  assert.equal(run.exitCode, 0);
-  assert.equal(run.events.filter((e) => e.event === 'prompt').length, 0, 'no question, no prompt');
-  assert.equal(run.document.summary.stale, 0);
-  assert.equal(run.document.summary.challenged, 1);
+    const run = await driveSession(clientFor(dbA), [], () => undefined);
+    assert.equal(run.error, null, JSON.stringify(run.error ?? {}));
+    assert.equal(run.exitCode, 0);
+    assert.equal(run.events.filter((e) => e.event === 'prompt').length, 0, 'no question, no prompt');
+    assert.equal(run.document.summary.stale, 0);
+    assert.equal(run.document.summary.challenged, 1);
 
-  const terminal = await runWithInput(
-    EMBER,
-    ['maintain', '--format', 'json', '--confirm', 'terminal', '--db', dbB],
-    { input: '', env },
-  );
-  assert.equal(terminal.status, 0, `the terminal run must succeed: ${terminal.stderr}`);
-  const terminalDoc = maintainDocumentFromMessage(terminal.stdout.trim().split('\n').pop());
-  assert.ok(terminalDoc);
-  assert.deepEqual(run.document, terminalDoc);
-  assert.equal(dump(dbA), dump(dbB), 'the databases are row-for-row equal after both runs');
+    const terminal = await runWithInput(
+      EMBER,
+      ['maintain', '--format', 'json', '--confirm', 'terminal', '--db', dbB],
+      { input: '', env },
+    );
+    assert.equal(terminal.status, 0, `the terminal run must succeed: ${terminal.stderr}`);
+    const terminalDoc = maintainDocumentFromMessage(terminal.stdout.trim().split('\n').pop());
+    assert.ok(terminalDoc);
+    assert.deepEqual(run.document, terminalDoc);
+    assert.equal(dump(dbA), dump(dbB), 'the databases are row-for-row equal after both runs');
+  } finally {
+    removeSeededDirs();
+  }
 }, 120000);
