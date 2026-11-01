@@ -39,3 +39,14 @@ test('the interim panes are exactly the six unbuilt screens', async () => {
   const { paneNames } = await import('../renderer/screens/placeholder.mjs');
   assert.deepEqual(paneNames().sort(), ['add', 'cleanup', 'fix', 'keepsafe', 'link', 'settings']);
 });
+
+test('a timed-out WRITE re-reads state first and says "may not have been done" (F3)', async () => {
+  const { writeTimeoutNeedsReload } = await import('../renderer/screens/fix-close.mjs');
+  // A write timeout is the ambiguous case: reload before the Retry offer.
+  assert.equal(writeTimeoutNeedsReload('APP-008', true), true);
+  // Reads (the dry-run previews) and every other keep the old behaviour.
+  assert.equal(writeTimeoutNeedsReload('APP-008', false), false);
+  assert.equal(writeTimeoutNeedsReload('MAINTAIN-025', true), false);
+  assert.equal(writeTimeoutNeedsReload(null, true), false);
+  assert.equal(writeTimeoutNeedsReload(undefined, true), false);
+});

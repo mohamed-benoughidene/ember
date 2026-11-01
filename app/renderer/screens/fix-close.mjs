@@ -499,7 +499,7 @@ export function createFixCloseScreen(ctx) {
     busy = true;
     const result = await ctx.api.fixAction({ action: 'edit-item', args: { item: item.id, field: view.edit.field, value, dryRun: true } });
     busy = false;
-    if (!result.ok) return showWriteError(result.error, 'the edit preview', () => previewEdit(item));
+    if (!result.ok) return showWriteError(result.error, 'the edit preview', () => previewEdit(item), false);
     view.edit.preview = result.data;
     await loadDetail();
   }
@@ -587,7 +587,7 @@ export function createFixCloseScreen(ctx) {
     busy = true;
     const result = await ctx.api.fixAction({ action: 'close-item', args: { item: item.id, reason: view.close.reason, dryRun: true } });
     busy = false;
-    if (!result.ok) return showWriteError(result.error, 'the close preview', () => previewClose(item));
+    if (!result.ok) return showWriteError(result.error, 'the close preview', () => previewClose(item), false);
     view.close.preview = result.data;
     view.close.asking = false;
     await loadDetail();
@@ -681,7 +681,7 @@ export function createFixCloseScreen(ctx) {
     busy = true;
     const result = await ctx.api.fixAction({ action: 'remove-link', args: { link: link.id, dryRun: true } });
     busy = false;
-    if (!result.ok) return showWriteError(result.error, 'the removal preview', () => previewUnlink(link));
+    if (!result.ok) return showWriteError(result.error, 'the removal preview', () => previewUnlink(link), false);
     view.unLink = { linkId: link.id, preview: result.data, asking: true };
     await loadDetail();
     ctx.paneEl().querySelector('[data-testid="unlink-confirm"]')?.scrollIntoView({ block: 'nearest' });
@@ -739,16 +739,21 @@ export function createFixCloseScreen(ctx) {
 
   /** One write refused or failed: plain words first, the code behind
    * Details, Try again repeats the SAME user action (a new deliberate
-   * click — this is the manual retry the write rule allows). */
-  function showWriteError(error, what, retry) {
+   * click — this is the manual retry the write rule allows; a write is
+   * never retried automatically, a repeated undo could run twice). */
+  async function showWriteError(error, what, retry, isWrite = true) {
     const info = error ?? {};
+    const timedOut = writeTimeoutNeedsReload(info.code ?? null, isWrite);
+    // Plan §5.1: a timed-out WRITE may already be applied, so re-read
+    // the real state BEFORE the Retry offer is shown.
+    if (timedOut) await reloadAll();
     const sentence = maintainSentenceFor(info.code ?? null);
     const note = undoNoteFor(info.code ?? '', info.detail ?? '');
     const region = ctx.paneEl().querySelector('[data-testid="fix-message-region"]');
     if (!region) return;
     region.innerHTML = `<div class="errbox" data-testid="fix-error" role="alert">
         <strong>${esc(sentence.title)}</strong>
-        <span class="detail">${esc(sentence.what)} (${esc(what)} was not done.)</span>
+        <span class="detail">${esc(sentence.what)} (${esc(what)} ${timedOut ? 'may not have been done.' : 'was not done.'})</span>
         ${note ? `<span class="hint">${esc(note)}</span>` : `<span class="hint">${esc(sentence.next)}</span>`}
         <div class="actions">
           <button type="button" class="btn" data-action="fix-error-retry" data-testid="fix-error-retry">Try again</button>
@@ -773,7 +778,20 @@ export function createFixCloseScreen(ctx) {
   return { render };
 }
 
-/* ---------- pure row helper (unit-testable, mirrors lookup's) ---------- */
+/* ---------- pure helpers (unit-testable) ---------- */
+
+/**
+ * Fix F3 (plan §5.1): an APP-008 timeout on a WRITE is ambiguous — the
+ * command may have been applied before the timeout fired — so the
+ * screen re-reads state and says the action "may not have been done".
+ * Reads (the dry-run previews) are unambiguous: no reload, old wording.
+ * @param {string | null} code
+ * @param {boolean} isWrite
+ * @returns {boolean}
+ */
+export function writeTimeoutNeedsReload(code, isWrite) {
+  return isWrite === true && code === 'APP-008';
+}
 
 export function fixRowHtml(it, selected, settle) {
   const label = `Item ${String(it.id)}, ${it.type ?? ''}: ${String(it.statement ?? '').replace(/\s+/g, ' ').trim()}, ${it.status}`;
