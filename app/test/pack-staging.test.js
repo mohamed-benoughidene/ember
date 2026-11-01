@@ -18,7 +18,17 @@
  *       input is stubbed here, the real value is read from the
  *       MACHINE with `dpkg --print-architecture`, never a label);
  *   (e) read the runtime from the ONE location the build reports
- *       (EMBER_RUNTIME_OUT — fixes 4.1 #18).
+ *       (EMBER_RUNTIME_OUT — fixes 4.1 #18);
+ *   (f) the staged bundle.json records the app version (passed as
+ *       the version input — main reads it from app/package.json),
+ *       the ENGINE version read by pack.js from ember/__init__.py
+ *       (may differ from the app version — that is the spec's rule),
+ *       and a deterministic content hash of the runtime tree that
+ *       this test RECOMPUTES independently and compares (4.1 #16);
+ *   (g) the exported control builder's `Depends:` line carries the
+ *       four missing libs — libnotify4, libatspi2.0-0, libuuid1,
+ *       libsecret-1-0 (safeStorage) — beside today's list (4.1 #17,
+ *       story 20).
  * And: merely requiring scripts/pack.js builds NOTHING (no stage).
  */
 
@@ -27,9 +37,10 @@ const assert = require('node:assert/strict');
 const { execFileSync, spawnSync } = require('node:child_process');
 const fs = require('node:fs');
 const path = require('node:path');
+const crypto = require('node:crypto');
 
 const APP_ROOT = path.join(__dirname, '..');
-const TMP_ROOT = '/tmp/opencode/batch1/chunk8';
+const TMP_ROOT = '/tmp/opencode/batch1/chunk9';
 
 const pack = require(path.join(APP_ROOT, 'scripts', 'pack.js'));
 
@@ -175,6 +186,89 @@ test('case e: the runtime comes from the ONE location the build reports (EMBER_R
     delete process.env.EMBER_RUNTIME_OUT;
   }
 }));
+
+test('case f: bundle.json records the app version, the engine version, and a deterministic runtime content hash', withCase('f-bundle-json', (dir) => {
+  // Both sources are read here, in the test — pack.js must agree.
+  const appVersion = JSON.parse(fs.readFileSync(path.join(APP_ROOT, 'package.json'), 'utf8')).version;
+  assert.match(appVersion, /^\d+\.\d+\.\d+$/, 'sanity: app/package.json carries a plain x.y.z');
+  const engineSource = fs.readFileSync(path.join(APP_ROOT, '..', 'ember', '__init__.py'), 'utf8');
+  const engineMatch = engineSource.match(/^__version__\s*=\s*["']([^"']+)["']/m);
+  const engineVersion = engineMatch[1];
+  process.stdout.write(`   sources: app ${appVersion} / engine ${engineVersion}\n`);
+  assert.ok(/^[A-Za-z0-9._+~-]+$/.test(engineVersion), 'sanity: ember/__init__.py parses to a version token');
+
+  const runtimeDir = makeRuntime(path.join(dir, 'runtime'));
+  stageCase(dir, { runtime: runtimeDir, version: appVersion });
+  const bundleText = fs.readFileSync(path.join(dir, 'stage', 'app', 'bundle.json'), 'utf8');
+  const bundle = JSON.parse(bundleText);
+
+  assert.equal(bundle.version, appVersion, 'bundle.json must record the app version from app/package.json');
+  assert.equal(bundle.engineVersion, engineVersion, 'bundle.json must record the ENGINE version read from ember/__init__.py (it may differ from the app version — spec rule)');
+  assert.match(bundle.runtimeHash, /^[0-9a-f]{64}$/, 'bundle.json must record a sha256 content hash of the runtime tree');
+
+  // Independent recompute (the field is only honest if it equals what
+  // an outside read of the runtime tree produces). Canonical walk:
+  // entries sorted by relative path; `d <rel>` for dirs, `l <rel>
+  // <target>` for symlinks, `f <rel> <sha256-of-content>` for files;
+  // sha256 over the lines, one per line.
+  const recompute = (root) => {
+    const lines = [];
+    const walk = (dir_) => {
+      const entries = fs.readdirSync(dir_, { withFileTypes: true })
+        .map((e) => [e, e.name])
+        .sort((a, b) => (a[1] < b[1] ? -1 : a[1] > b[1] ? 1 : 0));
+      for (const [entry, name] of entries) {
+        const p = path.join(dir_, name);
+        const rel = path.relative(root, p).split(path.sep).join('/');
+        if (entry.isSymbolicLink()) lines.push(`l ${rel} ${fs.readlinkSync(p)}`);
+        else if (entry.isDirectory()) { lines.push(`d ${rel}`); walk(p); }
+        else if (entry.isFile()) lines.push(`f ${rel} ${crypto.createHash('sha256').update(fs.readFileSync(p)).digest('hex')}`);
+      }
+    };
+    walk(root);
+    return lines;
+  };
+  const digestOf = (root) => {
+    const hash = crypto.createHash('sha256');
+    for (const line of recompute(root)) hash.update(`${line}\n`);
+    return hash.digest('hex');
+  };
+  assert.equal(bundle.runtimeHash, digestOf(runtimeDir), 'the staged hash must equal an independently recomputed hash of the SAME runtime tree');
+
+  // Determinism: a copy of the same tree (different folder, different
+  // inode mtimes) must hash identical.
+  const copy = fs.mkdtempSync(path.join(dir, 'rt-copy-'));
+  fs.cpSync(runtimeDir, path.join(copy, 'runtime'), { recursive: true, verbatimSymlinks: true });
+  assert.equal(bundle.runtimeHash, digestOf(path.join(copy, 'runtime')), 'the hash is content-deterministic: an identical tree in another folder hashes the same');
+  // And a modified tree must hash different.
+  fs.writeFileSync(path.join(copy, 'runtime', 'ember'), '#!/bin/sh\ntrue # changed\n');
+  assert.notEqual(bundle.runtimeHash, digestOf(path.join(copy, 'runtime')), 'a changed runtime tree must hash different');
+
+  // The Done-when proof: the test prints the staged bundle.json.
+  process.stdout.write(`== staged bundle.json ==\n${bundleText}`);
+}));
+
+test('case g: the control builder Depends on the four missing libs beside today\'s list', () => {
+  const control = pack.buildControl({ version: '0.0.0' });
+  const dependsLine = control.split('\n').find((line) => line.startsWith('Depends:'));
+  assert.ok(dependsLine, 'the control builder output must carry a Depends: line');
+  // Parse it as DATA: package names (incl. every alternative), never
+  // a grep over the script text.
+  const names = new Set(
+    dependsLine
+      .slice('Depends:'.length)
+      .split(',')
+      .map((dep) => dep.trim())
+      .flatMap((dep) => dep.split('|').map((alt) => alt.trim()))
+      .filter(Boolean),
+  );
+  const today = ['libgtk-3-0', 'libnss3', 'libxtst6', 'libxss1', 'libgbm1', 'libdrm2', 'libxkbcommon0', 'libasound2', 'libasound2t64', 'libatk-bridge2.0-0', 'libatk-bridge2.0-0t64', 'libcups2', 'libcups2t64'];
+  const missing = ['libnotify4', 'libatspi2.0-0', 'libuuid1', 'libsecret-1-0'];
+  for (const name of [...today, ...missing]) {
+    assert.ok(names.has(name), `Depends must list ${name} (today's list keeps its entries; the four new libs are finding 4.1 #17, story 20)`);
+  }
+  process.stdout.write(`   Depends: ${dependsLine.slice('Depends:'.length).trim()}\n`);
+});
 
 test('merely requiring the module builds nothing (no stage)', () => {
   // A fresh child process: with the old pack.js, requiring it RAN the
