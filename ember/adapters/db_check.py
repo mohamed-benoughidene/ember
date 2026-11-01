@@ -72,7 +72,14 @@ def check_database(db_path: str) -> DbCheckReport:
         )
     try:
         lines = []
-        version = _read_version(conn)
+        try:
+            version = _read_version(conn)
+        except ValueError:
+            # A non-numeric stamped version is a finding, not a crash
+            # (the report never raises, story 13 / report 4.10 #15).
+            lines.append("version: cannot read - not a number")
+            lines.append(f"result: {DRIFT}")
+            return DbCheckReport(lines, DRIFT)
         lines.append(f"version: {version}")
         unmet = [f"{name} needs {floor}" for name, floor in FLOORS if version < floor]
         if unmet:

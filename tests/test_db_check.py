@@ -166,6 +166,22 @@ def test_db_check_drift_stale_version(db_path) -> None:
     assert "result: DRIFT" == lines[-1]
 
 
+def test_non_numeric_version_is_a_finding_not_a_crash(db_path) -> None:
+    _build_healthy_db(db_path)
+    conn = sqlite3.connect(db_path)
+    conn.execute("UPDATE schema_version SET version = 'abc'")
+    conn.commit()
+    conn.close()
+
+    result = CliRunner().invoke(main, ["db-check", "--db", db_path])
+
+    assert result.exit_code == 1
+    assert "Traceback" not in result.output
+    lines = result.output.splitlines()
+    assert "version: cannot read - not a number" in lines
+    assert "result: DRIFT" == lines[-1]
+
+
 def test_db_check_unreadable_missing_file(db_path) -> None:
     missing = str(db_path) + ".absent"
 
