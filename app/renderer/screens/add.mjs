@@ -241,16 +241,35 @@ export function createAddScreen(ctx) {
 
   /* ---------------- the error state ---------------- */
 
+  /**
+   * The crash id named on an EMBER-000 house line (`crash=<id>` in the
+   * error's detail, Batch 2 Chunk 2), or null for any other error. The
+   * character class matches the engine's id shape and refuses `/`,
+   * `..` and whitespace before the id ever reaches a channel.
+   */
+  function crashIdFromError(err) {
+    if (!err || err.code !== 'EMBER-000' || typeof err.detail !== 'string') return null;
+    const m = /crash=([A-Za-z0-9._-]+)/.exec(err.detail);
+    return m ? m[1] : null;
+  }
+
   function errorBlockHtml(err) {
     const s = addErrorSentence(err);
     const setupButton = s.openSetup
       ? buttonHtml({ label: 'Set up the AI connection', action: 'add-open-setup', variant: 'secondary', testid: 'add-open-setup' })
       : '';
-    return `${errorHtml({ title: s.title, detail: s.what, why: s.next, onRetry: 'add-retry' })}${setupButton}
-      <p class="help" data-testid="error-code" hidden>${esc(`${err ? `${err.code} ${err.name} | ${err.detail}` : 'no details'}`)}</p>`;
+    // An EMBER-000 crash keeps its report; the two Chunk 14 buttons
+    // appear under Details so the user can copy or open it.
+    const crashId = crashIdFromError(err);
+    const crashProps = crashId ? { onCopyCrash: 'copy-crash', onShowCrash: 'show-crash-file' } : {};
+    return `${errorHtml({ title: s.title, detail: s.what, why: s.next, onRetry: 'add-retry', ...crashProps })}${setupButton}
+      <p class="help" data-testid="error-code" hidden>${esc(`${err ? `${err.code} ${err.name} | ${err.detail}` : 'no details'}`)}</p>${
+      crashId ? `<div data-testid="crash-report"></div>` : ''
+    }`;
   }
 
   function wireErrorBlock(container, err) {
+    const crashId = crashIdFromError(err);
     bindStateBlock(container, {
       'add-retry': () => startSession(),
       'show-details': () => {
@@ -258,7 +277,42 @@ export function createAddScreen(ctx) {
         if (code) code.hidden = !code.hidden;
       },
       'add-open-setup': () => ctx.openSetup(),
+      ...(crashId
+        ? {
+            'copy-crash': async () => {
+              const area = container.querySelector('[data-testid="crash-report"]');
+              if (!area) return;
+              const res = await ctx.api.crashReport(crashId);
+              if (res && res.ok) {
+                // The text rides back (chunk 13) so the user can read
+                // the report before sharing it. esc(): engine text is
+                // never trusted as markup.
+                area.innerHTML = `<p class="help" data-testid="crash-copied" role="status">Copied. The crash report is on the clipboard.</p>
+                  <pre class="source-verbatim" data-testid="crash-text">${esc(res.text)}</pre>`;
+              } else {
+                area.innerHTML = crashReportFailedHtml(res);
+              }
+            },
+            'show-crash-file': async () => {
+              const area = container.querySelector('[data-testid="crash-report"]');
+              if (!area) return;
+              const res = await ctx.api.crashReportFolder(crashId);
+              if (res && res.ok) {
+                area.innerHTML = `<p class="help" role="status">The file manager opened at the crash report.</p>`;
+              } else {
+                area.innerHTML = crashReportFailedHtml(res);
+              }
+            },
+          }
+        : {}),
     });
+  }
+
+  /** Plain words for a refused crash report (a missing file is an
+   * ordinary APP-002 answer, never a thrown error). */
+  function crashReportFailedHtml(res) {
+    const why = res && res.error ? `${res.error.name}` : '';
+    return `<p class="help" data-testid="crash-report-failed" role="status">The crash report could not be reached. ${esc(why)}</p>`;
   }
 
   /* ---------------- rendering ---------------- */

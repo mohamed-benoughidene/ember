@@ -43,11 +43,26 @@ export function emptyHtml({ title = 'Nothing here yet.', next = null, onNext = n
   return `<div class="state state--empty" data-testid="state-empty"><div class="empty">${esc(title)}${action}</div></div>`;
 }
 
-/** Error: in the failed block, with Retry and Details. */
-export function errorHtml({ title = 'Something did not work.', detail = '', why = '', onRetry = 'retry', onDetails = 'show-details' } = {}) {
+/** Error: in the failed block, with Retry and Details. For an EMBER-000
+ * crash (Batch 2 Chunk 14) the caller may pass `onCopyCrash` /
+ * `onShowCrash` action names; the two crash buttons then render under
+ * the Details row ("Copy crash report" / "Show file"). */
+export function errorHtml({
+  title = 'Something did not work.',
+  detail = '',
+  why = '',
+  onRetry = 'retry',
+  onDetails = 'show-details',
+  onCopyCrash = null,
+  onShowCrash = null,
+} = {}) {
+  const crashButtons =
+    onCopyCrash && onShowCrash
+      ? `<div class="actions" data-testid="crash-actions">${buttonHtml({ label: 'Copy crash report', action: onCopyCrash, variant: 'secondary' })}${buttonHtml({ label: 'Show file', action: onShowCrash, variant: 'secondary' })}</div>`
+      : '';
   return `<div class="state state--error" data-testid="state-error" role="alert"><div class="errbox"><strong>${esc(title)}</strong><span class="detail">${esc(detail)}</span>${
     why ? `<span class="hint">${esc(why)}</span>` : ''
-  }<div class="actions">${buttonHtml({ label: 'Try again', action: onRetry, variant: 'secondary' })}${buttonHtml({ label: 'Details', action: onDetails, variant: 'text' })}</div></div></div>`;
+  }<div class="actions">${buttonHtml({ label: 'Try again', action: onRetry, variant: 'secondary' })}${buttonHtml({ label: 'Details', action: onDetails, variant: 'text' })}</div>${crashButtons}</div></div>`;
 }
 
 /** No-key: this job needs the AI connection; everything else works. */
