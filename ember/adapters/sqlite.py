@@ -183,6 +183,43 @@ def open_maintain_database(db_path: str) -> sqlite3.Connection:
     return conn
 
 
+def open_maintain_database_readonly(
+    db_path: str, *, required_version: int
+) -> sqlite3.Connection:
+    """Open an existing maintain DB STRICTLY read-only, never migrate (G2-B).
+
+    For the `--dry-run` reads (`maintain --dry-run`, `undo --dry-run`,
+    `redo --dry-run`): plan §5.5 / story 76 — opening or reading an older
+    file must never migrate it silently; the pre-migration `.bak-v12` copy
+    and the version bump happen only when a real write opens the database
+    the normal way. Raise `DbOpenFailed` (MAINTAIN-007) when the file is
+    missing or not a readable SQLite database, and `SchemaOutdated`
+    (MAINTAIN-009) when the applied version is below `required_version`
+    (the maintain floor is 11; an undo/redo dry-run, which reads the undo
+    groups, needs 13).
+    """
+    if not os.path.exists(db_path):
+        raise MaintainDbOpenFailed("db file missing", db_path=db_path)
+    try:
+        conn = _connect_readonly(db_path)
+        conn.execute("SELECT COUNT(*) FROM sqlite_master").fetchone()
+    except sqlite3.Error as exc:
+        raise MaintainDbOpenFailed("db open fail", db_path=db_path) from exc
+    try:
+        version = int(conn.execute("SELECT version FROM schema_version").fetchone()["version"])
+    except (sqlite3.Error, TypeError, ValueError) as exc:
+        conn.close()
+        raise MaintainDbOpenFailed("schema version read fail") from exc
+    if version < required_version:
+        conn.close()
+        raise MaintainSchemaOutdated(
+            "schema version too old (dry-run never migrates)",
+            version=version,
+            required=required_version,
+        )
+    return conn
+
+
 def ensure_maintain_schema(conn: sqlite3.Connection) -> None:
     """Check the applied schema version is new enough for the maintain engine.
 
@@ -916,6 +953,12 @@ class SqliteMaintainContext:
 
         Raise `ItemsReadFailed` (MAINTAIN-010) on a read failure.
         """
+        if not _column_exists(self._conn, "change_log", "group_id"):
+            # G2-B: a pre-013 file has no `group_id` column. Every row
+            # predates the undo groups, so there is no group to read;
+            # `has_ungrouped_rows()` carries the honest story-123 note.
+            # The export reader gates the same column the same way.
+            return []
         try:
             rows = self._conn.execute(
                 "SELECT id, item_id, link_id, field_changed, old_value,"
@@ -961,6 +1004,16 @@ class SqliteMaintainContext:
 
         Raise `ItemsReadFailed` (MAINTAIN-010) on a read failure.
         """
+        if not _column_exists(self._conn, "change_log", "group_id"):
+            # G2-B: on a pre-013 file EVERY row is ungrouped, so the
+            # honest story-123 answer is "any ledger rows exist at all".
+            try:
+                row = self._conn.execute(
+                    "SELECT 1 FROM change_log LIMIT 1"
+                ).fetchone()
+            except sqlite3.Error as exc:
+                raise MaintainItemsReadFailed("change_log read fail") from exc
+            return row is not None
         try:
             row = self._conn.execute(
                 "SELECT 1 FROM change_log WHERE group_id IS NULL LIMIT 1"

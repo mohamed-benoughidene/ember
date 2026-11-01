@@ -48,6 +48,7 @@ from ember.adapters.sqlite import (
     build_embedding_store,
     open_database,
     open_maintain_database,
+    open_maintain_database_readonly,
     open_query_database,
     open_relate_database,
 )
@@ -539,7 +540,13 @@ def maintain(output: OutputOptions) -> None:
     total_items = 0
     stale_truncated = False
     try:
-        conn = open_maintain_database(output.db_path)
+        # G2-B: a `--dry-run` is a read — it opens STRICTLY read-only and
+        # never migrates an older file (plan §5.5, story 76).
+        conn = (
+            open_maintain_database_readonly(output.db_path, required_version=11)
+            if output.dry_run
+            else open_maintain_database(output.db_path)
+        )
         ports = MaintainPorts(
             lookup=SqliteMaintainContext(conn),
             store=SqliteMaintainStore(conn),
@@ -992,7 +999,13 @@ def undo(output: OutputOptions) -> None:
     line and writes zero rows.
     """
     try:
-        conn = open_maintain_database(output.db_path)
+        # G2-B: a `--dry-run` is a read — STRICTLY read-only, never
+        # migrates (plan §5.5, story 76).
+        conn = (
+            open_maintain_database_readonly(output.db_path, required_version=11)
+            if output.dry_run
+            else open_maintain_database(output.db_path)
+        )
         ports = _undo_ports(conn)
         result = run_undo(ports, UndoRequest(dry_run=output.dry_run))
         new_group_id = (
@@ -1032,7 +1045,13 @@ def redo(output: OutputOptions) -> None:
     `ember undo`.
     """
     try:
-        conn = open_maintain_database(output.db_path)
+        # G2-B: a `--dry-run` is a read — STRICTLY read-only, never
+        # migrates (plan §5.5, story 76).
+        conn = (
+            open_maintain_database_readonly(output.db_path, required_version=11)
+            if output.dry_run
+            else open_maintain_database(output.db_path)
+        )
         ports = _undo_ports(conn)
         result = run_redo(ports, UndoRequest(dry_run=output.dry_run))
         new_group_id = (

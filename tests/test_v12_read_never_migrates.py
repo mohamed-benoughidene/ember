@@ -114,3 +114,44 @@ def test_db_check_on_a_v12_file_succeeds_and_never_migrates(db_path) -> None:
     assert version_after == 12
     assert digest_after == digest_before
     assert not Path(f"{db_path}.bak-v12").exists()
+
+
+def test_maintain_dry_run_on_v12_never_migrates(db_path) -> None:
+    """G2-B: the app's Home pending-count and Clean up preview run
+    `maintain --dry-run` — a read. On a v12 file it must succeed
+    WITHOUT migrating, without a backup copy, byte-identical."""
+    _build_v12_db(db_path)
+    version_before, digest_before = _version_and_hash(db_path)
+
+    result = CliRunner().invoke(
+        main,
+        ["maintain", "--dry-run", "--format", "json", "--confirm", "json", "--db", db_path],
+    )
+
+    assert result.exit_code == 0, result.output
+    version_after, digest_after = _version_and_hash(db_path)
+    assert version_before == 12
+    assert version_after == 12
+    assert digest_after == digest_before, "a dry-run rewrote the v12 file"
+    assert not Path(f"{db_path}.bak-v12").exists()
+
+
+def test_undo_and_redo_dry_run_on_v12_never_migrate(db_path) -> None:
+    """G2-B: `undo --dry-run` / `redo --dry-run` on a v12 file answer
+    honestly (NothingToUndo with the older-rows note) and leave the
+    file byte-identical, version 12, no backup copy."""
+    _build_v12_db(db_path)
+    version_before, digest_before = _version_and_hash(db_path)
+
+    undo_result = CliRunner().invoke(main, ["undo", "--dry-run", "--db", db_path])
+    redo_result = CliRunner().invoke(main, ["redo", "--dry-run", "--db", db_path])
+
+    assert undo_result.exit_code == 1, undo_result.output
+    assert "nothing to undo" in undo_result.output
+    assert "older ledger rows" in undo_result.output, undo_result.output
+    assert redo_result.exit_code == 1, redo_result.output
+    version_after, digest_after = _version_and_hash(db_path)
+    assert version_before == 12
+    assert version_after == 12
+    assert digest_after == digest_before, "a dry-run rewrote the v12 file"
+    assert not Path(f"{db_path}.bak-v12").exists()
