@@ -251,6 +251,7 @@ Earlier logo and character images, kept for history.
 - `app/test/shortcuts.test.js`: The shortcut and tray seams on fakes: granted/refused/thrown registration with APP-005, the pinned three-item fallback menu, honest tray failure.
 - `app/test/errors.test.js`: The APP- namespace pins: codes 000-008 and their stable names, the AppError shape, unknown codes refused.
 - `app/test/launch-check.js`: `npm run check:launch`: builds a throwaway real knowledge base (venv `capture-source`, no key), launches the real Electron shell, and passes only when the window started, `items: N` was printed and the app exited 0.
+- `app/test/harness-no-key.test.js`: The automated key-leak check of the launch harness (Batch 0, decision I5): with sentinel AI keys in the environment, a recording fake engine (`EMBER_TEST_ENGINE`) stands in for the child and the dump proves the child env carries neither AI key and its `XDG_CONFIG_HOME` points inside the check's own temp work folder, never `~/.config`.
 - `app/test/run.js`: The thin node-test runner wrapper: `node --test` over test/'s *.test.js files; a first argument filters by filename, so the step-03 command `npm test -- design` runs the design tests.
 - `app/test/design-tokens.test.js`: The token contract: every DESIGN.md colour/spacing/radius/type token exists in tokens.css with the exact value, no orphan tokens, no invented hex values, plain CSS only.
 - `app/test/design-type-scale.test.js`: The Text Size Rule as maths: the five steps, Largest = 200% of Default, and the rem conversion reproducing the seven spacing steps.
@@ -424,6 +425,8 @@ Earlier logo and character images, kept for history.
 - `tests/test_relate_db_open.py`: Relate DB open checks: missing/corrupt file, migration fail, schema version 5/8/12 gate, and all migrations applied.
 - `tests/test_relate_read_failures.py`: Every `SqliteLinkContext` read maps a `sqlite3` failure to `RELATE-016`; also covers `item_status` and `supersedes_ancestors`.
 - `tests/test_migration_runner.py`: Each migration and its version bump are one transaction; failures roll back.
+- `tests/test_measure_model_change.py`: The measurement script's tests (Batch 0): `--help` exits 0, a failed run leaves no database, `-wal`/`-shm`/`-journal` or backup file behind, and an existing database outside the temp folder is refused with its bytes untouched.
+- `tests/test_key_wizard.py`: The key wizard run on a COPY inside a throwaway temp git repo (Batch 0): an un-ignored `.env` refuses before anything is written, and the key file ends mode 600 — also from a pre-existing 644 file — with the reported length matching the key.
 
 ### Bridge Tests (`tests/bridge/`)
 - `tests/bridge/__init__.py`: Marks the bridge tests folder as a package (S2: the bridge suite is isolated).
