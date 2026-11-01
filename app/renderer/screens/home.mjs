@@ -5,6 +5,12 @@
  * button (14), and a button on the attention message to the fix or the
  * sweep (15). Every block sits in a step-03 state component: loading,
  * empty, error with Retry and Details — no bare code on screen.
+ *
+ * Batch 3 F4 (decision B3-1): a failed engine-fed block (attention,
+ * counts, ledger) shows nothing of its own. The blocks record their
+ * failures and `renderFailures` shows ONE grouped notice per error
+ * code in `home-failures` — Try again reloads every block. The
+ * knowledge-base gate error and the no-key banner keep their cards.
  */
 
 import { esc } from '../design/escape-html.mjs';
@@ -12,7 +18,8 @@ import { buttonHtml } from '../components/button.mjs';
 import { bannerHtml } from '../components/banner.mjs';
 import { emptyHtml } from '../components/state-block.mjs';
 import { historyEventSentence } from '../../shared/plain-sentences.mjs';
-import { showErrorBlock, showLoadingBlock, dataOrNull } from './blocks.mjs';
+import { groupFailuresByCode } from '../../shared/home-failures.mjs';
+import { showErrorBlock, showLoadingBlock } from './blocks.mjs';
 
 const COUNT_PAGE_SIZE = 1; // totals ride the envelope; the page content is not needed
 const LEDGER_LIMIT = 5;
@@ -27,6 +34,10 @@ export function createHomeScreen(ctx) {
   let rootEl = null;
   let noKey = null;
   let kbGate = 'reading'; // 'ok' | 'nosuch' | 'invalid' | 'reading'
+  // Batch 3 F4 (decision B3-1): the engine-fed loaders no longer show
+  // their own error cards — on failure each records one { what, error }
+  // here and the notices render grouped (one per code) in home-failures.
+  let failures = [];
 
   async function load() {
     await Promise.all([loadGate(), loadKeyStatus()]);
@@ -56,6 +67,7 @@ export function createHomeScreen(ctx) {
     }
     kbGate = 'ok';
     renderGate();
+    failures = []; // a fresh visit (or Try again) judges the fresh load
     await Promise.all([loadAttention(), loadCounts(), loadLedger()]);
   }
 
@@ -71,6 +83,59 @@ export function createHomeScreen(ctx) {
           })
         : '';
     host.querySelector('[data-action="home-setup-key"]')?.addEventListener('click', () => ctx.openSetup());
+  }
+
+  /**
+   * Batch 3 F4: the grouped failure notices. ONE banner per error code
+   * (B3-1): the banner words carry the count sentence and the code's
+   * plain words, the banner's one action (Try again) runs `load()` —
+   * the same path a visit runs — and the code stays behind Details,
+   * never bare on screen (story 102). A failed block shows nothing of
+   * its own; this notice replaces its card.
+   */
+  function renderFailures() {
+    const host = rootEl ? rootEl.querySelector('[data-testid="home-failures"]') : null;
+    if (!host) return;
+    const groups = groupFailuresByCode(failures);
+    if (groups.length === 0) {
+      host.innerHTML = '';
+      return;
+    }
+    host.innerHTML = groups
+      .map((group) => {
+        // Same Details pattern as the state error cards (blocks.mjs):
+        // the raw `${code} ${name} | ${detail}` line stays hidden until
+        // Details is clicked.
+        const first = failures.find((f) => f && f.error && (f.error.code ?? null) === group.code);
+        const err = first ? first.error : null;
+        const line = err ? `${err.code ?? ''} ${err.name ?? ''} | ${err.detail ?? ''}` : 'no details';
+        // bannerHtml builds the banner with the encoded action; the
+        // Details toggle and the hidden code line sit inside the same
+        // banner div, so they are reachable under the banner's testid.
+        return bannerHtml({
+          text: `${group.words.countSentence} ${group.words.title} ${group.words.what}`,
+          actionLabel: 'Try again',
+          action: 'home-failures-retry',
+          testid: 'home-failure-notice',
+        }).replace(
+          '</div>',
+          `${buttonHtml({ label: 'Details', action: 'show-details', variant: 'text' })}<p class="help" data-testid="error-code" hidden>${esc(line)}</p></div>`,
+        );
+      })
+      .join('');
+    host.querySelectorAll('[data-testid="home-failure-notice"]').forEach((notice) => {
+      notice.querySelector('[data-action="home-failures-retry"]')?.addEventListener('click', () => load());
+      notice.querySelector('[data-action="show-details"]')?.addEventListener('click', () => {
+        const code = notice.querySelector('[data-testid="error-code"]');
+        if (code) code.hidden = !code.hidden;
+      });
+    });
+  }
+
+  /** Record one failed engine-fed block and show the grouped notices. */
+  function recordFailure(what, error) {
+    failures.push({ what, error });
+    renderFailures();
   }
 
   function renderGate() {
@@ -101,17 +166,25 @@ export function createHomeScreen(ctx) {
     const host = blocks.attention();
     showLoadingBlock(host, 'Checking what needs attention…');
     const challenged = await ctx.api.listItems({ status: 'Challenged', limit: COUNT_PAGE_SIZE, offset: 0 });
-    const challengedData = dataOrNull(host, challenged, { what: 'attention', onRetry: loadAttention });
-    if (challengedData === null) return;
-    const challengedCount = challengedData.total;
+    if (!challenged || !challenged.ok) {
+      host.innerHTML = '';
+      recordFailure('attention', challenged ? challenged.error : null);
+      return;
+    }
+    const challengedCount = challenged.data.total;
     const live = await ctx.api.currentState();
-    const stateData = dataOrNull(host, live, { what: 'attention', onRetry: loadAttention });
-    if (stateData === null) return;
+    if (!live || !live.ok) {
+      host.innerHTML = '';
+      recordFailure('attention', live ? live.error : null);
+      return;
+    }
+    const stateData = live.data;
     const firstChallenged = stateData.items.find((it) => it.challenged === true) ?? null;
     // maintainDryRun answers {ok, pending} in its own shape.
     const sweep = await ctx.api.maintainDryRun();
     if (!sweep || !sweep.ok) {
-      showErrorBlock(host, sweep ? sweep.error : null, { what: 'attention', onRetry: loadAttention });
+      host.innerHTML = '';
+      recordFailure('attention', sweep ? sweep.error : null);
       return;
     }
     const pendingCount = sweep.pending;
@@ -148,9 +221,10 @@ export function createHomeScreen(ctx) {
       ctx.api.listItems({ status: 'Closed', limit: COUNT_PAGE_SIZE, offset: 0 }),
     ]);
     const results = { all, active, challenged, closed };
-    for (const [name, result] of Object.entries(results)) {
+    for (const result of Object.values(results)) {
       if (!result.ok) {
-        showErrorBlock(host, result.error, { what: `the ${name} count`, onRetry: loadCounts });
+        host.innerHTML = '';
+        recordFailure('the counts', result.error);
         return;
       }
     }
@@ -167,8 +241,12 @@ export function createHomeScreen(ctx) {
     const host = blocks.ledger();
     showLoadingBlock(host, 'Reading the latest ledger lines…');
     const result = await ctx.api.history({ limit: LEDGER_LIMIT, offset: 0 });
-    const data = dataOrNull(host, result, { what: 'the latest ledger lines', onRetry: loadLedger });
-    if (data === null) return;
+    if (!result || !result.ok) {
+      host.innerHTML = '';
+      recordFailure('the latest ledger lines', result ? result.error : null);
+      return;
+    }
+    const data = result.data;
     const events = data.events ?? [];
     if (events.length === 0) {
       host.innerHTML = emptyHtml({ title: 'The ledger is empty. Every change you make is written here.' });
@@ -193,6 +271,7 @@ export function createHomeScreen(ctx) {
           ${buttonHtml({ label: 'Add text', action: 'home-add-main', variant: 'primary', testid: 'home-add' })}
         </div>
         <div data-testid="home-notice"></div>
+        <div data-testid="home-failures"></div>
         <div data-testid="kb-gate"></div>
         <div data-testid="attention"></div>
         <div data-testid="home-counts"></div>
