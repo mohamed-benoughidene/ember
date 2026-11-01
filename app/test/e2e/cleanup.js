@@ -187,8 +187,22 @@ async function launch({ kbPath, aiUrl = null, apiKey = null }) {
     EMBER_APP_COMMAND: EMBER,
     EMBER_APP_DB: kbPath,
   };
+  // Strip any inherited AI key BEFORE the scenario sets its own explicit fake
+  // — the child must never see a key from the operator's shell.
+  delete env.EMBER_AI_API_KEY;
+  delete env.OPENROUTER_API_KEY;
   if (aiUrl) env.EMBER_AI_BASE_URL = aiUrl;
   if (apiKey) env.EMBER_AI_API_KEY = apiKey;
+  // Guard: any AI key in the final env must be the scenario's explicit fake
+  // value, and OPENROUTER_API_KEY must be absent.
+  if (env.OPENROUTER_API_KEY !== undefined) {
+    fail(`OPENROUTER_API_KEY would still reach the launched app's environment`);
+  }
+  if (env.EMBER_AI_API_KEY !== undefined && env.EMBER_AI_API_KEY !== apiKey) {
+    fail(
+      `EMBER_AI_API_KEY in the child env is not the scenario's explicit fake value (got a key that was not passed by this scenario)`,
+    );
+  }
   const app = await _electron.launch({ args: ['.'], cwd: APP_ROOT, env });
   const win = await app.firstWindow();
   await win.waitForSelector('[data-testid="pane-cleanup"]');

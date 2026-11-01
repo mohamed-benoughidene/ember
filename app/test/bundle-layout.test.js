@@ -14,7 +14,7 @@
  * the manifest falls back to `ember` on PATH as always.
  */
 
-const test = require('node:test');
+const { test, after } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
@@ -27,8 +27,18 @@ const {
   bundledChildEnv,
 } = require('../main/ember-command');
 
+// The temp folders this file creates are removed once, after every test
+// in the file ran (node:test runs `after` exactly once).
+const tempDirs = [];
+
+after(() => {
+  for (const dir of tempDirs) fs.rmSync(dir, { recursive: true, force: true });
+});
+
 function tempAppDir() {
-  return fs.mkdtempSync(path.join(os.tmpdir(), 'ember-bundle-'));
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ember-bundle-'));
+  tempDirs.push(dir);
+  return dir;
 }
 
 test('the env override still wins over everything (step 02 behaviour unchanged)', () => {

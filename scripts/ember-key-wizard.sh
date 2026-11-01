@@ -63,15 +63,11 @@ step() { printf '  %s•%s %s\n' "$BLUE" "$RESET" "$1"; }
 note() { printf '  %s%s%s\n' "$DIM" "$1" "$RESET"; }
 warn() { printf '  %s⚠ %s%s\n' "$YELLOW" "$1" "$RESET"; }
 
-# open_url URL opens it in the human's browser, cross-platform incl. WSL.
+# open_url URL opens it in the human's browser with the Linux opener.
 open_url() {
   local url="$1"
   printf '  %s↗ opening%s %s\n' "$GREEN" "$RESET" "$url"
-  { if   command -v wslview     >/dev/null 2>&1; then wslview "$url"
-    elif command -v explorer.exe >/dev/null 2>&1; then explorer.exe "$url"
-    elif command -v xdg-open    >/dev/null 2>&1; then xdg-open "$url"
-    elif command -v open        >/dev/null 2>&1; then open "$url"
-    else false; fi
+  { command -v xdg-open >/dev/null 2>&1 && xdg-open "$url"
   } >/dev/null 2>&1 || warn "couldn't open a browser, so visit it manually: $url"
 }
 
@@ -135,11 +131,15 @@ ask_secret() {
 }
 
 # write_env KEY VALUE upserts KEY='VALUE' into ENV_FILE (replaces any existing
-# line) and sets $KEY. Idempotent. Creates ENV_FILE at mode 0600; writes through
-# a symlink and keeps an existing file's mode.
+# line) and sets $KEY. Idempotent. Locks ENV_FILE to mode 0600 BEFORE any key
+# byte is written (no 644 window, decision I13); writes through a symlink.
 write_env() {
   local key="$1" value="$2" tmp sq="'\\''"
-  [[ -e "$ENV_FILE" ]] || (umask 077 && : > "$ENV_FILE")
+  # Lock the file BEFORE any key byte is written (decision I13: no 644
+  # window at any moment). Covers both a fresh file and a pre-existing
+  # wide-open file: the mode ends as 600 before the key line is appended.
+  umask 077
+  touch "$ENV_FILE" && chmod 600 "$ENV_FILE"
   tmp=$(mktemp)
   grep -vE "^${key}=" "$ENV_FILE" > "$tmp" || true
   printf "%s='%s'\n" "$key" "${value//\'/$sq}" >> "$tmp"
@@ -213,6 +213,8 @@ ENV_FILE="$REPO_ROOT/.env"
 TOTAL_STAGES=3
 
 banner "Ember: OpenRouter key setup"
+# Decision D-22: this wizard is Linux-only; it opens URLs with xdg-open.
+note "Linux only: this wizard needs a Linux desktop (it opens URLs with xdg-open)."
 
 # ── Stage 1: the API key (secret) ─────────────────────────────────────────
 stage "OpenRouter: API key"
@@ -222,6 +224,12 @@ open_url "https://openrouter.ai/settings/keys"
 step "If you still have an existing key, copy it (starts sk-or-v1-)."
 step "Otherwise click 'Create key', name it (e.g. ember-e2e), and copy it."
 note "New keys are shown exactly once; if you lost the old one, create a new one."
+# Refuse BEFORE the key is asked or written: if git could still see .env,
+# the key file must not be created at all. Nothing is written on refusal.
+if ! git -C "$REPO_ROOT" check-ignore -q "$ENV_FILE"; then
+  printf 'ERROR: %s is NOT gitignored. Add .env to .gitignore first, then re-run this wizard. Nothing was written.\n' "$ENV_FILE" >&2
+  exit 1
+fi
 ask_secret EMBER_AI_API_KEY "Paste the OpenRouter key:"
 write_env EMBER_AI_API_KEY "$EMBER_AI_API_KEY"
 
@@ -241,8 +249,8 @@ stage "Verify"
 if [[ -f "$ENV_FILE" ]] && grep -q "^EMBER_AI_API_KEY=" "$ENV_FILE"; then
   printf '  %s✓ file exists:%s %s (mode %s)\n' "$GREEN" "$RESET" "$ENV_FILE" "$(stat -c %a "$ENV_FILE")"
   local keylen
-  keylen=$(grep -oP '(?<=EMBER_AI_API_KEY=).*' "$ENV_FILE" | wc -c)
-  printf '  %s✓ key present:%s %s chars (length only, never the key)\n' "$GREEN" "$RESET" "$((keylen - 1))"
+  keylen=${#EMBER_AI_API_KEY}
+  printf '  %s✓ key present:%s %s chars (length only, never the key)\n' "$GREEN" "$RESET" "$keylen"
   if [[ "$(stat -c %a "$ENV_FILE")" == "600" ]]; then
     printf '  %s✓ permissions:%s 600 (only your user can read it)\n' "$GREEN" "$RESET"
   else

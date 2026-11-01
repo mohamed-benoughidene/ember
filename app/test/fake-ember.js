@@ -52,11 +52,7 @@ function hangAndSleep() {
   setInterval(() => {}, 10_000);
 }
 
-if (mode === 'hang') {
-  hangAndSleep();
-} else if (mode === 'app') {
-  runAppMode(argv);
-} else if (mode === 'list') {
+function printListDocument() {
   const total = Number(process.env.FAKE_TOTAL ?? '2');
   const items = [];
   for (let i = 1; i <= total; i += 1) {
@@ -74,6 +70,19 @@ if (mode === 'hang') {
   }
   process.stdout.write(`${JSON.stringify({ total, items })}\n`);
   process.exit(0);
+}
+
+if (mode === 'hang') {
+  hangAndSleep();
+} else if (mode === 'app') {
+  runAppMode(argv);
+} else if (mode === 'list') {
+  printListDocument();
+} else if (mode === 'slow') {
+  /* A healthy read that merely takes a while: 400 ms of silence, then
+     the SAME list-items document the list mode prints, exit 0. The
+     5000 ms default limits must let it answer (never APP-008). */
+  setTimeout(printListDocument, 400);
 } else if (mode === 'garbage') {
   process.stdout.write('definitely not one json document\n');
   process.exit(0);
