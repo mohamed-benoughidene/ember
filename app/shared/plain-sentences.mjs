@@ -562,6 +562,11 @@ Object.assign(ERROR_SENTENCES, {
     what: 'The knowledge base file could not be opened or made ready (it may be missing, not an Ember file, damaged, or unreadable).',
     next: 'Check the file name and location, then try again. If it keeps happening, run the health check (Keep safe).',
   },
+  'CAPTURE-019': {
+    title: 'The AI address was not understood.',
+    what: 'The AI service address (the base URL) set in the environment is not a valid web address.',
+    next: 'Check the AI base URL setting, then try again. Nothing was created.',
+  },
   'RELATE-000': {
     title: 'A problem in the relate engine was reported.',
     what: 'Ember reported a general problem in the part that links items.',
@@ -736,6 +741,16 @@ Object.assign(ERROR_SENTENCES, {
     title: 'Reading the knowledge base failed.',
     what: 'A read of the items, links or ledger failed.',
     next: 'Try again. If it keeps happening, run the health check (Keep safe).',
+  },
+  'QUERY-008': {
+    title: 'The knowledge base is busy.',
+    what: 'Another program is holding the knowledge base file, so the read could not start.',
+    next: 'Wait a moment and try again. If it keeps happening, close the other program that uses this file.',
+  },
+  'QUERY-009': {
+    title: 'The knowledge base needs recovery.',
+    what: 'The knowledge base file could not be read; it may be damaged or left half-written.',
+    next: 'Run the health check (Keep safe) and follow the advice there. Do not edit the file by hand.',
   },
   'BACKUP-000': {
     title: 'A problem with the backup was reported.',
