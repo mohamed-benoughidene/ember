@@ -180,8 +180,27 @@ test('merely requiring the module builds nothing (no stage)', () => {
   // A fresh child process: with the old pack.js, requiring it RAN the
   // pack (main() at load). EMBER_RUNTIME_OUT points at a folder that
   // does not exist, so an at-load run would fail loudly, and the
-  // export check below fails while pack.js exports nothing.
-  const child = spawnSync(
+  // export check below fails while pack.js exports nothing.// The guarantee: requiring pack.js must not run the pack, so the stage
+// folder is neither created nor changed. On a machine with an old build
+// the folder already exists — pin its exact state instead of demanding
+// it be absent.
+const stageRoot = path.join(APP_ROOT, 'dist', 'ember-app');
+const snapshotStage = (root) => {
+  if (!fs.existsSync(root)) return null;
+  const out = {};
+  const walk = (dir) => {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const p = path.join(dir, entry.name);
+      const st = fs.statSync(p);
+      out[path.relative(root, p)] = `${st.size}:${st.mtimeMs}:${entry.isDirectory() ? 'd' : 'f'}`;
+      if (entry.isDirectory()) walk(p);
+    }
+  };
+  walk(root);
+  return out;
+};
+const stageBefore = snapshotStage(stageRoot);
+const child = spawnSync(
     process.execPath,
     [
       '-e',
@@ -191,5 +210,5 @@ test('merely requiring the module builds nothing (no stage)', () => {
     { env: { ...process.env, EMBER_RUNTIME_OUT: path.join(TMP_ROOT, 'no-such-runtime') } },
   );
   assert.equal(child.status, 0, `requiring scripts/pack.js must not run the pack and must export stageBundle:\n${child.stderr}`);
-  assert.equal(fs.existsSync(path.join(APP_ROOT, 'dist', 'ember-app')), false, 'merely requiring pack.js must create NO stage (app/dist/ember-app)');
+  assert.deepEqual(snapshotStage(stageRoot), stageBefore, 'merely requiring pack.js must not create or change ANY stage file (app/dist/ember-app)');
 });
