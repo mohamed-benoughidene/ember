@@ -36,10 +36,17 @@ function main() {
   const venvPython = isWin ? path.join(REPO_ROOT, '.venv', 'Scripts', 'python.exe') : path.join(REPO_ROOT, '.venv', 'bin', 'python');
   const seedCmd = isWin ? venvPython : path.join(REPO_ROOT, '.venv', 'bin', 'ember');
   const seedBaseArgs = isWin ? ['-m', 'ember', 'capture-source'] : ['capture-source'];
-  const commandEnv = isWin ? `${venvPython} -m ember` : path.join(REPO_ROOT, '.venv', 'bin', 'ember');
+  let commandEnv = isWin ? `${venvPython} -m ember` : path.join(REPO_ROOT, '.venv', 'bin', 'ember');
   const emberPresent = isWin ? seedCmd : commandEnv;
   if (!fs.existsSync(emberPresent)) {
     fail(`the project venv ember is missing (${emberPresent}) — this check reads a real knowledge base`);
+  }
+  // Test-only hook (I5): a fake engine records the FINAL child
+  // environment. It replaces only the read command the app runs — the
+  // strip, the key guard and the config-dir OK line below stay the
+  // assertion on every real launch.
+  if (process.env.EMBER_TEST_ENGINE) {
+    commandEnv = process.env.EMBER_TEST_ENGINE;
   }
   // The Electron binary, resolved the portable way: under PLAIN Node
   // the electron npm package exports the path to the real binary on
