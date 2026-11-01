@@ -103,6 +103,13 @@ class DbOpenFailed(CaptureError):
     name = "DbOpenFailed"
 
 
+class TextNotEncodable(CaptureError):
+    """Text (an edited field) cannot be written as UTF-8 (decision I1)."""
+
+    code = "CAPTURE-018"
+    name = "TextNotEncodable"
+
+
 class BaseUrlInvalid(CaptureError):
     """`EMBER_AI_BASE_URL` is not a usable URL (decision I1)."""
 
