@@ -387,6 +387,22 @@ function main() {
   // fakeroot: the archive entries must be root:root; this process is
   // not root — fakeroot fakes the ownership ONLY inside the archive.
   execFileSync('fakeroot', ['dpkg-deb', '--build', debTree, debPath], { stdio: 'inherit' });
+
+  // The pack ends with the check (Batch 1 Chunk 11; D-11/D-12/D-21
+  // wiring): the freshly built .deb must pass scripts/check-deb.sh
+  // before it counts as built. On FAIL the check saves its dated
+  // report and never the .deb (D-12), and its non-zero exit throws out
+  // of execFileSync — the fail() in the require.main guard below turns
+  // that into a pack failure. On PASS the .deb + report are saved into
+  // the release folder, newest 3 kept (D-21). The release folder
+  // follows EMBER_PACK_ROOT (default app/dist/release), the same way
+  // the check-deb tests pass their own release folder as argument 2.
+  execFileSync(
+    'bash',
+    [path.join(APP_ROOT, 'scripts', 'check-deb.sh'), debPath, path.join(PACK_ROOT, 'release')],
+    { stdio: 'inherit' },
+  );
+
   execFileSync('dpkg-deb', ['--info', debPath], { stdio: 'inherit' });
 
   process.stdout.write('\n== sizes (the step-13 install-size report) ==\n');
