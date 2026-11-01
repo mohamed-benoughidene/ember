@@ -107,6 +107,11 @@ export const MAINTAIN_SENTENCES = {
     what: 'The undo history holds an entry Ember does not recognise. Ember refused rather than guess what it meant.',
     next: 'Run the health check (Keep safe) and send the Details line with a bug report.',
   },
+  'MAINTAIN-028': {
+    title: 'This undo was stopped before writing.',
+    what: 'The item or link changed in the moment between checking and writing, so Ember stopped rather than overwrite the newer change. Nothing was written and nothing was half-undone.',
+    next: 'Read the item’s current state in Look up, then undo again only if that is still what you want.',
+  },
   /* Forced-path companion of story 53 ("verified" is Assumption-only):
      the screen keeps the button off, so this only shows if the rule is
      somehow reached anyway. */

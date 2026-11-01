@@ -143,3 +143,8 @@ class UndoWriteFailed(MaintainError):
 class GroupRecordInvalid(MaintainError):
     code = "MAINTAIN-027"
     name = "GroupRecordInvalid"
+
+
+class InverseTargetMoved(MaintainError):
+    code = "MAINTAIN-028"
+    name = "InverseTargetMoved"

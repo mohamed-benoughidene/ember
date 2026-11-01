@@ -41,6 +41,7 @@ from ember.maintain.derive import derive_status_changes
 from ember.maintain.errors import (
     ChangeLogWriteFailed,
     GroupRecordInvalid,
+    InverseTargetMoved,
     UndoWriteFailed,
 )
 from ember.maintain.rows import MaintainSnapshot, UndoSnapshot
@@ -693,4 +694,34 @@ def test_corrupt_self_pointing_marker_raises_027_and_writes_nothing(
     assert excinfo.value.code == "MAINTAIN-027"
     assert excinfo.value.context == {"group_id": 2, "target_group_id": 2}
     assert _ledger_count(conn) == count + 1  # only the corrupt row itself
+    conn.close()
+
+
+def test_target_moved_between_derive_and_write_is_refused_ma028(db_path) -> None:
+    """Fix G3: the docstring contract is now THE behaviour — the store
+    re-checks `expected_value` in the write transaction, so a row that
+    moved in the window between the derivation's read and the write is
+    refused with MAINTAIN-028 and NOTHING is written (no half-undone
+    group, no overwrite of the newer value)."""
+    conn = _open(db_path)
+    ports = _ports(conn, StepClock())
+    source_id = insert_source(conn)
+    insert_item(conn, source_id=source_id, item_id=1, status="Active")
+    conn.commit()
+
+    run_set_status(ports, MaintainRequest(item_id=1, to_status="Challenged"))
+    # Derive the undo plan while the live value still reads Challenged.
+    stale_plan = derive_undo(_undo_snapshot(conn))
+    # The race window closes: the item MOVED (a human close landed).
+    run_close_item(ports, MaintainRequest(item_id=1, reason="expired"))
+    moved_count = _ledger_count(conn)
+    moved_state = _state(conn)
+
+    with pytest.raises(InverseTargetMoved) as excinfo:
+        ports.store.apply_inverse_group(stale_plan)
+    assert excinfo.value.code == "MAINTAIN-028"
+    # Nothing was written: the ledger does not grow, the newer value stands.
+    assert _ledger_count(conn) == moved_count
+    assert _state(conn) == moved_state
+    assert _item_state(conn, 1)["status"] == "Closed" and _item_state(conn, 1)["close_reason"] == "expired"
     conn.close()

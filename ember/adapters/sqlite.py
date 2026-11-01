@@ -29,6 +29,7 @@ from ember.maintain.errors import (
     DbMigrationFailed as MaintainDbMigrationFailed,
     DbOpenFailed as MaintainDbOpenFailed,
     GroupRecordInvalid as MaintainGroupRecordInvalid,
+    InverseTargetMoved as MaintainInverseTargetMoved,
     ItemEditWriteFailed as MaintainItemEditWriteFailed,
     ItemsReadFailed as MaintainItemsReadFailed,
     RemoveLinkWriteFailed as MaintainRemoveLinkWriteFailed,
@@ -1560,9 +1561,12 @@ class SqliteMaintainStore:
 
         Return the number of inverse changes applied (the marker row is not
         counted). Raise `UndoWriteFailed` (MAINTAIN-026) when any UPDATE
-        fails and `ChangeLogWriteFailed` (MAINTAIN-012) when any INSERT
-        fails; either failure rolls the whole group back, so the ledger
-        never gains a half-undone group and no row state moves half way.
+        fails, `ChangeLogWriteFailed` (MAINTAIN-012) when any INSERT fails,
+        and `InverseTargetMoved` (MAINTAIN-028, fix G3) when an UPDATE
+        matched no row because the row moved between the derivation's
+        read and this write; any of the three rolls the whole group back,
+        so the ledger never gains a half-undone group and no row state
+        moves half way.
         """
         group_id = SqliteGroupIdPort(self._conn).next_group_id()
         timestamp = self._clock()
@@ -1575,6 +1579,11 @@ class SqliteMaintainStore:
                 "inverse update fail", group_id=group_id
             ) from exc
         except MaintainGroupRecordInvalid:
+            self._conn.rollback()
+            raise
+        except MaintainInverseTargetMoved:
+            # Fix G3: the mid-flight target moved — roll the whole group
+            # back (nothing was written) and raise; never half-undone.
             self._conn.rollback()
             raise
         for change in plan.changes:
@@ -1639,34 +1648,66 @@ class SqliteMaintainStore:
         and the symbolic `reversed_at` (`Reversed` stamps the write time,
         `None` clears it). An unknown shape raises `GroupRecordInvalid`
         (fail closed; the core never emits one).
+
+        Fix G3 (the contract `InverseChange` always documented): every
+        UPDATE carries the row's `expected_value` in its WHERE clause, so
+        the write happens ONLY when the row still holds the value the
+        refusal rule verified. A moved row matches no row and raises
+        `InverseTargetMoved` (MAINTAIN-028) — the caller rolls the whole
+        group back, so a later write can never overwrite the newer value.
         """
         if change.item_id is not None:
             if change.field == "status":
                 value = split_status_value(change.new_value or "")
-                self._conn.execute(
+                expected = split_status_value(change.expected_value or "")
+                rowcount = self._conn.execute(
                     "UPDATE items SET status = ?, close_reason = ?"
-                    " WHERE id = ?",
-                    (value.status, value.close_reason, change.item_id),
-                )
+                    " WHERE id = ? AND status IS ? AND close_reason IS ?",
+                    (
+                        value.status,
+                        value.close_reason,
+                        change.item_id,
+                        expected.status,
+                        expected.close_reason,
+                    ),
+                ).rowcount
             elif change.field == "status_origin":
-                self._conn.execute(
-                    "UPDATE items SET status_origin = ? WHERE id = ?",
-                    (change.new_value, change.item_id),
-                )
+                rowcount = self._conn.execute(
+                    "UPDATE items SET status_origin = ?"
+                    " WHERE id = ? AND status_origin IS ?",
+                    (change.new_value, change.item_id, change.expected_value),
+                ).rowcount
             elif change.field == "validated":
-                self._conn.execute(
-                    "UPDATE items SET validated = ? WHERE id = ?",
-                    (_validated_column_value(change.new_value), change.item_id),
-                )
+                rowcount = self._conn.execute(
+                    "UPDATE items SET validated = ?"
+                    " WHERE id = ? AND validated IS ?",
+                    (
+                        _validated_column_value(change.new_value),
+                        change.item_id,
+                        _validated_column_value(change.expected_value),
+                    ),
+                ).rowcount
             elif change.field in _EDIT_COLUMNS:
-                self._conn.execute(
+                rowcount = self._conn.execute(
                     f"UPDATE items SET {_EDIT_COLUMNS[change.field]} = ?"
-                    " WHERE id = ?",
-                    (change.new_value, change.item_id),
-                )
+                    f" WHERE id = ? AND {_EDIT_COLUMNS[change.field]} IS ?",
+                    (change.new_value, change.item_id, change.expected_value),
+                ).rowcount
             else:
                 raise MaintainGroupRecordInvalid(
                     "unknown item field in undo plan", field_changed=change.field
+                )
+            if rowcount == 0:
+                # Fix G3: the contract the docstring always claimed — the
+                # store RE-CHECKS the expected value in the same
+                # transaction it writes (fail closed). The row moved
+                # between the derivation's read and this write; nothing
+                # may change, or an undo would overwrite a newer value.
+                raise MaintainInverseTargetMoved(
+                    "inverse write matched no row: the target moved",
+                    field_changed=change.field,
+                    item_id=change.item_id,
+                    link_id=change.link_id,
                 )
             return
         if change.link_id is None:
@@ -1675,24 +1716,41 @@ class SqliteMaintainStore:
                 field_changed=change.field,
             )
         if change.field == "status":
-            self._conn.execute(
-                "UPDATE links SET status = ? WHERE id = ?",
-                (change.new_value, change.link_id),
-            )
+            rowcount = self._conn.execute(
+                "UPDATE links SET status = ?"
+                " WHERE id = ? AND status IS ?",
+                (change.new_value, change.link_id, change.expected_value),
+            ).rowcount
         elif change.field == "reversed_at":
+            # Fix G3: the EXPECTED state decides the guard, not the
+            # write: expected 'Reversed' means the marker must be live
+            # (IS NOT NULL), 'Confirmed' that it must be clear. The
+            # write itself stamps the time or clears NULL.
             if change.new_value == "Reversed":
-                self._conn.execute(
-                    "UPDATE links SET reversed_at = ? WHERE id = ?",
-                    (timestamp, change.link_id),
-                )
+                set_sql = "UPDATE links SET reversed_at = ?"
+                set_arg = (timestamp, change.link_id)
             else:
-                self._conn.execute(
-                    "UPDATE links SET reversed_at = NULL WHERE id = ?",
-                    (change.link_id,),
-                )
+                set_sql = "UPDATE links SET reversed_at = NULL"
+                set_arg = (change.link_id,)
+            guard = (
+                " AND reversed_at IS NOT NULL"
+                if change.expected_value == "Reversed"
+                else " AND reversed_at IS NULL"
+            )
+            rowcount = self._conn.execute(
+                f"{set_sql} WHERE id = ?{guard}", set_arg
+            ).rowcount
         else:
             raise MaintainGroupRecordInvalid(
                 "unknown link field in undo plan", field_changed=change.field
+            )
+        if rowcount == 0:
+            # Fix G3: the same re-check rule as the item fields above.
+            raise MaintainInverseTargetMoved(
+                "inverse write matched no row: the target moved",
+                field_changed=change.field,
+                item_id=change.item_id,
+                link_id=change.link_id,
             )
 
 
