@@ -49,7 +49,9 @@ from ember.maintain.rows import (
     split_status_value,
 )
 from ember.query.errors import (
+    DbBusy as QueryDbBusy,
     DbOpenFailed as QueryDbOpenFailed,
+    DbRecoveryNeeded as QueryDbRecoveryNeeded,
     ItemsReadFailed as QueryItemsReadFailed,
     SchemaOutdated as QuerySchemaOutdated,
 )
@@ -258,9 +260,10 @@ def ensure_maintain_schema(conn: sqlite3.Connection) -> None:
 def open_query_database(db_path: str) -> sqlite3.Connection:
     """Open an existing query DB **read-only**, check the schema, never migrate.
 
-    Raise `DbOpenFailed` (QUERY-003) when the file is missing or is not a
-    readable SQLite database, and `SchemaOutdated` (QUERY-004) when the applied
-    version is below the required 10.
+    Raise `DbOpenFailed` (QUERY-003) when the file is missing, `DbBusy`
+    (QUERY-008) when another process holds the write lock, `DbRecoveryNeeded`
+    (QUERY-009) when the file exists but cannot be read, and `SchemaOutdated`
+    (QUERY-004) when the applied version is below the required 10.
 
     Unlike every other engine's boot path this one applies no migration: a read
     command that rewrites the ledger is not a read, and `query` is the one
@@ -275,7 +278,12 @@ def open_query_database(db_path: str) -> sqlite3.Connection:
     except sqlite3.Error as exc:
         if conn is not None:
             conn.close()
-        raise QueryDbOpenFailed("db open fail", db_path=os.path.basename(db_path)) from exc
+        message = str(exc).lower()
+        if "locked" in message or "busy" in message:
+            raise QueryDbBusy("db busy", db_path=os.path.basename(db_path)) from exc
+        raise QueryDbRecoveryNeeded(
+            "db needs recovery", db_path=os.path.basename(db_path)
+        ) from exc
     try:
         ensure_query_schema(conn, os.path.basename(db_path))
     except EmberError:
