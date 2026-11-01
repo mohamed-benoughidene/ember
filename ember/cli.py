@@ -690,18 +690,16 @@ def close_item(item_id: int, reason: str, output: OutputOptions) -> None:
     except EmberError as exc:
         click.echo(f"error: {exc.log_line()}", err=True)
         raise SystemExit(1)
-    if output.fmt == "json":
-        click.echo(
-            render_document(
-                OutputDocument(
-                    command="close-item",
-                    changes=changes,
-                    summary=summary_counts(changes, total_items),
-                    dry_run=output.dry_run,
-                )
-            )
-        )
-    else:
+    _echo_document(
+        output,
+        OutputDocument(
+            command="close-item",
+            changes=changes,
+            summary=summary_counts(changes, total_items),
+            dry_run=output.dry_run,
+        ),
+    )
+    if output.fmt != "json":
         for line in format_report(changes, total_items):
             click.echo(line)
 
@@ -743,17 +741,15 @@ def set_status(item_id: int, to_status: str, output: OutputOptions) -> None:
     except EmberError as exc:
         click.echo(f"error: {exc.log_line()}", err=True)
         raise SystemExit(1)
-    if output.fmt == "json":
-        click.echo(
-            render_document(
-                OutputDocument(
-                    command="set-status",
-                    changes=changes,
-                    summary=summary_counts(changes, total_items),
-                )
-            )
-        )
-    else:
+    _echo_document(
+        output,
+        OutputDocument(
+            command="set-status",
+            changes=changes,
+            summary=summary_counts(changes, total_items),
+        ),
+    )
+    if output.fmt != "json":
         for line in format_report(changes, total_items):
             click.echo(line)
 
@@ -798,17 +794,15 @@ def reverse_supersedes(
     except EmberError as exc:
         click.echo(f"error: {exc.log_line()}", err=True)
         raise SystemExit(1)
-    if output.fmt == "json":
-        click.echo(
-            render_document(
-                OutputDocument(
-                    command="reverse-supersedes",
-                    changes=changes,
-                    summary=summary_counts(changes, total_items),
-                )
-            )
-        )
-    else:
+    _echo_document(
+        output,
+        OutputDocument(
+            command="reverse-supersedes",
+            changes=changes,
+            summary=summary_counts(changes, total_items),
+        ),
+    )
+    if output.fmt != "json":
         for line in format_report(changes, total_items):
             click.echo(line)
 
@@ -862,17 +856,16 @@ def edit_item(
     except EmberError as exc:
         click.echo(f"error: {exc.log_line()}", err=True)
         raise SystemExit(1)
+    _echo_document(
+        output,
+        OutputDocument(
+            command="edit-item",
+            changes=changes,
+            summary={},
+            dry_run=output.dry_run,
+        ),
+    )
     if output.fmt == "json":
-        click.echo(
-            render_document(
-                OutputDocument(
-                    command="edit-item",
-                    changes=changes,
-                    summary={},
-                    dry_run=output.dry_run,
-                )
-            )
-        )
         return
     for change in changes:
         if output.dry_run:
@@ -926,17 +919,16 @@ def remove_link(link_id: int, output: OutputOptions) -> None:
     except EmberError as exc:
         click.echo(f"error: {exc.log_line()}", err=True)
         raise SystemExit(1)
+    _echo_document(
+        output,
+        OutputDocument(
+            command="remove-link",
+            changes=changes,
+            summary={},
+            dry_run=output.dry_run,
+        ),
+    )
     if output.fmt == "json":
-        click.echo(
-            render_document(
-                OutputDocument(
-                    command="remove-link",
-                    changes=changes,
-                    summary={},
-                    dry_run=output.dry_run,
-                )
-            )
-        )
         return
     for change in changes:
         if output.dry_run:
@@ -988,6 +980,54 @@ def _newest_group_id(context: SqliteMaintainContext) -> int:
     return context.list_grouped_ledger()[-1].group_id
 
 
+def _echo_document(output: OutputOptions, document: OutputDocument) -> None:
+    """Print ONE bridge document when `fmt` is json (fix C3: the one
+    shape every write/utility command repeats); text mode is silent here
+    - each command's own text lines stay at its site."""
+    if output.fmt == "json":
+        click.echo(render_document(document))
+
+
+def _run_undo_or_redo(
+    command: str, run: Callable[[Any, UndoRequest], Any], output: OutputOptions
+) -> None:
+    """The ONE body of `ember undo` / `ember redo` (fix C3): the same
+    open (G2-B: a dry-run opens strictly read-only), the same error
+    edge, the same document and report line. `run` is run_undo or
+    run_redo - the only difference between the two commands."""
+    try:
+        conn = (
+            open_maintain_database_readonly(output.db_path, required_version=11)
+            if output.dry_run
+            else open_maintain_database(output.db_path)
+        )
+        ports = _undo_ports(conn)
+        result = run(ports, UndoRequest(dry_run=output.dry_run))
+        new_group_id = (
+            None if output.dry_run else _newest_group_id(ports.lookup)
+        )
+    except EmberError as exc:
+        click.echo(f"error: {exc.log_line()}", err=True)
+        raise SystemExit(1)
+    _echo_document(
+        output,
+        OutputDocument(
+            command=command,
+            changes=result.changes,
+            summary={
+                "direction": result.direction,
+                "source_group_id": result.source_group_id,
+                "source_action": result.source_action,
+                "target_label": result.target_label,
+                "new_group_id": new_group_id,
+            },
+            dry_run=output.dry_run,
+        ),
+    )
+    if output.fmt != "json":
+        click.echo(format_undo_line(result, new_group_id))
+
+
 @main.command("undo")
 @_output_options(dry_run=True)
 def undo(output: OutputOptions) -> None:
@@ -998,41 +1038,7 @@ def undo(output: OutputOptions) -> None:
     moved since) exits 1 and writes nothing. `--dry-run` prints the same
     line and writes zero rows.
     """
-    try:
-        # G2-B: a `--dry-run` is a read — STRICTLY read-only, never
-        # migrates (plan §5.5, story 76).
-        conn = (
-            open_maintain_database_readonly(output.db_path, required_version=11)
-            if output.dry_run
-            else open_maintain_database(output.db_path)
-        )
-        ports = _undo_ports(conn)
-        result = run_undo(ports, UndoRequest(dry_run=output.dry_run))
-        new_group_id = (
-            None if output.dry_run else _newest_group_id(ports.lookup)
-        )
-    except EmberError as exc:
-        click.echo(f"error: {exc.log_line()}", err=True)
-        raise SystemExit(1)
-    if output.fmt == "json":
-        click.echo(
-            render_document(
-                OutputDocument(
-                    command="undo",
-                    changes=result.changes,
-                    summary={
-                        "direction": result.direction,
-                        "source_group_id": result.source_group_id,
-                        "source_action": result.source_action,
-                        "target_label": result.target_label,
-                        "new_group_id": new_group_id,
-                    },
-                    dry_run=output.dry_run,
-                )
-            )
-        )
-    else:
-        click.echo(format_undo_line(result, new_group_id))
+    _run_undo_or_redo("undo", run_undo, output)
 
 
 @main.command("redo")
@@ -1044,41 +1050,7 @@ def redo(output: OutputOptions) -> None:
     again to make it available. Same refusals and `--dry-run` as
     `ember undo`.
     """
-    try:
-        # G2-B: a `--dry-run` is a read — STRICTLY read-only, never
-        # migrates (plan §5.5, story 76).
-        conn = (
-            open_maintain_database_readonly(output.db_path, required_version=11)
-            if output.dry_run
-            else open_maintain_database(output.db_path)
-        )
-        ports = _undo_ports(conn)
-        result = run_redo(ports, UndoRequest(dry_run=output.dry_run))
-        new_group_id = (
-            None if output.dry_run else _newest_group_id(ports.lookup)
-        )
-    except EmberError as exc:
-        click.echo(f"error: {exc.log_line()}", err=True)
-        raise SystemExit(1)
-    if output.fmt == "json":
-        click.echo(
-            render_document(
-                OutputDocument(
-                    command="redo",
-                    changes=result.changes,
-                    summary={
-                        "direction": result.direction,
-                        "source_group_id": result.source_group_id,
-                        "source_action": result.source_action,
-                        "target_label": result.target_label,
-                        "new_group_id": new_group_id,
-                    },
-                    dry_run=output.dry_run,
-                )
-            )
-        )
-    else:
-        click.echo(format_undo_line(result, new_group_id))
+    _run_undo_or_redo("redo", run_redo, output)
 
 
 @main.command("current-state")
@@ -1272,15 +1244,13 @@ def backup(target_path: str, output: OutputOptions) -> None:
     }
     if report.rotated:
         click.echo(f"rotated to {report.rotated}", err=True)
-    if output.fmt == "json":
-        click.echo(
-            render_document(
-                OutputDocument(
-                    command="backup", changes=[], summary=report_dict
-                )
-            )
-        )
-    else:
+    _echo_document(
+        output,
+        OutputDocument(
+            command="backup", changes=[], summary=report_dict
+        ),
+    )
+    if output.fmt != "json":
         click.echo(
             f"backup written: {report.path}"
             f" (schema v{report.schema_version}, {report.item_count} items)"
@@ -1353,15 +1323,13 @@ def db_check(output: OutputOptions) -> None:
     }
     if report.detail is not None:
         click.echo(f"detail: {report.detail}", err=True)
-    if output.fmt == "json":
-        click.echo(
-            render_document(
-                OutputDocument(
-                    command="db-check", changes=[], summary=report_dict
-                )
-            )
-        )
-    else:
+    _echo_document(
+        output,
+        OutputDocument(
+            command="db-check", changes=[], summary=report_dict
+        ),
+    )
+    if output.fmt != "json":
         for line in report.lines:
             click.echo(line)
     if report.result != "OK":
