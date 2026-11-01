@@ -31,6 +31,7 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+import tempfile
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -38,16 +39,14 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
-from ember.adapters.embedder import (  # noqa: E402
-    EmbeddingStorePort,
-    SentenceTransformerEmbedder,
-)
+from ember.adapters.embedder import SentenceTransformerEmbedder  # noqa: E402
 from ember.adapters.sqlite import (  # noqa: E402
     SqliteLinkContext,
     build_embedding_store,
     open_database,
 )
 from ember.relate.candidate_pool import MODEL_CHANGED_LINE, build_candidate_pool  # noqa: E402
+from ember.relate.embedding_store import EmbeddingStorePort  # noqa: E402
 from ember.relate.load_filter import load_latest_candidates  # noqa: E402
 
 from tests.fakes import (  # noqa: E402
@@ -187,6 +186,18 @@ def main() -> int:
         db_file = Path(args.db).resolve()
     else:
         db_file = DEFAULT_DB_DIR / f"model-change-{args.items}.db"
+
+    # A real database is never a throwaway: refuse an existing file that is
+    # outside the temp directory before any file operation touches it.
+    temp_root = Path(tempfile.gettempdir()).resolve()
+    if db_file.exists() and not db_file.is_relative_to(temp_root):
+        print(
+            f"ERROR: refusing --db {db_file}: the file already exists and is not "
+            f"inside the system temp directory {temp_root}",
+            file=sys.stderr,
+        )
+        return 1
+
     db_file.parent.mkdir(parents=True, exist_ok=True)
     delete_database(db_file)  # start fresh. The seed helpers assume an empty file
 
