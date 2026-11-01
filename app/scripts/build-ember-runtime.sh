@@ -97,7 +97,7 @@ if [ -n "$MODEL_CACHE" ]; then
   # or <cache>/models--... (snapshot_download's cache_dir is the hub dir).
   HUB_SRC="$MODEL_CACHE/hub"
   [ -d "$HUB_SRC" ] || HUB_SRC="$MODEL_CACHE"
-  MODEL_TREE="$HUB_SRC/${MODEL_ID//\//--}" # models--BAAI--bge-base-en-v1.5
+  MODEL_TREE="$HUB_SRC/models--${MODEL_ID//\//--}" # models--BAAI--bge-base-en-v1.5
   if [ ! -d "$MODEL_TREE" ] || [ -z "$(find "$MODEL_TREE" -name model.safetensors -print -quit)" ]; then
     fail "EMBER_MODEL_CACHE holds no '$MODEL_ID' weights (looked for $MODEL_TREE with a model.safetensors under it) - a weightless cache would ship a bundle that downloads the weights itself on first use"
   fi
@@ -124,8 +124,9 @@ cd "$REPO_ROOT"
 # repo, not in site-packages), and the packer's data-file collector
 # cannot see an editable package's .sql sheets; the module itself also
 # needed naming. So: name the module (hidden-import) AND copy the .sql
-# files into the bundle by hand (add-data); the F1 build gate below
-# fails the build if either is missing again. The destination
+# files into the bundle by hand (add-data); the build gate below
+# (gate-ember-runtime.sh) fails the build if either is missing again.
+# The destination
 # 'ember/adapters/migrations' is the in-bundle path _migration_scripts
 # reads via importlib.resources.
 "$PACK_VENV/bin/pyinstaller" \
@@ -147,29 +148,32 @@ cd "$REPO_ROOT"
   --add-data "$REPO_ROOT/ember/adapters/migrations:ember/adapters/migrations" \
   "$BUILD_DIR/entry.py"
 
-rm -rf "$RUNTIME_OUT"
-mkdir -p "$(dirname "$RUNTIME_OUT")"
-mv "$BUILD_DIR/dist/ember-runtime" "$RUNTIME_OUT"
+# The new runtime tree is built and GATED ENTIRELY INSIDE the scratch
+# dir (stories 11, 12, 21): $RUNTIME_OUT — the OLD runtime — is touched
+# only after the new tree has passed the gate. A failed build of any
+# kind (smoke, gate) leaves the old runtime untouched.
+NEW_RUNTIME="$BUILD_DIR/dist/ember-runtime"
 # The COLLECT puts the executable under the ONEDIR folder named after
 # --name; the app's layout wants `<ember-runtime>/ember` (one name on
 # every platform, see app/main/ember-command.js bundleLayout).
-mv "$RUNTIME_OUT/ember-runtime" "$RUNTIME_OUT/ember" 2>/dev/null || mv "$RUNTIME_OUT/ember-runtime.exe" "$RUNTIME_OUT/ember.exe"
+mv "$NEW_RUNTIME/ember-runtime" "$NEW_RUNTIME/ember" 2>/dev/null || mv "$NEW_RUNTIME/ember-runtime.exe" "$NEW_RUNTIME/ember.exe"
 
 echo "== the bundle carries the model weights (no first-run download, story 107) =="
 if [ -n "$MODEL_CACHE" ]; then
   # HUB_SRC was resolved and the weights were checked BEFORE PyInstaller
   # (story 13): a cache without the '$MODEL_ID' weights never gets this
-  # far, so the bare "any models--* tree" grep is gone.
-  mkdir -p "$RUNTIME_OUT/models"
-  cp -r "$HUB_SRC" "$RUNTIME_OUT/models/hub"
+  # far, so the bare "any models--* tree" grep is gone. The weights are
+  # copied INTO THE SCRATCH TREE; they move with it on the swap below.
+  mkdir -p "$NEW_RUNTIME/models"
+  cp -r "$HUB_SRC" "$NEW_RUNTIME/models/hub"
   # Trim duplicate weight formats from the COPY (the staging cache keeps
   # everything): sentence-transformers/transformers load
   # model.safetensors; pytorch_model.bin and onnx/ are dead weight (~800
   # MB) in every install. Then KEEP exactly the blobs the snapshot
   # symlinks still name (the hub cache also carries sha-named blob
   # links that would otherwise resurrect everything).
-  find "$RUNTIME_OUT/models/hub" \( -name 'pytorch_model.bin' -o -type d -name 'onnx*' \) -exec rm -rf {} + 2>/dev/null || true
-  hub="$RUNTIME_OUT/models/hub"
+  find "$NEW_RUNTIME/models/hub" \( -name 'pytorch_model.bin' -o -type d -name 'onnx*' \) -exec rm -rf {} + 2>/dev/null || true
+  hub="$NEW_RUNTIME/models/hub"
   refs="$(find "$hub" -type l -path '*snapshots/*' -exec realpath {} \; | sort -u)"
   cd "$hub"
   while IFS= read -r link; do
@@ -183,59 +187,37 @@ if [ -n "$MODEL_CACHE" ]; then
   find . -empty -type d -delete
   rm -rf .locks
   cd "$REPO_ROOT"
-  echo "weights in bundle: $(du -sm "$RUNTIME_OUT/models/hub" | cut -f1) MB"
+  echo "weights in bundle: $(du -sm "$NEW_RUNTIME/models/hub" | cut -f1) MB"
 else
   echo "NO weights copied (EMBER_MODEL_CACHE unset) — a first `relate` would download them"
 fi
 
-# Base smoke: the frozen CLI answers --help with NO venv and NO repo
-# source on the path (spike check 1b, mechanism proven there for the
-# base 20 MB build; here the same proof for the with-embedder build).
+# Base smoke on the NEW tree while it is still in the scratch: the
+# frozen CLI answers --help with NO venv and NO repo source on the path
+# (spike check 1b). The --version smoke is now a REAL call (it exists
+# since Batch 1 chunk 1; finding 4.1 #9): no more `|| true`, and both
+# calls run BEFORE the swap, so a smoke failure also leaves the old
+# runtime untouched.
 cd /
-"$RUNTIME_OUT/ember" --help > /dev/null || fail "the frozen runtime does not run standalone"
-"$RUNTIME_OUT/ember" --version > /dev/null || true
+"$NEW_RUNTIME/ember" --help > /dev/null || fail "the frozen runtime does not run standalone"
+"$NEW_RUNTIME/ember" --version > /dev/null || fail "the frozen runtime answers no --version (the one engine source is broken in the bundle)"
 
-# == THE BUILD GATE (fix F1, founder order): the packed program must do
-# the two things the app's first run needs — migrate a fresh file, and
-# fail HONESTLY on a missing key. The F1 crash (a ModuleNotFoundError
-# traceback on every capture: the migrations package missing from the
-# bundle) must be impossible to ship again.
-#
-#  1. no-key capture on a fresh temp file. The env has EVERY AI key
-#     variable removed, so the gate can never make a real AI call. A
-#     healthy bundle exits 1 with ONE normal house line on stderr
-#     ("error: CAPTURE-008 ... ai api key missing") — never a traceback.
-#  2. db-check on the SAME file: the capture migrated it before the key
-#     check, so it must print "version: 13" and "result: OK".
+# == THE BUILD GATE, as its own script (decision N1): the packed
+# program must do the two things the app's first run needs — migrate a
+# fresh file, and fail HONESTLY on a missing key. It runs on the NEW
+# tree in the scratch (story 21); a failed gate never touches the old
+# runtime (story 11).
 echo "== the build gate: the packed program must really work (fix F1) =="
-GATE_NOTE="$BUILD_DIR/gate-note.txt"
-GATE_KB="$BUILD_DIR/gate.kb"
-printf 'The gate note: setup sticks because the hinge is loose.' > "$GATE_NOTE"
-set +e
-env -u EMBER_AI_API_KEY -u OPENROUTER_API_KEY \
-  "$RUNTIME_OUT/ember" capture --format json --confirm json --file "$GATE_NOTE" --db "$GATE_KB" \
-  > "$BUILD_DIR/gate-capture.out" 2> "$BUILD_DIR/gate-capture.err"
-CAPTURE_RC=$?
-set -e
-[ "$CAPTURE_RC" -eq 1 ] || fail "the gate capture must end 1 (key missing) on a healthy bundle; got $CAPTURE_RC (stderr: $(head -c 200 "$BUILD_DIR/gate-capture.err"))"
-FIRST_ERR="$(head -n1 "$BUILD_DIR/gate-capture.err")"
-case "$FIRST_ERR" in
-  "error: "*) : ;;  # the one honest house line
-  *) fail "the gate capture's first stderr line must start 'error: ' (a Python traceback here means the F1 bug again): $FIRST_ERR" ;;
-esac
-DBCHECK_JSON="$("$RUNTIME_OUT/ember" db-check --db "$GATE_KB" --format json 2> "$BUILD_DIR/gate-dbcheck.err")" \
-  || fail "the gate db-check must end 0 (the capture migrated the file); got: $(head -c 200 "$BUILD_DIR/gate-dbcheck.err")"
-case "$DBCHECK_JSON" in
-  *'"version: 13"'*) : ;;
-  *) fail "the gate db-check must report the file migrated to version 13; its lines were: $(echo "$DBCHECK_JSON" | head -c 300)" ;;
-esac
-case "$DBCHECK_JSON" in
-  *'"result: OK"'*) : ;;
-  *) fail "the gate db-check must end 'result: OK'; its lines were: $(echo "$DBCHECK_JSON" | head -c 300)" ;;
-esac
-rm -f "$GATE_NOTE" "$GATE_KB" "$GATE_KB".bak-v*
-echo "gate capture: exit 1, first line ok ($FIRST_ERR)"
-echo "gate db-check: version 13, result OK"
+bash "$SCRIPT_DIR/gate-ember-runtime.sh" "$NEW_RUNTIME"
+
+# The gate-passed marker (story 12: the pack refuses a runtime without
+# it) is written ONLY now — after the gate PASSED — so a marker can
+# never exist on a runtime the gate refused.
+printf 'gate passed (build-ember-runtime.sh)\n' > "$NEW_RUNTIME/.gate-ok"
+
+echo "== swap: only now may the old runtime be replaced (story 11) =="
+rm -rf "$RUNTIME_OUT"
+mv "$NEW_RUNTIME" "$RUNTIME_OUT"
 
 echo "== sizes =="
 du -sm "$RUNTIME_OUT" "$RUNTIME_OUT/_internal/torch" ${MODEL_CACHE:+"$RUNTIME_OUT/models"} 2>/dev/null || \
