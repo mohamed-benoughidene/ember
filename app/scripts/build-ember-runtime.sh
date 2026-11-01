@@ -45,6 +45,27 @@ MODEL_ID="BAAI/bge-base-en-v1.5"     # ember's own default (ember/adapters/embed
 PY="$PACK_VENV/bin/python"
 fail() { echo "build-ember-runtime FAILED: $*" >&2; exit 1; }
 
+if [ -n "$MODEL_CACHE" ]; then
+  MODEL_CACHE="$(realpath -m "$MODEL_CACHE")" # canonical form; -m creates nothing
+fi
+
+# Refuse bad output paths BEFORE anything is created (stories 14, 15;
+# findings 4.1 #7, #8): the multi-GB scratch is made NEXT TO this path
+# and the old $RUNTIME_OUT is REMOVED at swap time, so a sloppy path
+# must never reach those lines.
+case "$RUNTIME_OUT" in
+  "") fail "EMBER_RUNTIME_OUT is empty - set it to an absolute folder path" ;;
+  /*) : ;; # absolute - the only safe form
+  *) fail "EMBER_RUNTIME_OUT must be an ABSOLUTE path (got '$RUNTIME_OUT'): a relative path would drop the multi-GB build scratch wherever the script happens to run" ;;
+esac
+RUNTIME_OUT="$(realpath -m "$RUNTIME_OUT")" # canonical form; -m creates nothing
+case "$RUNTIME_OUT" in
+  "/")
+    fail "EMBER_RUNTIME_OUT = / is unsafe - the build deletes and replaces this folder at the end; use a dedicated folder, never the root" ;;
+  "$REPO_ROOT"|"$APP_ROOT")
+    fail "EMBER_RUNTIME_OUT = $RUNTIME_OUT is unsafe - it must be a dedicated folder, not the repo itself (the build deletes and replaces it at the end)" ;;
+esac
+
 [ -x "$PY" ] || fail "no python at $PY (set EMBER_PACK_VENV to a venv with ember + the embedder + pyinstaller)"
 
 check_pkg() { "$PY" -c "import importlib.util,sys; sys.exit(0 if importlib.util.find_spec('$1') else 1)" || fail "the pack venv is missing $2 (install it into EMBER_PACK_VENV, never into the maintainer's real venv)"; }
@@ -64,6 +85,23 @@ if "+cpu" not in ver and "+cu" not in ver:
 elif "+cu" in ver:
     sys.exit(f"build-ember-runtime FAILED: the pack venv has a CUDA torch ({ver}); decision 3-B needs the CPU build")
 EOF
+
+# Refuse a weightless / FOREIGN model cache BEFORE the 20-minute
+# PyInstaller step and BEFORE the old runtime is removed (story 13):
+# when EMBER_MODEL_CACHE is set it must already hold THIS model's
+# weights, or the bundle would ship without them and the first
+# `relate` would download gigabytes on the user's machine (story 45).
+HUB_SRC=""
+if [ -n "$MODEL_CACHE" ]; then
+  # Accept both hub-cache layouts: <cache>/hub/models--... (HF_HOME-style)
+  # or <cache>/models--... (snapshot_download's cache_dir is the hub dir).
+  HUB_SRC="$MODEL_CACHE/hub"
+  [ -d "$HUB_SRC" ] || HUB_SRC="$MODEL_CACHE"
+  MODEL_TREE="$HUB_SRC/${MODEL_ID//\//--}" # models--BAAI--bge-base-en-v1.5
+  if [ ! -d "$MODEL_TREE" ] || [ -z "$(find "$MODEL_TREE" -name model.safetensors -print -quit)" ]; then
+    fail "EMBER_MODEL_CACHE holds no '$MODEL_ID' weights (looked for $MODEL_TREE with a model.safetensors under it) - a weightless cache would ship a bundle that downloads the weights itself on first use"
+  fi
+fi
 
 # NOTE: the build needs several GB of scratch (torch alone is ~1.5 GB
 # installed) — the scratch is created NEXT TO the output (same disk),
@@ -119,11 +157,9 @@ mv "$RUNTIME_OUT/ember-runtime" "$RUNTIME_OUT/ember" 2>/dev/null || mv "$RUNTIME
 
 echo "== the bundle carries the model weights (no first-run download, story 107) =="
 if [ -n "$MODEL_CACHE" ]; then
-  # Accept both hub-cache layouts: <cache>/hub/models--... (HF_HOME-style)
-  # or <cache>/models--... (snapshot_download's cache_dir is the hub dir).
-  HUB_SRC="$MODEL_CACHE/hub"
-  [ -d "$HUB_SRC" ] || HUB_SRC="$MODEL_CACHE"
-  ls "$HUB_SRC" | grep -q "^models--" || fail "EMBER_MODEL_CACHE holds no models--* tree: $MODEL_CACHE"
+  # HUB_SRC was resolved and the weights were checked BEFORE PyInstaller
+  # (story 13): a cache without the '$MODEL_ID' weights never gets this
+  # far, so the bare "any models--* tree" grep is gone.
   mkdir -p "$RUNTIME_OUT/models"
   cp -r "$HUB_SRC" "$RUNTIME_OUT/models/hub"
   # Trim duplicate weight formats from the COPY (the staging cache keeps
