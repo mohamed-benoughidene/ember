@@ -41,6 +41,12 @@ button, input, select, textarea { font: inherit; color: inherit; }
   font-variant-numeric: tabular-nums;
 }
 
+/* A long value in a note (a file path) wraps inside its note instead of
+   pushing the note wider than its box at Largest text size. Without
+   this the Keep safe scan could overflow on paths whose unbreakable
+   stem is long (Batch 3 follow-up, real a11y finding). */
+.mono { overflow-wrap: anywhere; }
+
 /* ---------- the heat mark: Active full dot, Challenged half dot,
      Closed ring. Status never depends on colour alone: the shape
      differs and the word always follows (StatusPill). ---------- */
