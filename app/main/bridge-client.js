@@ -26,6 +26,28 @@ const { parseEventLine, answerLine } = require('../shared/parse-event-line');
 
 const WHERE = 'main.bridge-client';
 
+/**
+ * The house error line may NOT be the first stderr line: `ember relate`
+ * prints a model-change warning first (click.echo(..., err=True) in
+ * ember/cli.py), and a later line carries the real `error: ...` shape.
+ * Scan every line and parse the FIRST one matching the house pattern;
+ * the lines after it become its detail. Without errorPattern or with
+ * no matching line this returns null and the caller keeps its old
+ * first-line fallback (never guessed). Pure (T1).
+ *
+ * @param {string[]} stderrLines
+ * @param {string | undefined} errorPattern
+ * @returns {{code: string, name: string, where: string, detail: string} | null}
+ */
+function findHouseError(stderrLines, errorPattern) {
+  if (!errorPattern) return null;
+  for (let i = 0; i < stderrLines.length; i++) {
+    const parsed = parseErrorLine(stderrLines[i], errorPattern, stderrLines.slice(i + 1));
+    if (parsed) return parsed;
+  }
+  return null;
+}
+
 /** Reads: timeout + at most one automatic retry (plan §5.1). */
 const READ_COMMANDS = new Set([
   'list-items',
@@ -224,9 +246,10 @@ function createBridgeClient(options) {
       // NO_DOC commands: the app uses only the exit code (D3: never recompute).
       return { ok: true, data: null };
     }
-    // Non-zero exit: the house error line on stderr is THE result.
+    // Non-zero exit: the house error line on stderr is THE result
+    // (wherever among the stderr lines it sits — F2).
     const first = run.stderrLines[0] ?? '';
-    const parsed = errorPattern ? parseErrorLine(first, errorPattern, run.stderrLines.slice(1)) : null;
+    const parsed = findHouseError(run.stderrLines, errorPattern);
     if (parsed) return { ok: false, error: parsed };
     if (run.exitCode === 2) {
       return {
@@ -330,7 +353,7 @@ function createBridgeClient(options) {
         emitError(appErrorInfo('APP-008', `${WHERE}.runConfirmSession`, `ember ${name} produced no output for ${sessionIdleMs} ms and was stopped`));
       }
       const first = stderrLines[0] ?? '';
-      const parsed = exitCode === 1 && errorPattern ? parseErrorLine(first, errorPattern, stderrLines.slice(1)) : null;
+      const parsed = exitCode === 1 ? findHouseError(stderrLines, errorPattern) : null;
       if (parsed) emitError(parsed);
       // [app 12] the session is over: the knowledge base may have changed.
       if (onActivity) onActivity(name);

@@ -114,6 +114,20 @@ test('a non-house error line becomes APP-002 (never guessed)', async () => {
   });
 });
 
+test('a warning line before the house error line does not hide the real error (F2)', async () => {
+  const client = makeClient({ fakeMode: 'warning-then-error' });
+  const result = await client.runCommand('list-items', []);
+  assert.equal(result.ok, false);
+  assert.equal(result.error.code, 'RELATE-036');
+  assert.equal(result.error.name, 'ModelChanged');
+  assert.equal(result.error.where, 'fake.ember');
+  assert.ok(result.error.detail.startsWith('embeddings stale'), result.error.detail);
+  // The warning before the error is not the error: it must not be in
+  // the detail, and the code must never degrade to APP-002.
+  assert.ok(!result.error.detail.includes('warning:'), result.error.detail);
+  assert.notEqual(result.error.code, 'APP-002');
+});
+
 test('stdout that is not one JSON document is APP-002', async () => {
   const client = createBridgeClient({
     emberCommand: ['node', FAKE_EMBER],

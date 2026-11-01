@@ -89,6 +89,13 @@ if (mode === 'hang') {
 } else if (mode === 'unparsable-error') {
   process.stderr.write('this is not the house error line at all\n');
   process.exit(1);
+} else if (mode === 'warning-then-error') {
+  /* Fix F2: a warning line prints BEFORE the house error line (the
+     real `ember relate` does this with its model-change warning), so
+     the client must scan past it. */
+  process.stderr.write('warning: embedding model changed since build\n');
+  process.stderr.write('error: RELATE-036 ModelChanged | fake.ember | embeddings stale | item_id=3\n');
+  process.exit(1);
 } else if (mode === 'session') {
   runSession();
 } else if (mode === 'relate') {
