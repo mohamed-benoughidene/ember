@@ -1,9 +1,17 @@
 /**
  * The plain-sentence table (interface-app-plan.md §5.6, L2 §5.6).
  *
- * One entry per code/word the step-04 screens can show TODAY (app step
- * file §4): the APP- namespace plus the QUERY- codes the read commands
- * raise (QUERY-001, 003, 004, 006, 007). Every other engine or bridge
+ * One entry per code the screens can show. Fix F5 (plan §5.6: "A
+ * test walks `ember/**\/errors.py` and fails when a code has no
+ * entry"): the table is now TOTAL over every code the engine defines
+ * — plus the tested refinements (`app/shared/capture-words.mjs` for
+ * CAPTURE-008, `app/shared/maintain-sentences.mjs` for its MAINTAIN
+ * codes, `app/shared/relate-words.mjs` for two RELATE details), which
+ * keep precedence where they exist. Every below-entry was written
+ * ONLY from the error class's name, docstring and raise sites in the
+ * engine — never from assumed behaviour.
+ *
+ * Every other engine or bridge
  * code falls back to a generic family sentence — NEVER a blank (story
  * 102: errors say what failed and what to do next, with the code on
  * request).
@@ -448,5 +456,294 @@ Object.assign(ERROR_SENTENCES, {
     title: 'Ember is missing a setting it needs.',
     what: 'A needed value (the AI key, or the embedder settings) was not there.',
     next: 'Check the AI connection in Settings, then try again. Nothing was changed.',
+  },
+});
+
+/* =====================================================================
+ * FIX F5 (2026-11-01) — the total table. Every code in
+ * `ember/**\/errors.py` that no other sentence file owns now has a
+ * full {title, what, next} entry, written ONLY from the class name,
+ * its docstring and its raise sites (never assumed behaviour). Codes
+ * NOT listed here are owned elsewhere: CAPTURE-008 (capture-words),
+ * CAPTURE-016 and MAINTAIN-001..006, 013..017, 023..027
+ * (maintain-sentences). The -000 family bases are never raised
+ * directly; they get honest general words so the table stays total.
+ * ===================================================================== */
+
+Object.assign(ERROR_SENTENCES, {
+  'CAPTURE-000': {
+    title: 'A problem in the capture engine was reported.',
+    what: 'Ember reported a general problem in the part that adds text.',
+    next: 'Try again. If it keeps happening, close and reopen the app.',
+  },
+  'CAPTURE-001': {
+    title: 'The text file could not be found.',
+    what: 'The file of text Ember was asked to add is missing.',
+    next: 'Check the file, then try again. Nothing was created.',
+  },
+  'CAPTURE-002': {
+    title: 'That text file is too large.',
+    what: 'The file is larger than Ember accepts; Ember keeps text files under 5 MB.',
+    next: 'Use a smaller text file. Nothing was created.',
+  },
+  'CAPTURE-003': {
+    title: 'The text could not be read.',
+    what: 'Reading the text (from a file or pasted input) failed.',
+    next: 'Try again. Nothing was created.',
+  },
+  'CAPTURE-004': {
+    title: 'That file is not readable text.',
+    what: 'The file is not UTF-8 text; it may be a binary file.',
+    next: 'Use a plain text file saved as UTF-8. Nothing was created.',
+  },
+  'CAPTURE-005': {
+    title: 'Reading the stored sources failed.',
+    what: 'A read of the stored source texts in the knowledge base failed.',
+    next: 'Try again. If it keeps happening, run the health check (Keep safe).',
+  },
+  'CAPTURE-006': {
+    title: 'Saving the source text failed.',
+    what: 'Writing the source text into the knowledge base failed, so nothing was created.',
+    next: 'Try again. If it keeps happening, run the health check (Keep safe).',
+  },
+  'CAPTURE-007': {
+    title: 'The AI service could not be used.',
+    what: 'The request to the AI service failed.',
+    next: 'Check the AI connection, then try again. Your text is kept; nothing was created.',
+  },
+  'CAPTURE-008': {
+    title: 'The AI service could not answer.',
+    what: 'The request for proposals failed: the service was not reachable, or it refused the key.',
+    next: 'Check the AI connection in Settings, then try again. Your text is kept; nothing was created.',
+  },
+  'CAPTURE-009': {
+    title: 'The AI answer was not understandable.',
+    what: 'The AI service answered, but the answer did not have the shape Ember expects.',
+    next: 'Try again. If it keeps happening, check the AI connection. Nothing was created.',
+  },
+  'CAPTURE-010': {
+    title: 'A capture setting was not understood.',
+    what: 'A setting that says how much surrounding text Ember sends to the AI (the context mode) has an unknown value.',
+    next: 'Check the Ember setting in your environment, then try again. Nothing was created.',
+  },
+  'CAPTURE-011': {
+    title: 'Reading the items failed.',
+    what: 'A read of the items in the knowledge base failed.',
+    next: 'Try again. If it keeps happening, run the health check (Keep safe).',
+  },
+  'CAPTURE-012': {
+    title: "The item's source text is missing.",
+    what: 'The knowledge base has no stored source text for this item.',
+    next: 'Add the text again, or run the health check (Keep safe).',
+  },
+  'CAPTURE-013': {
+    title: 'Saving the item failed.',
+    what: 'Writing the new item into the knowledge base failed, so it was not created.',
+    next: 'Try again. If it keeps happening, run the health check (Keep safe).',
+  },
+  'CAPTURE-014': {
+    title: 'The Add was stopped.',
+    what: 'Adding was stopped by you, or the answers ended early. This line is not usually shown on its own.',
+    next: 'Nothing was created. You can add text again.',
+  },
+  'CAPTURE-015': {
+    title: 'There is no item with that number.',
+    what: 'The item number asked for is not in this knowledge base.',
+    next: 'Look the item up again and pick it from the list.',
+  },
+  'RELATE-000': {
+    title: 'A problem in the relate engine was reported.',
+    what: 'Ember reported a general problem in the part that links items.',
+    next: 'Try again. If it keeps happening, close and reopen the app. Nothing was linked.',
+  },
+  'RELATE-011': {
+    title: 'Saving the record of the change failed.',
+    what: "The link was being written when the ledger (Ember's record of every change) could not be updated. The save is all-or-nothing.",
+    next: 'Try again. If it keeps happening, run the health check (Keep safe). Nothing was linked.',
+  },
+  'RELATE-013': {
+    title: 'The knowledge base could not be brought up to date.',
+    what: "Updating the file's format to what Ember needs failed. A backup copy of your file was kept beside it before the attempt.",
+    next: 'Run the health check (Keep safe), then try again.',
+  },
+  'RELATE-016': {
+    title: 'Reading the items failed.',
+    what: 'A read of the items in the knowledge base failed while Link items was preparing.',
+    next: 'Try again. If it keeps happening, run the health check (Keep safe).',
+  },
+  'RELATE-018': {
+    title: 'Turning text into meaning numbers failed.',
+    what: 'The part that compares items by meaning (the embedder) could not process the text.',
+    next: 'Try again. Nothing was linked.',
+  },
+  'RELATE-019': {
+    title: 'Saving the meaning numbers failed.',
+    what: 'Writing the meaning numbers (the search cache) into the knowledge base failed.',
+    next: 'Try again. Nothing was linked.',
+  },
+  'RELATE-021': {
+    title: 'Reading the links failed.',
+    what: 'A read of the links between items failed.',
+    next: 'Try again. If it keeps happening, run the health check (Keep safe).',
+  },
+  'RELATE-022': {
+    title: 'Comparing items by meaning failed.',
+    what: 'The similarity calculation between texts failed.',
+    next: 'Try again. Nothing was linked.',
+  },
+  'RELATE-023': {
+    title: 'Reading the project labels failed.',
+    what: 'A read of the project labels (metadata) on items failed.',
+    next: 'Try again. If it keeps happening, run the health check (Keep safe).',
+  },
+  'RELATE-024': {
+    title: 'A proposal pointed at an item that was not offered.',
+    what: 'An AI suggestion named a second item outside the candidate list Ember built.',
+    next: 'Nothing was written. Run Link items again and pick from the list.',
+  },
+  'RELATE-025': {
+    title: 'A proposal named a different starting item.',
+    what: 'An AI suggestion claimed to come from another item than the one being linked.',
+    next: 'Nothing was written. Run Link items again.',
+  },
+  'RELATE-026': {
+    title: 'The first item of the link was not found.',
+    what: 'The item the link starts from is not in this knowledge base.',
+    next: 'Look the item up again. Nothing was written.',
+  },
+  'RELATE-027': {
+    title: 'The second item of the link was not found.',
+    what: 'The item the link points to is not in this knowledge base.',
+    next: 'Look the item up again. Nothing was written.',
+  },
+  'RELATE-028': {
+    title: 'That replacement would make a loop.',
+    what: 'A supersedes link would create a chain where items replace each other in a circle. Ember refuses loops.',
+    next: 'Nothing was written. Link a different pair.',
+  },
+  'RELATE-029': {
+    title: 'Saving the link failed.',
+    what: 'Writing the confirmed link into the knowledge base failed, so nothing was saved.',
+    next: 'Try again. If it keeps happening, run the health check (Keep safe).',
+  },
+  'RELATE-030': {
+    title: 'The saved AI answer failed a check.',
+    what: 'The record Ember keeps of the raw AI answer did not match its expected shape.',
+    next: 'Run Link items again. If it keeps happening, run the health check (Keep safe). Nothing was linked.',
+  },
+  'RELATE-031': {
+    title: 'Linking was stopped.',
+    what: 'Linking was stopped by you, or the answers ended early.',
+    next: 'Nothing was linked. You can run Link items again.',
+  },
+  'RELATE-033': {
+    title: 'The AI answer was not understandable.',
+    what: 'The AI service answered, but its link suggestions did not have the shape Ember expects.',
+    next: 'Run Link items again. Nothing was written.',
+  },
+  'RELATE-036': {
+    title: 'Saving the raw AI answer failed.',
+    what: 'Ember keeps every raw AI answer on file before using it; this save failed, so the run stopped.',
+    next: 'Try again. If it keeps happening, run the health check (Keep safe). Nothing was linked.',
+  },
+  'RELATE-037': {
+    title: 'Reading the meaning numbers failed.',
+    what: 'The stored meaning numbers (the search cache) could not be read.',
+    next: 'Run Link items again. If it keeps happening, run the health check (Keep safe). Nothing was linked.',
+  },
+  'MAINTAIN-000': {
+    title: 'A problem in the maintain engine was reported.',
+    what: 'Ember reported a general problem in the part that keeps items current.',
+    next: 'Try again. If it keeps happening, close and reopen the app.',
+  },
+  'MAINTAIN-007': {
+    title: 'The knowledge base file could not be opened.',
+    what: 'The file is missing, was moved, or is not a readable Ember knowledge base.',
+    next: 'Check where the file is, then open it again in setup. Nothing was changed.',
+  },
+  'MAINTAIN-008': {
+    title: 'The knowledge base could not be brought up to date.',
+    what: "Updating the file's format to what Ember needs failed. A backup copy of your file was kept before the attempt.",
+    next: 'Run the health check (Keep safe), then try again.',
+  },
+  'MAINTAIN-009': {
+    title: 'This knowledge base is in an older format.',
+    what: 'The sweep needs a newer file format than this knowledge base has.',
+    next: 'Open the file with the Ember command line once (a write brings it up to date), then try again. Nothing was changed.',
+  },
+  'MAINTAIN-010': {
+    title: 'Reading the items failed.',
+    what: 'A read of the items in the knowledge base failed.',
+    next: 'Try again. If it keeps happening, run the health check (Keep safe).',
+  },
+  'MAINTAIN-011': {
+    title: 'Saving the status change failed.',
+    what: 'Writing the status change into the knowledge base failed, so nothing was saved.',
+    next: 'Try again. If it keeps happening, run the health check (Keep safe).',
+  },
+  'MAINTAIN-012': {
+    title: 'Saving the record of the change failed.',
+    what: "The change was being written when the ledger (Ember's record of every change) could not be updated. Nothing was saved half-way.",
+    next: 'Try again. If it keeps happening, run the health check (Keep safe).',
+  },
+  'MAINTAIN-018': {
+    title: 'The AI service could not answer.',
+    what: 'The request for close suggestions failed; the service may be unreachable or it refused the key.',
+    next: 'Check the AI connection, then run Clean up again. Nothing was changed.',
+  },
+  'MAINTAIN-019': {
+    title: 'The AI answer was not understandable.',
+    what: 'The AI service answered, but the close suggestion did not have the shape Ember expects.',
+    next: 'Run Clean up again. Nothing was changed.',
+  },
+  'MAINTAIN-020': {
+    title: 'Ember is missing a setting it needs.',
+    what: 'The AI key needed for close suggestions was not there.',
+    next: 'Check the AI connection in Settings, then run Clean up again. Nothing was changed.',
+  },
+  'MAINTAIN-021': {
+    title: 'Saving the raw AI answer failed.',
+    what: 'Ember keeps every raw AI answer on file; this save failed, so the run stopped.',
+    next: 'Run Clean up again. Nothing was changed.',
+  },
+  'MAINTAIN-022': {
+    title: 'Clean up was stopped.',
+    what: 'The sweep was stopped by you, or the answers ended early.',
+    next: 'The changes you already confirmed stay; nothing else was touched. You can run Clean up again.',
+  },
+  'QUERY-000': {
+    title: 'A problem in the query engine was reported.',
+    what: 'Ember reported a general problem in the reading views.',
+    next: 'Try again. If it keeps happening, close and reopen the app.',
+  },
+  'QUERY-002': {
+    title: 'There were no words to search for.',
+    what: 'The search text had no searchable words in it.',
+    next: 'Type what to search for, then search again.',
+  },
+  'QUERY-005': {
+    title: 'Reading the knowledge base failed.',
+    what: 'A read of the items, links or ledger failed.',
+    next: 'Try again. If it keeps happening, run the health check (Keep safe).',
+  },
+  'BACKUP-000': {
+    title: 'A problem with the backup was reported.',
+    what: 'Ember reported a general backup problem.',
+    next: 'Try again. Your knowledge base file is unchanged.',
+  },
+  'EXPORT-000': {
+    title: 'A problem with the export was reported.',
+    what: 'Ember reported a general export problem.',
+    next: 'Try again. Your knowledge base file is unchanged.',
+  },
+  'BRIDGE-000': {
+    title: 'A problem between the app and Ember was reported.',
+    what: 'Ember reported a general problem on the structured door between the app and the Ember program.',
+    next: 'Try again. If it keeps happening, close and reopen the app.',
+  },
+  'BRIDGE-001': {
+    title: 'An answer could not be sent.',
+    what: 'A confirmation answer could not be wrapped as data to send to Ember. This is an internal guard.',
+    next: 'Try again.',
   },
 });

@@ -104,8 +104,10 @@ test('maintain plain sentences', async (t) => {
   });
 
   await t.test('unknown codes fall through to the shared family sentence, never blank', () => {
-    const generic = maintainSentenceFor('MAINTAIN-011');
-    assert.equal(generic.title, sentenceFor('MAINTAIN-011').title, 'falls back to the shared table');
+    // F5 gave every engine code an entry, so the fall-through needs a
+    // hypothetical future code (one the engine does not define yet).
+    const generic = maintainSentenceFor('MAINTAIN-999');
+    assert.equal(generic.title, sentenceFor('MAINTAIN-999').title, 'falls back to the shared table');
     assert.match(generic.title, /maintain engine/i);
     for (const field of ['title', 'what', 'next']) assert.ok(generic[field].trim() !== '');
     const named = maintainSentenceFor('MAINTAIN-025');

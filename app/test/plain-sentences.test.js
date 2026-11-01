@@ -70,13 +70,38 @@ test('plain sentences', async (t) => {
     }
   });
 
+  await t.test('every code in ember/**/errors.py has sentences (spec §5.6 walk, F5)', async () => {
+    const { MAINTAIN_SENTENCES } = await import('../shared/maintain-sentences.mjs');
+    // Same extraction as the walk above: every code the engine defines.
+    const real = new Set();
+    for (const dir of ['ember', 'ember/capture', 'ember/maintain', 'ember/query', 'ember/relate', 'ember/adapters']) {
+      const file = path.join(REPO_ROOT, dir, 'errors.py');
+      if (!fs.existsSync(file)) continue;
+      for (const match of fs.readFileSync(file, 'utf8').matchAll(/code = "([A-Z]+-\d{3})"/g)) {
+        real.add(match[1]);
+      }
+    }
+    assert.ok(real.size > 90, `the walk found only ${real.size} codes; the file set must be wrong`);
+    const covered = { ...ERROR_SENTENCES, ...MAINTAIN_SENTENCES };
+    for (const code of real) {
+      const entry = covered[code];
+      assert.ok(entry, `${code} (raised by the engine) has no plain-sentence entry anywhere`);
+      if (entry) {
+        for (const field of ['title', 'what', 'next']) {
+          assert.equal(typeof entry[field], 'string', `${code}.${field} is missing`);
+          assert.ok(entry[field].trim().length > 0, `${code}.${field} is blank`);
+        }
+      }
+    }
+  });
+
   await t.test('an unknown code falls back to a generic family sentence, never a blank', () => {
     const unknownInKnownFamily = sentenceFor('QUERY-099');
     assert.match(unknownInKnownFamily.title, /query engine/i);
     assert.ok(unknownInKnownFamily.what.includes('QUERY-099'), 'the code must be visible in the generic sentence');
     for (const field of ['title', 'what', 'next']) assert.ok(unknownInKnownFamily[field].trim() !== '');
-    const unknownInKnownFamily2 = sentenceFor('CAPTURE-007');
-    assert.match(unknownInKnownFamily2.title, /capture engine/i);
+    const unknownInKnownFamily2 = sentenceFor('CAPTURE-099');
+    assert.match(unknownInKnownFamily2.title, /capture engine/i, 'a future code in a known family still gets the family sentence');
     const unknownFamily = sentenceFor('ZZZZ-001');
     assert.ok(unknownFamily.title.trim() !== '' && unknownFamily.what.trim() !== '' && unknownFamily.next.trim() !== '');
     assert.match(unknownFamily.title, /Ember|problem/i);

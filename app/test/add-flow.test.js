@@ -236,9 +236,11 @@ test('CAPTURE-008 from an unreachable or refusing service: retry with the same f
 
 test('every other code rides the shared plain-sentence table (family fallback)', async () => {
   const { addErrorSentence } = await loadWords();
-  // CAPTURE-002 has the table's generic family sentence, never a blank,
-  // and the App keeps its own "nothing changed" honesty line.
-  const s = addErrorSentence({ code: 'CAPTURE-002', name: 'FileTooLarge', where: 'x', detail: 'too large' });
+  // F5 gave every real CAPTURE- code an entry, so the fallback needs a
+  // hypothetical future code; it gets the table's generic family
+  // sentence, never a blank, and the App keeps its own "nothing
+  // changed" honesty line.
+  const s = addErrorSentence({ code: 'CAPTURE-099', name: 'Someday', where: 'x', detail: 'too large' });
   assert.equal(s.title, 'A problem in the capture engine (adding text) was reported.');
   assert.match(s.what, /Nothing of yours was changed\./);
   assert.equal(s.retry, true);
