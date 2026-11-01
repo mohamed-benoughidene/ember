@@ -32,8 +32,8 @@ const WHERE = 'main.bridge-client';
  * ember/cli.py), and a later line carries the real `error: ...` shape.
  * Scan every line and parse the FIRST one matching the house pattern;
  * the lines after it become its detail. Without errorPattern or with
- * no matching line this returns null and the caller keeps its old
- * first-line fallback (never guessed). Pure (T1).
+ * no matching line this returns null and the caller keeps its own
+ * last-non-empty-line fallback (never guessed). Pure (T1).
  *
  * @param {string[]} stderrLines
  * @param {string | undefined} errorPattern
@@ -271,9 +271,21 @@ function createBridgeClient(options) {
         error: appErrorInfo('APP-002', `${WHERE}.runCommand`, `ember ${name} exited 2 (usage error or user abort)${first ? `: ${clip(first)}` : ''}`),
       };
     }
+    // No house line anywhere (e.g. a raw Python traceback): the REAL
+    // cause is the LAST non-empty stderr line — a traceback ends with
+    // the exception itself (`sqlite3.OperationalError: ...`), its
+    // first line is only the `Traceback (most recent call last):`
+    // header.
+    // No house line anywhere (e.g. a raw Python traceback): the REAL
+    // cause is the LAST non-empty stderr line — a traceback ends with
+    // the exception itself (`sqlite3.OperationalError: ...`), its
+    // first line is only the `Traceback (most recent call last):`
+    // header.
+    const causeLines = run.stderrLines.filter((l) => l.trim() !== '');
+    const cause = causeLines[causeLines.length - 1] ?? '';
     return {
       ok: false,
-      error: appErrorInfo('APP-002', `${WHERE}.runCommand`, `ember ${name} failed with an unparsable error line${first ? `: ${clip(first)}` : ' (no stderr)'}`),
+      error: appErrorInfo('APP-002', `${WHERE}.runCommand`, `ember ${name} failed with an unparsable error line${cause ? `: ${clip(cause)}` : ' (no stderr)'}`),
     };
   }
 

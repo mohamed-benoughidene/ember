@@ -105,6 +105,15 @@ if (mode === 'hang') {
   process.stderr.write('warning: embedding model changed since build\n');
   process.stderr.write('error: RELATE-036 AiResponseWriteFailed | fake.ember | raw answer save failed | item_id=3\n');
   process.exit(1);
+} else if (mode === 'traceback') {
+  /* An UNEXPECTED engine death: a raw Python traceback, no house line
+     anywhere. The client must fall back to stderr and keep the LAST
+     line (the `sqlite3.OperationalError` cause), not the first
+     `Traceback` line. */
+  process.stderr.write('Traceback (most recent call last):\n');
+  process.stderr.write('  File "ember/adapters/sqlite.py", line 118, in open_database\n');
+  process.stderr.write('sqlite3.OperationalError: database disk image is malformed\n');
+  process.exit(1);
 } else if (mode === 'session') {
   runSession();
 } else if (mode === 'relate') {
