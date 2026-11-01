@@ -5,7 +5,7 @@
  * write, corrupt file -> defaults + APP-004, never a crash.
  */
 
-const test = require('node:test');
+const { test, after } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
@@ -13,9 +13,19 @@ const path = require('node:path');
 const { normalizeSettings, DEFAULTS, SCHEMA_NUMBER } = require('../shared/settings-schema');
 const { createSettingsStore } = require('../main/settings-store');
 
+// I4: every mkdtemp folder tempDir() creates is tracked and removed
+// once, at the very end of the file (node:test's after() runs a single
+// time). The chmod finally at the permission test only restores the
+// mode; the folder itself is cleaned here.
+const tempDirs = [];
 function tempDir() {
-  return fs.mkdtempSync(path.join(os.tmpdir(), 'ember-settings-'));
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ember-settings-'));
+  tempDirs.push(dir);
+  return dir;
 }
+after(() => {
+  for (const dir of tempDirs) fs.rmSync(dir, { recursive: true, force: true });
+});
 
 // --- the pure schema ----------------------------------------------------------
 
