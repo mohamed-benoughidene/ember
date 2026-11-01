@@ -29,6 +29,11 @@
 /* ---------- error codes ---------- */
 
 export const ERROR_SENTENCES = {
+  'EMBER-000': {
+    title: 'Ember hit an unexpected problem.',
+    what: 'An unexpected problem happened inside Ember. The report was saved on this computer, with no secrets in it.',
+    next: 'You can copy or open the crash report to read it or share it for help.',
+  },
   'APP-000': {
     title: 'Something in the app did not work.',
     what: 'Ember hit an unexpected internal error.',
@@ -111,6 +116,7 @@ export const ERROR_FAMILIES = {
   MAINTAIN: 'in the maintain engine (the sweep)',
   BACKUP: 'in the backup command',
   EXPORT: 'in the export command',
+  EMBER: 'inside the Ember program (an unexpected problem)',
 };
 
 /**
