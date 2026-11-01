@@ -29,6 +29,11 @@
 /* ---------- error codes ---------- */
 
 export const ERROR_SENTENCES = {
+  'EMBER-000': {
+    title: 'Ember hit an unexpected problem.',
+    what: 'An unexpected problem happened inside Ember. The report was saved on this computer, with no secrets in it.',
+    next: 'You can copy or open the crash report to read it or share it for help.',
+  },
   'APP-000': {
     title: 'Something in the app did not work.',
     what: 'Ember hit an unexpected internal error.',
@@ -111,6 +116,7 @@ export const ERROR_FAMILIES = {
   MAINTAIN: 'in the maintain engine (the sweep)',
   BACKUP: 'in the backup command',
   EXPORT: 'in the export command',
+  EMBER: 'inside the Ember program (an unexpected problem)',
 };
 
 /**
@@ -551,6 +557,21 @@ Object.assign(ERROR_SENTENCES, {
     what: 'The item number asked for is not in this knowledge base.',
     next: 'Look the item up again and pick it from the list.',
   },
+  'CAPTURE-017': {
+    title: 'The knowledge base could not be opened.',
+    what: 'The knowledge base file could not be opened or made ready (it may be missing, not an Ember file, damaged, or unreadable).',
+    next: 'Check the file name and location, then try again. If it keeps happening, run the health check (Keep safe).',
+  },
+  'CAPTURE-018': {
+    title: 'The edited text cannot be saved.',
+    what: 'Part of the edited text is broken inside (it cannot be written as UTF-8), so the edit was refused.',
+    next: 'Edit again with ordinary characters, or answer no to skip this item. Nothing was created.',
+  },
+  'CAPTURE-019': {
+    title: 'The AI address was not understood.',
+    what: 'The AI service address (the base URL) set in the environment is not a valid web address.',
+    next: 'Check the AI base URL setting, then try again. Nothing was created.',
+  },
   'RELATE-000': {
     title: 'A problem in the relate engine was reported.',
     what: 'Ember reported a general problem in the part that links items.',
@@ -725,6 +746,16 @@ Object.assign(ERROR_SENTENCES, {
     title: 'Reading the knowledge base failed.',
     what: 'A read of the items, links or ledger failed.',
     next: 'Try again. If it keeps happening, run the health check (Keep safe).',
+  },
+  'QUERY-008': {
+    title: 'The knowledge base is busy.',
+    what: 'Another program is holding the knowledge base file, so the read could not start.',
+    next: 'Wait a moment and try again. If it keeps happening, close the other program that uses this file.',
+  },
+  'QUERY-009': {
+    title: 'The knowledge base needs recovery.',
+    what: 'The knowledge base file could not be read; it may be damaged or left half-written.',
+    next: 'Run the health check (Keep safe) and follow the advice there. Do not edit the file by hand.',
   },
   'BACKUP-000': {
     title: 'A problem with the backup was reported.',

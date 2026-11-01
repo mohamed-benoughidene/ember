@@ -444,7 +444,8 @@ def test_relate_missing_db_exits_1_with_relate_012(tmp_path) -> None:
 
     assert result.exit_code == 1
     assert "RELATE-012" in result.output
-    assert str(missing) in result.output
+    assert "missing.db" in result.output  # file name only (Chunk 3)
+    assert str(missing) not in result.output
     assert not missing.exists()
 
 

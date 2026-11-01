@@ -15,7 +15,12 @@ from ember.adapters.sqlite import (
     ensure_query_schema,
     open_query_database,
 )
-from ember.query.errors import DbOpenFailed, ItemsReadFailed, SchemaOutdated
+from ember.query.errors import (
+    DbOpenFailed,
+    DbRecoveryNeeded,
+    ItemsReadFailed,
+    SchemaOutdated,
+)
 from ember.query.run_query import run_current_state
 from tests.fakes import FIXED_TIME, insert_item, insert_link, insert_source
 from tests.query.fakes import make_v9, make_v10
@@ -62,18 +67,20 @@ def test_missing_file_raises_003_and_is_never_created(tmp_path) -> None:
         open_query_database(str(missing))
 
     assert exc.value.code == "QUERY-003"
-    assert exc.value.context["db_path"] == str(missing)
+    assert exc.value.context["db_path"] == "missing.db"  # file name only (Chunk 3)
     assert not missing.exists()
 
 
-def test_non_sqlite_file_raises_003(tmp_path) -> None:
+def test_non_sqlite_file_raises_009(tmp_path) -> None:
+    """Non-SQLite file (Chunk 6): recovery-needed, not the generic 003."""
     corrupt = tmp_path / "corrupt.db"
     corrupt.write_text("not a sqlite database", encoding="utf-8")
 
-    with pytest.raises(DbOpenFailed) as exc:
+    with pytest.raises(DbRecoveryNeeded) as exc:
         open_query_database(str(corrupt))
 
-    assert exc.value.code == "QUERY-003"
+    assert exc.value.code == "QUERY-009"
+    assert exc.value.context["db_path"] == "corrupt.db"  # file name only (Chunk 3)
 
 
 def test_version_9_database_raises_004_and_is_not_migrated(db_path) -> None:
@@ -125,7 +132,7 @@ def test_schema_version_read_failure_raises_003_with_the_db_path(
         open_query_database(str(target))
 
     assert exc.value.code == "QUERY-003"
-    assert exc.value.context["db_path"] == str(target)
+    assert exc.value.context["db_path"] == "test.db"  # file name only (Chunk 3)
 
 
 def test_query_leaves_the_database_byte_identical(db_path) -> None:

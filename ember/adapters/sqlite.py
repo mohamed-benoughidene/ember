@@ -15,6 +15,7 @@ from importlib import resources
 from typing import Callable
 
 from ember.capture.errors import (
+    DbOpenFailed as CaptureDbOpenFailed,
     ItemDbReadError,
     ItemDbWriteError,
     SourceDbReadError,
@@ -48,7 +49,9 @@ from ember.maintain.rows import (
     split_status_value,
 )
 from ember.query.errors import (
+    DbBusy as QueryDbBusy,
     DbOpenFailed as QueryDbOpenFailed,
+    DbRecoveryNeeded as QueryDbRecoveryNeeded,
     ItemsReadFailed as QueryItemsReadFailed,
     SchemaOutdated as QuerySchemaOutdated,
 )
@@ -101,10 +104,23 @@ def _connect_readonly(db_path: str) -> sqlite3.Connection:
 
 
 def open_database(db_path: str) -> sqlite3.Connection:
-    """Open a SQLite connection, enforce foreign keys, apply migrations."""
-    conn = _connect(db_path)
-    _apply_migrations(conn)
-    return conn
+    """Open a SQLite connection, enforce foreign keys, apply migrations.
+
+    Raise `DbOpenFailed` (CAPTURE-017) when the connection or the
+    migrations fail; the failed connection is closed first, and the
+    detail carries the file name only, never the full path.
+    """
+    conn: sqlite3.Connection | None = None
+    try:
+        conn = _connect(db_path)
+        _apply_migrations(conn)
+        return conn
+    except sqlite3.Error as exc:
+        if conn is not None:
+            conn.close()
+        raise CaptureDbOpenFailed(
+            "db open fail", db_path=os.path.basename(db_path)
+        ) from exc
 
 
 def open_relate_database(db_path: str) -> sqlite3.Connection:
@@ -115,7 +131,7 @@ def open_relate_database(db_path: str) -> sqlite3.Connection:
     migration fails.
     """
     if not os.path.exists(db_path):
-        raise DbOpenFailed("db file missing", db_path=db_path)
+        raise DbOpenFailed("db file missing", db_path=os.path.basename(db_path))
     conn: sqlite3.Connection | None = None
     try:
         conn = _connect(db_path)
@@ -123,12 +139,12 @@ def open_relate_database(db_path: str) -> sqlite3.Connection:
     except sqlite3.Error as exc:
         if conn is not None:
             conn.close()
-        raise DbOpenFailed("db open fail", db_path=db_path) from exc
+        raise DbOpenFailed("db open fail", db_path=os.path.basename(db_path)) from exc
     try:
         _apply_migrations(conn)
     except (sqlite3.Error, ValueError, OSError) as exc:
         conn.close()
-        raise DbMigrationFailed("migration fail", db_path=db_path) from exc
+        raise DbMigrationFailed("migration fail", db_path=os.path.basename(db_path)) from exc
     try:
         ensure_relate_schema(conn)
     except EmberError:
@@ -162,7 +178,7 @@ def open_maintain_database(db_path: str) -> sqlite3.Connection:
     version is below the required 10.
     """
     if not os.path.exists(db_path):
-        raise MaintainDbOpenFailed("db file missing", db_path=db_path)
+        raise MaintainDbOpenFailed("db file missing", db_path=os.path.basename(db_path))
     conn: sqlite3.Connection | None = None
     try:
         conn = _connect(db_path)
@@ -170,12 +186,12 @@ def open_maintain_database(db_path: str) -> sqlite3.Connection:
     except sqlite3.Error as exc:
         if conn is not None:
             conn.close()
-        raise MaintainDbOpenFailed("db open fail", db_path=db_path) from exc
+        raise MaintainDbOpenFailed("db open fail", db_path=os.path.basename(db_path)) from exc
     try:
         _apply_migrations(conn)
     except (sqlite3.Error, ValueError, OSError) as exc:
         conn.close()
-        raise MaintainDbMigrationFailed("migration fail", db_path=db_path) from exc
+        raise MaintainDbMigrationFailed("migration fail", db_path=os.path.basename(db_path)) from exc
     try:
         ensure_maintain_schema(conn)
     except EmberError:
@@ -200,12 +216,15 @@ def open_maintain_database_readonly(
     groups, needs 13).
     """
     if not os.path.exists(db_path):
-        raise MaintainDbOpenFailed("db file missing", db_path=db_path)
+        raise MaintainDbOpenFailed("db file missing", db_path=os.path.basename(db_path))
+    conn: sqlite3.Connection | None = None
     try:
         conn = _connect_readonly(db_path)
         conn.execute("SELECT COUNT(*) FROM sqlite_master").fetchone()
     except sqlite3.Error as exc:
-        raise MaintainDbOpenFailed("db open fail", db_path=db_path) from exc
+        if conn is not None:
+            conn.close()
+        raise MaintainDbOpenFailed("db open fail", db_path=os.path.basename(db_path)) from exc
     try:
         version = int(conn.execute("SELECT version FROM schema_version").fetchone()["version"])
     except (sqlite3.Error, TypeError, ValueError) as exc:
@@ -241,23 +260,32 @@ def ensure_maintain_schema(conn: sqlite3.Connection) -> None:
 def open_query_database(db_path: str) -> sqlite3.Connection:
     """Open an existing query DB **read-only**, check the schema, never migrate.
 
-    Raise `DbOpenFailed` (QUERY-003) when the file is missing or is not a
-    readable SQLite database, and `SchemaOutdated` (QUERY-004) when the applied
-    version is below the required 10.
+    Raise `DbOpenFailed` (QUERY-003) when the file is missing, `DbBusy`
+    (QUERY-008) when another process holds the write lock, `DbRecoveryNeeded`
+    (QUERY-009) when the file exists but cannot be read, and `SchemaOutdated`
+    (QUERY-004) when the applied version is below the required 10.
 
     Unlike every other engine's boot path this one applies no migration: a read
     command that rewrites the ledger is not a read, and `query` is the one
     command an AI may run against the user's database.
     """
     if not os.path.exists(db_path):
-        raise QueryDbOpenFailed("db file missing", db_path=db_path)
+        raise QueryDbOpenFailed("db file missing", db_path=os.path.basename(db_path))
+    conn: sqlite3.Connection | None = None
     try:
         conn = _connect_readonly(db_path)
         conn.execute("SELECT COUNT(*) FROM sqlite_master").fetchone()
     except sqlite3.Error as exc:
-        raise QueryDbOpenFailed("db open fail", db_path=db_path) from exc
+        if conn is not None:
+            conn.close()
+        message = str(exc).lower()
+        if "locked" in message or "busy" in message:
+            raise QueryDbBusy("db busy", db_path=os.path.basename(db_path)) from exc
+        raise QueryDbRecoveryNeeded(
+            "db needs recovery", db_path=os.path.basename(db_path)
+        ) from exc
     try:
-        ensure_query_schema(conn, db_path)
+        ensure_query_schema(conn, os.path.basename(db_path))
     except EmberError:
         conn.close()
         raise

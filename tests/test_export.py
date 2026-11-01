@@ -702,3 +702,46 @@ def test_export_on_a_v12_file_prints_dashes_and_stays_v12(db_path) -> None:
         "SELECT version FROM schema_version"
     ).fetchone()[0]
     assert version == 12
+
+
+# 7. Batch 2 chunk 8: damaged text reads as QUERY-005; one exit for any
+#    bad --out (plan Chunk 8; report findings 4.10 #2, 4.10 #16).
+
+
+def test_export_damaged_text_reads_as_one_query_005_line(db_path, tmp_path) -> None:
+    _seed(db_path)
+    # The report §6 repro: one stored text column holds bytes that are not
+    # valid UTF-8 (`broken` + one 0xFF byte), written straight into the file.
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.execute(
+            "UPDATE items SET statement = CAST(X'62726f6b656eff' AS TEXT)"
+            " WHERE id = 1"
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    result = CliRunner().invoke(main, ["export", "--db", db_path])
+
+    lines = (result.stderr or "").splitlines()
+    assert result.exit_code == 1
+    assert len(lines) == 1
+    assert lines[0].startswith("error: QUERY-005 ItemsReadFailed |")
+    assert "Traceback" not in (result.stderr or "")
+
+
+def test_export_out_existing_directory_is_one_export_001_line(db_path, tmp_path) -> None:
+    _seed(db_path)
+    out_dir = tmp_path / "adir"
+    out_dir.mkdir()
+
+    result = CliRunner().invoke(
+        main, ["export", "--db", db_path, "--out", str(out_dir)]
+    )
+
+    lines = (result.stderr or "").splitlines()
+    assert result.exit_code == 1
+    assert len(lines) == 1
+    assert lines[0].startswith("error: EXPORT-001 OutputWriteFailed |")
+    assert "Traceback" not in (result.stderr or "")

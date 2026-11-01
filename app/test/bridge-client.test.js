@@ -150,6 +150,16 @@ test('a warning line before the house error line does not hide the real error (F
   assert.notEqual(result.error.code, 'APP-002');
 });
 
+test('a traceback with no house line keeps the LAST non-empty stderr line in the APP-002 details', async () => {
+  const client = makeClient({ fakeMode: 'traceback' });
+  const result = await client.runCommand('list-items', []);
+  assert.equal(result.ok, false);
+  assert.equal(result.error.code, 'APP-002');
+  // The real cause is the LAST line, not the leading `Traceback` line.
+  assert.ok(result.error.detail.includes('sqlite3.OperationalError'), result.error.detail);
+  assert.ok(!result.error.detail.includes('Traceback'), result.error.detail);
+});
+
 test('stdout that is not one JSON document is APP-002', async () => {
   const client = createBridgeClient({
     emberCommand: ['node', FAKE_EMBER],

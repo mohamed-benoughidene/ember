@@ -209,6 +209,45 @@ def test_edit_sequence_relabels_metadata(db_path, tmp_path, monkeypatch) -> None
     assert _count(db_path, "SELECT COUNT(*) FROM items") == 1
 
 
+def test_edit_with_unpaired_surrogate_is_refused(db_path, tmp_path, monkeypatch) -> None:
+    """An edit answer with a lone surrogate cannot be written as UTF-8.
+
+    Plan Chunk 10: the confirm loop refuses the answer before any write,
+    with the house code CAPTURE-018 TextNotEncodable. The `--confirm json`
+    surface carries the pinned `"\\ud800"` text as a JSON escape (the way a
+    lone surrogate really enters the engine today); the terminal surface
+    feeds the same loop and the one check covers both.
+    """
+    batch = ProposalBatch(
+        proposals=[_proposal("Use SQLite", "use SQLite")], dropped=[]
+    )
+    response = ProposalResponse(raw_response=RAW_ANSWER, batch=batch)
+    monkeypatch.setattr(
+        "ember.cli.build_item_proposer", lambda: FakeItemProposer([response])
+    )
+    sample = tmp_path / "note.txt"
+    sample.write_text(SAMPLE, encoding="utf-8")
+    answers = (
+        '{"answer": "e"}\n'
+        '{"answer": ""}\n'
+        '{"answer": "bad \\ud800 statement"}\n'
+        '{"answer": ""}\n'
+    )
+
+    result = CliRunner().invoke(
+        main,
+        ["capture", "--file", str(sample), "--db", db_path, "--confirm", "json"],
+        input=answers,
+    )
+
+    assert result.exit_code == 1
+    lines = (result.stderr or "").splitlines()
+    assert len(lines) == 1
+    assert lines[0].startswith("error: CAPTURE-018 TextNotEncodable |")
+    assert "Traceback" not in (result.stderr or "")
+    assert _count(db_path, "SELECT COUNT(*) FROM items") == 0
+
+
 def test_missing_api_key_exits_1(db_path, tmp_path, monkeypatch) -> None:
     monkeypatch.delenv("EMBER_AI_API_KEY", raising=False)
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)

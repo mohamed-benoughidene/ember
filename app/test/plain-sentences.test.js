@@ -50,12 +50,32 @@ test('plain sentences', async (t) => {
     }
   });
 
+  await t.test('EMBER-000 has a full sentence entry and the EMBER family exists', () => {
+    const entry = ERROR_SENTENCES['EMBER-000'];
+    assert.ok(entry, 'EMBER-000 has no entry');
+    for (const field of ['title', 'what', 'next']) {
+      assert.equal(typeof entry[field], 'string');
+      assert.ok(entry[field].trim().length > 0, `EMBER-000.${field} is blank`);
+    }
+    // The Chunk-12 wording (stories 2 and 4): an unexpected problem
+    // inside Ember; the report was saved; share the crash report.
+    assert.match(entry.what, /unexpected problem/i);
+    assert.match(entry.what, /report was saved/i);
+    assert.match(entry.next, /crash report/i);
+    const asSentence = sentenceFor('EMBER-000');
+    assert.equal(asSentence.title, entry.title);
+    assert.equal(asSentence.what, entry.what);
+    assert.equal(asSentence.next, entry.next);
+    assert.ok(ERROR_FAMILIES.EMBER, 'the EMBER family has no words');
+    assert.ok(ERROR_FAMILIES.EMBER.trim().length > 0, 'the EMBER family words are blank');
+  });
+
   await t.test('every engine/bridge code the table claims exists in ember/**/errors.py', () => {
     const real = new Set();
     for (const dir of ['ember', 'ember/capture', 'ember/maintain', 'ember/query', 'ember/relate', 'ember/adapters']) {
       const file = path.join(REPO_ROOT, dir, 'errors.py');
       if (!fs.existsSync(file)) continue;
-      for (const match of fs.readFileSync(file, 'utf8').matchAll(/code = "([A-Z]+-\d{3})"/g)) {
+      for (const match of fs.readFileSync(file, 'utf8').matchAll(/code(?::\s*str)? = "([A-Z]+-\d{3})"/g)) {
         real.add(match[1]);
       }
     }
@@ -77,7 +97,7 @@ test('plain sentences', async (t) => {
     for (const dir of ['ember', 'ember/capture', 'ember/maintain', 'ember/query', 'ember/relate', 'ember/adapters']) {
       const file = path.join(REPO_ROOT, dir, 'errors.py');
       if (!fs.existsSync(file)) continue;
-      for (const match of fs.readFileSync(file, 'utf8').matchAll(/code = "([A-Z]+-\d{3})"/g)) {
+      for (const match of fs.readFileSync(file, 'utf8').matchAll(/code(?::\s*str)? = "([A-Z]+-\d{3})"/g)) {
         real.add(match[1]);
       }
     }

@@ -3,8 +3,9 @@
 The whole job is a B1 rendering: gather every `items`, `links`, `sources`
 and `change_log` row, render them as human-first plain text, emit to a
 file or stdout. It is a read over the live database, never a write: the
-CLI opens the store through `open_query_database` (QUERY-003/004 floors,
-never migrates) and `gather_export` only runs SELECTs.
+CLI opens the store through `open_query_database` (QUERY-003/004/008/009
+floors, never migrates) and `gather_export` only runs SELECTs; a read
+failure there (a damaged stored text included) reads as QUERY-005.
 
 Determinism is a contract (T1): `render_export` is PURE, no I/O, no clock,
 and the same `ExportData` always renders byte-identical. The header's
@@ -53,6 +54,7 @@ from pydantic import BaseModel
 from ember.adapters.errors import OverwriteRefused, OutputWriteFailed
 from ember.adapters.sqlite import column_exists
 from ember.adapters.paths import same_path
+from ember.query.errors import ItemsReadFailed
 from ember.query.rows import ChangeRow
 from ember.relate.rows import Link
 
@@ -110,9 +112,20 @@ def gather_export(conn: sqlite3.Connection) -> ExportData:
     links, sources and the full ledger (each row's `group_id` when the
     column exists, else `None`). Side effects: none, SELECT only
     (`item_embeddings` and `ai_responses` are never read, D2). Raised
-    codes: none of its own. An unexpected read failure propagates (I7,
-    fail fast, no swallowed errors).
+    codes: `ItemsReadFailed` (QUERY-005) when any read fails — a damaged
+    stored text (invalid UTF-8) included; a read failure closes cleanly
+    through the caller's `finally` and is named with a house code, never
+    an unexpected crash (Batch 2 chunk 8). Other unexpected failures
+    still propagate (I7, fail fast, no swallowed errors).
     """
+    try:
+        return _gather_export_reads(conn)
+    except sqlite3.Error as exc:
+        raise ItemsReadFailed("export read fail") from exc
+
+
+def _gather_export_reads(conn: sqlite3.Connection) -> ExportData:
+    """The SELECT phase of `gather_export`, unwrapped: sqlite3 errors bubble."""
     version = int(conn.execute("SELECT version FROM schema_version").fetchone()["version"])
     # The undo-group column exists only from migration 013 (schema 13). The
     # file is never migrated here: on a v12 file the ledger rows gather with

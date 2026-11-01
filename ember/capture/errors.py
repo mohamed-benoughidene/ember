@@ -12,49 +12,49 @@ class CaptureError(EmberError):
 
 class SourceFileNotFound(CaptureError):
     code = "CAPTURE-001"
-    name = "FileNotFound"
+    name = "SourceFileNotFound"
 
 
 class SourceFileTooLarge(CaptureError):
     code = "CAPTURE-002"
-    name = "FileTooLarge"
+    name = "SourceFileTooLarge"
 
 
 class StdinReadError(CaptureError):
     code = "CAPTURE-003"
-    name = "StdinReadFail"
+    name = "StdinReadError"
 
 
 class InvalidUtf8Error(CaptureError):
     code = "CAPTURE-004"
-    name = "InvalidUtf8"
+    name = "InvalidUtf8Error"
 
 
 class SourceDbReadError(CaptureError):
     code = "CAPTURE-005"
-    name = "DbReadFail"
+    name = "SourceDbReadError"
 
 
 class SourceDbWriteError(CaptureError):
     code = "CAPTURE-006"
-    name = "DbWriteFail"
+    name = "SourceDbWriteError"
 
 
 class AiError(CaptureError):
     """Base for AI failures. The retry loop catches this, nothing wider."""
 
     code = "CAPTURE-007"
-    name = "AiFail"
+    name = "AiError"
 
 
 class AiCallError(AiError):
     code = "CAPTURE-008"
-    name = "AiCallFail"
+    name = "AiCallError"
 
 
 class AiSchemaError(AiError):
     code = "CAPTURE-009"
-    name = "AiSchemaFail"
+    name = "AiSchemaError"
 
 
 class ContextModeInvalid(CaptureError):
@@ -64,7 +64,7 @@ class ContextModeInvalid(CaptureError):
 
 class ItemDbReadError(CaptureError):
     code = "CAPTURE-011"
-    name = "ItemDbReadFail"
+    name = "ItemDbReadError"
 
 
 class ItemSourceMissing(CaptureError):
@@ -74,7 +74,7 @@ class ItemSourceMissing(CaptureError):
 
 class ItemDbWriteError(CaptureError):
     code = "CAPTURE-013"
-    name = "ItemDbWriteFail"
+    name = "ItemDbWriteError"
 
 
 class UserAbort(CaptureError):
@@ -94,3 +94,24 @@ class NotAnAssumption(CaptureError):
 
     code = "CAPTURE-016"
     name = "NotAnAssumption"
+
+
+class DbOpenFailed(CaptureError):
+    """The capture database cannot be opened or migrated (decision I1)."""
+
+    code = "CAPTURE-017"
+    name = "DbOpenFailed"
+
+
+class TextNotEncodable(CaptureError):
+    """Text (an edited field) cannot be written as UTF-8 (decision I1)."""
+
+    code = "CAPTURE-018"
+    name = "TextNotEncodable"
+
+
+class BaseUrlInvalid(CaptureError):
+    """`EMBER_AI_BASE_URL` is not a usable URL (decision I1)."""
+
+    code = "CAPTURE-019"
+    name = "BaseUrlInvalid"

@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import traceback
 from datetime import datetime, timezone
 from dataclasses import dataclass
 from functools import wraps
@@ -71,6 +72,7 @@ from ember.capture.item_proposal import (
     read_context_mode,
 )
 from ember.capture.source_storage import StoredSource, store_source
+from ember.crash_report import write_crash_file
 from ember.errors import EmberError
 from ember.maintain.close_proposer import ProposalOutcome, stale_close_candidates
 from ember.maintain.derive import derive_status_changes
@@ -293,7 +295,72 @@ class MaintainTerminalConfirm:
         click.echo(text)
 
 
-@click.group()
+class EmberGroup(click.Group):
+    """The ONE edge handler at the program's exit door (Batch 2 Chunk 2).
+
+    Wraps the whole dispatch: an unexpected non-house exception becomes a
+    single `error: EMBER-000 InternalError | ...` line on stderr, exit 1,
+    and a crash file with the secrets scrubbed out. A known `EmberError`
+    becomes exactly one house line with its own code and name (Chunk 4
+    moved the printing of known errors here); click's own usage errors and
+    a user abort keep their exit contract (N6: usage error 2, abort 2).
+    """
+
+    def invoke(self, ctx: click.Context) -> Any:
+        try:
+            return super().invoke(ctx)
+        except (
+            SystemExit,
+            click.ClickException,
+            click.exceptions.Exit,
+            click.exceptions.Abort,
+        ):
+            # A user abort and click usage errors keep their exit contract
+            # (N6: usage error 2, abort 2); SystemExit is a verdict already.
+            raise
+        except Exception as exc:
+            # Known house error: the edge handler prints its own line and
+            # exits 1 (Chunk 4 — the 19 per-command copies are gone).
+            if isinstance(exc, EmberError):
+                click.echo(f"error: {exc.log_line()}", err=True)
+                sys.exit(1)
+            _handle_unexpected(exc, command=ctx.info_name)
+
+
+def _handle_unexpected(exc: Exception, *, command: str) -> None:
+    """Print the ONE EMBER-000 house line and exit 1 for an unexpected
+    exception. A broken pipe leaves NO crash file (nothing went wrong in
+    the engine — nobody is there to read the output); every other
+    unexpected exception writes a secret-scrubbed crash file and names it
+    in the line. The handler prints the `InternalError` name itself; the
+    base class `ember/errors.py` `code`/`name` stays untouched."""
+    if isinstance(exc, BrokenPipeError):
+        click.echo(
+            f"error: EMBER-000 InternalError | ember.cli.{command} | output pipe closed",
+            err=True,
+        )
+        sys.exit(1)
+
+    frames = traceback.extract_tb(exc.__traceback__)
+    innermost = frames[-1] if frames else None
+    if innermost is not None:
+        module = os.path.splitext(os.path.basename(innermost.filename))[0]
+        where = f"{module}.{innermost.name}"
+    else:
+        where = "ember.cli"
+
+    crash = write_crash_file(
+        command=command,
+        traceback_text=traceback.format_exc(),
+    )
+    click.echo(
+        f"error: EMBER-000 InternalError | {where} | crash={crash}",
+        err=True,
+    )
+    sys.exit(1)
+
+
+@click.group(cls=EmberGroup)
 @click.version_option(version=__version__, prog_name="ember")
 def main() -> None:
     """Ember: project context management system."""
@@ -316,14 +383,10 @@ def main() -> None:
 def capture_source(file_path: str | None, db_path: str) -> None:
     """Phase 1: store raw input, dedup by content hash, print source reference."""
     mode = InputMode.FILE if file_path else InputMode.STDIN
-    try:
-        raw_text = read_raw_text(mode=mode, path=file_path)
-        conn = open_database(db_path)
-        store = SqliteSourceStore(conn)
-        result = store_source(store, raw_text)
-    except EmberError as exc:
-        click.echo(f"error: {exc.log_line()}", err=True)
-        sys.exit(1)
+    raw_text = read_raw_text(mode=mode, path=file_path)
+    conn = open_database(db_path)
+    store = SqliteSourceStore(conn)
+    result = store_source(store, raw_text)
     if result.reused:
         click.echo("source already stored", err=True)
     click.echo(
@@ -361,44 +424,40 @@ def capture(file_path: str | None, output: OutputOptions) -> None:
         )
     mode = InputMode.FILE if file_path else InputMode.STDIN
     sink, confirm = _confirm_io(output, JsonCaptureConfirm, TerminalConfirm)
-    try:
-        raw_text = read_raw_text(mode=mode, path=file_path)
-        conn = open_database(db_path=output.db_path)
-        stored = _store(conn, raw_text)
-        response = _propose(conn, stored)
-        _store_ai_response(conn, stored, response)
-        for drop in response.batch.dropped:
-            sink.echo(f"dropped proposal: {drop.rule}")
-        if not response.batch.proposals:
-            sink.echo("0 valid proposals")
+    raw_text = read_raw_text(mode=mode, path=file_path)
+    conn = open_database(db_path=output.db_path)
+    stored = _store(conn, raw_text)
+    response = _propose(conn, stored)
+    _store_ai_response(conn, stored, response)
+    for drop in response.batch.dropped:
+        sink.echo(f"dropped proposal: {drop.rule}")
+    if not response.batch.proposals:
+        sink.echo("0 valid proposals")
 
-        gatekeeper = SqliteItemGatekeeper(conn)
-        run = _gatekeeper_run(conn, gatekeeper, stored)
-        outcome = validate_proposals(response.batch.proposals, run)
-        for reject in outcome.rejected:
-            sink.echo(f"rejected by gatekeeper: {reject.rule}")
+    gatekeeper = SqliteItemGatekeeper(conn)
+    run = _gatekeeper_run(conn, gatekeeper, stored)
+    outcome = validate_proposals(response.batch.proposals, run)
+    for reject in outcome.rejected:
+        sink.echo(f"rejected by gatekeeper: {reject.rule}")
 
-        result = run_confirm_loop(
-            outcome.validated,
-            confirm=confirm,
-            commit=gatekeeper,
-            revalidate=lambda draft: validate_add_item(draft, run),
-        )
-        sink.summary(
-            f"accepted: {len(result.accepted_ids)}"
-            f", rejected: {result.rejected_count}"
-            f", warnings: {result.warning_count}"
-            f", aborted: {str(result.aborted).lower()}",
-            {
-                "accepted": len(result.accepted_ids),
-                "rejected": result.rejected_count,
-                "warnings": result.warning_count,
-                "aborted": result.aborted,
-            },
-        )
-    except EmberError as exc:
-        click.echo(f"error: {exc.log_line()}", err=True)
-        sys.exit(1)
+    result = run_confirm_loop(
+        outcome.validated,
+        confirm=confirm,
+        commit=gatekeeper,
+        revalidate=lambda draft: validate_add_item(draft, run),
+    )
+    sink.summary(
+        f"accepted: {len(result.accepted_ids)}"
+        f", rejected: {result.rejected_count}"
+        f", warnings: {result.warning_count}"
+        f", aborted: {str(result.aborted).lower()}",
+        {
+            "accepted": len(result.accepted_ids),
+            "rejected": result.rejected_count,
+            "warnings": result.warning_count,
+            "aborted": result.aborted,
+        },
+    )
 
     if result.aborted:
         sys.exit(2)
@@ -458,72 +517,68 @@ def relate(item_id: int | None, latest: bool, output: OutputOptions) -> None:
         raise click.UsageError("one of --item or --latest is required")
     sink, confirm = _confirm_io(output, JsonRelateConfirm, RelateTerminalConfirm)
     aborted = False
-    try:
-        validate_embedder_config()
-        conn = open_relate_database(output.db_path)
-        lookup = SqliteLinkContext(conn)
-        store = SqliteLinkStore(conn)
-        link_proposer = build_link_proposer(os.environ)
-        ai_response_store = build_ai_response_store(conn)
-        if latest:
-            result = load_latest_candidates(lookup)
-        else:
-            result = load_item_candidates(lookup, item_id=item_id, db_path=output.db_path)
-        if result is None:
-            sink.echo("no unrelated items")
-            return
-        if result.universe.items:
-            pool = build_candidate_pool(
-                result,
-                link_lookup=lookup,
-                embedding_store=build_embedding_store(conn),
-                embedder=build_embedder(),
-            )
-        else:
-            pool = Pool.empty()
-        if pool.warning:
-            click.echo(pool.warning, err=True)
-        if not pool.ranked:
-            sink.echo(
-                json.dumps(
-                    {"phase": 2, "pool_size": 0, "signals": pool.counts}
-                )
-            )
-            return
-        ports = RelatePorts(
+    validate_embedder_config()
+    conn = open_relate_database(output.db_path)
+    lookup = SqliteLinkContext(conn)
+    store = SqliteLinkStore(conn)
+    link_proposer = build_link_proposer(os.environ)
+    ai_response_store = build_ai_response_store(conn)
+    if latest:
+        result = load_latest_candidates(lookup)
+    else:
+        result = load_item_candidates(lookup, item_id=item_id, db_path=output.db_path)
+    if result is None:
+        sink.echo("no unrelated items")
+        return
+    if result.universe.items:
+        pool = build_candidate_pool(
+            result,
             link_lookup=lookup,
-            link_store=store,
-            link_proposer=link_proposer,
-            ai_response_store=ai_response_store,
-            confirm=confirm,
+            embedding_store=build_embedding_store(conn),
+            embedder=build_embedder(),
         )
-        request = RelateRequest(
-            new_item=result.new_item, ranked=pool.ranked, env=os.environ
+    else:
+        pool = Pool.empty()
+    if pool.warning:
+        click.echo(pool.warning, err=True)
+    if not pool.ranked:
+        sink.echo(
+            json.dumps(
+                {"phase": 2, "pool_size": 0, "signals": pool.counts}
+            )
         )
-        outcome = run_relate(ports, request)
-        for rejection in outcome.gatekeeper_rejections:
-            if rejection.detail:
-                sink.echo(
-                    f"relate rejected: {rejection.code} | {rejection.detail}"
-                )
-            else:
-                sink.echo(f"relate rejected: {rejection.code}")
-        sink.summary(
-            f"accepted: {len(outcome.accepted)}"
-            f", rejected: {outcome.rejected}"
-            f", skipped: {outcome.skipped}"
-            f", aborted: {str(outcome.aborted).lower()}",
-            {
-                "accepted": len(outcome.accepted),
-                "rejected": outcome.rejected,
-                "skipped": outcome.skipped,
-                "aborted": outcome.aborted,
-            },
-        )
-        aborted = outcome.aborted
-    except EmberError as exc:
-        click.echo(f"error: {exc.log_line()}", err=True)
-        sys.exit(1)
+        return
+    ports = RelatePorts(
+        link_lookup=lookup,
+        link_store=store,
+        link_proposer=link_proposer,
+        ai_response_store=ai_response_store,
+        confirm=confirm,
+    )
+    request = RelateRequest(
+        new_item=result.new_item, ranked=pool.ranked, env=os.environ
+    )
+    outcome = run_relate(ports, request)
+    for rejection in outcome.gatekeeper_rejections:
+        if rejection.detail:
+            sink.echo(
+                f"relate rejected: {rejection.code} | {rejection.detail}"
+            )
+        else:
+            sink.echo(f"relate rejected: {rejection.code}")
+    sink.summary(
+        f"accepted: {len(outcome.accepted)}"
+        f", rejected: {outcome.rejected}"
+        f", skipped: {outcome.skipped}"
+        f", aborted: {str(outcome.aborted).lower()}",
+        {
+            "accepted": len(outcome.accepted),
+            "rejected": outcome.rejected,
+            "skipped": outcome.skipped,
+            "aborted": outcome.aborted,
+        },
+    )
+    aborted = outcome.aborted
     if aborted:
         sys.exit(2)
 
@@ -551,75 +606,71 @@ def maintain(output: OutputOptions) -> None:
     sweep_changes: list[StatusChange] = []
     total_items = 0
     stale_truncated = False
-    try:
-        # G2-B: a `--dry-run` is a read — it opens STRICTLY read-only and
-        # never migrates an older file (plan §5.5, story 76).
-        conn = (
-            open_maintain_database_readonly(output.db_path, required_version=11)
-            if output.dry_run
-            else open_maintain_database(output.db_path)
+    # G2-B: a `--dry-run` is a read — it opens STRICTLY read-only and
+    # never migrates an older file (plan §5.5, story 76).
+    conn = (
+        open_maintain_database_readonly(output.db_path, required_version=11)
+        if output.dry_run
+        else open_maintain_database(output.db_path)
+    )
+    ports = MaintainPorts(
+        lookup=SqliteMaintainContext(conn),
+        store=SqliteMaintainStore(conn),
+        group_ids=SqliteGroupIdPort(conn),
+    )
+    if output.dry_run:
+        snapshot = _load(ports.lookup)
+        changes = derive_status_changes(snapshot)
+        total_items = len(snapshot.items)
+        if not json_mode:
+            for line in format_report(changes, total_items):
+                sink.echo(line)
+        # Nothing was applied, so this fresh load is still the pre-apply
+        # view: the dry-run list deliberately names every candidate
+        # before the human commits to a run (review fix 3).
+        shortlist = stale_close_candidates(
+            _load(ports.lookup), now=datetime.now(timezone.utc)
         )
-        ports = MaintainPorts(
-            lookup=SqliteMaintainContext(conn),
-            store=SqliteMaintainStore(conn),
-            group_ids=SqliteGroupIdPort(conn),
-        )
-        if output.dry_run:
-            snapshot = _load(ports.lookup)
-            changes = derive_status_changes(snapshot)
-            total_items = len(snapshot.items)
-            if not json_mode:
-                for line in format_report(changes, total_items):
-                    sink.echo(line)
-            # Nothing was applied, so this fresh load is still the pre-apply
-            # view: the dry-run list deliberately names every candidate
-            # before the human commits to a run (review fix 3).
-            shortlist = stale_close_candidates(
-                _load(ports.lookup), now=datetime.now(timezone.utc)
-            )
-            stale_truncated = shortlist.truncated
-            if shortlist.truncated and not json_mode:
-                sink.echo("stale shortlist capped at 10 items (list truncated)")
-            if not json_mode:
-                for candidate in shortlist.candidates:
-                    sink.echo(
-                        f"item {candidate.item_id}: stale {candidate.item_type}"
-                        f" (newest answers link"
-                        f" {candidate.newest_answers_link_id},"
-                        f" confirmed {candidate.newest_answer_created_at})"
-                        " (dry-run)"
-                    )
-            outcome = ProposalOutcome(
-                stale=len(shortlist.candidates), proposed=0, accepted=0, rejected=0
-            )
-            sweep_changes = changes
-        else:
-            result = run_sweep(ports, MaintainRequest())
-            total_items = result.total_items
-            sweep_changes = result.changed
-            if not json_mode:
-                for line in format_report(result.changed, result.total_items):
-                    sink.echo(line)
-            shortlist = stale_close_candidates(
-                _load(ports.lookup), now=datetime.now(timezone.utc)
-            )
-            stale_truncated = shortlist.truncated
-            if shortlist.truncated and not json_mode:
-                sink.echo("stale shortlist capped at 10 items (list truncated)")
-            if shortlist.candidates:
-                outcome = run_close_proposals(
-                    CloseProposalPorts(
-                        lookup=ports.lookup,
-                        store=ports.store,
-                        close_proposer=build_close_proposer(os.environ),
-                        ai_response_store=SqliteAiResponseStore(conn),
-                        confirm=confirm,
-                    ),
-                    now=datetime.now(timezone.utc),
+        stale_truncated = shortlist.truncated
+        if shortlist.truncated and not json_mode:
+            sink.echo("stale shortlist capped at 10 items (list truncated)")
+        if not json_mode:
+            for candidate in shortlist.candidates:
+                sink.echo(
+                    f"item {candidate.item_id}: stale {candidate.item_type}"
+                    f" (newest answers link"
+                    f" {candidate.newest_answers_link_id},"
+                    f" confirmed {candidate.newest_answer_created_at})"
+                    " (dry-run)"
                 )
-    except EmberError as exc:
-        click.echo(f"error: {exc.log_line()}", err=True)
-        raise SystemExit(1)
+        outcome = ProposalOutcome(
+            stale=len(shortlist.candidates), proposed=0, accepted=0, rejected=0
+        )
+        sweep_changes = changes
+    else:
+        result = run_sweep(ports, MaintainRequest())
+        total_items = result.total_items
+        sweep_changes = result.changed
+        if not json_mode:
+            for line in format_report(result.changed, result.total_items):
+                sink.echo(line)
+        shortlist = stale_close_candidates(
+            _load(ports.lookup), now=datetime.now(timezone.utc)
+        )
+        stale_truncated = shortlist.truncated
+        if shortlist.truncated and not json_mode:
+            sink.echo("stale shortlist capped at 10 items (list truncated)")
+        if shortlist.candidates:
+            outcome = run_close_proposals(
+                CloseProposalPorts(
+                    lookup=ports.lookup,
+                    store=ports.store,
+                    close_proposer=build_close_proposer(os.environ),
+                    ai_response_store=SqliteAiResponseStore(conn),
+                    confirm=confirm,
+                ),
+                now=datetime.now(timezone.utc),
+            )
     if json_mode:
         summary = summary_counts(sweep_changes, total_items)
         summary.update(
@@ -682,26 +733,22 @@ def close_item(item_id: int, reason: str, output: OutputOptions) -> None:
     Prints the same report as `maintain`. `--dry-run` loads and validates only;
     it writes no `items` or `change_log` row.
     """
-    try:
-        conn = open_maintain_database(output.db_path)
-        ports = MaintainPorts(
-            lookup=SqliteMaintainContext(conn),
-            store=SqliteMaintainStore(conn),
-            group_ids=SqliteGroupIdPort(conn),
+    conn = open_maintain_database(output.db_path)
+    ports = MaintainPorts(
+        lookup=SqliteMaintainContext(conn),
+        store=SqliteMaintainStore(conn),
+        group_ids=SqliteGroupIdPort(conn),
+    )
+    if output.dry_run:
+        snapshot = _load(ports.lookup)
+        changes = validate_close_item(snapshot, item_id, reason)
+        total_items = len(snapshot.items)
+    else:
+        result = run_close_item(
+            ports, MaintainRequest(item_id=item_id, reason=reason)
         )
-        if output.dry_run:
-            snapshot = _load(ports.lookup)
-            changes = validate_close_item(snapshot, item_id, reason)
-            total_items = len(snapshot.items)
-        else:
-            result = run_close_item(
-                ports, MaintainRequest(item_id=item_id, reason=reason)
-            )
-            changes = result.changed
-            total_items = result.total_items
-    except EmberError as exc:
-        click.echo(f"error: {exc.log_line()}", err=True)
-        raise SystemExit(1)
+        changes = result.changed
+        total_items = result.total_items
     _echo_document(
         output,
         OutputDocument(
@@ -738,21 +785,17 @@ def set_status(item_id: int, to_status: str, output: OutputOptions) -> None:
     `Challenged` item also sets the manual shield. Prints the same report as
     `maintain`.
     """
-    try:
-        conn = open_maintain_database(output.db_path)
-        ports = MaintainPorts(
-            lookup=SqliteMaintainContext(conn),
-            store=SqliteMaintainStore(conn),
-            group_ids=SqliteGroupIdPort(conn),
-        )
-        result = run_set_status(
-            ports, MaintainRequest(item_id=item_id, to_status=to_status)
-        )
-        changes = result.changed
-        total_items = result.total_items
-    except EmberError as exc:
-        click.echo(f"error: {exc.log_line()}", err=True)
-        raise SystemExit(1)
+    conn = open_maintain_database(output.db_path)
+    ports = MaintainPorts(
+        lookup=SqliteMaintainContext(conn),
+        store=SqliteMaintainStore(conn),
+        group_ids=SqliteGroupIdPort(conn),
+    )
+    result = run_set_status(
+        ports, MaintainRequest(item_id=item_id, to_status=to_status)
+    )
+    changes = result.changed
+    total_items = result.total_items
     _echo_document(
         output,
         OutputDocument(
@@ -791,21 +834,17 @@ def reverse_supersedes(
     the two `change_log` rows in one transaction from one clock read. Prints
     the same report as `maintain`.
     """
-    try:
-        conn = open_maintain_database(output.db_path)
-        ports = MaintainPorts(
-            lookup=SqliteMaintainContext(conn),
-            store=SqliteMaintainStore(conn),
-            group_ids=SqliteGroupIdPort(conn),
-        )
-        result = run_reverse_supersedes(
-            ports, MaintainRequest(item_id=item_id, link_id=link_id)
-        )
-        changes = result.changed
-        total_items = result.total_items
-    except EmberError as exc:
-        click.echo(f"error: {exc.log_line()}", err=True)
-        raise SystemExit(1)
+    conn = open_maintain_database(output.db_path)
+    ports = MaintainPorts(
+        lookup=SqliteMaintainContext(conn),
+        store=SqliteMaintainStore(conn),
+        group_ids=SqliteGroupIdPort(conn),
+    )
+    result = run_reverse_supersedes(
+        ports, MaintainRequest(item_id=item_id, link_id=link_id)
+    )
+    changes = result.changed
+    total_items = result.total_items
     _echo_document(
         output,
         OutputDocument(
@@ -850,24 +889,20 @@ def edit_item(
     A same-value edit is a no-op (exit 0, nothing written). The human invoking
     the command IS the confirmation and no AI runs in this path.
     """
-    try:
-        conn = open_maintain_database(output.db_path)
-        ports = MaintainPorts(
-            lookup=SqliteMaintainContext(conn),
-            store=SqliteMaintainStore(conn),
-            group_ids=SqliteGroupIdPort(conn),
+    conn = open_maintain_database(output.db_path)
+    ports = MaintainPorts(
+        lookup=SqliteMaintainContext(conn),
+        store=SqliteMaintainStore(conn),
+        group_ids=SqliteGroupIdPort(conn),
+    )
+    if output.dry_run:
+        snapshot = _load(ports.lookup)
+        changes = validate_edit_item(snapshot, item_id, field, value)
+    else:
+        changes = run_edit_item(
+            ports,
+            MaintainRequest(item_id=item_id, field=field, value=value),
         )
-        if output.dry_run:
-            snapshot = _load(ports.lookup)
-            changes = validate_edit_item(snapshot, item_id, field, value)
-        else:
-            changes = run_edit_item(
-                ports,
-                MaintainRequest(item_id=item_id, field=field, value=value),
-            )
-    except EmberError as exc:
-        click.echo(f"error: {exc.log_line()}", err=True)
-        raise SystemExit(1)
     _echo_document(
         output,
         OutputDocument(
@@ -909,28 +944,24 @@ def remove_link(link_id: int, output: OutputOptions) -> None:
     the same link is an error (MAINTAIN-015), not a silent no-op. The human
     invoking the command IS the confirmation and no AI runs in this path.
     """
-    try:
-        conn = open_maintain_database(output.db_path)
-        ports = MaintainPorts(
-            lookup=SqliteMaintainContext(conn),
-            store=SqliteMaintainStore(conn),
-            group_ids=SqliteGroupIdPort(conn),
+    conn = open_maintain_database(output.db_path)
+    ports = MaintainPorts(
+        lookup=SqliteMaintainContext(conn),
+        store=SqliteMaintainStore(conn),
+        group_ids=SqliteGroupIdPort(conn),
+    )
+    # The display-only link line is read from the same Phase-1 snapshot
+    # the command writes from, BEFORE the flip (a removed link leaves
+    # the Confirmed-only read). Step plan 05 §2/§3: display fields are
+    # not carried on LinkChange.
+    snapshot = _load(ports.lookup)
+    link = _confirmed_link(snapshot, link_id)
+    if output.dry_run:
+        changes = validate_remove_link(snapshot, link_id)
+    else:
+        changes = run_remove_link(
+            ports, MaintainRequest(link_id=link_id)
         )
-        # The display-only link line is read from the same Phase-1 snapshot
-        # the command writes from, BEFORE the flip (a removed link leaves
-        # the Confirmed-only read). Step plan 05 §2/§3: display fields are
-        # not carried on LinkChange.
-        snapshot = _load(ports.lookup)
-        link = _confirmed_link(snapshot, link_id)
-        if output.dry_run:
-            changes = validate_remove_link(snapshot, link_id)
-        else:
-            changes = run_remove_link(
-                ports, MaintainRequest(link_id=link_id)
-            )
-    except EmberError as exc:
-        click.echo(f"error: {exc.log_line()}", err=True)
-        raise SystemExit(1)
     _echo_document(
         output,
         OutputDocument(
@@ -1007,20 +1038,16 @@ def _run_undo_or_redo(
     open (G2-B: a dry-run opens strictly read-only), the same error
     edge, the same document and report line. `run` is run_undo or
     run_redo - the only difference between the two commands."""
-    try:
-        conn = (
-            open_maintain_database_readonly(output.db_path, required_version=11)
-            if output.dry_run
-            else open_maintain_database(output.db_path)
-        )
-        ports = _undo_ports(conn)
-        result = run(ports, UndoRequest(dry_run=output.dry_run))
-        new_group_id = (
-            None if output.dry_run else _newest_group_id(ports.lookup)
-        )
-    except EmberError as exc:
-        click.echo(f"error: {exc.log_line()}", err=True)
-        raise SystemExit(1)
+    conn = (
+        open_maintain_database_readonly(output.db_path, required_version=11)
+        if output.dry_run
+        else open_maintain_database(output.db_path)
+    )
+    ports = _undo_ports(conn)
+    result = run(ports, UndoRequest(dry_run=output.dry_run))
+    new_group_id = (
+        None if output.dry_run else _newest_group_id(ports.lookup)
+    )
     _echo_document(
         output,
         OutputDocument(
@@ -1078,12 +1105,8 @@ def current_state_command(db_path: str) -> None:
     Read-only: the database is opened read-only and never migrated, so a
     database behind the required schema version is refused, not upgraded.
     """
-    try:
-        conn = open_query_database(db_path)
-        output = run_current_state(SqliteQueryContext(conn))
-    except EmberError as exc:
-        click.echo(f"error: {exc.log_line()}", err=True)
-        raise SystemExit(1)
+    conn = open_query_database(db_path)
+    output = run_current_state(SqliteQueryContext(conn))
     click.echo(output)
 
 
@@ -1133,13 +1156,9 @@ def topic_search_command(
     is the corpus, so counts recompute) and `--limit` crops the ranked list.
     Read-only, like every query command.
     """
-    try:
-        topic_filter = TopicFilter(status=status, type=item_type, limit=limit)
-        conn = open_query_database(db_path)
-        output = run_topic_search(SqliteQueryContext(conn), query, topic_filter)
-    except EmberError as exc:
-        click.echo(f"error: {exc.log_line()}", err=True)
-        raise SystemExit(1)
+    topic_filter = TopicFilter(status=status, type=item_type, limit=limit)
+    conn = open_query_database(db_path)
+    output = run_topic_search(SqliteQueryContext(conn), query, topic_filter)
     click.echo(output)
 
 
@@ -1159,12 +1178,8 @@ def why_command(item_id: int, db_path: str) -> None:
     Prints the reasons nearest first, each with the depth it was reached at.
     Read-only, like every query command.
     """
-    try:
-        conn = open_query_database(db_path)
-        output = run_why(SqliteQueryContext(conn), item_id)
-    except EmberError as exc:
-        click.echo(f"error: {exc.log_line()}", err=True)
-        raise SystemExit(1)
+    conn = open_query_database(db_path)
+    output = run_why(SqliteQueryContext(conn), item_id)
     click.echo(output)
 
 
@@ -1217,13 +1232,9 @@ def history_command(
     `--offset` skips, then `--limit` caps, always behind the ledger order.
     Read-only, like every query command.
     """
-    try:
-        conn = open_query_database(db_path)
-        page = HistoryPage(limit=limit, offset=offset, since=since)
-        output = run_history(SqliteQueryContext(conn), item_id, page)
-    except EmberError as exc:
-        click.echo(f"error: {exc.log_line()}", err=True)
-        raise SystemExit(1)
+    conn = open_query_database(db_path)
+    page = HistoryPage(limit=limit, offset=offset, since=since)
+    output = run_history(SqliteQueryContext(conn), item_id, page)
     click.echo(output)
 
 
@@ -1241,11 +1252,7 @@ def backup(target_path: str, output: OutputOptions) -> None:
     Restore: copy the file back, or point Ember at it with `--db`. There is
     deliberately no restore command (GLOSSARY).
     """
-    try:
-        report = create_backup(output.db_path, target_path)
-    except EmberError as exc:
-        click.echo(f"error: {exc.log_line()}", err=True)
-        raise SystemExit(1)
+    report = create_backup(output.db_path, target_path)
     # T9: the adapter report becomes a plain dict on the CLI side, before it
     # could reach the bridge renderer.
     report_dict = {
@@ -1273,7 +1280,7 @@ def backup(target_path: str, output: OutputOptions) -> None:
 @click.option(
     "--out",
     "out_path",
-    type=click.Path(dir_okay=False),
+    type=str,
     default=None,
     help="Write the export to this UTF-8 text file instead of STDOUT.",
 )
@@ -1294,26 +1301,22 @@ def export(out_path: str | None, db_path: str) -> None:
     This file is for reading without Ember. It is not restorable into
     Ember; that is the backup's job (GLOSSARY).
     """
+    conn = open_query_database(db_path)
     try:
-        conn = open_query_database(db_path)
-        try:
-            data = gather_export(conn)
-        finally:
-            conn.close()
-        text = render_export(data)
-        if out_path is not None:
-            refuse_self_overwrite(db_path, out_path)
-            write_export(text, out_path)
-            click.echo(
-                f"exported {len(data.items)} items, {len(data.links)} links,"
-                f" {len(data.ledger)} ledger rows, {len(data.sources)} sources"
-                f" -> {out_path}"
-            )
-        else:
-            click.echo(text, nl=False)
-    except EmberError as exc:
-        click.echo(f"error: {exc.log_line()}", err=True)
-        raise SystemExit(1)
+        data = gather_export(conn)
+    finally:
+        conn.close()
+    text = render_export(data)
+    if out_path is not None:
+        refuse_self_overwrite(db_path, out_path)
+        write_export(text, out_path)
+        click.echo(
+            f"exported {len(data.items)} items, {len(data.links)} links,"
+            f" {len(data.ledger)} ledger rows, {len(data.sources)} sources"
+            f" -> {out_path}"
+        )
+    else:
+        click.echo(text, nl=False)
 
 
 @main.command("db-check")
@@ -1350,17 +1353,13 @@ def db_check(output: OutputOptions) -> None:
 
 def _write_validated_flag(item_id: int, db_path: str, *, new_value: bool) -> None:
     """Write the flag on an Assumption. `new_value` is data, not a mode switch."""
-    try:
-        conn = open_database(db_path)
-        ids = SqliteGroupIdPort(conn)
-        gatekeeper = SqliteItemGatekeeper(conn, group_ids=ids)
-        item = validate_set_validated(gatekeeper.find_item(item_id), item_id)
-        gatekeeper.save_validated_flag(
-            item, validated=new_value, group_id=ids.next_group_id()
-        )
-    except EmberError as exc:
-        click.echo(f"error: {exc.log_line()}", err=True)
-        sys.exit(1)
+    conn = open_database(db_path)
+    ids = SqliteGroupIdPort(conn)
+    gatekeeper = SqliteItemGatekeeper(conn, group_ids=ids)
+    item = validate_set_validated(gatekeeper.find_item(item_id), item_id)
+    gatekeeper.save_validated_flag(
+        item, validated=new_value, group_id=ids.next_group_id()
+    )
     click.echo(f"item {item.id} validated: {str(new_value).lower()}")
 
 
@@ -1455,14 +1454,10 @@ def list_items_command(
     one parameter; the rule's object bundling lives one layer down, where
     the pure core takes the named `TopicFilter` and `ListPage` objects.
     """
-    try:
-        conn = open_query_database(db_path)
-        filter_ = TopicFilter(status=status, type=item_type)
-        page = ListPage(limit=limit, offset=offset)
-        output = run_list_items(SqliteQueryContext(conn), filter_, page)
-    except EmberError as exc:
-        click.echo(f"error: {exc.log_line()}", err=True)
-        raise SystemExit(1)
+    conn = open_query_database(db_path)
+    filter_ = TopicFilter(status=status, type=item_type)
+    page = ListPage(limit=limit, offset=offset)
+    output = run_list_items(SqliteQueryContext(conn), filter_, page)
     click.echo(output)
 
 
@@ -1489,10 +1484,6 @@ def show_item_command(item_id: int, db_path: str) -> None:
     on an older schema file without the column). Read-only, like every
     query command.
     """
-    try:
-        conn = open_query_database(db_path)
-        output = run_show_item(SqliteQueryContext(conn), item_id)
-    except EmberError as exc:
-        click.echo(f"error: {exc.log_line()}", err=True)
-        raise SystemExit(1)
+    conn = open_query_database(db_path)
+    output = run_show_item(SqliteQueryContext(conn), item_id)
     click.echo(output)

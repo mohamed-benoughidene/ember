@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Callable, Protocol
 
-from ember.capture.errors import UserAbort
+from ember.capture.errors import TextNotEncodable, UserAbort
 from ember.capture.item_gatekeeper import (
     NearDupWarning,
     ProposalDraft,
@@ -173,6 +173,24 @@ def accept(item: ValidatedItem, *, commit: ItemCommitPort, accepted: list[int]) 
     accepted.append(item.id)
 
 
+def _check_encodable(text: str, *, item_id: int, field: str) -> None:
+    """Refuse an accepted e-answered text that cannot be written as UTF-8.
+
+    A lone surrogate (`"\\ud800"`) arrives through a JSON answer line (a
+    `\\ud800` escape survives `json.loads`) and would kill the write/echo
+    path later with a raw `UnicodeEncodeError`. Checking here, at the point
+    the answer is accepted, covers both confirm surfaces (terminal and
+    `--confirm json`, which feed the same loop) and happens before any
+    write: no item row, no `change_log` row (plan Chunk 10, decision I1).
+    """
+    try:
+        text.encode("utf-8")
+    except UnicodeEncodeError as exc:
+        raise TextNotEncodable(
+            "text cannot be written as UTF-8", item=item_id, field=field
+        ) from exc
+
+
 def edit_item(
     item: ValidatedItem,
     *,
@@ -184,10 +202,17 @@ def edit_item(
     Returns None when the gatekeeper throws the edit away, so the loop moves on
     (same as a Phase 3 drop: no item row, no `change_log`).
     """
+    new_type = ask_type(confirm, default=item.type)
+    _check_encodable(new_type, item_id=item.id, field="type")
+    new_statement = ask_statement(confirm, default=item.statement)
+    _check_encodable(new_statement, item_id=item.id, field="statement")
+    new_metadata = ask_metadata(confirm, default=item.metadata)
+    if new_metadata is not None:
+        _check_encodable(new_metadata, item_id=item.id, field="metadata")
     draft = ProposalDraft(
-        type=ask_type(confirm, default=item.type),
-        statement=ask_statement(confirm, default=item.statement),
-        metadata=ask_metadata(confirm, default=item.metadata),
+        type=new_type,
+        statement=new_statement,
+        metadata=new_metadata,
         source_quote=item.source_quote,
         confidence=item.confidence,
     )
