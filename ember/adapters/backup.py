@@ -110,10 +110,13 @@ def _open_source(source_path: str) -> sqlite3.Connection:
     """
     if not os.path.exists(source_path):
         raise SourceOpenFailed("db file missing", db_path=os.path.basename(source_path))
+    conn: sqlite3.Connection | None = None
     try:
         conn = _connect_readonly(source_path)
         conn.execute("PRAGMA schema_version").fetchone()
     except sqlite3.Error as exc:
+        if conn is not None:
+            conn.close()
         raise SourceOpenFailed(
             "db open fail", db_path=os.path.basename(source_path)
         ) from exc

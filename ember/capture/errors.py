@@ -94,3 +94,10 @@ class NotAnAssumption(CaptureError):
 
     code = "CAPTURE-016"
     name = "NotAnAssumption"
+
+
+class DbOpenFailed(CaptureError):
+    """The capture database cannot be opened or migrated (decision I1)."""
+
+    code = "CAPTURE-017"
+    name = "DbOpenFailed"

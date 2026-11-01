@@ -14,6 +14,7 @@ import pytest
 
 import ember.adapters.sqlite as sqlite_adapter
 from ember.adapters.sqlite import open_database
+from ember.capture.errors import DbOpenFailed as CaptureDbOpenFailed
 from tests.fakes import FIXED_TIME, insert_item, insert_source
 
 _MIGRATIONS_TO_11 = (
@@ -218,7 +219,7 @@ def test_failed_migration_leaves_intact_prior_database_012(
         lambda: real_scripts[:11] + [(12, "CREATE TABLE half;\nTHIS IS NOT SQL;")],
     )
 
-    with pytest.raises(sqlite3.Error):
+    with pytest.raises(CaptureDbOpenFailed):
         open_database(db_path)
 
     # The prior database file is intact at v11, and the pre-migration backup

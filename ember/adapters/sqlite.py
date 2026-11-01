@@ -15,6 +15,7 @@ from importlib import resources
 from typing import Callable
 
 from ember.capture.errors import (
+    DbOpenFailed as CaptureDbOpenFailed,
     ItemDbReadError,
     ItemDbWriteError,
     SourceDbReadError,
@@ -101,10 +102,23 @@ def _connect_readonly(db_path: str) -> sqlite3.Connection:
 
 
 def open_database(db_path: str) -> sqlite3.Connection:
-    """Open a SQLite connection, enforce foreign keys, apply migrations."""
-    conn = _connect(db_path)
-    _apply_migrations(conn)
-    return conn
+    """Open a SQLite connection, enforce foreign keys, apply migrations.
+
+    Raise `DbOpenFailed` (CAPTURE-017) when the connection or the
+    migrations fail; the failed connection is closed first, and the
+    detail carries the file name only, never the full path.
+    """
+    conn: sqlite3.Connection | None = None
+    try:
+        conn = _connect(db_path)
+        _apply_migrations(conn)
+        return conn
+    except sqlite3.Error as exc:
+        if conn is not None:
+            conn.close()
+        raise CaptureDbOpenFailed(
+            "db open fail", db_path=os.path.basename(db_path)
+        ) from exc
 
 
 def open_relate_database(db_path: str) -> sqlite3.Connection:
@@ -201,10 +215,13 @@ def open_maintain_database_readonly(
     """
     if not os.path.exists(db_path):
         raise MaintainDbOpenFailed("db file missing", db_path=os.path.basename(db_path))
+    conn: sqlite3.Connection | None = None
     try:
         conn = _connect_readonly(db_path)
         conn.execute("SELECT COUNT(*) FROM sqlite_master").fetchone()
     except sqlite3.Error as exc:
+        if conn is not None:
+            conn.close()
         raise MaintainDbOpenFailed("db open fail", db_path=os.path.basename(db_path)) from exc
     try:
         version = int(conn.execute("SELECT version FROM schema_version").fetchone()["version"])
@@ -251,10 +268,13 @@ def open_query_database(db_path: str) -> sqlite3.Connection:
     """
     if not os.path.exists(db_path):
         raise QueryDbOpenFailed("db file missing", db_path=os.path.basename(db_path))
+    conn: sqlite3.Connection | None = None
     try:
         conn = _connect_readonly(db_path)
         conn.execute("SELECT COUNT(*) FROM sqlite_master").fetchone()
     except sqlite3.Error as exc:
+        if conn is not None:
+            conn.close()
         raise QueryDbOpenFailed("db open fail", db_path=os.path.basename(db_path)) from exc
     try:
         ensure_query_schema(conn, os.path.basename(db_path))

@@ -8,6 +8,7 @@ import pytest
 
 import ember.adapters.sqlite as sqlite_adapter
 from ember.adapters.sqlite import _apply_migrations, open_database
+from ember.capture.errors import DbOpenFailed as CaptureDbOpenFailed
 
 
 def _table_names(conn: sqlite3.Connection) -> set[str]:
@@ -24,7 +25,7 @@ def test_failed_migration_rolls_back_schema_and_version(
         lambda: [(1, "CREATE TABLE half (id INTEGER);\nTHIS IS NOT SQL;")],
     )
 
-    with pytest.raises(sqlite3.Error):
+    with pytest.raises(CaptureDbOpenFailed):
         open_database(db_path)
 
     conn = sqlite3.connect(db_path)
@@ -46,7 +47,7 @@ def test_later_migration_failure_keeps_earlier_migration(
         ],
     )
 
-    with pytest.raises(sqlite3.Error):
+    with pytest.raises(CaptureDbOpenFailed):
         open_database(db_path)
 
     conn = sqlite3.connect(db_path)
