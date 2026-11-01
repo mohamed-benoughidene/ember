@@ -67,11 +67,13 @@ const EMBER_PRELOAD_API = Object.freeze([
   'ember:relateExit',
   'ember:openQuickPopup',
   'ember:quickOpenMain',
+  'ember:crashReport',
+  'ember:crashReportFolder',
 ]);
 // The names after the base 15: Add (App 05), Keep safe (step 09),
 // Fix and close (step 07), Settings (app 10), Clean up (App 08),
-// Quick popup (app 11) — each appended at the END of the allowlist
-// as its own bracketed block.
+// Quick popup (app 11), Crash report (Batch 2 Chunk 13) — each
+// appended at the END of the allowlist as its own bracketed block.
 
 contextBridge.exposeInMainWorld('ember', {
   /** Smallest proof the seam is alive: string in, string out. */
@@ -287,6 +289,16 @@ contextBridge.exposeInMainWorld('ember', {
     ipcRenderer.on('ember:openRequest', handler);
     return () => ipcRenderer.removeListener('ember:openRequest', handler);
   },
+
+  /* ==== Batch 2 Chunk 13 (D-16): the EMBER-000 crash report's two
+     invoke channels — Copy crash report and Show file (the buttons
+     land on the Add screen in Chunk 14; N4 crash ids only). ==== */
+
+  /** Copy crash report: `crash=<id>` → the file's whole text on the clipboard. */
+  crashReport: (crashId) => ipcRenderer.invoke('ember:crashReport', { crashId }),
+
+  /** Show file: reveal the crash report FILE in the OS file manager. */
+  crashReportFolder: (crashId) => ipcRenderer.invoke('ember:crashReportFolder', { crashId }),
 
   /* ==== App 12 (ticket A41): the application menu's one push channel.
      Main asks; this window's router decides (B4). Kinds: navigate

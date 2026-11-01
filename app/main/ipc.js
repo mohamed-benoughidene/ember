@@ -15,6 +15,7 @@
  */
 
 const path = require('node:path');
+const fs = require('node:fs');
 const { createBridgeClient } = require('./bridge-client');
 const {
   validateKnowledgeBasePath,
@@ -29,6 +30,9 @@ const {
   showItemArgs,
   historyArgs,
 } = require('./command-args');
+// Batch 2 Chunk 13: the EMBER-000 crash report lives where the N4 rule
+// says (main/crash-file.js, same resolve as the engine's).
+const { crashPath } = require('./crash-file');
 // App 05 (ticket A34): the Add session channels and the pasted-text
 // temp file, registered in the bracketed block at the end of this list.
 const { wireAddChannels } = require('./add-session');
@@ -85,6 +89,16 @@ const WHERE = 'main.ipc';
  *   called after a successful settings save (the Menu pane's
  *   hide/reorder, a knowledge-base switch), so the menu rebuilds and
  *   the undo labels re-derive against the current file (null likewise)
+ * @param {{writeText: (text: string) => void}|null} [options.clipboard]
+ *   the Electron clipboard adapter (Batch 2 Chunk 13: Copy crash
+ *   report; null keeps an honest APP-000 refusal)
+ * @param {{showItemInFolder: (path: string) => unknown}|null} [options.shell]
+ *   the Electron shell adapter (Batch 2 Chunk 13: Show file; same
+ *   null rule)
+ * @param {(path: string) => string} [options.readTextFile] the crash-file
+ *   reader seam: a full file text in, a throw (ENOENT etc.) out
+ *   (defaults to fs.readFileSync; tests inject a fake — the injected-
+ *   fake unit test pins the clipboard write, Chunk 13)
  */
 function registerIpcHandlers(options) {
   const {
@@ -114,6 +128,11 @@ function registerIpcHandlers(options) {
     onCommand = () => {},
     /* --- App 08 (Clean up): push stream for the sweep session (additive; ticket A37). --- */
     sweepNotify = () => {},
+    // [Batch 2 Chunk 13] the crash report's OS adapters; null keeps an
+    // honest "not available in this build" refusal (as the popup does).
+    clipboard = null,
+    shell = null,
+    readTextFile = (filePath) => fs.readFileSync(filePath, 'utf8'),
   } = options;
 
   let cachedClient = null;
@@ -528,6 +547,73 @@ function registerIpcHandlers(options) {
         return { ok: true, noKey: true };
       }
       return { ok: true, hint: String(hint) };
+    },
+
+    /* ==== Batch 2 Chunk 13 (D-16): the EMBER-000 crash report ========
+       Added at the END of the registration list as this chunk's own
+       bracketed block. The engine names a crash id on the house line
+       (`crash=<id>`); these two channels turn that id into Copy crash
+       report / Show file. ONE validate at this edge (I9): the id must
+       be text, and crashPath (the N4 rule, main/crash-file.js) refuses
+       any id that could climb out of the crashes folder. A missing
+       crash file is an ordinary APP-002 answer, never a thrown error.
+       ================================================================= */
+
+    /**
+     * Copy crash report: read `<id>.txt` whole and put the text on the
+     * clipboard. The text also rides back ({ok, text}) so the screen
+     * can show it beside the button (Chunk 14).
+     */
+    'ember:crashReport': (payload) => {
+      const crashId =
+        typeof payload === 'object' && payload !== null && typeof payload.crashId === 'string'
+          ? payload.crashId.trim()
+          : '';
+      if (crashId === '') {
+        return { ok: false, error: appErrorInfo('APP-002', `${WHERE}.crashReport`, 'no crash report id was given') };
+      }
+      let filePath;
+      try {
+        filePath = crashPath(crashId);
+      } catch (err) {
+        return { ok: false, error: appErrorInfo('APP-002', `${WHERE}.crashReport`, err instanceof Error ? err.message : 'the crash id was refused') };
+      }
+      let text;
+      try {
+        text = readTextFile(filePath);
+      } catch {
+        return { ok: false, error: appErrorInfo('APP-002', `${WHERE}.crashReport`, 'the crash report file does not exist (or cannot be read)') };
+      }
+      if (clipboard === null || typeof clipboard.writeText !== 'function') {
+        return { ok: false, error: appErrorInfo('APP-000', `${WHERE}.crashReport`, 'the clipboard is not available in this build') };
+      }
+      clipboard.writeText(text);
+      return { ok: true, text };
+    },
+
+    /**
+     * Show file: ask the OS file manager to reveal the crash FILE
+     * itself (the full path, not the folder).
+     */
+    'ember:crashReportFolder': (payload) => {
+      const crashId =
+        typeof payload === 'object' && payload !== null && typeof payload.crashId === 'string'
+          ? payload.crashId.trim()
+          : '';
+      if (crashId === '') {
+        return { ok: false, error: appErrorInfo('APP-002', `${WHERE}.crashReportFolder`, 'no crash report id was given') };
+      }
+      let filePath;
+      try {
+        filePath = crashPath(crashId);
+      } catch (err) {
+        return { ok: false, error: appErrorInfo('APP-002', `${WHERE}.crashReportFolder`, err instanceof Error ? err.message : 'the crash id was refused') };
+      }
+      if (shell === null || typeof shell.showItemInFolder !== 'function') {
+        return { ok: false, error: appErrorInfo('APP-000', `${WHERE}.crashReportFolder`, 'the file manager is not available in this build') };
+      }
+      shell.showItemInFolder(filePath);
+      return { ok: true, path: filePath };
     },
   };
 

@@ -17,7 +17,7 @@
  * `launch-check-error: CODE ...` and exit 1.
  */
 
-const { app, BrowserWindow, safeStorage, ipcMain, dialog } = require('electron');
+const { app, BrowserWindow, safeStorage, ipcMain, dialog, clipboard, shell } = require('electron');
 const path = require('node:path');
 const {
   resolveEmberCommand,
@@ -536,6 +536,11 @@ function wireIpc(services) {
       menuManager.refresh();
       scheduleUndoLabelRefresh();
     },
+    /* --- Batch 2 Chunk 13: the EMBER-000 crash report's OS adapters
+       (D-16): the real clipboard and shell for Copy crash report /
+       Show file on the Add screen (Chunk 14). --- */
+    clipboard,
+    shell,
   });
 
   // [app 11] The default global shortcut, registered at boot AFTER
