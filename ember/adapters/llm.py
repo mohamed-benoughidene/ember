@@ -9,10 +9,11 @@ from __future__ import annotations
 
 import os
 from typing import Any, Mapping, Sequence
+from urllib.parse import urlparse
 
 from openai import OpenAI, OpenAIError
 
-from ember.capture.errors import AiCallError, AiSchemaError
+from ember.capture.errors import AiCallError, AiSchemaError, BaseUrlInvalid
 from ember.capture.item_proposal import (
     SYSTEM_PROMPT,
     ContextItem,
@@ -78,6 +79,24 @@ class OpenAiItemProposer:
         )
 
 
+def validate_base_url(
+    env: Mapping[str, str], error_class: type[Exception]
+) -> None:
+    """Fail fast on an unusable `EMBER_AI_BASE_URL`, before any request.
+
+    A base URL the provider SDK could never build a request from (no http(s)
+    scheme, no host) raises the calling family's config error here, at the
+    config point, instead of a raw `httpx.InvalidURL` deep in the call
+    (plan Chunk 9). An unset variable keeps the default and is fine.
+    """
+    base_url = env.get("EMBER_AI_BASE_URL")
+    if not base_url:
+        return
+    parsed = urlparse(base_url)
+    if parsed.scheme not in ("http", "https") or not parsed.netloc:
+        raise error_class("ai base url invalid", base_url=base_url)
+
+
 def build_item_proposer(
     env: Mapping[str, str] | None = None,
 ) -> OpenAiItemProposer:
@@ -86,12 +105,15 @@ def build_item_proposer(
     Keys: `EMBER_AI_API_KEY` (or `OPENROUTER_API_KEY`), `EMBER_AI_MODEL`,
     `EMBER_AI_BASE_URL`.
 
-    Raise `AiCallError` (CAPTURE-008) when no API key is configured.
+    Raise `AiCallError` (CAPTURE-008) when no API key is configured, and
+    `BaseUrlInvalid` (CAPTURE-019) when `EMBER_AI_BASE_URL` is not a usable
+    URL.
 
     The client is built with an explicit timeout and `max_retries=0`, so the
     only retry is the one `propose_items` owns (plan section 5, rule I15).
     """
     values = os.environ if env is None else env
+    validate_base_url(values, BaseUrlInvalid)
     api_key = _first_present(values, _API_KEY_VARS)
     if not api_key:
         raise AiCallError("ai api key missing")
@@ -145,11 +167,13 @@ def build_link_proposer(env: Mapping[str, str] | None = None) -> OpenAiLinkPropo
 
     Keys: `EMBER_AI_API_KEY` (or `OPENROUTER_API_KEY`), `EMBER_AI_MODEL`,
     `EMBER_AI_BASE_URL`. Raise `ConfigMissing` (RELATE-035) when no API key is
-    configured. The client is built with an explicit timeout and
+    configured or when `EMBER_AI_BASE_URL` is not a usable URL. The client is
+    built with an explicit timeout and
     `max_retries=0`, so the only retry is the one `propose_links_with_retry`
     owns.
     """
     values = os.environ if env is None else env
+    validate_base_url(values, ConfigMissing)
     api_key = _first_present(values, _API_KEY_VARS)
     if not api_key:
         raise ConfigMissing("ai api key missing")
@@ -208,11 +232,12 @@ def build_close_proposer(env: Mapping[str, str] | None = None) -> OpenAiClosePro
 
     Keys: `EMBER_AI_API_KEY` (or `OPENROUTER_API_KEY`), `EMBER_AI_MODEL`,
     `EMBER_AI_BASE_URL`. Raise `CloseAiConfigMissing` (MAINTAIN-020) when no
-    API key is configured. The client is built with an explicit timeout and
-    `max_retries=0`, so the only retry is the one `propose_close_with_retry`
-    owns.
+    API key is configured or when `EMBER_AI_BASE_URL` is not a usable URL.
+    The client is built with an explicit timeout and `max_retries=0`, so the
+    only retry is the one `propose_close_with_retry` owns.
     """
     values = os.environ if env is None else env
+    validate_base_url(values, CloseAiConfigMissing)
     api_key = _first_present(values, _API_KEY_VARS)
     if not api_key:
         raise CloseAiConfigMissing("ai api key missing")
@@ -293,9 +318,10 @@ def _user_content(raw_text: str, context: list[ContextItem]) -> str:
 
 
 def _content(response: Any) -> str:
-    if not response.choices:
+    choices = getattr(response, "choices", None)
+    if not choices:
         raise AiSchemaError("ai response has no choices")
-    return response.choices[0].message.content or ""
+    return choices[0].message.content or ""
 
 
 def _link_messages(
@@ -325,6 +351,7 @@ def _link_user_content(new_item: NewItem, candidates: list[NewItem]) -> str:
 
 def _link_content(response: Any) -> str:
     """Return the assistant text, or raise RELATE-033 when there is no choice."""
-    if not response.choices:
+    choices = getattr(response, "choices", None)
+    if not choices:
         raise AiResponseSchemaInvalid("ai response has no choices")
-    return response.choices[0].message.content or ""
+    return choices[0].message.content or ""
