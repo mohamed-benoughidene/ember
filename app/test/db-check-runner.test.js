@@ -153,3 +153,24 @@ test('a timed-out child retries once, then comes back as APP-008 (a read, I15)',
     fake.cleanup();
   }
 });
+
+test('oversized stdout ends with the bridge-client kind of error (F8)', async () => {
+  // 40 x 1 MB chunks = 40 MB > the 32 MB untrusted-output cap.
+  const fake = fakeEmber(`
+    const big = Buffer.alloc(1024 * 1024, 0x78);
+    let n = 0;
+    const iv = setInterval(() => {
+      process.stdout.write(big);
+      n += 1;
+      if (n >= 40) { clearInterval(iv); process.exit(0); }
+    }, 2);
+  `);
+  try {
+    const result = await runDbCheck({ emberCommand: fake.command, errorPattern: errorPatternFixture(), dbPath: '/tmp/x.db', attempts: 1, timeoutMs: 20000 });
+    assert.equal(result.ok, false);
+    assert.equal(result.error.code, 'APP-002');
+    assert.match(result.error.detail, /more than \d+ bytes/, result.error.detail);
+  } finally {
+    fake.cleanup();
+  }
+});

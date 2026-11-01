@@ -30,6 +30,11 @@ const { parseErrorLine } = require('../shared/parse-error-line');
 const WHERE = 'main.db-check-runner';
 const RESULTS = new Set(['OK', 'DRIFT', 'UNREADABLE']);
 
+/** The same cap the bridge client enforces (fix F8): the child's
+ * stdout is untrusted, so a runaway must end the run with the same
+ * kind of error, not fill the memory. */
+const MAX_OUTPUT_BYTES = 32 * 1024 * 1024;
+
 /**
  * @param {object} options
  * @param {string[]} options.emberCommand resolved command prefix
@@ -66,6 +71,8 @@ function runDbCheck(options) {
         return;
       }
       const stdoutChunks = [];
+      let stdoutBytes = 0;
+      let tooLarge = false;
       const stderrLines = [];
       let timedOut = false;
       let settled = false;
@@ -84,7 +91,29 @@ function runDbCheck(options) {
           }
         }, 1000);
       }, timeoutMs);
-      child.stdout.on('data', (chunk) => stdoutChunks.push(chunk));
+      child.stdout.on('data', (chunk) => {
+        stdoutBytes += chunk.length; // fix F8: the untrusted cap
+        if (stdoutBytes > MAX_OUTPUT_BYTES) {
+          tooLarge = true;
+          settled = true;
+          clearTimeout(timer);
+          try {
+            child.kill('SIGKILL');
+          } catch {
+            /* already gone */
+          }
+          resolve({
+            failed: false,
+            timedOut: false,
+            tooLarge: true,
+            exitCode: null,
+            stdout: '',
+            stderrLines: [],
+          });
+          return;
+        }
+        stdoutChunks.push(chunk);
+      });
       child.stderr.on('data', (chunk) => {
         for (const line of String(chunk).split('\n')) {
           if (line !== '') stderrLines.push(line);
@@ -152,6 +181,12 @@ function runDbCheck(options) {
     for (let attempt = 1; attempt <= attempts; attempt += 1) {
       const run = await attemptOnce();
       if (run.failed) return { ok: false, error: run.error };
+      if (run.tooLarge) {
+        return {
+          ok: false,
+          error: appErrorInfo('APP-002', `${WHERE}.runDbCheck`, `ember db-check printed more than ${MAX_OUTPUT_BYTES} bytes`),
+        };
+      }
       if (!run.timedOut) return interpret(run);
     }
     return {
