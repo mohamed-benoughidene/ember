@@ -150,3 +150,13 @@ test('every preloaded name the Settings screen calls exists in preload and ipc',
     assert.ok(ipc.includes(`ember:${channel}'`), `${channel} is registered`);
   }
 });
+
+test('both layers share the ONE keyShapeWords function (fix C5 drift pin)', async () => {
+  const shared = await import('../shared/key-shape.mjs');
+  const { keyShapeWords: screenWords } = await import('../renderer/screens/settings.mjs');
+  const { keyShapeWords: mainWords } = require('../main/ipc');
+  // Identity, not equality: a layer that grows its own copy fails this.
+  assert.equal(screenWords, shared.keyShapeWords, 'the settings screen must re-export the shared words');
+  assert.equal(mainWords, shared.keyShapeWords, 'the main-process backstop must re-export the shared words');
+  assert.match(shared.keyShapeWords('empty'), /Paste your key/);
+});

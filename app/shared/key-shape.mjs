@@ -13,6 +13,22 @@
 export const MIN_KEY_LENGTH = 20;
 
 /**
+ * The ONE reason words for a refused key shape, shared by both layers
+ * (fix C5, founder decision: the settings pane's sentences are THE
+ * wording — the main-process backstop re-uses exactly these, and the
+ * drift test in settings-screen.test.js pins both layers to this one
+ * function). Always a full stand-alone sentence, never a secret.
+ *
+ * @param {'empty'|'whitespace'|'short'} reason
+ * @returns {string}
+ */
+export function keyShapeWords(reason) {
+  if (reason === 'empty') return 'The key box is empty. Paste your key, then save it.';
+  if (reason === 'whitespace') return 'A key is one unbroken line of characters. This one has a space or a line break inside; copy it again completely.';
+  return 'This key is too short. A real key has at least 20 characters with no spaces; copy it again completely.';
+}
+
+/**
  * @param {unknown} key the pasted key text
  * @returns {{ok: true} | {ok: false, reason: 'empty'|'whitespace'|'short'}}
  */

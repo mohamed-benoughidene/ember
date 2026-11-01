@@ -29,7 +29,11 @@
 import { esc } from '../design/escape-html.mjs';
 import { buttonHtml } from '../components/button.mjs';
 import { loadingHtml } from '../components/state-block.mjs';
-import { checkKeyShape } from '../../shared/key-shape.mjs';
+import { checkKeyShape, keyShapeWords } from '../../shared/key-shape.mjs';
+
+// Fix C5: the pane re-exports the ONE shared wording so the drift test
+// in settings-screen.test.js can pin both layers to the same function.
+export { keyShapeWords };
 import { acceleratorWarnings, parseAccelerator, displayKeys } from '../../shared/shortcut-warnings.mjs';
 
 const IS_MAC = /Mac/i.test(navigator.platform ?? '');
@@ -524,12 +528,6 @@ export function acceleratorFromEvent(event, key, isMac) {
   const normalized = key.length === 1 ? key.toUpperCase() : key;
   if (mods.length === 0) return normalized;
   return `${mods.join('+')}+${normalized}`;
-}
-
-function keyShapeWords(reason) {
-  if (reason === 'empty') return 'The key box is empty. Paste your key, then save it.';
-  if (reason === 'whitespace') return 'A key is one unbroken line of characters. This one has a space or a line break inside; copy it again completely.';
-  return 'This key is too short. A real key has at least 20 characters with no spaces; copy it again completely.';
 }
 
 /* ---------- HTML ---------- */

@@ -1,5 +1,7 @@
 'use strict';
 
+const { requireId } = require('./require-id');
+
 /**
  * The argv builders for the step-07 Fix and close write commands
  * (app step file §1).
@@ -42,14 +44,6 @@ const FIX_ACTIONS = [
   ...FLIP_COMMANDS,
   ...UNDO_COMMANDS,
 ];
-
-function requireId(value, what) {
-  const n = Number(value);
-  if (!Number.isInteger(n) || n < 1) {
-    throw new TypeError(`${what} must be a whole number from 1 up, got ${String(value)}`);
-  }
-  return n;
-}
 
 function requireOneOf(value, allowed, what) {
   if (!allowed.includes(value)) {

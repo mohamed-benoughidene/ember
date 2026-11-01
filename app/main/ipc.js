@@ -21,7 +21,7 @@ const {
   knowledgeBaseStatus,
 } = require('./ember-command');
 const { appErrorInfo } = require('../shared/errors');
-const { checkKeyShape } = require('../shared/key-shape.mjs');
+const { checkKeyShape, keyShapeWords } = require('../shared/key-shape.mjs');
 const { maintainDocumentFromMessage } = require('../shared/maintain-words.mjs');
 const {
   listItemsArgs,
@@ -307,7 +307,9 @@ function registerIpcHandlers(options) {
       if (!shape.ok) {
         return {
           ok: false,
-          error: appErrorInfo('APP-003', `${WHERE}.setKey`, `the key was not saved: ${keyShapeWords(shape.reason)}`),
+          // Fix C5: the ONE shared wording (the settings pane's sentences); the
+          // sentence itself is the detail, never a prefixed lowercase fragment.
+          error: appErrorInfo('APP-003', `${WHERE}.setKey`, keyShapeWords(shape.reason)),
         };
       }
       return keyStore.set(key);
@@ -321,7 +323,8 @@ function registerIpcHandlers(options) {
       if (!shape.ok) {
         return {
           ok: false,
-          error: appErrorInfo('APP-003', `${WHERE}.setSessionKey`, `the key was not kept: ${keyShapeWords(shape.reason)}`),
+          // Fix C5: the shared wording, as above.
+          error: appErrorInfo('APP-003', `${WHERE}.setSessionKey`, keyShapeWords(shape.reason)),
         };
       }
       return keyStore.setSessionOnly(key);
@@ -739,11 +742,7 @@ function registerIpcHandlers(options) {
   return { names: [...names, ...addWiring.channels, ...relateWiring.channels] };
 }
 
-/** The plain words for a shape refusal (shared rule, one wording). */
-function keyShapeWords(reason) {
-  if (reason === 'empty') return 'the key box was empty';
-  if (reason === 'whitespace') return 'a key is one unbroken line of characters; this one had a space or line break inside';
-  return `this key is too short; a real key has at least 20 characters (no spaces)`;
-}
-
-module.exports = { registerIpcHandlers };
+/** The plain words for a shape refusal (fix C5: the ONE shared wording —
+ * re-exported here so the drift test can pin both layers to the same
+ * function object; never a secret). */
+module.exports = { registerIpcHandlers, keyShapeWords };

@@ -1,5 +1,7 @@
 'use strict';
 
+const { requireId } = require('./require-id');
+
 /**
  * The argv builder for the Link items session (app step 06).
  *
@@ -18,14 +20,6 @@
  * shape the command would refuse. Pure module (T1): unit-tested in
  * app/test/relate-args.test.js.
  */
-
-function requireId(value) {
-  const n = Number(value);
-  if (!Number.isInteger(n) || n < 1) {
-    throw new TypeError(`--item must be a whole number from 1 up, got ${String(value)}`);
-  }
-  return n;
-}
 
 /**
  * The argv (WITHOUT `--db`/`--confirm json`) for one relate start.

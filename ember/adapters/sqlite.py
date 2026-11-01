@@ -954,7 +954,7 @@ class SqliteMaintainContext:
 
         Raise `ItemsReadFailed` (MAINTAIN-010) on a read failure.
         """
-        if not _column_exists(self._conn, "change_log", "group_id"):
+        if not column_exists(self._conn, "change_log", "group_id"):
             # G2-B: a pre-013 file has no `group_id` column. Every row
             # predates the undo groups, so there is no group to read;
             # `has_ungrouped_rows()` carries the honest story-123 note.
@@ -1005,7 +1005,7 @@ class SqliteMaintainContext:
 
         Raise `ItemsReadFailed` (MAINTAIN-010) on a read failure.
         """
-        if not _column_exists(self._conn, "change_log", "group_id"):
+        if not column_exists(self._conn, "change_log", "group_id"):
             # G2-B: on a pre-013 file EVERY row is ungrouped, so the
             # honest story-123 answer is "any ledger rows exist at all".
             try:
@@ -1024,7 +1024,7 @@ class SqliteMaintainContext:
         return row is not None
 
 
-def _column_exists(conn: sqlite3.Connection, table: str, column: str) -> bool:
+def column_exists(conn: sqlite3.Connection, table: str, column: str) -> bool:
     """Whether `table` has `column` (`PRAGMA table_info`, the export rule).
 
     Readers select an additive column ONLY through this check (I5): a file
@@ -1095,7 +1095,7 @@ class SqliteQueryContext:
                 "id, source_item_id, target_item_id, link_type, status,"
                 " created_at"
             )
-            has_reversed = _column_exists(self._conn, "links", "reversed_at")
+            has_reversed = column_exists(self._conn, "links", "reversed_at")
             if has_reversed:
                 columns += ", reversed_at"
             rows = self._conn.execute(

@@ -14,7 +14,7 @@ in id order, links in id order, sources in id order, ledger in
 `(timestamp, id)` order. Every column of every row is exported, removed
 and reversed links carry their state, ledger values are never truncated.
 Since undo step 05 each ledger row also carries its `group_id` (the undo
-group stamp): read from the column only when `PRAGMA table_info` shows it
+group stamp): read from the column only when the adapters shared `column_exists` shows it
 (never migrated), rendered `-` when NULL or when the column does not
 exist (a v12 file).
 `item_embeddings` and `ai_responses` are deliberately excluded: derived,
@@ -51,6 +51,7 @@ import sqlite3
 from pydantic import BaseModel
 
 from ember.adapters.errors import OverwriteRefused, OutputWriteFailed
+from ember.adapters.sqlite import column_exists
 from ember.adapters.paths import same_path
 from ember.query.rows import ChangeRow
 from ember.relate.rows import Link
@@ -116,10 +117,7 @@ def gather_export(conn: sqlite3.Connection) -> ExportData:
     # The undo-group column exists only from migration 013 (schema 13). The
     # file is never migrated here: on a v12 file the ledger rows gather with
     # `group_id=None` and the render prints `-`.
-    has_group_id = "group_id" in {
-        row["name"]
-        for row in conn.execute("PRAGMA table_info(change_log)")
-    }
+    has_group_id = column_exists(conn, "change_log", "group_id")
     items = [
         ExportItem(
             id=row["id"],
