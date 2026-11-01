@@ -26,7 +26,7 @@
  *   change was made by the CLI behaves identically under the sweep.
  */
 
-const test = require('node:test');
+const { test, after } = require('node:test');
 const assert = require('node:assert/strict');
 const { execFileSync } = require('node:child_process');
 const fs = require('node:fs');
@@ -62,8 +62,19 @@ function itemStatus(dbPath, itemId) {
   return [out.item.status, out.item.close_reason];
 }
 
+// Each seeded folder holds the twin databases of one test; the list is
+// emptied once, after every test in the file ran (node:test runs
+// `after` exactly once).
+const seededDirs = [];
+
+after(() => {
+  for (const dir of seededDirs) fs.rmSync(dir, { recursive: true, force: true });
+});
+
 function freshDir(name) {
-  return fs.mkdtempSync(path.join(os.tmpdir(), `ember-fix-${name}-`));
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), `ember-fix-${name}-`));
+  seededDirs.push(dir);
+  return dir;
 }
 
 test('the close preview and write equal the CLI on twin files (stories 56-59)', async () => {
