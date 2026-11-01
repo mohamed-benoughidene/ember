@@ -34,8 +34,11 @@ function makeClient(overrides = {}) {
     emberCommand: ['node', FAKE_EMBER],
     dbPath: tempPath('kb.db'),
     errorPattern: errorPatternFixture(),
-    timeoutReadMs: 150,
-    timeoutWriteMs: 150,
+    // 5000 ms: a healthy-but-slow read (the fake's `slow` mode takes
+    // 400 ms) must answer, never die as APP-008. The hung-read/hung-
+    // write tests set their tight 150 ms limit explicitly.
+    timeoutReadMs: 5000,
+    timeoutWriteMs: 5000,
     sessionIdleMs: 5000,
     ...rest,
     spawnFn:
@@ -61,6 +64,16 @@ test('a read returns the pinned shape: {ok:true, data:{total, items}}', async ()
     Object.keys(result.data).sort(),
     ['items', 'total'],
   );
+});
+
+test('a slow-but-answering read succeeds with the default limit', async () => {
+  // A healthy engine that merely takes 400 ms must NOT be judged by
+  // the dead-session limit: makeClient's defaults (5000 ms after the
+  // Batch 0 fix) have to let the normal document through, never APP-008.
+  const client = makeClient({ fakeMode: 'slow' });
+  const result = await client.runCommand('list-items', []);
+  assert.equal(result.ok, true, `the slow read must answer, never timeout: ${JSON.stringify(result)}`);
+  assert.equal(result.data.total, 2, JSON.stringify(result));
 });
 
 test('the knowledge base path rides along as --db on EVERY call', async () => {
