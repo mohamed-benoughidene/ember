@@ -7,7 +7,14 @@ import sqlite3
 
 from click.testing import CliRunner
 
+from ember.adapters.sqlite import open_database
 from ember.cli import main
+
+
+def _seed_knowledge_base(db_path: str) -> None:
+    """Create the file as `ember init` does (D-25: capture-source refuses
+    a missing file; these tests pin phase-1 store/dedup, not creation)."""
+    open_database(db_path).close()
 
 
 def _rows(db_path: str) -> list[tuple]:
@@ -26,6 +33,7 @@ def _payload(result) -> dict:
 
 
 def test_file_mode_prints_source_reference(db_path, tmp_path) -> None:
+    _seed_knowledge_base(db_path)
     sample = tmp_path / "sample.txt"
     sample.write_text("hello", encoding="utf-8")
 
@@ -41,6 +49,7 @@ def test_file_mode_prints_source_reference(db_path, tmp_path) -> None:
 
 
 def test_stdin_mode_and_dedup_message(db_path) -> None:
+    _seed_knowledge_base(db_path)
     runner = CliRunner()
 
     first = runner.invoke(main, ["capture-source", "--db", db_path], input="hello")

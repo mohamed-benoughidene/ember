@@ -15,6 +15,7 @@ from pathlib import Path
 import pytest
 from click.testing import CliRunner
 
+from ember.adapters.sqlite import open_database
 from ember.cli import _handle_unexpected, main
 from tests.bridge import harness
 
@@ -44,6 +45,7 @@ def test_forced_unexpected_exception_gives_one_ember_000_line_and_a_crash_file(
     monkeypatch.setattr("ember.cli.store_source", _boom)
 
     db_path = tmp_path / "x.db"
+    open_database(str(db_path)).close()  # D-25: capture-source refuses a missing file
     result = CliRunner().invoke(main, ["capture-source", "--db", str(db_path)], input="hello")
 
     assert result.exit_code == 1

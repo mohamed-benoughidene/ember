@@ -7,6 +7,7 @@ import os
 import shutil
 import sqlite3
 import sys
+import time
 import urllib.parse
 from array import array
 from collections import deque
@@ -16,7 +17,9 @@ from importlib import resources
 from typing import Callable, Iterator
 
 from ember.capture.errors import (
+    DbFileMissing as CaptureDbFileMissing,
     DbOpenFailed as CaptureDbOpenFailed,
+    InitRefused as CaptureInitRefused,
     ItemDbReadError,
     ItemDbWriteError,
     SourceDbReadError,
@@ -122,6 +125,157 @@ def open_database(db_path: str) -> sqlite3.Connection:
         raise CaptureDbOpenFailed(
             "db open fail", db_path=os.path.basename(db_path)
         ) from exc
+
+
+def open_existing_database(db_path: str) -> sqlite3.Connection:
+    """Open an EXISTING capture database; refuse a missing file (N8, D-25).
+
+    The open path behind the user commands that must never create the
+    knowledge base (`capture-source`, and through the validated write the
+    `set-validated` / `clear-validated` pair): the file is checked BEFORE
+    any open, so a missing file is refused with `DbFileMissing`
+    (CAPTURE-020) and nothing is created or migrated. `open_database` itself
+    keeps its connect-create semantics — it is `ember init`'s create path
+    and the test seeding path (N8: one command creates on purpose).
+    """
+    if not os.path.exists(db_path):
+        raise CaptureDbFileMissing(
+            "db file missing", db_path=os.path.basename(db_path)
+        )
+    return open_database(db_path)
+
+
+_EXPECTED_TABLES_AT_LATEST = frozenset(
+    {
+        "schema_version",
+        "sources",
+        "items",
+        "change_log",
+        "ai_responses",
+        "links",
+        "item_embeddings",
+        "link_compat",
+    }
+)
+
+
+def init_knowledge_base(db_path: str) -> str:
+    """Create and migrate a NEW knowledge base; accept nothing else (N8).
+
+    The create side of `ember init` (decision D-25: that one command is the
+    only thing in Ember that creates the file, on purpose). Returns
+    `"created"` after creating and migrating a missing file, and
+    `"current"` when the path already holds a healthy Ember database at the
+    latest migration version — checked strictly read-only, so an already-
+    current file stays byte-identical.
+
+    The healthy check (N8's essentials): the `schema_version` table
+    present, its version equal to the latest migration number, and the
+    expected tables intact. Anything else raises `InitRefused`
+    (CAPTURE-021): a file that is not an Ember database, no version table,
+    a version other than the latest, or missing tables. Nothing is ever
+    adopted and nothing is migrated by `init` after the first create.
+    """
+    if not os.path.exists(db_path):
+        try:
+            open_database(db_path).close()
+        except CaptureDbOpenFailed:
+            # Two first-Adds-at-once (story 11): another `ember init` may
+            # have created and migrated the same fresh file between the
+            # exists check and the open. The healthy-latest check below
+            # then decides; a file missing again re-raises the open
+            # failure.
+            if not os.path.exists(db_path):
+                raise
+        else:
+            return "created"
+    return _require_healthy_current(db_path)
+
+
+def _require_healthy_current(db_path: str) -> str:
+    """Return `"current"` for a healthy latest-version database, refuse the rest.
+
+    Opened STRICTLY read-only: a current file is left byte-identical, and a
+    refusal writes nothing. Raise `InitRefused` (CAPTURE-021) on every
+    shape `ember init` cannot accept (see `init_knowledge_base`).
+
+    Only the TRANSIENT shapes get a settle window (5 s, the busy-timeout
+    scale): a file reading as an Ember database BEHIND the latest version,
+    or a busy read, may be another `ember init` mid-migration (story 11's
+    two first-Adds-at-once), so it is re-inspected until it reaches the
+    latest or the window ends. The permanent shapes — not an Ember
+    database, no readable version table, a version ABOVE the latest,
+    missing tables at the latest — are refused immediately; no waiting
+    makes those healthy.
+    """
+    latest = max(number for number, _ in _migration_scripts())
+    deadline = time.monotonic() + 5.0
+    while True:
+        where, detail, transient = _inspect_health(db_path, latest)
+        if where == "current":
+            return "current"
+        if not transient or time.monotonic() >= deadline:
+            raise CaptureInitRefused(
+                where, detail=detail, db_path=os.path.basename(db_path)
+            )
+        time.sleep(0.05)
+
+
+def _inspect_health(db_path: str, latest: int) -> tuple[str, str, bool]:
+    """Read the file's health once, STRICTLY read-only (no writes, ever).
+
+    Returns `(refusal_where, detail, transient)`, or `("current", ..., False)`
+    for a healthy database at the latest version. The transient shapes (a
+    behind version, a busy file) may be another `ember init` mid-migration
+    and get the settle window; every other shape refuses immediately.
+    """
+    conn: sqlite3.Connection | None = None
+    try:
+        conn = _connect_readonly(db_path)
+        tables = {
+            row["name"]
+            for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            )
+        }
+        if "schema_version" not in tables:
+            return ("no schema_version table", "the version table is missing", False)
+        row = conn.execute("SELECT version FROM schema_version").fetchone()
+        if row is None:
+            return ("empty schema_version table", "no version row", False)
+        version = int(row["version"])
+        if version > latest:
+            return (
+                "schema version is not the latest",
+                f"version={version} required={latest} (version above latest)",
+                False,
+            )
+        if version < latest:
+            return (
+                "schema version is not the latest",
+                f"version={version} required={latest}",
+                True,
+            )
+        missing = sorted(_EXPECTED_TABLES_AT_LATEST - tables)
+        if missing:
+            return ("missing tables", ", ".join(missing), False)
+        return ("current", "", False)
+    except (TypeError, ValueError):
+        return (
+            "empty schema_version table",
+            "the version row is not a number",
+            False,
+        )
+    except sqlite3.Error as exc:
+        message = str(exc).lower()
+        if "locked" in message or "busy" in message:
+            # Another writer holds the file; its outcome decides at the
+            # next poll, so this is a retryable read, not a verdict.
+            return ("schema version is not the latest", f"file busy ({exc})", True)
+        return ("not an ember database", f"unreadable ({exc})", False)
+    finally:
+        if conn is not None:
+            conn.close()
 
 
 def open_relate_database(db_path: str) -> sqlite3.Connection:

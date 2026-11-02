@@ -63,6 +63,8 @@ def test_clear_validated_flips_the_flag_back(db_path) -> None:
 
 
 def test_missing_item_exits_1(db_path) -> None:
+    open_database(db_path).close()  # D-25: set-validated refuses a missing file
+
     result = invoke(["set-validated", "--item", "99", "--db", db_path])
 
     assert result.exit_code == 1
