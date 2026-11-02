@@ -171,6 +171,19 @@ def validate_set_validated(item: StoredItem | None, item_id: int) -> StoredItem:
     return item
 
 
+def validated_change_is_noop(item: StoredItem, new_value: bool) -> bool:
+    """Check the flag change CHANGES something (finding 4.5 #18).
+
+    True when the item already carries `new_value`: writing anyway would
+    append a fake `true -> true` (or `false -> false`) ledger row —
+    history for a change that never happened. The caller must skip the
+    write and answer honestly instead. A never-set flag (`None`) is
+    always a real change, even toward `false`: `None -> false` is new
+    history worth recording.
+    """
+    return item.validated is not None and bool(item.validated) == new_value
+
+
 def validate_add_item(
     draft: ProposalDraft,
     run: GatekeeperRun,

@@ -114,8 +114,13 @@ def _active_undos(groups: list[LedgerGroup]) -> dict[int, int]:
     rule 1). A later undo of the same group wins. A pointer naming a group
     not strictly earlier than its own cannot exist in a healthy ledger (a
     group is only ever written after the group it points at): fail closed
-    (MAINTAIN-027, both ids) rather than let a corrupt ledger flip the stack.
+    (MAINTAIN-027, both ids) rather than let a corrupt ledger flip the
+    stack. Each pointer must also name the right KIND of group (4.6 #5):
+    `undo_of` a normal action group, `redo_of` the undo group it
+    re-applies — a pointer at another pointer group is a ledger that
+    cannot exist, and running off it would undo the wrong group.
     """
+    by_id = {group.group_id: group for group in groups}
     redone: set[int] = set()
     active: dict[int, int] = {}
     for group in groups:
@@ -130,6 +135,7 @@ def _active_undos(groups: list[LedgerGroup]) -> dict[int, int]:
             group,
         )
         _require_earlier(group, undone_by)
+        _require_kind(group, by_id, undone_by, wanted="undo")
         redone.add(undone_by)
     for group in groups:
         if _kind(group) != "undo":
@@ -143,10 +149,41 @@ def _active_undos(groups: list[LedgerGroup]) -> dict[int, int]:
             group,
         )
         _require_earlier(group, undo_id)
+        _require_kind(group, by_id, undo_id, wanted="original")
         if group.group_id in redone:
             continue
         active[undo_id] = group.group_id
     return active
+
+
+def _require_kind(
+    group: LedgerGroup,
+    by_id: dict[int, LedgerGroup],
+    target_id: int,
+    *,
+    wanted: str,
+) -> None:
+    """Fail closed (MAINTAIN-027) when a pointer names the wrong KIND of group.
+
+    An `undo_of` pointer must name a normal action group, a `redo_of`
+    pointer the undo group it re-applies (L2 §5.3 rule 1). A pointer at
+    another pointer group is a ledger that cannot exist (finding 4.6 #5):
+    fail closed with both ids rather than undo the wrong group.
+    """
+    target = by_id.get(target_id)
+    if target is None:
+        raise GroupRecordInvalid(
+            "marker names a group the ledger does not hold",
+            group_id=group.group_id,
+            target_group_id=target_id,
+        )
+    if _kind(target) != wanted:
+        raise GroupRecordInvalid(
+            "pointer row names a group of the wrong kind",
+            group_id=group.group_id,
+            target_group_id=target_id,
+            named_group_kind=_kind(target),
+        )
 
 
 def _require_earlier(group: LedgerGroup, target_id: int) -> None:
@@ -289,6 +326,9 @@ def _live_value(snapshot: UndoSnapshot, change: InverseChange) -> str | None:
     Status values compare in the writer's encoded `<status>:<reason>` form;
     a `reversed_at` change compares against the link's marker state
     (`Reversed` when a reversal timestamp is set, else `Confirmed`).
+    An unknown field fails closed (MAINTAIN-027, finding 4.6 #6): the
+    refusal rule must never pass by comparing a wrong attribute in
+    silence.
     """
     if change.link_id is not None:
         link = _link(snapshot, change.link_id)
@@ -296,7 +336,13 @@ def _live_value(snapshot: UndoSnapshot, change: InverseChange) -> str | None:
             return None
         if change.field == "status":
             return link.status
-        return "Reversed" if link.reversed_at is not None else "Confirmed"
+        if change.field == "reversed_at":
+            return "Reversed" if link.reversed_at is not None else "Confirmed"
+        raise GroupRecordInvalid(
+            "unknown field in grouped ledger row",
+            field_changed=change.field,
+            link_id=change.link_id,
+        )
     item = _item(snapshot, change.item_id)
     if item is None:
         return None
@@ -310,7 +356,13 @@ def _live_value(snapshot: UndoSnapshot, change: InverseChange) -> str | None:
         return item.validated
     if change.field == "rationale":
         return item.rationale
-    return item.source
+    if change.field == "source":
+        return item.source
+    raise GroupRecordInvalid(
+        "unknown field in grouped ledger row",
+        field_changed=change.field,
+        item_id=change.item_id,
+    )
 
 
 def _item(snapshot: UndoSnapshot, item_id: int | None) -> ItemState | None:

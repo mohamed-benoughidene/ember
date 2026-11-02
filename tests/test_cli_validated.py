@@ -62,6 +62,31 @@ def test_clear_validated_flips_the_flag_back(db_path) -> None:
     assert f"item {item_id} validated: false" in result.output
 
 
+def test_set_validated_on_an_already_validated_item_writes_no_ledger_row(
+    db_path,
+) -> None:
+    """4.5 #18: a second `set-validated` changes nothing. Writing anyway
+    would append a fake `true -> true` ledger row — history for a change
+    that never happened. The flag keeps its value, the command still
+    exits 0, and the ledger holds exactly ONE `validated` row."""
+    item_id = seed_item(db_path, "Assumption")
+    invoke(["set-validated", "--item", str(item_id), "--db", db_path])
+
+    result = invoke(["set-validated", "--item", str(item_id), "--db", db_path])
+
+    assert result.exit_code == 0
+    assert flag(db_path, item_id) == 1
+    conn = sqlite3.connect(db_path)
+    try:
+        rows = conn.execute(
+            "SELECT old_value, new_value FROM change_log"
+            " WHERE field_changed = 'validated'"
+        ).fetchall()
+    finally:
+        conn.close()
+    assert rows == [(None, "true")]
+
+
 def test_missing_item_exits_1(db_path) -> None:
     open_database(db_path).close()  # D-25: set-validated refuses a missing file
 

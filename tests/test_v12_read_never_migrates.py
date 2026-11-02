@@ -137,9 +137,12 @@ def test_maintain_dry_run_on_v12_never_migrates(db_path) -> None:
 
 
 def test_undo_and_redo_dry_run_on_v12_never_migrate(db_path) -> None:
-    """G2-B: `undo --dry-run` / `redo --dry-run` on a v12 file answer
-    honestly (NothingToUndo with the older-rows note) and leave the
-    file byte-identical, version 12, no backup copy."""
+    """G2-B + B4-19: `undo --dry-run` / `redo --dry-run` on a v12 file
+    refuse loudly and honestly — the undo groups are the `group_id` rows
+    (migration 013), so the read-only open demands floor 13 and answers
+    SchemaOutdated (MAINTAIN-009, `required=13`), never a misleading
+    nothing-to-undo — and leave the file byte-identical, version 12, no
+    backup copy."""
     _build_v12_db(db_path)
     version_before, digest_before = _version_and_hash(db_path)
 
@@ -147,9 +150,10 @@ def test_undo_and_redo_dry_run_on_v12_never_migrate(db_path) -> None:
     redo_result = CliRunner().invoke(main, ["redo", "--dry-run", "--db", db_path])
 
     assert undo_result.exit_code == 1, undo_result.output
-    assert "nothing to undo" in undo_result.output
-    assert "older ledger rows" in undo_result.output, undo_result.output
+    assert "MAINTAIN-009" in undo_result.output, undo_result.output
+    assert "required=13" in undo_result.output, undo_result.output
     assert redo_result.exit_code == 1, redo_result.output
+    assert "MAINTAIN-009" in redo_result.output, redo_result.output
     version_after, digest_after = _version_and_hash(db_path)
     assert version_before == 12
     assert version_after == 12

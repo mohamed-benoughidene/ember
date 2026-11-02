@@ -9,6 +9,7 @@ and the byte-identity of `--dry-run` (file hash) are all proven end to end.
 from __future__ import annotations
 
 import hashlib
+import importlib.resources
 import sqlite3
 from pathlib import Path
 from typing import Any
@@ -351,6 +352,58 @@ def test_redo_unknown_flag_exits_2(db_path) -> None:
 # ---------------------------------------------------------------------------
 # Missing database: the unchanged boot code (MAINTAIN-007) at the edge.
 # ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# G2-B floor: an undo --dry-run's read-only open must demand version 13.
+# ---------------------------------------------------------------------------
+
+_MIGRATIONS_TO_12 = (
+    "001_create_sources.sql",
+    "002_create_items.sql",
+    "003_create_change_log.sql",
+    "004_add_item_detail_columns.sql",
+    "005_create_ai_responses.sql",
+    "006_create_links.sql",
+    "007_create_item_embeddings.sql",
+    "008_add_change_log_link_fk.sql",
+    "009_drop_source_id_not_null_and_add_item_id.sql",
+    "010_add_item_close_reason.sql",
+    "011_add_links_reversed_at_and_enforcement_triggers.sql",
+    "012_add_items_metadata.sql",
+)
+
+
+def _build_v12_db(db_path: str) -> None:
+    """Build a real untouched v12 file (scripts 001-012, version stamped 12)."""
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    conn.execute("CREATE TABLE schema_version (version INTEGER NOT NULL)")
+    conn.execute("INSERT INTO schema_version (version) VALUES (12)")
+    package = importlib.resources.files("ember.adapters.migrations")
+    for name in _MIGRATIONS_TO_12:
+        conn.executescript(package.joinpath(name).read_text(encoding="utf-8"))
+    source_id = insert_source(conn)
+    insert_item(conn, source_id=source_id, item_id=1)
+    conn.commit()
+    conn.close()
+
+
+def test_undo_dry_run_on_a_v12_file_requires_version_13(db_path) -> None:
+    """The undo groups are the ledger's `group_id` rows (migration 013):
+    a dry-run's read-only open must demand floor 13, not the maintain
+    floor 11, so an older file gets the honest SchemaOutdated answer
+    (MAINTAIN-009, `required=13`) instead of a misleading `nothing to
+    undo` (MAINTAIN-023) — and the file stays at v12, untouched."""
+    _build_v12_db(db_path)
+
+    result = _invoke(["undo", "--dry-run", "--db", db_path])
+
+    assert result.exit_code == 1
+    text = _error_text(result)
+    assert "MAINTAIN-009" in text
+    assert "required=13" in text
+    assert _count(db_path, "SELECT version FROM schema_version") == 12
 
 
 def test_undo_missing_db_exits_1_maintain_007(tmp_path) -> None:

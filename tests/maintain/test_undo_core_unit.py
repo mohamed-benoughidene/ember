@@ -17,13 +17,14 @@ from ember.maintain.errors import (
     UndoRefused,
 )
 from ember.maintain.rows import (
+    InverseChange,
     ItemState,
     LedgerGroup,
     StatusValue,
     UndoSnapshot,
     split_status_value,
 )
-from ember.maintain.undo import derive_redo, derive_undo
+from ember.maintain.undo import _live_value, derive_redo, derive_undo
 from ember.relate.rows import ChangeLogEntry, Link
 
 FIXED_TIME = "2026-01-01T00:00:00+00:00"
@@ -597,6 +598,55 @@ def test_pre013_rows_invisible_but_023_says_so() -> None:
     with pytest.raises(NothingToUndo) as without_old_rows:
         derive_undo(_snap([], ungrouped=False))
     assert without_old_rows.value.context["ungrouped_rows_exist"] is False
+
+
+def test_undo_refuses_a_pointer_row_aimed_at_the_wrong_group_kind() -> None:
+    """4.6 #5: a pointer row must name the right KIND of group — `undo_of`
+    a normal action group, never another pointer. This crafted ledger has
+    group 3's `undo_of` pointer naming group 2, which is itself an undo.
+    Ordering alone cannot see this: `derive_undo` refuses to run off a
+    ledger that cannot exist (MAINTAIN-027) instead of undoing group 1,
+    the WRONG group, as if group 3 were not there."""
+    original = _group(
+        1, _row(4, "status", "Active", "Challenged", "user_set_status")
+    )
+    first_undo = _group(
+        2,
+        _row(4, "status", "Challenged", "Active", "user_undo"),
+        _undo_marker(1),
+    )
+    corrupt = _group(
+        3,
+        _row(4, "status", "Active", "Challenged", "user_undo"),
+        _undo_marker(2),
+    )
+    snapshot = _snap(
+        [original, first_undo, corrupt], [_item(4, status="Challenged")]
+    )
+    with pytest.raises(GroupRecordInvalid) as excinfo:
+        derive_undo(snapshot)
+    assert excinfo.value.code == "MAINTAIN-027"
+    assert excinfo.value.context["group_id"] == 3
+    assert excinfo.value.context["target_group_id"] == 2
+
+
+def test_undo_fails_loudly_on_an_unknown_field() -> None:
+    """4.6 #6: `_live_value` must fail closed (MAINTAIN-027) on a field it
+    does not know. Today an unknown field falls through and is silently
+    compared against `item.source`, so a corrupt row could pass the
+    refusal check by accident instead of raising."""
+    snapshot = _snap([], [_item(7)])
+    change = InverseChange(
+        item_id=7,
+        field="created_at",
+        expected_value=FIXED_TIME,
+        new_value=None,
+        ledger_row=_row(7, "created_at", FIXED_TIME, None, "user_undo"),
+    )
+    with pytest.raises(GroupRecordInvalid) as excinfo:
+        _live_value(snapshot, change)
+    assert excinfo.value.code == "MAINTAIN-027"
+    assert excinfo.value.context["field_changed"] == "created_at"
 
 
 # --------------------------------------------------------------------------
