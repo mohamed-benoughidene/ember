@@ -72,6 +72,24 @@ def _rows(conn: sqlite3.Connection, sql: str) -> list[tuple]:
     return [tuple(row) for row in conn.execute(sql).fetchall()]
 
 
+def _pre_migration_snapshot(db_path: str) -> Path:
+    """The one timestamped `.bak-<UTC stamp>-<hex>` pre-migration snapshot.
+
+    Since B4-16 the runner names the copy `<db>.bak-<stamp>-<6hex>`, never
+    again the reusable `.bak-v<version>`, so a repeated run leaves its own
+    snapshot instead of overwriting one file.
+    """
+    directory = Path(db_path).parent
+    name = Path(db_path).name
+    snapshots = sorted(
+        p
+        for p in directory.glob(f"{name}.bak-*")
+        if not p.name.startswith(f"{name}.bak-v")  # the legacy family
+    )
+    assert len(snapshots) == 1, f"expected one snapshot, got {snapshots}"
+    return snapshots[0]
+
+
 def test_migration_012_adds_nullable_metadata_column(db_path) -> None:
     _build_v11_db(db_path)
 
@@ -223,15 +241,15 @@ def test_failed_migration_leaves_intact_prior_database_012(
         open_database(db_path)
 
     # The prior database file is intact at v11, and the pre-migration backup
-    # was taken before the failing script ran.
+    # was taken before the failing script ran — its own timestamped
+    # snapshot (B4-16), a healthy copy at the pre-migration version.
     raw = sqlite3.connect(db_path)
     assert raw.execute("SELECT version FROM schema_version").fetchone()[0] == 11
     assert _rows(raw, f"SELECT {_ITEM_COLUMNS} FROM items ORDER BY id") == items_before
     raw.close()
 
-    backup_path = Path(f"{db_path}.bak-v11")
-    assert backup_path.is_file()
-    backup = sqlite3.connect(backup_path)
+    backup = sqlite3.connect(str(_pre_migration_snapshot(db_path)))
+    assert backup.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
     assert backup.execute("SELECT version FROM schema_version").fetchone()[0] == 11
     assert (
         _rows(backup, f"SELECT {_ITEM_COLUMNS} FROM items ORDER BY id") == items_before

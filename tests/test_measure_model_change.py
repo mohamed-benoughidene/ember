@@ -41,7 +41,8 @@ def test_failed_run_leaves_no_database(tmp_path: Path, monkeypatch) -> None:
     raises on construction, and `main()` runs with `--db` inside this test's
     own temp folder. Whatever way the run fails (a non-zero return, or the
     error escaping as an exception), no `*.db`, `-wal`, `-shm`, `-journal`
-    or `.bak-v*` file may remain in that folder.
+    or pre-migration backup file (`.bak-*`, both name families) may remain
+    in that folder.
     """
     spec = importlib.util.spec_from_file_location("measure_model_change_under_test", SCRIPT)
     module = importlib.util.module_from_spec(spec)
@@ -65,7 +66,7 @@ def test_failed_run_leaves_no_database(tmp_path: Path, monkeypatch) -> None:
     leftovers = sorted(
         entry.name
         for entry in tmp_path.iterdir()
-        if entry.name.endswith((".db", "-wal", "-shm", "-journal")) or ".bak-v" in entry.name
+        if entry.name.endswith((".db", "-wal", "-shm", "-journal")) or ".bak-" in entry.name
     )
     assert leftovers == [], leftovers
 

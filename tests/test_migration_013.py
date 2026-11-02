@@ -80,6 +80,24 @@ def _rows(conn: sqlite3.Connection, sql: str) -> list[tuple]:
     return [tuple(row) for row in conn.execute(sql).fetchall()]
 
 
+def _pre_migration_snapshot(db_path: str) -> Path:
+    """The one timestamped `.bak-<UTC stamp>-<hex>` pre-migration snapshot.
+
+    Since B4-16 the runner names the copy `<db>.bak-<stamp>-<6hex>`, never
+    again the reusable `.bak-v<version>`, so a repeated run leaves its own
+    snapshot instead of overwriting one file.
+    """
+    directory = Path(db_path).parent
+    name = Path(db_path).name
+    snapshots = sorted(
+        p
+        for p in directory.glob(f"{name}.bak-*")
+        if not p.name.startswith(f"{name}.bak-v")  # the legacy family
+    )
+    assert len(snapshots) == 1, f"expected one snapshot, got {snapshots}"
+    return snapshots[0]
+
+
 def test_migration_013_adds_nullable_group_id_column(db_path) -> None:
     _build_v12_db(db_path)
 
@@ -196,9 +214,10 @@ def test_migration_013_writes_the_safety_copy(db_path) -> None:
 
     open_database(db_path).close()
 
-    backup_path = Path(f"{db_path}.bak-v12")
-    assert backup_path.is_file()
-    backup = sqlite3.connect(backup_path)
+    # The safety copy is the runner's own timestamped snapshot (B4-16): a
+    # healthy copy at the pre-migration version.
+    backup = sqlite3.connect(str(_pre_migration_snapshot(db_path)))
+    assert backup.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
     assert backup.execute("SELECT version FROM schema_version").fetchone()[0] == 12
     assert (
         _rows(backup, f"SELECT {_LOG_COLUMNS} FROM change_log ORDER BY id")
@@ -236,9 +255,8 @@ def test_failed_migration_rolls_back_and_keeps_the_v12_file(
     )
     raw.close()
 
-    backup_path = Path(f"{db_path}.bak-v12")
-    assert backup_path.is_file()
-    backup = sqlite3.connect(backup_path)
+    backup = sqlite3.connect(str(_pre_migration_snapshot(db_path)))
+    assert backup.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
     assert backup.execute("SELECT version FROM schema_version").fetchone()[0] == 12
     assert (
         _rows(backup, f"SELECT {_LOG_COLUMNS} FROM change_log ORDER BY id")
