@@ -89,6 +89,11 @@ const WHERE = 'main.ipc';
  *   called after a successful settings save (the Menu pane's
  *   hide/reorder, a knowledge-base switch), so the menu rebuilds and
  *   the undo labels re-derive against the current file (null likewise)
+ * @param {((focused: boolean) => void)|null} [options.onTextFocusChanged]
+ *   story 13 (finding 4.9 #14): called with the renderer's pushed
+ *   text-field focus state after `ember:textFocusChanged`, so the
+ *   shell can flip the Edit menu between Electron's text Undo/Redo
+ *   roles and Ember's own derivation (null keeps the menu unflipped)
  * @param {{writeText: (text: string) => void}|null} [options.clipboard]
  *   the Electron clipboard adapter (Batch 2 Chunk 13: Copy crash
  *   report; null keeps an honest APP-000 refusal)
@@ -122,6 +127,8 @@ function registerIpcHandlers(options) {
     // [app 12] the menu's re-derive hooks; null keeps step-11 behaviour
     onBridgeActivity = null,
     onSettingsSaved = null,
+    // [story 13] the text-field focus hook; null keeps the menu unflipped
+    onTextFocusChanged = null,
     bootNotice = null,
     kbChooser = () => null,
     saveChooser = () => null,
@@ -741,6 +748,26 @@ function registerIpcHandlers(options) {
     },
   });
   /* --- App 11 block ends --- */
+
+  /* =================================================================
+     STORY 13 (finding 4.9 #14) — the text-field focus push (renderer
+     -> main, invoke-only), added at the END of the registration list
+     as its own bracketed block. One validated boolean: `true` while a
+     text field holds the keys, `false` the moment none does. The
+     shell decides what it means (the Edit menu's role flip, through
+     the onTextFocusChanged hook); a non-boolean is refused at this
+     edge — the handler never guesses.
+     ================================================================= */
+  Object.assign(handlers, {
+    'ember:textFocusChanged': (payload) => {
+      if (typeof payload !== 'boolean') {
+        return { ok: false, error: appErrorInfo('APP-004', `${WHERE}.textFocusChanged`, 'the focus change was not a boolean') };
+      }
+      if (typeof onTextFocusChanged === 'function') onTextFocusChanged(payload);
+      return { ok: true };
+    },
+  });
+  /* --- story 13 block ends --- */
 
   const names = Object.keys(handlers);
   for (const name of names) {

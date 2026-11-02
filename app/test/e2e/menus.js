@@ -25,6 +25,9 @@
  *  7. STORY 102 + 99 — the boot notice's code sits behind a Details
  *     control; Reduce Motion leaves the ONE animation off while a
  *     real status change settles, and motion exists without it.
+ *  8. STORY 13 — a focused text field (the Look up search box, via
+ *     Edit -> Find) flips Edit's Undo/Redo to Electron's role items (no
+ *     action id); losing focus flips them back to the Ember items.
  */
 
 const { execFileSync } = require('node:child_process');
@@ -542,6 +545,59 @@ async function detailsAndMotion() {
   }
 }
 
+/* ---------------- scenario 8: a focused text field means text undo (story 13) ---------------- */
+
+/** The Edit menu's first two items as the live Menu API sees them. */
+async function editUndoRedoItems(app) {
+  const menus = await readMenu(app);
+  const edit = (menus ?? []).find((m) => m.label === 'Edit');
+  return edit ? edit.items.filter((i) => i.type !== 'separator').slice(0, 2) : [];
+}
+
+async function focusedTextField() {
+  process.stdout.write('--- scenario 8: while a text field holds focus, Edit Undo/Redo are Electron roles ---\n');
+  const workDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ember-e2e-menu8-'));
+  const dbPath = path.join(workDir, 'kb.db');
+  seedEmptyKb(dbPath);
+  const { app } = await launch({ workDir, dbPath });
+  try {
+    const win = await app.firstWindow();
+    await win.waitForSelector('[data-testid="home-pane"]');
+    await waitForMenuItem(app, 'edit-undo', (i) => i.role === null && i.enabled === false && i.label === 'Undo', 'the idle Edit Undo is the Ember item');
+
+    // Focus a real text field the way a user does: Edit -> Find lands
+    // on the Look up search box, focused (the same open route the menu
+    // already pins in scenario 5).
+    await clickMenuItem(app, 'edit-find');
+    await win.waitForSelector('[data-testid="lookup-q"]');
+    const focused = await win.evaluate(() => document.activeElement?.getAttribute('data-testid') ?? null);
+    if (focused !== 'lookup-q') fail(`the search box must hold the keys, focused: ${focused}`);
+
+    // The flip (story 13): Undo/Redo become the ROLE items — no id, so
+    // the manager gives them no click and no Ember job action can
+    // route through them; the labels are the standard role words.
+    const start = Date.now();
+    for (;;) {
+      const [undo, redo] = await editUndoRedoItems(app);
+      if (undo && undo.role === 'undo' && undo.id === null && undo.label === 'Undo' && redo && redo.role === 'redo' && redo.id === null && redo.label === 'Redo') break;
+      if (Date.now() - start > 15000) {
+        fail(`the focused Edit menu never flipped to the roles; last items: ${JSON.stringify([undo, redo])}`);
+      }
+      await new Promise((r) => setTimeout(r, 200));
+    }
+    process.stdout.write('a focused text field shows the role Undo/Redo (no action id)\n');
+
+    // The flip back: a click on the tab (a button, no text focus) and
+    // the Ember items return the moment no field holds the keys.
+    await win.click('[data-testid="tab-items"]');
+    await waitForMenuItem(app, 'edit-undo', (i) => i.role === null && i.label === 'Undo', 'the menu flips back to Ember Undo once no field holds focus');
+    process.stdout.write('a field losing focus flips the menu back to the Ember items\n');
+  } finally {
+    await app.close().catch(() => {});
+    fs.rmSync(workDir, { recursive: true, force: true });
+  }
+}
+
 async function main() {
   await specTable();
   await liveLabels();
@@ -550,7 +606,8 @@ async function main() {
   await settingsAndFind();
   await firstRunMenu();
   await detailsAndMotion();
-  process.stdout.write('e2e menus OK: the menu is the spec table, the undo labels live, the routes work\n');
+  await focusedTextField();
+  process.stdout.write('e2e menus OK: the menu is the spec table, the undo labels live, the routes work, the focused field means text undo\n');
 }
 
 main().catch((err) => {

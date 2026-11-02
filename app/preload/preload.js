@@ -69,11 +69,15 @@ const EMBER_PRELOAD_API = Object.freeze([
   'ember:quickOpenMain',
   'ember:crashReport',
   'ember:crashReportFolder',
+  'ember:textFocusChanged',
 ]);
 // The names after the base 15: Add (App 05), Keep safe (step 09),
 // Fix and close (step 07), Settings (app 10), Clean up (App 08),
 // Quick popup (app 11), Crash report (Batch 2 Chunk 13) — each
 // appended at the END of the allowlist as its own bracketed block.
+// Story 13 (4.9 #14) appends ONE more, the text-field focus push:
+// renderer -> main, invoke-only, a single boolean (see the exposure
+// block at the end of this file and the pinning test).
 
 contextBridge.exposeInMainWorld('ember', {
   /** Smallest proof the seam is alive: string in, string out. */
@@ -310,4 +314,13 @@ contextBridge.exposeInMainWorld('ember', {
     ipcRenderer.on('ember:menuRequest', handler);
     return () => ipcRenderer.removeListener('ember:menuRequest', handler);
   },
+
+  /* ==== Story 13 (finding 4.9 #14): the text-field focus push — the
+     ONE boolean this page may hand main (invoke-only): `true` while a
+     text field holds the keys, `false` the moment none does. Main
+     flips the Edit menu between Electron's role Undo/Redo and Ember's
+     own derivation; the renderer pushes only when the value CHANGES. ==== */
+
+  /** Push the text-field focus state (a single boolean) to main. */
+  textFocusChanged: (focused) => ipcRenderer.invoke('ember:textFocusChanged', focused),
 });

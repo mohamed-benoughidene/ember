@@ -223,6 +223,29 @@ window.ember.onMenuRequest((ask) => {
 });
 /* --- App 12 block ends --- */
 
+/* --- [story 13] the text-field focus reporter (finding 4.9 #14):
+   the ONE thing this page may push to main for the Edit menu's text
+   undo. A text field is an input, a textarea, or anything editable
+   (the DOM's own isContentEditable verdict on a [contenteditable]
+   element); while one holds the keys the page pushes `true`, and the
+   moment none does it pushes `false` — ONLY on the change between
+   those two states, never per focus event or keystroke. Main flips
+   the Edit menu between Electron's role Undo/Redo and Ember's own
+   derivation with it. --- */
+{
+  let textFocused = false;
+  const isTextField = (el) =>
+    Boolean(el) && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable === true);
+  const pushTextFocus = (focused) => {
+    if (focused === textFocused) return;
+    textFocused = focused;
+    window.ember.textFocusChanged(focused);
+  };
+  document.addEventListener('focusin', (event) => pushTextFocus(isTextField(event.target)));
+  document.addEventListener('focusout', () => pushTextFocus(false));
+}
+/* --- story 13 block ends --- */
+
 /* --- App 08 (Clean up): the pending-count badge on the sidebar job
    (story 68; plan §1: shown only when the last preview count > 0,
    refreshed after any write; the number is a real `maintain --dry-run`
