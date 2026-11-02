@@ -748,11 +748,16 @@ function registerIpcHandlers(options) {
       try {
         return await handlers[name](payload);
       } catch (err) {
-        // Never leak a raw error (which could carry paths and values)
-        // to the renderer: turn it into a named APP- error.
+        // Story 25 (4.9 #19): never leak a raw error (it can carry
+        // paths and values) across the IPC edge. The renderer gets the
+        // code and a generic sentence; the raw text stays in the app's
+        // own stderr log — one house line, with the code on it.
+        const message = err instanceof Error ? err.message : 'unknown error';
+        const oneLine = message.replace(/\s*\r?\n\s*/g, ' ');
+        process.stderr.write(`error: APP-002 BridgeOutputInvalid | ${WHERE}.${name} | ${oneLine}\n`);
         return {
           ok: false,
-          error: appErrorInfo('APP-002', `${WHERE}.${name}`, `the call failed unexpectedly: ${err instanceof Error ? err.message : 'unknown error'}`),
+          error: appErrorInfo('APP-002', `${WHERE}.${name}`, 'the call failed unexpectedly. Close and reopen Ember, then try again.'),
         };
       }
     });
