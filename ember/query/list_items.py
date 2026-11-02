@@ -32,3 +32,23 @@ def list_items(
     if page.limit is not None:
         window = window[: page.limit]
     return total, window
+
+
+def count_by_status(items: list[QueryItem]) -> dict[str, int]:
+    """Return the four Home counts derived from one full item load.
+
+    The counter reads the same port load `list_items` filters (`lookup.list_items()`,
+    the `items` table), so each number agrees with the per-status `list-items`
+    call's `total`: `active` / `challenged` / `closed` count that status, and
+    `total` counts every loaded item, any status included (a status outside
+    the three names adds to `total` only, exactly as it falls outside every
+    per-status filter). No I/O, no DB: the load feeds the counters, the
+    counters only count.
+    """
+    counts = {"active": 0, "challenged": 0, "closed": 0}
+    for item in items:
+        key = item.status.lower()
+        if key in counts:
+            counts[key] += 1
+    counts["total"] = len(items)
+    return counts

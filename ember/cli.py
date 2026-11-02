@@ -118,6 +118,7 @@ from ember.maintain.run_maintain import (
     run_sweep,
     run_undo,
 )
+from ember.query.list_items import count_by_status
 from ember.query.rows import HistoryPage, ListPage, TopicFilter
 from ember.query.run_query import (
     run_current_state,
@@ -1631,6 +1632,16 @@ def _gatekeeper_run(
     help="Skip N items after the cut. Omit it to skip none.",
 )
 @click.option(
+    "--counts",
+    "counts",
+    is_flag=True,
+    default=False,
+    help=(
+        "Print one counts document instead of the list: the four Home"
+        " counts (active, challenged, closed, total) in `summary`."
+    ),
+)
+@click.option(
     "--db",
     "db_path",
     default=DEFAULT_DB_PATH,
@@ -1641,6 +1652,7 @@ def list_items_command(
     item_type: str | None,
     limit: int | None,
     offset: int | None,
+    counts: bool,
     db_path: str,
 ) -> None:
     """List every item in any status, as JSON.
@@ -1649,13 +1661,20 @@ def list_items_command(
     its status and close reason. `total` is the count after the filters but
     before `--limit`/`--offset` crop the printed window. Read-only: the
     database is opened read-only and never migrated, like every query
-    command.
+    command. With `--counts` the command instead prints one document whose
+    `summary` carries the four Home counts (`active`, `challenged`,
+    `closed`, `total`), each equal to the per-status call's `total`.
 
     Rule I3 exception, recorded by the founder 2026-11-01 (fix C1): this
-    Click callback takes five parameters because Click binds one option to
+    Click callback takes six parameters because Click binds one option to
     one parameter; the rule's object bundling lives one layer down, where
     the pure core takes the named `TopicFilter` and `ListPage` objects.
     """
+    if counts:
+        conn = open_query_database(db_path)
+        counts_document = count_by_status(SqliteQueryContext(conn).list_items())
+        click.echo(json.dumps({"summary": counts_document}, ensure_ascii=False))
+        return
     conn = open_query_database(db_path)
     filter_ = TopicFilter(status=status, type=item_type)
     page = ListPage(limit=limit, offset=offset)
