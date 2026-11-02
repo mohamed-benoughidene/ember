@@ -27,10 +27,12 @@
  *  3. CAP NOTE: eleven stale questions — the preview lists ten and
  *     says the list is capped; with zero changes the badge stays
  *     hidden and the calm empty message shows (68, 69).
- *  4. NO KEY: an apply whose stale loop cannot reach a key fails
- *     INSIDE the block, with Retry, plain words and the code behind
- *     Details; the sweep changes written before the stop are real in
- *     the database.
+ *  4. NO KEY: the zero-AI sweep writes its real change; the
+ *     close-proposal loop needs a key, and the engine reports what
+ *     COMPLETED first (B4-08), so the app shows the honest done
+ *     result — change applied, "no proposal" said in plain words, the
+ *     ledger pointed at — and the raw engine error line never reaches
+ *     the screen.
  *
  * The step-03 accessibility helper runs on every state this e2e
  * renders, and Reduce Motion is honoured (96-104).
@@ -459,30 +461,37 @@ async function noKeyFlow() {
     const { win } = shell;
     await win.click('[data-action="cleanup-preview"]');
     await win.waitForSelector('[data-testid="cleanup-table"]');
-    // The preview never needs a key.
-    await win.click('[data-testid="cleanup-apply"]');
-    await win.waitForSelector('[data-testid="state-error"]');
-    const errText = await win.evaluate(() => document.body.innerText);
-    // The shared plain-sentence table's family fallback names the code
-    // inside a full sentence (the step-03 wording); what must never
+    // The preview never needs a key. The apply runs the zero-AI sweep,
+    // which WRITES its change; only the close-proposal loop that
+    // follows needs a key. Since B4-08 the engine prints the document
+    // of what COMPLETED first (the sweep's own change, and the
+    // phase-5 outcome with zero proposals made), and the app renders
+    // that honest result — no error block, no Retry. What must never
     // show is the RAW house line or a lone code with no words.
+    await win.click('[data-testid="cleanup-apply"]');
+    await win.waitForSelector('[data-testid="sweep-result-headline"]');
+    const errText = await win.evaluate(() => document.body.innerText);
     if (/\| ember\./.test(errText) || /(MAINTAIN|APP|QUERY)-\d{3} \|/.test(errText)) {
       fail(`the raw error line must not reach the screen: ${errText.slice(0, 300)}`);
     }
-    // The exact-entry words (fix F5 + the honesty fix it forced): the
-    // sweep's post-apply failure says what is missing AND that the
-    // already-made sweep changes stay, recorded in the ledger. What
-    // must never show is the RAW house line or a lone code with no words.
-    if (!/AI key needed for close suggestions/.test(errText)) fail(`the plain words must name the missing key: ${errText.slice(0, 300)}`);
-    if (!/ledger/.test(errText)) fail(`the error must point at the ledger for what was already written: ${errText.slice(0, 300)}`);
-    await win.click('[data-testid="state-error"] [data-action="show-details"]');
-    const code = await win.textContent('[data-testid="error-code"]');
-    if (!/MAINTAIN-020/.test(code)) fail(`the code behind Details must name the missing key, saw ${code}`);
-    // The sweep changes written before the failed proposal loop are real.
+    // The done result: the sweep's own count, the ledger pointed at
+    // for what was written, and the phase-5 outcome honest about the
+    // keyless loop — one stale question waited, ZERO proposals were
+    // made, nothing accepted or declined (fix F5's honesty, kept).
+    const headline = await win.textContent('[data-testid="sweep-result-headline"]');
+    if (!/Done\. 1 item was changed/.test(headline)) fail(`the result headline must carry the sweep's own count: ${headline}`);
+    if (!/The ledger shows why\./.test(headline)) fail(`the result must point at the ledger for what was written: ${headline}`);
+    if (!/Old questions: none needed a proposal, 0 accepted, 0 declined/.test(headline)) {
+      fail(`the phase-5 outcome must say no proposal was made keyless: ${headline}`);
+    }
+    // The sweep's change is real: on screen (the item's new heat mark)
+    // and in the REAL database.
+    const now3 = await win.locator('[data-testid="cleanup-result-now-3"]').innerHTML();
+    if (!/status-pill-challenged/.test(now3)) fail(`item 3's new heat mark must read Challenged: ${now3}`);
     const row3db = await itemRow(kbPath, 3);
-    if (row3db.status !== 'Challenged') fail(`the sweep change must be real even when the loop failed, saw ${row3db.status}`);
-    await assertCleanScan(win, 'Clean up, apply failed (no key)');
-    process.stdout.write('no-key flow OK: the error lives in the block, the applied change is real\n');
+    if (row3db.status !== 'Challenged') fail(`the sweep change must be real even keyless, saw ${row3db.status}`);
+    await assertCleanScan(win, 'Clean up, keyless apply result');
+    process.stdout.write('no-key flow OK: the honest keyless result, no raw error line, the applied change is real\n');
   } finally {
     await closeShell(shell, path.dirname(kbPath), null);
   }
