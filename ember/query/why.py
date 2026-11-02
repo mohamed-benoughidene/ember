@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from collections import deque
 
+from ember.query.errors import QueryItemNotFound, QueryLinkEndGone
 from ember.query.rows import QueryItem, WhyReason, WhyResult
 from ember.relate.rows import Link
 
@@ -46,10 +47,16 @@ def why(items: list[QueryItem], links: list[Link], item_id: int) -> WhyResult:
     carries its `depth` (1 for a direct reason). The start item is not one of
     the reasons, it travels as `WhyResult.item`.
 
-    The gatekeeper guarantees `item_id` exists, so a missing id here is an
-    internal error, not a user error (I9).
+    The gatekeeper validates the id, and the reads share one snapshot, so a
+    missing start id would mean a race (it answers QUERY-001, the
+    user-named id, like the gate). A reason whose item row is gone is a
+    dangling link end: the same house code as `show_item` (`QUERY-010`),
+    never a raw `KeyError` (finding 4.7 #2).
     """
     by_id = {item.id: item for item in items}
+    start = by_id.get(item_id)
+    if start is None:
+        raise QueryItemNotFound("item not found", item_id=item_id)
     edges = _reason_edges(links)
     visited = {item_id}
     queue: deque[tuple[int, int]] = deque([(item_id, 0)])
@@ -61,7 +68,13 @@ def why(items: list[QueryItem], links: list[Link], item_id: int) -> WhyResult:
             if reason_id in visited:
                 continue
             visited.add(reason_id)
-            reason_item = by_id[reason_id]
+            reason_item = by_id.get(reason_id)
+            if reason_item is None:
+                raise QueryLinkEndGone(
+                    "link's other end is gone",
+                    link_id=link_id,
+                    item_id=reason_id,
+                )
             reasons.append(
                 WhyReason(
                     item_id=reason_item.id,
@@ -77,4 +90,4 @@ def why(items: list[QueryItem], links: list[Link], item_id: int) -> WhyResult:
             queue.append((reason_id, depth + 1))
 
     reasons.sort(key=lambda reason: (reason.depth, reason.item_id))
-    return WhyResult(item=by_id[item_id], reasons=reasons)
+    return WhyResult(item=start, reasons=reasons)

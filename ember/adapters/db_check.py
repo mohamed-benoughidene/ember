@@ -17,7 +17,7 @@ import os
 import sqlite3
 
 from ember.adapters.link_replay import replay_reversals
-from ember.adapters.sqlite import _connect_readonly
+from ember.adapters.sqlite import _connect_readonly, column_exists
 from ember.query.rows import ChangeRow
 from ember.relate.compat import TYPE_COMPAT
 
@@ -226,6 +226,20 @@ def _group_marker_line(conn: sqlite3.Connection, version: int) -> tuple[str, boo
 
 
 def _ledger_rows(conn: sqlite3.Connection) -> list[ChangeRow]:
+    """Read the ledger as ChangeRow objects, `group_id` when the file has it.
+
+    The group stamp is selected only when the column exists (migration 013,
+    finding 4.7 #11): on 13+ the rows carry their undo group, on a pre-013
+    file every row keeps the model default `None` instead of failing the
+    whole check.
+    """
+    columns = (
+        "id, item_id, link_id, field_changed, old_value, new_value,"
+        " timestamp, trigger_cause"
+    )
+    has_groups = column_exists(conn, "change_log", "group_id")
+    if has_groups:
+        columns += ", group_id"
     return [
         ChangeRow(
             id=row["id"],
@@ -236,9 +250,13 @@ def _ledger_rows(conn: sqlite3.Connection) -> list[ChangeRow]:
             new_value=row["new_value"],
             timestamp=row["timestamp"],
             trigger_cause=row["trigger_cause"],
+            group_id=(
+                int(row["group_id"])
+                if has_groups and row["group_id"] is not None
+                else None
+            ),
         )
         for row in conn.execute(
-            "SELECT id, item_id, link_id, field_changed, old_value, new_value,"
-            " timestamp, trigger_cause FROM change_log ORDER BY id"
+            f"SELECT {columns} FROM change_log ORDER BY id"
         )
     ]
