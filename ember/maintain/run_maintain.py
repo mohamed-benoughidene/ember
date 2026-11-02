@@ -11,6 +11,8 @@ adds `run_undo` / `run_redo` and `UndoRequest` (the snapshot loader rides
 
 from __future__ import annotations
 
+from collections.abc import Callable
+from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass, field
 from datetime import datetime
 
@@ -63,6 +65,13 @@ class MaintainPorts:
     # Keyword-only (Python >=3.10) so `CloseProposalPorts` can add its own
     # required ports after it without reordering existing call sites.
     group_ids: GroupIdPort | None = field(default=None, kw_only=True)
+    # One unit of work per user action (Batch 4 chunk 8, 4.3 #9): a factory
+    # for the adapter's connection-scoped `unit_of_work` context manager.
+    # `None` (engine-test fakes and direct-store callers) keeps today's
+    # per-store-commit behaviour byte for byte.
+    unit_of_work: Callable[[], AbstractContextManager[None]] | None = field(
+        default=None, kw_only=True
+    )
 
 
 @dataclass(frozen=True)
@@ -146,9 +155,20 @@ def _next_group_id(ports: MaintainPorts) -> int | None:
 
     `None` when no group-id port was injected (pre-013 behaviour). The
     caller stamps every ledger row its action writes with the SAME id, so
-    `run_set_status`'s two transactions share it (engine-undo-plan §5.1).
+    `run_set_status`'s status batch and its shield share it (undo step 01).
     """
     return None if ports.group_ids is None else ports.group_ids.next_group_id()
+
+
+def _unit_of_work(ports: MaintainPorts) -> AbstractContextManager[None]:
+    """Wrap one user action's writes in ONE transaction (Batch 4 chunk 8).
+
+    Inside it, no store commits or rolls back on its own, so the whole
+    action — e.g. `run_set_status`'s status batch plus its manual shield —
+    commits once or rolls back whole (4.3 #9). Without the port (engine
+    fakes, direct-store callers) the stores keep today's own behaviour.
+    """
+    return nullcontext() if ports.unit_of_work is None else ports.unit_of_work()
 
 
 def _apply_and_report(
@@ -179,7 +199,8 @@ def run_sweep(ports: MaintainPorts, request: MaintainRequest) -> MaintainResult:
     """
     snapshot = _load(ports.lookup)
     changes = derive_status_changes(snapshot)
-    return _apply_and_report(ports, snapshot, changes)
+    with _unit_of_work(ports):
+        return _apply_and_report(ports, snapshot, changes)
 
 
 def run_close_item(ports: MaintainPorts, request: MaintainRequest) -> MaintainResult:
@@ -195,7 +216,8 @@ def run_close_item(ports: MaintainPorts, request: MaintainRequest) -> MaintainRe
     """
     snapshot = _load(ports.lookup)
     changes = validate_close_item(snapshot, request.item_id, request.reason)
-    return _apply_and_report(ports, snapshot, changes, _next_group_id(ports))
+    with _unit_of_work(ports):
+        return _apply_and_report(ports, snapshot, changes, _next_group_id(ports))
 
 
 def run_set_status(ports: MaintainPorts, request: MaintainRequest) -> MaintainResult:
@@ -205,20 +227,23 @@ def run_set_status(ports: MaintainPorts, request: MaintainRequest) -> MaintainRe
     `006` from the validator, `MAINTAIN-010` on a read failure, `MAINTAIN-011` /
     `012` from the store. Only a `Challenged -> Active` clear writes the
     `status_origin='manual'` shield, and only when a change was actually applied
-    (so a no-op does not shield). The shield is a second transaction (step-03
-    §4.2). ONE group id stamps BOTH transactions (undo step 01).
+    (so a no-op does not shield). The status batch and its shield are ONE
+    transaction (Batch 4 chunk 8, 4.3 #9): a shield failure rolls the whole
+    action back, so the item keeps its old status. ONE group id stamps both
+    halves (undo step 01).
     """
     snapshot = _load(ports.lookup)
     changes = validate_set_status(snapshot, request.item_id, request.to_status)
     group_id = _next_group_id(ports) if changes else None
-    result = _apply_and_report(ports, snapshot, changes, group_id)
-    if (
-        result.applied
-        and request.to_status == "Active"
-        and changes
-        and changes[0].old_status == "Challenged"
-    ):
-        ports.store.apply_status_origin(request.item_id, "manual", group_id)
+    with _unit_of_work(ports):
+        result = _apply_and_report(ports, snapshot, changes, group_id)
+        if (
+            result.applied
+            and request.to_status == "Active"
+            and changes
+            and changes[0].old_status == "Challenged"
+        ):
+            ports.store.apply_status_origin(request.item_id, "manual", group_id)
     return result
 
 
@@ -440,6 +465,7 @@ def run_close_proposals(ports: CloseProposalPorts, now: datetime) -> ProposalOut
                     lookup=ports.lookup,
                     store=ports.store,
                     group_ids=ports.group_ids,
+                    unit_of_work=ports.unit_of_work,
                 ),
                 MaintainRequest(
                     item_id=candidate.item_id, reason=response.proposal.reason
