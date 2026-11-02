@@ -79,6 +79,14 @@ function createWindow({ showOnReady = true } = {}) {
   mainWindow.once('ready-to-show', () => {
     if (showOnReady) mainWindow.show();
   });
+  // Batch 5 (story 24, D-24's safety half): the window is a closed
+  // box. Any in-page navigation attempt is refused (the renderer is
+  // the one local page; its own router never uses real navigation),
+  // and no window.open / target=_blank ever opens a new window.
+  mainWindow.webContents.on('will-navigate', (event) => {
+    event.preventDefault();
+  });
+  mainWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   // The popup's held "open setup" request re-sends once the page can
   // hear it (the early-push race; see openMainRequest).
   mainWindow.webContents.on('did-finish-load', () => {

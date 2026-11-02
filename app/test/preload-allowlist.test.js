@@ -210,6 +210,17 @@ test('the relate-session channels are preloaded, registered and pushed by name',
 });
 /* ==== end App 06 block ==== */
 
+/* ==== Batch 5 (story 24 / D-24's safety half): the window is a closed
+   box — navigation and new windows are denied in main.js, pinned here
+   statically next to the isolation switches so neither can regress. ==== */
+test('the main window denies navigation and new windows (story 24)', () => {
+  assert.match(MAIN, /webContents\.on\('will-navigate'/, 'main.js never registers will-navigate');
+  const navigate = MAIN.match(/webContents\.on\('will-navigate'[\s\S]{0,200}/);
+  assert.ok(navigate && navigate[0].includes('preventDefault()'), 'will-navigate must be denied with event.preventDefault()');
+  assert.match(MAIN, /setWindowOpenHandler\(\s*\(\)\s*=>\s*\(\{\s*action:\s*'deny'\s*\}\)\s*\)/, 'setWindowOpenHandler must deny new windows');
+});
+/* ==== end Batch 5 story 24 block ==== */
+
 /* ==== App 12 (ticket A41): the application menu's push channel is
    subscribed by the preload, sent by main by name, and never an
    invoke — pinned here so it cannot go dead or hidden. ==== */
