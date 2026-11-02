@@ -35,8 +35,39 @@
  *                 $XDG_STATE_HOME/ember/crashes/, a raw traceback then
  *                 the house line `error: EMBER-000 InternalError |
  *                 fake-ember | crash=<id>`, exit 1.
+ *
+ * Batch 5 chunk 3 (4.4 #1, #11) adds two SPLIT modes so the JS readers
+ * are pinned against the way a real pipe actually delivers bytes:
+ * - FAKE_STDERR_SPLIT=1 (with FAKE_MODE=error): the house error line
+ *   arrives in piecewise writes — one cut inside the name (the first
+ *   piece is not a house line) and one inside a multi-byte character
+ *   — so the reader must re-decode across a boundary AND rejoin the
+ *   line.
+ * - FAKE_STDOUT_SPLIT=1 (with FAKE_MODE=session): a JSON event line
+ *   arrives in two writes with a multi-byte character cut at the
+ *   boundary, and the LAST line arrives WITHOUT its newline (story
+ *   30) — the reader must flush that final partial line when the
+ *   child closes.
+ * - FAKE_FLOOD=1 (Batch 5 chunk 5, 4.2 #14; any mode): stream ~40 MB
+ *   to stdout in drain-aware chunks and end by CLOSING stdout — every
+ *   byte really reaches the parent's reader, so the 32 MB cap is
+ *   really hit.
+ * - FAKE_SESSION_CLOSE_STDIN=1 (with FAKE_MODE=session, Batch 5 chunk
+ *   5, 4.4 #2): the engine stops reading its stdin while the process
+ *   stays alive — the app's next answer() hits a broken pipe (EPIPE).
+ * - FAKE_EXIT_EARLY=1 (Batch 5 chunk 6, 4.4 #6 / story 20; any mode):
+ *   the engine dies right after spawn, with NO output on either
+ *   stream — the app must settle on the process exit, never hang.
+ * - FAKE_GRANDCHILD=1 (with FAKE_MODE=session, Batch 5 chunk 6, 4.4 #6
+ *   / story 21): the fake spawns a grandchild that INHERITS its
+ *   stdout/stderr pipes and then exits itself. The parent's stdio can
+ *   then only close when the grandchild dies — and the grandchild
+ *   never dies on its own (a bare setInterval). The grandchild's pid
+ *   is logged to FAKE_GRANDCHILD_LOG so a test can pin that the app's
+ *   process-group kill really ended the stuck helper.
  */
 
+const { spawn } = require('node:child_process');
 const fs = require('node:fs');
 const path = require('node:path');
 
@@ -44,6 +75,58 @@ function noteSpawn() {
   if (process.env.FAKE_SPAWN_LOG) {
     fs.appendFileSync(process.env.FAKE_SPAWN_LOG, `${JSON.stringify(process.argv.slice(2))}\n`);
   }
+}
+
+/* ==== Batch 5 chunk 3 (4.4 #1, #11) ================================
+   Write ONE line in TWO piecewise writes to the given stream. The cut
+   lands INSIDE a multi-byte character when the line carries an
+   ellipsis (U+2026, three UTF-8 bytes), so the reader must decode
+   across the boundary; otherwise it cuts mid-line. The delay between
+   the two writes makes the parent really receive two chunks (two
+   reads) — the shape a per-chunk `String(chunk).split('\n')` cannot
+   handle, because the first chunk carries no newline. ================ */
+function splitWrite(stream, lineBuffer, done) {
+  const mark = Buffer.from('…', 'utf8');
+  const at = lineBuffer.indexOf(mark);
+  const cut = at === -1 ? Math.floor(lineBuffer.length / 2) : at + 1;
+  stream.write(lineBuffer.subarray(0, cut));
+  setTimeout(() => {
+    stream.write(lineBuffer.subarray(cut));
+    done();
+  }, 25);
+}
+
+/* ==== Batch 5 chunk 5 (4.2 #14, story 33; the db-check F8 pattern) ==
+   FAKE_FLOOD=1: stream ~40 MB (640 event lines of 64 KB) to
+   stdout in DRAIN-AWARE writes (wait for 'drain', so no byte sits in
+   the child's own buffer) and end by CLOSING stdout. Deliberately
+   NOT `process.exit()` (4.2 #2): exit would drop still-pending bytes
+   and the parent could settle under its output cap without ever
+   seeing them. `process.exitCode` + the natural end after stdout
+   closes guarantees every byte really reaches the parent's reader.
+   For the SESSION half (story 33) the chunks are VALID confirm event
+   lines: a chatty engine floods with event lines, and line-shaped
+   chunks keep the parent's carry reader at its normal cost — a
+   newline-free megabyte flood would grind the reader's carry buffer
+   long before the cap (see the chunk-5 report note). The stream still
+   really exceeds the 32 MB cap, which is what the tests pin. ====== */
+function runFlood() {
+  // ~640 lines of 64 KB = ~40 MB. Small lines keep the parent's per-
+  // line parse cheap (a 1 MB JSON text per line made the same test
+  // take 7.7 s in GC); the byte total still really exceeds the cap.
+  const big = Buffer.from(`${JSON.stringify({ event: 'message', text: 'x'.repeat(64 * 1024 - 64) })}\n`);
+  let n = 0;
+  function writeChunk() {
+    if (n >= 640) {
+      process.exitCode = 0;
+      process.stdout.end();
+      return;
+    }
+    n += 1;
+    if (process.stdout.write(big)) writeChunk();
+    else process.stdout.once('drain', writeChunk);
+  }
+  writeChunk();
 }
 
 const mode = process.env.FAKE_MODE ?? 'list';
@@ -67,6 +150,14 @@ noteSpawn();
 if (argv[0] === 'init') {
   const target = argv[argv.indexOf('--db') + 1] ?? null;
   if (!fs.existsSync(target)) fs.writeFileSync(target, '');
+  process.exit(0);
+}
+
+/* Batch 5 chunk 6 (4.4 #6, story 20): FAKE_EXIT_EARLY=1 — the engine
+   dies right after spawn, with NO output on either stream. The app
+   must settle the session (or call) on the process exit itself, never
+   hang waiting for a summary that will not come. */
+if (process.env.FAKE_EXIT_EARLY === '1') {
   process.exit(0);
 }
 
@@ -127,7 +218,11 @@ function printListDocument() {
   process.exit(0);
 }
 
-if (mode === 'hang') {
+if (process.env.FAKE_FLOOD === '1') {
+  // Batch 5 chunk 5 (4.2 #14): the flood comes first — whatever the
+  // mode would have printed, the test wants ~40 MB of stdout.
+  runFlood();
+} else if (mode === 'hang') {
   hangAndSleep();
 } else if (mode === 'app') {
   runAppMode(argv);
@@ -147,9 +242,32 @@ if (mode === 'hang') {
   const rest = withNewline
     ? `free text with a | inside and\na second line`
     : detail;
-  process.stderr.write(`error: QUERY-003 DbOpenFailed | fake.ember | ${rest}\n`);
-  process.stderr.write('continuation line one\ncontinuation line two\n');
-  process.exit(1);
+  const houseLine = `error: QUERY-003 DbOpenFailed | fake.ember | ${rest}\n`;
+  if (process.env.FAKE_STDERR_SPLIT === '1') {
+    /* Batch 5 chunk 3 (4.4 #1): the house line arrives in piecewise
+       writes — the first cut lands INSIDE the name (so the first
+       piece is NOT a house line: the reader must rejoin the pieces
+       before any parse), the second cut lands INSIDE a multi-byte
+       character (the ellipsis in the detail: the reader must re-decode
+       across the boundary). A per-chunk String(chunk).split('\n')
+       breaks on both. */
+    const leading = Buffer.from('error: QUERY-003 DbOpenFail', 'utf8');
+    const middle = Buffer.from('ed | fake.ember | db file', 'utf8');
+    const ellipsis = Buffer.from('…', 'utf8');
+    const tail = Buffer.from(' missing\ncontinuation line one\ncontinuation line two\n', 'utf8');
+    process.stderr.write(leading);
+    setTimeout(() => {
+      process.stderr.write(Buffer.concat([middle, ellipsis.subarray(0, 1)]));
+      setTimeout(() => {
+        process.stderr.write(Buffer.concat([ellipsis.subarray(1), tail]));
+        process.exit(1);
+      }, 25);
+    }, 25);
+  } else {
+    process.stderr.write(houseLine);
+    process.stderr.write('continuation line one\ncontinuation line two\n');
+    process.exit(1);
+  }
 } else if (mode === 'unparsable-error') {
   process.stderr.write('this is not the house error line at all\n');
   process.exit(1);
@@ -188,7 +306,21 @@ if (mode === 'hang') {
   process.exit(1);
 }
 
-function runSession() {  const events = process.env.FAKE_SESSION_IDLE === '1'
+function runSession() {
+  /* ==== Batch 5 chunk 5 (4.4 #5): a CHATTY child that never finishes
+     a line — fragment after fragment, no '\n' — never resets the idle
+     timer (only COMPLETE lines feed bumpIdle), so the inactivity
+     limit must end it even though raw chunks keep arriving. NO other
+     output and especially NO prompt: a prompt would arm the 30-minute
+     prompt-wait limit instead of the output idle limit. ==== */
+  if (process.env.FAKE_SESSION_NO_FULL_LINE === '1') {
+    setInterval(() => {
+      process.stdout.write('working fragment, never terminated');
+    }, 50);
+    return;
+  }
+
+  const events = process.env.FAKE_SESSION_IDLE === '1'
     // Fix F4: a frozen engine has asked NO question — only non-prompt
     // output, so the client's normal inactivity limit must end it.
     ? [{ event: 'message', text: 'working' }]
@@ -203,14 +335,87 @@ function runSession() {  const events = process.env.FAKE_SESSION_IDLE === '1'
           text: '- id: 1',
         },
         { event: 'prompt', kind: 'choice', text: '[y]es / [n]o / [q]uit', choices: ['y', 'n', 'q'] },
-        { event: 'summary', accepted: 1, rejected: 0 },
+        // `aborted` is here because the REAL engine's summary always carries
+        // it (ember/cli.py passes it for capture/relate/maintain alike) —
+        // the app's field check (batch 5, 4.4 #7/#8) refuses a summary
+        // without it, so the stub must mimic the real shape.
+        { event: 'summary', accepted: 1, rejected: 0, aborted: false },
       ];
 
   // Emit the whole pinned stream, then wait for ONE answer line and
   // report its shape, so the test can pin answer() -> the child
   // received exactly `{"answer": "<text>"}`.
+  if (process.env.FAKE_STDOUT_SPLIT === '1') {
+    /* ==== Batch 5 chunk 3 (story 30, 4.4 #11) =======================
+       Split mode: a JSON event line arrives in TWO writes with a
+       multi-byte character cut at the boundary, and the LAST line
+       arrives WITHOUT its newline (the pipe closed mid-line). The
+       stub then exits 0 without waiting for answers — the reader
+       must flush that final partial line on close. The other session
+       env modes (FAKE_SESSION_DIE / IDLE / SCRIPT) do not combine
+       with this one. */
+    const tail = events[events.length - 1];
+    // Prefix an ellipsis to the FIRST event's text so the split can
+    // land inside a multi-byte character (JSON.stringify keeps raw).
+    const head = events.slice(0, -1).map((e, i) =>
+      i === 0 && typeof e.text === 'string' && !e.text.includes('…')
+        ? { ...e, text: `…${e.text}` }
+        : e,
+    );
+    const [firstLine, ...otherLines] = head.map((e) => Buffer.from(`${JSON.stringify(e)}\n`, 'utf8'));
+    splitWrite(process.stdout, firstLine, () => {
+      for (const line of otherLines) process.stdout.write(line);
+      setTimeout(() => {
+        // The final line has NO trailing newline (story 30).
+        process.stdout.write(Buffer.from(JSON.stringify(tail), 'utf8'));
+        setTimeout(() => process.exit(0), 20);
+      }, 25);
+    });
+    return;
+  }
   for (const e of events) {
     process.stdout.write(`${JSON.stringify(e)}\n`);
+  }
+
+  /* ==== Batch 5 chunk 6 (4.4 #6, story 21): FAKE_GRANDCHILD=1 ========
+     The fake emits its scripted events, then spawns a GRANDCHILD that
+     inherits its stdout/stderr pipes, then exits itself. The parent's
+     stdio can then only close when the grandchild dies — the
+     `setInterval` child never does — so a settle that waits on pipe
+     close waits on the grandchild's lifetime. The grandchild's pid is
+     logged to FAKE_GRANDCHILD_LOG so the test can pin that the app's
+     process-group kill ended the stuck helper. ===================== */
+  if (process.env.FAKE_GRANDCHILD === '1') {
+    const grandchild = spawn('node', ['-e', 'setInterval(() => {}, 1000)'], {
+      // Inherit the SESSION pipes: the child holds the same stdout and
+      // stderr the app's reader is waiting on. NOT detached — the
+      // grandchild stays in the fake's process group, which is exactly
+      // what the app's group kill must reach.
+      stdio: ['ignore', 'inherit', 'inherit'],
+    });
+    if (process.env.FAKE_GRANDCHILD_LOG) {
+      fs.appendFileSync(process.env.FAKE_GRANDCHILD_LOG, `${grandchild.pid}\n`);
+    }
+    process.exit(0);
+  }
+
+  /* ==== Batch 5 chunk 5 (4.4 #2): the engine stops reading its stdin
+     (the way a crashed or past-prompt engine does) while the PROCESS
+     stays alive. The next answer the app writes then hits a broken
+     pipe (EPIPE); the session must surface that as an error event,
+     never a crash. Verified in a standalone repro: Node's
+     process.stdin.destroy() does NOT close fd 0 (stdio fds are kept
+     open on purpose), so the REAL fd is closed here — the parent's
+     write then raises write EPIPE, and without an 'error' handler on
+     child.stdin the parent process DIES on the unhandled error. */
+  if (process.env.FAKE_SESSION_CLOSE_STDIN === '1') {
+    try {
+      fs.closeSync(0);
+    } catch {
+      /* already closed */
+    }
+    setInterval(() => {}, 10_000);
+    return;
   }
 
   /* ==== App 05 (ticket A34): die mid-session, for the add e2e ======

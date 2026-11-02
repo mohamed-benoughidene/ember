@@ -61,7 +61,7 @@ function renderSetupNeeded() {
     </div></div>
     <div class="actions">${buttonHtml({ label: 'Open Ember', action: 'quick-open-main-setup', variant: 'primary', testid: 'quick-open-main-setup' })}</div>`,
     (root) => {
-      root.querySelector('[data-action="quick-open-main-setup"]')?.addEventListener('click', () => void openMain('ember'));
+      root.querySelector('[data-action="quick-open-main-setup"]')?.addEventListener('click', () => void openMain('setup'));
     },
   );
 }
@@ -72,11 +72,34 @@ async function openMain(view) {
   if (res && res.ok) await window.ember.openQuickPopup({ action: 'hide' });
 }
 
-/** Esc closes the popup, EXCEPT mid-session where it stops the add (story 92). */
+/**
+ * Esc closes the popup, EXCEPT mid-session where it stops the add
+ * (story 92). The stop keys are the Add screen's own — but they sit on
+ * the pane, so a keydown whose focus rests on the page body (a click
+ * on the frameless window's blank space, or any focus change between
+ * renders) never passes through them. Yield only when the pane will
+ * really hear the key; own the Esc otherwise — it must always do its
+ * job. The end states are the subtlety: the summary event tells the
+ * session's story before the engine's exit event flips the phase to
+ * "done" (they can be seconds apart under load), and stopping then
+ * would answer APP-002 ("no add is running") and paint an error over
+ * a saved add — so an Esc in a finished end state closes, exactly
+ * like the done phase it is about to become.
+ */
 function installEscClose() {
   document.addEventListener('keydown', (ev) => {
     if (ev.key !== 'Escape') return;
-    if (screen && screen.state.phase === 'session') return; // the Add screen's Esc: stop
+    if (screen && screen.state.phase === 'session') {
+      if (paneEl.contains(document.activeElement)) return; // the Add screen's Esc: stop
+      ev.preventDefault();
+      const stage = stageNow();
+      if (stage === 'session' || stage === 'loading') {
+        void screen.stop(); // the same stop the pane handler would run
+        return;
+      }
+      void window.ember.openQuickPopup({ action: 'hide' }); // summary/stopped/empty: the story is told
+      return;
+    }
     ev.preventDefault();
     void window.ember.openQuickPopup({ action: 'hide' });
   });
@@ -148,6 +171,7 @@ function rebuildIfSafe() {
 }
 
 document.addEventListener('visibilitychange', () => {
+  setStagePolling(document.visibilityState === 'visible');
   if (document.visibilityState !== 'visible') return;
   void rebuildIfSafe().catch(() => {
     /* the seam is not up (boot not finished); the next open retries */
@@ -159,17 +183,33 @@ function stageNow() {
   return screen ? addStage(screen.state.view) : null;
 }
 
+/**
+ * The stage guard only runs while the popup page is visible (story 15,
+ * 4.9 #24): a hidden window has nothing to watch, and polling in the
+ * background is wasted work. The existing visibilitychange listener
+ * (above) starts and stops it.
+ */
+let stageTimer = null;
+function setStagePolling(enabled) {
+  if (enabled && stageTimer === null) {
+    stageTimer = setInterval(() => {
+      // The stage guard covers the exit that lands after the stopped
+      // line renders (the MutationObserver catches the DOM; this
+      // catches a re-render that reuses the same node).
+      if (stageNow() === 'stopped' && screen && screen.state.phase === 'done') {
+        void window.ember.openQuickPopup({ action: 'hide' });
+      }
+    }, 300);
+  } else if (!enabled && stageTimer !== null) {
+    clearInterval(stageTimer);
+    stageTimer = null;
+  }
+}
+
 void (async () => {
   document.querySelector('[data-testid="quick-open-main"]').addEventListener('click', () => void openMain('ember'));
   installEscClose();
   await refresh();
   watchForStopped();
-  // The stage guard covers the exit that lands after the stopped line
-  // renders (the MutationObserver catches the DOM; this catches a
-  // re-render that reuses the same node).
-  setInterval(() => {
-    if (stageNow() === 'stopped' && screen && screen.state.phase === 'done') {
-      void window.ember.openQuickPopup({ action: 'hide' });
-    }
-  }, 300);
+  setStagePolling(document.visibilityState === 'visible');
 })();

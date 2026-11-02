@@ -166,7 +166,8 @@ async function checkAndBackup() {
     const verdict = await win.textContent('[data-testid="ks-check-verdict"]');
     if (!/No problems found/.test(verdict)) fail(`a healthy file must say so (story 75): ${verdict.slice(0, 200)}`);
     const rows = await win.locator('[data-testid="ks-check-row"]').allTextContents();
-    if (rows.length !== 8) fail(`the report has 8 lines and 8 plain rows are expected, saw ${rows.length}: ${JSON.stringify(rows)}`);
+    // Batch 4 C15 added the tables row: a healthy report has 9 plain rows.
+    if (rows.length !== 9) fail(`the report has 9 lines and 9 plain rows are expected, saw ${rows.length}: ${JSON.stringify(rows)}`);
     for (const row of rows) {
       if (/^(version|floors|triggers|link_compat|foreign_key_check|reversal replay|group_id|result):/.test(row.trim())) {
         fail(`a report row leaked the raw machine line: "${row}"`);

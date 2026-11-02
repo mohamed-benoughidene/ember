@@ -554,6 +554,20 @@ export function createLinkScreen(ctx) {
     pane.addEventListener('keydown', state.keydownHandler);
   }
 
+  /* Batch 5 chunk 13: the same shell contract as Add (the Add pattern,
+     stories 3/4) — the pane element outlives this screen, so the shell
+     calls dispose() on navigation: the keys, the prepare timer's DOM
+     work, and the event subscriptions end with the screen. */
+  function dispose() {
+    if (state.keydownHandler) {
+      const pane = ctx.paneEl();
+      if (pane) pane.removeEventListener('keydown', state.keydownHandler);
+      state.keydownHandler = null;
+    }
+    clearTimeout(state.prepareTimer);
+    unlisten();
+  }
+
   /* ---------------- the five-state gate ---------------- */
 
   async function render() {
@@ -589,7 +603,7 @@ export function createLinkScreen(ctx) {
     if (!state.keyMissing) loadPick();
   }
 
-  return { render, state };
+  return { render, state, dispose };
 }
 
 /* ---------- pure row helper (unit-testable; the lookup pattern) ---------- */

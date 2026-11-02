@@ -218,10 +218,15 @@ export function createSettingsScreen(ctx) {
     const token = ++refreshToken;
     state.kbLoading = true;
     refresh();
-    state.kbPath = ctx.state.effectiveKbPath || ctx.state.settings.knowledgeBasePath || '';
+    // The path comes from the fresh status read (4.9 #10, story 10),
+    // not the boot snapshot (ctx.state.effectiveKbPath): a knowledge
+    // base switched after boot must show its new name here at once.
     const status = await ctx.api.kbStatus();
     if (token !== refreshToken) return;
     state.kbStatus = status;
+    state.kbPath = (status && typeof status.path === 'string' && status.path)
+      || ctx.state.settings.knowledgeBasePath
+      || '';
     state.kbLoading = false;
     refresh();
   }

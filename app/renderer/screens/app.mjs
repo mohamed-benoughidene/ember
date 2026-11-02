@@ -13,7 +13,8 @@ import { textScale } from '../design/text-scale.mjs';
 // [app 10] the real Settings screen replaces the interim placeholder
 import { createSettingsScreen } from './settings.mjs';
 import { bannerHtml } from '../components/banner.mjs';
-import { sentenceFor } from '../../shared/plain-sentences.mjs';
+import { esc } from '../design/escape-html.mjs';
+import { groupFailuresByCode } from '../../shared/home-failures.mjs';
 import { createFirstRunScreen } from './first-run.mjs';
 import { createHomeScreen } from './home.mjs';
 import { createLookupScreen } from './lookup.mjs';
@@ -49,17 +50,89 @@ const navEl = document.getElementById('nav');
 const paneEl = document.getElementById('pane');
 const bannerEl = document.getElementById('top-banner');
 
+/* --- Batch 5 chunk 12 (F5; findings 4.9 #1, #2; closes 4.2 #7): the
+   shell's render token. `renderToken` changes on every navigation.
+   The screen created for a navigation receives a renderFrame bound to
+   the token it was created under; a stale screen's late refresh (an
+   async result landing after the user moved on) paints NOTHING. This
+   is settings.mjs:159's per-screen refresh-token idea, lifted to the
+   shell so every pane gets it over the one shared pane write. F5 was:
+   Keep safe's late health-check repaint overwrote Settings (and the
+   text being typed there) — the shared pane write at ctx.renderFrame
+   had no idea WHO was allowed to paint. --- */
+let renderToken = 0;
+
+function painterFor(token) {
+  return (html, wire) => {
+    if (token !== renderToken) return; // a stale token paints nothing
+    paneEl.innerHTML = html;
+    if (typeof wire === 'function' && paneEl.isConnected) wire(paneEl);
+    paneEl.focus({ preventScroll: true });
+  };
+}
+
+/** One screen instance per navigation: its render token is issued
+ * here, and the screen's own ctx carries exactly its paint right. The
+ * spread snapshot keeps the live settings object, the api object and
+ * the nav helpers (ctx.state.settings is read through the SAME
+ * reference, and navigation still goes through ctx.navigate). */
+function screenCtxWithPaintRight() {
+  renderToken += 1;
+  return { ...ctx, renderFrame: painterFor(renderToken) };
+}
+
+/* --- Batch 5 chunk 13 (stories 3, 4; findings 4.9 #3, #4, #5, #17):
+   the shell owns THE one live screen. `navigate` disposes the screen
+   it leaves: a screen's key listeners and its engine work (its sweep
+   session, its timers) end when the user moves on. Screens attach
+   document-level keys THROUGH the shell (`ctx.screenKeys`), so a
+   hidden screen's keys are dead even if a dispose were forgotten —
+   only handlers created under the CURRENT render token fire. This is
+   the same token discipline as the paint right above, for keys. --- */
+let activeScreen = null;
+
+function disposeActiveScreen() {
+  const screen = activeScreen;
+  activeScreen = null;
+  if (screen && typeof screen.dispose === 'function') screen.dispose();
+}
+
+const screenKeyBindings = []; // {token, handler}; only token === renderToken fires
+
+function activateScreen(screen) {
+  activeScreen = screen;
+  return screen;
+}
+
 const ctx = {
   api: window.ember,
   state: null,
   params: null,
   paneEl: () => paneEl,
+  /** Batch 5 chunk 13 (4.9 #17): attach a document-level key handler
+    * that belongs to THIS screen only. It dies when the screen's own
+    * off() runs (dispose), and it is dead regardless once any later
+    * navigation bumps the render token. */
+  screenKeys(handler) {
+    const entry = { token: renderToken, handler };
+    screenKeyBindings.push(entry);
+    let attached = true;
+    return () => {
+      if (!attached) return;
+      attached = false;
+      const i = screenKeyBindings.indexOf(entry);
+      if (i !== -1) screenKeyBindings.splice(i, 1);
+    };
+  },
   renderFrame(html, wire) {
     paneEl.innerHTML = html;
-    if (typeof wire === 'function') wire(paneEl);
+    if (typeof wire === 'function' && paneEl.isConnected) wire(paneEl);
     paneEl.focus({ preventScroll: true });
   },
   navigate(id, params = null) {
+    // Batch 5 chunk 13: leaving a screen disposes it (its keys and
+    // engine work end with the navigation; stories 3, 4).
+    disposeActiveScreen();
     ctx.params = params;
     // [app 10] the settings screen retitles the window to name its
     // open pane (story 80); every other pane carries the plain title.
@@ -76,6 +149,7 @@ const ctx = {
     navEl.hidden = false;
   },
   openSetup() {
+    disposeActiveScreen(); // Batch 5 chunk 13: the pane is being left
     firstRunActive = true;
     document.body.classList.add('first-run');
     navEl.hidden = true;
@@ -115,6 +189,16 @@ window.ember.onOpenRequest((ask) => {
 });
 /* --- App 11 block ends --- */
 
+/* --- Batch 5 chunk 13 (4.9 #17): ONE dispatcher for every screen's
+   document-level keys. A handler created under an older token (a
+   hidden screen's) is never called, so hidden screens' keys are dead
+   by construction — the shell's active-screen scope. --- */
+document.addEventListener('keydown', (event) => {
+  for (const { token, handler } of screenKeyBindings.slice()) {
+    if (token === renderToken) handler(event);
+  }
+});
+
 /* --- [app 12] the application menu's one push channel (ticket A41):
    main only ASKS; this window's router and screens decide (B4). A
    menu Undo/Redo lands on the Fix and close screen's own controls
@@ -138,6 +222,29 @@ window.ember.onMenuRequest((ask) => {
   }
 });
 /* --- App 12 block ends --- */
+
+/* --- [story 13] the text-field focus reporter (finding 4.9 #14):
+   the ONE thing this page may push to main for the Edit menu's text
+   undo. A text field is an input, a textarea, or anything editable
+   (the DOM's own isContentEditable verdict on a [contenteditable]
+   element); while one holds the keys the page pushes `true`, and the
+   moment none does it pushes `false` — ONLY on the change between
+   those two states, never per focus event or keystroke. Main flips
+   the Edit menu between Electron's role Undo/Redo and Ember's own
+   derivation with it. --- */
+{
+  let textFocused = false;
+  const isTextField = (el) =>
+    Boolean(el) && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable === true);
+  const pushTextFocus = (focused) => {
+    if (focused === textFocused) return;
+    textFocused = focused;
+    window.ember.textFocusChanged(focused);
+  };
+  document.addEventListener('focusin', (event) => pushTextFocus(isTextField(event.target)));
+  document.addEventListener('focusout', () => pushTextFocus(false));
+}
+/* --- story 13 block ends --- */
 
 /* --- App 08 (Clean up): the pending-count badge on the sidebar job
    (story 68; plan §1: shown only when the last preview count > 0,
@@ -169,33 +276,37 @@ ctx.setCleanupBadge = (count) => {
    function so the router branch stays one line. The branch must sit
    BEFORE the placeholder router below, because the interim pane list
    still carries 'cleanup' (placeholder.mjs is untouched). --- */
-function renderCleanupPane() {
-  screens.cleanup = createCleanupScreen(ctx);
+function renderCleanupPane(screenCtx) {
+  screens.cleanup = activateScreen(createCleanupScreen(screenCtx));
   screens.cleanup.render();
 }
 // --- App 08 registration ends ---
 
 function renderPane(id) {
-  // [app 10] Settings is a real screen now; the other interim panes
-  // keep their honest placeholders until their build steps.
+  // Batch 5 chunk 12: this navigation's paint right — the screen (and
+  // only this screen instance) may paint; any LATER navigation makes
+  // it stale (screenCtxWithPaintRight, top of file).
+  const screenCtx = screenCtxWithPaintRight();
+  // Batch 5 chunk 13: this instance becomes the shell's ONE live
+  // screen (navigate disposed the previous one just above).
   if (id === 'settings') {
-    screens.settings = createSettingsScreen(ctx);
+    screens.settings = activateScreen(createSettingsScreen(screenCtx));
     screens.settings.refresh();
     return;
   }
   if (id === 'home') {
-    screens.home = createHomeScreen(ctx);
+    screens.home = activateScreen(createHomeScreen(screenCtx));
     screens.home.render();
     return;
   }
   if (id === 'lookup') {
-    screens.lookup = createLookupScreen(ctx);
+    screens.lookup = activateScreen(createLookupScreen(screenCtx));
     screens.lookup.render();
     return;
   }
   /* ==== App 05 (ticket A34): the real Add screen ================ */
   if (id === 'add') {
-    screens.add = createAddScreen(ctx);
+    screens.add = activateScreen(createAddScreen(screenCtx));
     screens.add.render();
     return;
   }
@@ -207,13 +318,13 @@ function renderPane(id) {
    * placed after it, the real screen would be unreachable.
    * ================================================================= */
   if (id === 'keepsafe') {
-    screens.keepsafe = createKeepSafeScreen(ctx);
+    screens.keepsafe = activateScreen(createKeepSafeScreen(screenCtx));
     screens.keepsafe.render();
     return;
   }
   // app step 07 (Fix and close): the real screen replaces the interim pane.
   if (id === 'fix') {
-    screens.fix = createFixCloseScreen(ctx);
+    screens.fix = activateScreen(createFixCloseScreen(screenCtx));
     screens.fix.render();
     return;
   }
@@ -221,7 +332,7 @@ function renderPane(id) {
   // (additive branch; ticket A37). This branch sits BEFORE the
   // placeholder router below.
   if (id === 'cleanup') {
-    renderCleanupPane();
+    renderCleanupPane(screenCtx);
     return;
   }
   // --- App 08 branch ends ---
@@ -231,16 +342,16 @@ function renderPane(id) {
    * (which would otherwise answer for `link` first).
    * ================================================================= */
   if (id === 'link') {
-    screens.link = createLinkScreen(ctx);
+    screens.link = activateScreen(createLinkScreen(screenCtx));
     screens.link.render();
     return;
   }
   // -------------------------------------------------------------------
   if (paneNames().includes(id)) {
-    createPlaceholderScreen(ctx, id).render();
+    activateScreen(createPlaceholderScreen(screenCtx, id)).render();
     return;
   }
-  createPlaceholderScreen(ctx, 'add').render(); // an unknown id never blanks the pane
+  activateScreen(createPlaceholderScreen(screenCtx, 'add')).render(); // an unknown id never blanks the pane
 }
 
 function buildNav() {
@@ -296,22 +407,42 @@ function showNotices() {
     bannerEl.innerHTML = '';
     return;
   }
-  const error = notices[0];
-  const sentence = sentenceFor(error.code);
-  bannerEl.innerHTML = `${bannerHtml({
-    text: `${sentence.what} ${sentence.next}`,
-    actionLabel: 'Details',
-    action: 'notice-details',
-  })}<p class="help mono" data-testid="notice-code" hidden style="padding:0 var(--s6)">${`${error.code} ${error.name} | ${error.detail}`}</p>`;
-  bannerEl.querySelector('[data-action="notice-details"]')?.addEventListener('click', () => {
-    const code = bannerEl.querySelector('[data-testid="notice-code"]');
-    if (code) code.hidden = !code.hidden;
-  });
+  // Story 14 (4.9 #20), Batch 3's B3-1 rule carried to boot: ONE
+  // grouped notice per error code, in first-seen order — every boot
+  // notice shows, never only the first. The grouping is Batch 3's own
+  // helper (home-failures); each notice rides as its group's member
+  // and every detail line stays visible behind Details.
+  const groups = groupFailuresByCode(notices.map((error) => ({ error })));
+  bannerEl.innerHTML = groups
+    .map((group) => {
+      const lines = notices
+        .filter((notice) => (notice.code ?? null) === group.code)
+        .map((notice) => `${esc(`${notice.code} ${notice.name}`)} | ${esc(notice.detail ?? '')}`)
+        .join('<br>');
+      return `<div data-testid="boot-notice">${bannerHtml({
+        text: `${group.words.what} ${group.words.next}`,
+        actionLabel: 'Details',
+        action: 'notice-details',
+      })}<p class="help mono" data-testid="notice-code" hidden style="padding:0 var(--s6)">${lines}</p></div>`;
+    })
+    .join('');
+  for (const wrap of bannerEl.querySelectorAll('[data-testid="boot-notice"]')) {
+    wrap.querySelector('[data-action="notice-details"]')?.addEventListener('click', () => {
+      const code = wrap.querySelector('[data-testid="notice-code"]');
+      if (code) code.hidden = !code.hidden;
+    });
+  }
 }
 
 /** First run opens when no knowledge-base path is chosen (story 1). */
 function firstRun() {
-  screens.firstRun = createFirstRunScreen(ctx);
+  // First run is its own pane: it gets its own paint right exactly
+  // like a navigate() would (Batch 5 chunk 12).
+  renderToken += 1;
+  const token = renderToken;
+  const firstRunCtx = { ...ctx, renderFrame: painterFor(token) };
+  screens.firstRun = createFirstRunScreen(firstRunCtx);
+  activateScreen(screens.firstRun); // Batch 5 chunk 13: it is the live screen
   firstRunActive = true;
   document.body.classList.add('first-run');
   navEl.hidden = true;
@@ -320,6 +451,9 @@ function firstRun() {
 
 async function boot() {
   bootState = await window.ember.getState();
+  // The screen-lifetime rule (spec "Screen lifetime"): every DOM
+  // lookup after an await checks the element still exists first.
+  if (!navEl.isConnected || !paneEl.isConnected || !bannerEl.isConnected) return;
   ctx.state = bootState;
   applySettings();
   showNotices();

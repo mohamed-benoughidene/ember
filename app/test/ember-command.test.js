@@ -18,6 +18,22 @@ test('the ember command comes from the env override or falls back to PATH', () =
   assert.deepEqual(resolveEmberCommand({}), ['ember']);
 });
 
+test('EMBER_APP_COMMAND as a JSON array resolves to that exact argv (a path with a space survives, story 26)', () => {
+  assert.deepEqual(resolveEmberCommand({ EMBER_APP_COMMAND: '["/path/with space/ember"]' }), [
+    '/path/with space/ember',
+  ]);
+  // Backward compatibility: a space-separated value is still split.
+  assert.deepEqual(resolveEmberCommand({ EMBER_APP_COMMAND: 'node /x/fake-ember.js' }), [
+    'node',
+    '/x/fake-ember.js',
+  ]);
+});
+
+test('a value starting with "[" that is not a valid JSON array falls back to the split — no crash', () => {
+  const bad = '[bad json';
+  assert.deepEqual(resolveEmberCommand({ EMBER_APP_COMMAND: bad }), bad.trim().split(/\s+/));
+});
+
 test('APP-007: a path-shaped ember command that does not exist is refused at boot', () => {
   const result = checkEmberCommand(['/nowhere/no-ember']);
   assert.equal(result.ok, false);

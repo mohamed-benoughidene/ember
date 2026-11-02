@@ -36,6 +36,11 @@
  *  7. `--quick-add` + placement: the popup opens on the display the
  *     mouse is on, at the saved position setting (bottom-right default,
  *     top-centre seeded), with the main window parked.
+ *  8. story 9 (Batch 5 chunk 21): completing first run in the main
+ *     window SAVES a knowledge base — in the SAME session, without a
+ *     restart, the default accelerator is registered and the popup
+ *     opens (the registration rides the existing onSettingsSaved
+ *     hook, which first run's step-1 save also fires).
  */
 
 const { _electron } = require('playwright');
@@ -105,6 +110,14 @@ async function launchPopupApp({ workDir, aiBaseUrl, quickAdd = false, withDb = t
   const kbPath = path.join(workDir, 'kb.db');
   if (withDb) {
     // A real knowledge base (no AI needed): pre-Add read commands answer honestly.
+    // B4-05 (D-25): capture-source REFUSES a missing file (CAPTURE-020),
+    // so the seed runs `ember init` first — the same create-on-purpose
+    // first move launch-check.js makes (init is a no-op on a file that
+    // is already healthy and current).
+    execFileSync(EMBER, ['init', '--db', kbPath], {
+      cwd: REPO_ROOT,
+      stdio: ['pipe', 'ignore', 'inherit'],
+    });
     execFileSync(EMBER, ['capture-source', '--db', kbPath], {
       input: 'A throwaway source text for the popup e2e.\n',
       cwd: REPO_ROOT,
@@ -123,7 +136,21 @@ async function launchPopupApp({ workDir, aiBaseUrl, quickAdd = false, withDb = t
   if (aiBaseUrl) env.EMBER_AI_BASE_URL = aiBaseUrl;
   if (refusedShortcut) env.EMBER_APP_SHORTCUT_REFUSED = '1';
   const app = await _electron.launch({ args: quickAdd ? ['.', '--quick-add'] : ['.'], cwd: APP_ROOT, env });
-  const mainWin = await app.firstWindow();
+  // The main window is the one that is NOT the quick popup — found by
+  // its URL, never by `app.firstWindow()`: under `--quick-add` the
+  // popup window can win that race (the machine flake this file
+  // carried until 2026-11-02 — firstWindow() handed back the popup and
+  // every later mainWin assertion timed out). The main window is
+  // always created first (main.js boot: createWindow, then the popup),
+  // so the first non-quick window in the list is the main one.
+  const mainWin = await (async () => {
+    for (let i = 0; i < 100; i += 1) {
+      const win = app.windows().find((w) => !w.url().includes('quick.html'));
+      if (win) return win;
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    return app.firstWindow();
+  })();
   if (withKey) {
     const kept = await mainWin.evaluate((k) => window.ember.setSessionKey(k), KEY);
     if (!kept || !kept.ok) throw new Error('the session key could not be kept in the test app');
@@ -399,6 +426,55 @@ async function popupStopCloses(ai) {
   }
 }
 
+/* ---------- scenario 8: story 9 — the shortcut registers on first run's save ---------- */
+
+async function popupShortcutAfterFirstRun() {
+  process.stdout.write('--- popup: the capture shortcut registers when first run saves (story 9) ---\n');
+  const workDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ember-e2e-popupfirstrun-'));
+  // A fresh install: no settings file, no knowledge base, no key — the
+  // main window opens FIRST RUN, exactly like the settings e2e's
+  // recovery scenario drives it (no pre-seeded settings.json).
+  const { app, mainWin } = await launchPopupApp({ workDir, aiBaseUrl: null, withDb: false, withKey: false });
+  try {
+    await mainWin.waitForSelector('[data-testid="setup-db-input"]');
+    // The boot rule (scenario 4's case): nothing registers before first run.
+    if (await isShortcutRegistered(app)) fail('no global shortcut may register before first run is done');
+    // Complete first run: accept the suggested knowledge base file, skip the key.
+    await mainWin.click('[data-action="setup-file-continue"]');
+    await mainWin.waitForSelector('[data-testid="setup-key-input"]');
+    await mainWin.click('[data-action="setup-skip-key"]');
+    await mainWin.waitForSelector('[data-testid="setup-finish"]');
+    await mainWin.click('[data-testid="setup-finish"]');
+    await mainWin.waitForSelector('[data-testid="state-no-key"]'); // first run skipped the key: Add's honest state
+    // Story 9: WITHOUT a restart, the default accelerator is registered
+    // now — first run's knowledge-base save re-registered it in this
+    // same session (the observable half of "press the shortcut"; a real
+    // OS key press cannot be synthesized here, so the press is driven
+    // through the SAME handler the shortcut shares).
+    assert.equal(
+      await isShortcutRegistered(app),
+      true,
+      'the default quick-popup shortcut must register when first run saves a knowledge base, without a restart',
+    );
+    // The press works: the same handler the shortcut fires opens the
+    // popup. The key was skipped, so the Add screen shows its honest
+    // no-key state (scenario 3's opened-past-the-gate shape) — never
+    // the setup-needed words (the knowledge base is chosen now).
+    await openViaHandler(mainWin);
+    const popup = await findPopup(app);
+    await popup.waitForSelector('[data-testid="state-no-key"]');
+    if ((await popup.locator('[data-testid="quick-setup-needed"]').count()) !== 0) {
+      fail('after first run the popup must not show the setup-needed state');
+    }
+    await popup.keyboard.press('Escape');
+    await waitPopup(app, false);
+    process.stdout.write('popup first-run OK: the save registered the default accelerator; the popup opened in the SAME session\n');
+  } finally {
+    await app.close().catch(() => {});
+    fs.rmSync(workDir, { recursive: true, force: true });
+  }
+}
+
 /* ---------- scenario 7: --quick-add + placement follows the setting ---------- */
 
 async function popupPlacement({ position, expectBottom }) {
@@ -446,13 +522,14 @@ async function main() {
     await popupNoKey();
     await popupSetupMissing();
     await popupRefusedRoute();
+    await popupShortcutAfterFirstRun();
     await popupStopCloses(ai);
     await popupPlacement({ position: 'bottom-right', expectBottom: true });
     await popupPlacement({ position: 'top-center', expectBottom: false });
   } finally {
     ai.server.close();
   }
-  process.stdout.write('e2e popup OK: all seven scenarios green (real ember child, fake AI server on EMBER_AI_BASE_URL)\n');
+  process.stdout.write('e2e popup OK: all eight scenarios green (real ember child, fake AI server on EMBER_AI_BASE_URL)\n');
 }
 
 main().catch((err) => {

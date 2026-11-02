@@ -108,6 +108,13 @@ export function deriveUndoMenuState(result, direction) {
  *   accelerators are positional (1-7 in the shown order), so they
  *   equal the spec table's Command+1..7 at the default order.
  * - undo/redo: deriveUndoMenuState outputs.
+ * - textFieldFocused: a text field holds focus (story 13, finding
+ *   4.9 #14): Edit's Undo/Redo become Electron ROLE items (`role:
+ *   'undo'` / `'redo'`, the standard words, the role's own platform
+ *   key) and carry NO action id — the main-process manager gives role
+ *   items no click (app/main/app-menu.js:40), so an Ember job action
+ *   can never fire while typing: Ctrl+Z stays with the text box.
+ *   False (default): Ember's own undo entries as below.
  *
  * @param {object} ctx
  * @returns {{label: string, submenu: object[]}[]}
@@ -120,6 +127,7 @@ export function buildMenuTemplate(ctx) {
     jobs = JOBS,
     undo = deriveUndoMenuState(null, 'undo'),
     redo = deriveUndoMenuState(null, 'redo'),
+    textFieldFocused = false,
   } = ctx ?? {};
   const mac = IS_MAC(platform);
 
@@ -129,6 +137,23 @@ export function buildMenuTemplate(ctx) {
     accelerator: `CmdOrCtrl+${index + 1}`,
     enabled: Boolean(kbChosen) && !(jobs.hidden ?? []).includes(id),
   }));
+
+  // Story 13 (4.9 #14): while a text field holds focus the two Edit
+  // entries are Electron ROLE items — plain words, the role's own
+  // platform key (Command/Ctrl+Z), NO `id`, so the main-process
+  // manager (app-menu.js wire: role items keep their role and get NO
+  // click) can never route an Ember job action here; the undo/redo
+  // labels stay with the Fix and close bar the moment no field holds
+  // focus (textFieldFocused false).
+  const editUndoRedo = textFieldFocused
+    ? [
+        { label: 'Undo', role: 'undo' },
+        { label: 'Redo', role: 'redo' },
+      ]
+    : [
+        { id: 'edit-undo', label: undo.label, accelerator: 'CmdOrCtrl+Z', enabled: Boolean(undo.enabled) },
+        { id: 'edit-redo', label: redo.label, accelerator: 'Shift+CmdOrCtrl+Z', enabled: Boolean(redo.enabled) },
+      ];
 
   return [
     {
@@ -157,8 +182,7 @@ export function buildMenuTemplate(ctx) {
     {
       label: 'Edit',
       submenu: [
-        { id: 'edit-undo', label: undo.label, accelerator: 'CmdOrCtrl+Z', enabled: Boolean(undo.enabled) },
-        { id: 'edit-redo', label: redo.label, accelerator: 'Shift+CmdOrCtrl+Z', enabled: Boolean(redo.enabled) },
+        ...editUndoRedo,
         { type: 'separator' },
         { label: 'Cut', role: 'cut' },
         { label: 'Copy', role: 'copy' },

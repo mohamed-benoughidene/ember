@@ -50,6 +50,9 @@ jobs:
       - name: Install-size report (the bundled Electron runtime)
         run: |
           node -e "const fs=require('fs');function du(p){let s=0;for(const e of fs.readdirSync(p,{withFileTypes:true})){const f=p+'/'+e.name;s+=e.isDirectory()?du(f):fs.statSync(f).size}return s};for(const d of ['app/node_modules/electron/dist','app/node_modules/playwright']){try{console.log(d,Math.round(du(d)/1048576)+' MB')}catch(e){console.log(d,'missing')}}"
+      - name: Fix chrome-sandbox ownership and mode (Electron's sandbox helper)
+        if: runner.os == 'Linux'
+        run: sudo chown root:root app/node_modules/electron/dist/chrome-sandbox && sudo chmod 4755 app/node_modules/electron/dist/chrome-sandbox
       - name: Launch check (story 109) — Linux needs a virtual display
         if: runner.os == 'Linux'
         run: xvfb-run --auto-servernum npm run check:launch --prefix app
@@ -59,3 +62,24 @@ jobs:
       - name: Launch check (story 109) — Windows
         if: runner.os == 'Windows'
         run: npm run check:launch --prefix app
+
+  # Story 34 (decision 7, spec §Infra-1, D-13): the full E2E suite runs
+  # in CI on a virtual screen, with the fake engine stub and a throwaway
+  # config (never the developer's own settings, never real AI keys).
+  app-e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: Create the venv the e2e reads
+        run: python -m venv .venv
+      - name: Install Ember into the venv
+        run: .venv/bin/python -m pip install -e .
+      - name: Install the app's pinned dev dependencies (electron 45.1.0, playwright)
+        run: npm ci --prefix app
+      - name: Fix chrome-sandbox ownership and mode (Electron's sandbox helper)
+        run: sudo chown root:root app/node_modules/electron/dist/chrome-sandbox && sudo chmod 4755 app/node_modules/electron/dist/chrome-sandbox
+      - name: Run the E2E suite under xvfb (fake engine, fake AI, throwaway config)
+        run: env -u EMBER_AI_API_KEY -u OPENROUTER_API_KEY XDG_CONFIG_HOME=$(mktemp -d) xvfb-run --auto-servernum npm run e2e --prefix app

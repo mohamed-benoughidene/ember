@@ -34,7 +34,7 @@ if (command === 'backup') {
   const target = argv[3]; // backup --db <db> <TARGET> --format json
   process.stdout.write(JSON.stringify({
     changes: [], command: 'backup', dry_run: false,
-    summary: { path: target, schema_version: 13, item_count: 2, rotated: null },
+    summary: { path: process.env.FAKE_BACKUP_PATH || target, schema_version: 13, item_count: 2, rotated: null },
   }));
   process.exit(0);
 }
@@ -124,6 +124,28 @@ test('backupTo refuses an unusable path BEFORE any child starts, then maps the e
     assert.equal(ok.ok, true);
     assert.deepEqual(ok.data, { path: target, schemaVersion: 13, itemCount: 2, rotated: null });
     assert.deepEqual(h.commands, [['backup', [target]]]);
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('a backup summary whose path differs from the chosen target is refused', async () => {
+  const h = harness();
+  try {
+    const target = path.join(h.dir, 'chosen.db');
+    const lie = path.join(h.dir, 'somewhere-else.db');
+    process.env.FAKE_BACKUP_PATH = lie;
+    try {
+      const result = await h.call('ember:backupTo', { targetPath: target });
+      assert.equal(
+        result.ok,
+        false,
+        `a report naming a different file must not be trusted: ${JSON.stringify(result)}`,
+      );
+      assert.equal(result.error.code, 'APP-002');
+    } finally {
+      delete process.env.FAKE_BACKUP_PATH;
+    }
   } finally {
     h.cleanup();
   }

@@ -160,6 +160,46 @@ test('a traceback with no house line keeps the LAST non-empty stderr line in the
   assert.ok(!result.error.detail.includes('Traceback'), result.error.detail);
 });
 
+// --- Batch 5 chunk 3 (4.4 #1, #11): whole streamed lines -----------------------
+
+test('a house error line split across two writes parses to the engine\'s code', async () => {
+  // The fake writes the house line in TWO piecewise pipe writes (the
+  // first carries no newline), the way a real engine's stderr can
+  // arrive. A reader that splits each chunk on '\n' sees two broken
+  // half-lines and loses the house code.
+  const client = makeClient({ fakeMode: 'error', env: { FAKE_STDERR_SPLIT: '1' } });
+  const result = await client.runCommand('list-items', []);
+  assert.equal(result.ok, false);
+  assert.equal(result.error.code, 'QUERY-003', JSON.stringify(result.error));
+  assert.equal(result.error.name, 'DbOpenFailed');
+  assert.equal(result.error.where, 'fake.ember');
+});
+
+test('a stderr line split mid-multi-byte character is intact', async () => {
+  // The two writes cut INSIDE the ellipsis (U+2026, three UTF-8
+  // bytes): decoding each chunk on its own replaces the broken half
+  // characters with U+FFFD, so the detail must NOT contain one.
+  const client = makeClient({ fakeMode: 'error', env: { FAKE_STDERR_SPLIT: '1' } });
+  const result = await client.runCommand('list-items', []);
+  assert.equal(result.ok, false);
+  assert.ok(result.error.detail.includes('db file… missing'), result.error.detail);
+  assert.ok(!result.error.detail.includes('\uFFFD'), result.error.detail);
+});
+
+test('the final unterminated stdout line is read', async () => {
+  // Story 30: the session's LAST event line arrives WITHOUT its
+  // newline — the reader must flush that partial line when the child
+  // closes, not drop the summary event.
+  const client = makeClient({ env: { FAKE_STDOUT_SPLIT: '1' } });
+  const { events, errors, exitPromise } = openSession(client, 'capture');
+  await exitPromise;
+  assert.deepEqual(events.map((e) => e.event), ['message', 'block', 'prompt', 'summary']);
+  assert.deepEqual(errors, [], JSON.stringify(errors));
+  assert.equal(events[3].aborted, false);
+  // The split line was cut inside its ellipsis: the text survives.
+  assert.ok(events[0].text.includes('…reading the file'), JSON.stringify(events[0]));
+});
+
 test('stdout that is not one JSON document is APP-002', async () => {
   const client = createBridgeClient({
     emberCommand: ['node', FAKE_EMBER],
@@ -416,6 +456,257 @@ test('garbage in a confirm stream raises APP-002 and never reaches the renderer'
   assert.deepEqual(events, [], 'no garbage event may pass');
   assert.ok(errors.some((e) => e.code === 'APP-002'), JSON.stringify(errors));
 });
+
+// --- Batch 5 chunk 5: sessions cap their bytes; stdin survives (4.4 #2, #5; 4.2 #14) ---
+
+test('confirm-session stdout beyond the 32 MB cap settles with a named error', async () => {
+  // 4.2 #14, story 33: a confirm session's stdout is untrusted output
+  // too — the same 32 MB cap the one-shot path has must end the
+  // session with a NAMED cap error (APP-002, the same wording), not
+  // let a chatty engine stream forever. The fake floods ~40 MB (40 x
+  // 1 MB, drain-aware, so every byte really reaches the reader).
+  const client = makeClient({
+    sessionIdleMs: 20_000, // the CAP must end it, never the idle limit
+    spawnFn: (exe, args, opts) =>
+      spawn(exe, args, { ...opts, env: { ...opts.env, FAKE_MODE: 'session', FAKE_FLOOD: '1' } }),
+  });
+  const { errors, exitPromise } = openSession(client, 'maintain');
+  await exitPromise;
+  assert.ok(
+    errors.some((e) => e.code === 'APP-002' && /more than \d+ bytes/.test(e.detail)),
+    `expected the named output-cap error, got: ${JSON.stringify(errors)}`,
+  );
+}, 30_000);
+
+test('writing an answer to a session whose stdin closed is an error event, not a crash', async () => {
+  // 4.4 #2: an answer written after the engine stopped reading its
+  // stdin raises EPIPE as an 'error' event on the parent's stdin
+  // stream — without a handler that unhandled error would take down
+  // the whole app process. The session must surface it as an error
+  // event and end, quietly.
+  const client = makeClient({
+    sessionIdleMs: 20_000,
+    spawnFn: (exe, args, opts) =>
+      spawn(exe, args, { ...opts, env: { ...opts.env, FAKE_MODE: 'session', FAKE_SESSION_CLOSE_STDIN: '1' } }),
+  });
+  const { session, events, errors, exitPromise } = openSession(client, 'maintain');
+  await testHelpers.waitFor(() => events.some((e) => e.event === 'prompt'), 5000);
+  session.answer('y'); // the engine no longer reads its stdin -> EPIPE
+  const exit = await exitPromise;
+  assert.ok(
+    errors.some((e) => e.code === 'APP-002' && /stdin/.test(e.detail)),
+    `expected the named broken-stdin error, got: ${JSON.stringify(errors)}`,
+  );
+}, 20_000);
+
+test('one-shot output beyond the cap returns the cap error', async () => {
+  // 4.2 #14: the MAX_OUTPUT_BYTES branch in the ONE-SHOT path (kill at
+  // > 32 MB, then the interpret() step returns the cap error) had no
+  // test. The same flood, run through runCommand, must come back as
+  // APP-002 naming the byte count.
+  const client = makeClient({ fakeMode: 'list', env: { FAKE_FLOOD: '1' }, timeoutReadMs: 30_000 });
+  const result = await client.runCommand('list-items', []);
+  assert.equal(result.ok, false, JSON.stringify(result));
+  assert.equal(result.error.code, 'APP-002', JSON.stringify(result.error));
+  assert.match(result.error.detail, /more than \d+ bytes/, result.error.detail);
+}, 60_000);
+
+test('a chatty child that never completes a line still times out on idle (4.4 #5)', async () => {
+  // 4.4 #5: raw stdout chunks must NOT reset the idle timer — only
+  // COMPLETE lines do (the line reader feeds bumpIdle). This child
+  // writes a small fragment every 50 ms and never a '\n': the session
+  // must still end with the named idle error.
+  const client = makeClient({
+    sessionIdleMs: 300,
+    spawnFn: (exe, args, opts) =>
+      spawn(exe, args, { ...opts, env: { ...opts.env, FAKE_MODE: 'session', FAKE_SESSION_NO_FULL_LINE: '1' } }),
+  });
+  const { errors, exitPromise } = openSession(client, 'maintain');
+  await exitPromise;
+  assert.ok(
+    errors.some((e) => e.code === 'APP-008' && /produced no output/.test(e.detail)),
+    `expected the idle timeout despite constant raw output, got: ${JSON.stringify(errors)}`,
+  );
+}, 10_000);
+
+// --- Batch 5 chunk 6: timeouts are hard bounds (4.4 #6; stories 20, 21) ---
+
+/** True while the fake's logged grandchild still answers at that pid. */
+function grandchildAlive(pidFile) {
+  let pid = NaN;
+  try {
+    pid = Number(fs.readFileSync(pidFile, 'utf8').trim());
+  } catch {
+    return true; // the fake has not logged it yet — assume still alive
+  }
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false; // ESRCH: nothing is left at that pid
+  }
+}
+
+test('with a short timeout, a session whose grandchild holds the pipes settles within a short bound after the kill, not when the grandchild dies', async () => {
+  // 4.4 #6, story 21. The engine emits its events, asks its question,
+  // leaves a GRANDCHILD holding its stdout/stderr, and exits. The
+  // grandchild never exits on its own (a bare setInterval), so the
+  // child's pipes stay open forever: a settle that waits for stdio to
+  // close waits for the grandchild's death and hangs the call. The
+  // settle must be the process exit plus a short hard bound for pipe
+  // close, and the client's kill must reach the whole process group so
+  // the stuck helper cannot outlive the session. The fake logs the
+  // grandchild's pid so this test can pin the helper really ended.
+  const grandchildLog = tempPath('grandchild.pid');
+  const client = makeClient({
+    fakeMode: 'session',
+    // No builtin limit may settle this on its own: the settle must be
+    // the engine's own exit plus a short bound, never a timer.
+    sessionIdleMs: 60_000,
+    env: {
+      FAKE_SESSION_SCRIPT: JSON.stringify([
+        { event: 'message', text: 'working' },
+        { event: 'prompt', kind: 'choice', text: '[y]es / [n]o / [q]uit', choices: ['y', 'n', 'q'] },
+      ]),
+      FAKE_GRANDCHILD: '1',
+      FAKE_GRANDCHILD_LOG: grandchildLog,
+    },
+  });
+  const start = Date.now();
+  const { session, events, exitPromise } = openSession(client, 'capture');
+  try {
+    const settle = await Promise.race([
+      exitPromise,
+      new Promise((resolve) => setTimeout(() => resolve('bound'), 8000)),
+    ]);
+    if (settle === 'bound') {
+      assert.fail(
+        `the session did not settle within ${Date.now() - start} ms: the engine exited at once, so the settle was left waiting for the pipes the grandchild holds`,
+      );
+    }
+    const elapsed = Date.now() - start;
+    assert.ok(elapsed < 8000, `settled after ${elapsed} ms — too close to the grandchild's lifetime`);
+    assert.deepEqual(events.map((e) => e.event), ['message', 'prompt']);
+    assert.equal(settle.exitCode, 0, JSON.stringify(settle));
+    // The stuck helper must not outlive the session: the app's kill
+    // reaches the whole process group, grandchild included.
+    session.stop();
+    await testHelpers.waitFor(() => !grandchildAlive(grandchildLog), 8000);
+  } finally {
+    // Hygiene on ANY path (a failing settle must not leak a node
+    // process): end the session, then kill the grandchild directly.
+    session.stop();
+    try {
+      const pid = Number(fs.readFileSync(grandchildLog, 'utf8').trim());
+      process.kill(pid, 'SIGKILL');
+    } catch {
+      /* already gone or never started */
+    }
+  }
+}, 20_000);
+
+test('an engine that exits early settles the session, it does not hang', async () => {
+  // 4.4 #6 / story 20: an engine that dies right after spawn with NO
+  // output must settle the session on its process exit — the call may
+  // never hang waiting for a summary that will not come.
+  const client = makeClient({ fakeMode: 'session', env: { FAKE_EXIT_EARLY: '1' } });
+  const start = Date.now();
+  const { exitPromise } = openSession(client, 'capture');
+  const settle = await Promise.race([
+    exitPromise,
+    new Promise((resolve) => setTimeout(() => resolve('bound'), 8000)),
+  ]);
+  assert.notEqual(settle, 'bound', `the session did not settle within ${Date.now() - start} ms`);
+  const elapsed = Date.now() - start;
+  assert.ok(elapsed < 5000, `the engine died at once but the session settled only after ${elapsed} ms`);
+  assert.equal(settle.exitCode, 0);
+}, 20_000);
+
+// --- Batch 5 chunk 7: one settle rule for engines that die unexpectedly (N3; 4.4 #9, #10) ---
+
+test('a stop() the app asked for settles with NO error (story 22)', async () => {
+  // The two-way settle rule (chunk 7, N3): the app's OWN stop() is a
+  // quiet end. The engine sits at its prompt (no summary yet) when the
+  // app stops it: the exit callback still fires (the fake reads the
+  // closed stdin as a user quit, exit 2 — the earlier "stop() closes
+  // stdin" pin), but NO error may be emitted for it. This extends that
+  // earlier case honestly to the new rule; the engine deliberately has
+  // NOT delivered its summary, so the quiet end can only come from the
+  // stop flag itself.
+  const client = makeClient({
+    sessionIdleMs: 20_000,
+    sessionPromptWaitMs: 20_000,
+    spawnFn: (exe, args, opts) =>
+      spawn(exe, args, {
+        ...opts,
+        env: {
+          ...opts.env,
+          FAKE_MODE: 'session',
+          FAKE_SESSION_SCRIPT: JSON.stringify([
+            { event: 'message', text: 'working' },
+            { event: 'prompt', kind: 'choice', text: '[y]es / [n]o / [q]uit', choices: ['y', 'n', 'q'] },
+          ]),
+        },
+      }),
+  });
+  const { session, events, errors, exitPromise } = openSession(client, 'maintain');
+  await testHelpers.waitFor(() => events.some((e) => e.event === 'prompt'), 5000);
+  session.stop();
+  const exit = await exitPromise;
+  assert.equal(exit.exitCode, 2, 'the fake reads the closed stdin as a quiet quit');
+  assert.deepEqual(errors, [], `the app's own stop is never an error: ${JSON.stringify(errors)}`);
+}, 15000);
+
+test('a signal-killed child settles with the new Ember-stopped-unexpectedly code (4.4 #10, story 22)', async () => {
+  // The engine emits part of its script (a message, then a prompt) and
+  // is then killed by a signal — an engine death the app did NOT ask
+  // for. One new app code (APP-009 EmberStoppedUnexpectedly) must
+  // settle the session; no code of any kind existed for this before.
+  const childRef = { current: null };
+  const client = makeClient({
+    sessionIdleMs: 20_000,
+    sessionPromptWaitMs: 20_000,
+    spawnFn: (exe, args, opts) => {
+      const child = spawn(exe, args, {
+        ...opts,
+        env: {
+          ...opts.env,
+          FAKE_MODE: 'session',
+          FAKE_SESSION_SCRIPT: JSON.stringify([
+            { event: 'message', text: 'working' },
+            { event: 'prompt', kind: 'choice', text: '[y]es / [n]o / [q]uit', choices: ['y', 'n', 'q'] },
+          ]),
+        },
+      });
+      childRef.current = child;
+      return child;
+    },
+  });
+  const { errors, events, exitPromise } = openSession(client, 'capture');
+  await testHelpers.waitFor(() => events.some((e) => e.event === 'prompt'), 5000);
+  childRef.current.kill('SIGKILL');
+  const exit = await exitPromise;
+  assert.ok(errors.length >= 1, 'a killed engine must settle with an error event');
+  assert.ok(
+    errors.every((e) => e.code === 'APP-009' && e.name === 'EmberStoppedUnexpectedly'),
+    `every error must be the one Ember-stopped-unexpectedly code, got: ${JSON.stringify(errors)}`,
+  );
+  assert.notEqual(exit.exitCode, 0, 'the child was killed, it did not exit cleanly');
+}, 10_000);
+
+test('an exit with no summary settles with the same code (story 29)', async () => {
+  // The engine exits right after spawn with NO output at all — the
+  // "ended without a summary" path (story 29) settles with the SAME
+  // one code as a signal kill, so all three unexpected paths agree.
+  const client = makeClient({ fakeMode: 'session', env: { FAKE_EXIT_EARLY: '1' } });
+  const { errors, exitPromise } = openSession(client, 'capture');
+  const exit = await exitPromise;
+  assert.equal(exit.exitCode, 0);
+  assert.ok(
+    errors.some((e) => e.code === 'APP-009' && e.name === 'EmberStoppedUnexpectedly'),
+    `expected APP-009 for the exit with no summary, got: ${JSON.stringify(errors)}`,
+  );
+}, 10_000);
 
 // --- tiny poll helper (sessions are event-driven) ------------------------------
 

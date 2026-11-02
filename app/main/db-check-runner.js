@@ -30,6 +30,42 @@ const { parseErrorLine } = require('../shared/parse-error-line');
 const WHERE = 'main.db-check-runner';
 const RESULTS = new Set(['OK', 'DRIFT', 'UNREADABLE']);
 
+/**
+ * Batch 5 chunk 3 (4.4 #1): the same carry-buffer line reader the
+ * bridge client uses. A real pipe does not care where lines end: a
+ * house error line can arrive in two piecewise writes (the first
+ * carries NO newline), and a multi-byte character can be cut at a
+ * chunk boundary. `String(chunk).split('\n')` splits such a line into
+ * broken halves; this reader decodes with a STREAMING TextDecoder,
+ * keeps the tail in a carry buffer, commits a line only on '\n', and
+ * `flush()` (once, on child close) commits the final partial line.
+ * Self-contained on purpose: this module stays independent of the
+ * step-02 bridge client (additive step rule).
+ *
+ * @param {(line: string) => void} [onLine] called for every complete line
+ * @returns {{push: (chunk: Buffer) => void, flush: () => void}}
+ */
+function lineCollector(onLine) {
+  const decoder = new TextDecoder();
+  let carry = '';
+  return {
+    push(chunk) {
+      carry += decoder.decode(chunk, { stream: true });
+      let newlineAt = carry.indexOf('\n');
+      while (newlineAt !== -1) {
+        if (onLine && carry.slice(0, newlineAt) !== '') onLine(carry.slice(0, newlineAt));
+        carry = carry.slice(newlineAt + 1);
+        newlineAt = carry.indexOf('\n');
+      }
+    },
+    flush() {
+      carry += decoder.decode(); // ends any pending multi-byte sequence
+      if (onLine && carry !== '') onLine(carry);
+      carry = '';
+    },
+  };
+}
+
 /** The same cap the bridge client enforces (fix F8): the child's
  * stdout is untrusted, so a runaway must end the run with the same
  * kind of error, not fill the memory. */
@@ -74,6 +110,9 @@ function runDbCheck(options) {
       let stdoutBytes = 0;
       let tooLarge = false;
       const stderrLines = [];
+      const stderrReader = lineCollector((line) => {
+        if (line !== '') stderrLines.push(line);
+      });
       let timedOut = false;
       let settled = false;
       const timer = setTimeout(() => {
@@ -115,9 +154,7 @@ function runDbCheck(options) {
         stdoutChunks.push(chunk);
       });
       child.stderr.on('data', (chunk) => {
-        for (const line of String(chunk).split('\n')) {
-          if (line !== '') stderrLines.push(line);
-        }
+        stderrReader.push(chunk); // whole streamed lines, chunk 3
       });
       child.on('error', (err) => {
         if (settled) return;
@@ -129,6 +166,9 @@ function runDbCheck(options) {
         if (settled) return;
         settled = true;
         clearTimeout(timer);
+        // Chunk 3: flush on close — the final partial line (no
+        // trailing newline, story 30) commits here.
+        stderrReader.flush();
         resolve({
           failed: false,
           timedOut,

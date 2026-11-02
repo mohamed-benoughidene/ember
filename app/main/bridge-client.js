@@ -48,6 +48,51 @@ function findHouseError(stderrLines, errorPattern) {
   return null;
 }
 
+/**
+ * Batch 5 chunk 3 (4.4 #1, #11; stories 18, 19, 30): a streaming line
+ * reader for one untrusted child stream.
+ *
+ * WHY: a real pipe does not care where lines end. A house error line
+ * can arrive in two piecewise writes (the first carries NO newline),
+ * and a multi-byte character can be cut at a chunk boundary. Decoding
+ * each chunk on its own (`String(chunk)`) splits such a line into
+ * broken halves and mangles the half characters into U+FFFD; a reader
+ * that only commits on '\n' drops the final unterminated line.
+ *
+ * This reader decodes with a STREAMING TextDecoder (a multi-byte
+ * character cut at a chunk boundary survives), keeps the tail in a
+ * carry buffer, commits a line only on '\n', and `flush()` (called
+ * once, on child close) commits the final partial line (story 30).
+ *
+ * @param {(line: string) => void} [onLine] called for every complete line
+ * @returns {{push: (chunk: Buffer) => void, flush: () => void}}
+ */
+function lineCollector(onLine) {
+  const decoder = new TextDecoder();
+  let carry = '';
+  function commit(text) {
+    // NOTE: empty lines are passed through — the stderr caller filters
+    // them (as before); the stdout caller parses them like any line.
+    if (onLine) onLine(text);
+  }
+  return {
+    push(chunk) {
+      carry += decoder.decode(chunk, { stream: true });
+      let newlineAt = carry.indexOf('\n');
+      while (newlineAt !== -1) {
+        commit(carry.slice(0, newlineAt));
+        carry = carry.slice(newlineAt + 1);
+        newlineAt = carry.indexOf('\n');
+      }
+    },
+    flush() {
+      carry += decoder.decode(); // ends any pending multi-byte sequence
+      if (carry !== '') commit(carry);
+      carry = '';
+    },
+  };
+}
+
 /** Reads: timeout + at most one automatic retry (plan §5.1). */
 const READ_COMMANDS = new Set([
   'list-items',
@@ -99,6 +144,43 @@ const NO_DOC_COMMANDS = new Set(['export', 'set-validated', 'clear-validated']);
 const SESSION_COMMANDS = new Set(['capture', 'relate', 'maintain']);
 
 const MAX_OUTPUT_BYTES = 32 * 1024 * 1024;
+
+/**
+ * Batch 5 chunk 6 (4.4 #6; spec bullet "the engine is started in its
+ * own process group… a short hard bound for pipe close"): after the
+ * ENGINE process is gone, its pipes may still be held open by a stray
+ * helper process (a grandchild that inherited them). A settle that
+ * waits on pipe close alone would wait for that helper's lifetime, so
+ * the settle gives the pipes ONE short hard bound after process exit
+ * and then finishes with whatever arrived.
+ */
+const PIPE_CLOSE_BOUND_MS = 3_000;
+
+/**
+ * Kill the engine's WHOLE process group (4.4 #6): children spawn
+ * `detached`, so the child leads its own group and a negative-pid
+ * signal reaches every member — a stuck grandchild included.
+ * `child.kill` alone only ever hit the immediate child and left the
+ * helper holding the pipes. Errors mean the target is already gone.
+ */
+function killProcessGroup(child, signal) {
+  try {
+    process.kill(-child.pid, signal);
+  } catch {
+    /* the process group is already gone */
+  }
+  try {
+    child.kill(signal);
+  } catch {
+    /* already gone */
+  }
+}
+
+/** TERM first (a polite chance to exit), KILL as the backstop. */
+function stopEngineTree(child) {
+  killProcessGroup(child, 'SIGTERM');
+  setTimeout(() => killProcessGroup(child, 'SIGKILL'), 1000);
+}
 
 /**
  * @param {object} options
@@ -158,63 +240,66 @@ function createBridgeClient(options) {
         child = spawnFn(argv[0], argv.slice(1), {
           env: childEnv(),
           stdio: [stdinMode, 'pipe', 'pipe'],
+          // Batch 5 chunk 6 (4.4 #6): the engine leads its OWN process
+          // group, so the timeout kill below reaches grandchildren too.
+          detached: true,
         });
       } catch (err) {
         resolve({ failed: true, error: appErrorInfo('APP-001', `${WHERE}.runCommand`, safeText(err)) });
         return;
       }
-      const stdoutChunks = [];
       const stderrLines = [];
+      // Batch 5 chunk 3 (4.4 #1, #11): whole streamed lines.
+      const stdoutDecoder = new TextDecoder();
+      const stderrReader = lineCollector((line) => {
+        if (line !== '') stderrLines.push(line);
+      });
+      let stdoutText = '';
       let stdoutBytes = 0;
       let tooLarge = false;
       let timedOut = false;
       let settled = false;
+      // Batch 5 chunk 6: armed on process 'exit' — the short hard
+      // bound after which the run settles even if the pipes are still
+      // held open by a stray grandchild.
+      let pipeBoundTimer = null;
 
       const timer = setTimeout(() => {
         timedOut = true;
-        try {
-          child.kill('SIGTERM');
-        } catch {
-          /* already gone */
-        }
-        setTimeout(() => {
-          try {
-            child.kill('SIGKILL');
-          } catch {
-            /* already gone */
-          }
-        }, 1000);
+        stopEngineTree(child); // chunk 6: the WHOLE group, not just the child
       }, timeoutMs);
 
       child.stdout.on('data', (chunk) => {
         stdoutBytes += chunk.length;
         if (stdoutBytes > MAX_OUTPUT_BYTES) {
           tooLarge = true;
-          try {
-            child.kill('SIGTERM');
-          } catch {
-            /* already gone */
-          }
+          stopEngineTree(child);
           return;
         }
-        stdoutChunks.push(chunk);
+        // Streamed decode (chunk 3): a multi-byte character cut at a
+        // chunk boundary survives; the pieces join into the document.
+        stdoutText += stdoutDecoder.decode(chunk, { stream: true });
       });
       child.stderr.on('data', (chunk) => {
-        for (const line of String(chunk).split('\n')) {
-          if (line !== '') stderrLines.push(line);
-        }
+        stderrReader.push(chunk); // whole streamed lines, chunk 3
       });
 
       const finish = () => {
         if (settled) return;
         settled = true;
         clearTimeout(timer);
+        clearTimeout(pipeBoundTimer);
+        // Chunk 3: flush on close — the final partial lines (no
+        // trailing newline, and any pending multi-byte bytes) commit
+        // here, which is the ONLY place that can see them.
+        stdoutText += stdoutDecoder.decode();
+        stderrReader.flush();
         resolve({
           failed: false,
           timedOut,
           tooLarge,
           exitCode: typeof child.exitCode === 'number' ? child.exitCode : child.signalCode,
-          stdout: Buffer.concat(stdoutChunks).toString('utf8'),
+          stdout: stdoutText,
           stderrLines,
         });
       };
@@ -223,6 +308,15 @@ function createBridgeClient(options) {
         settled = true;
         clearTimeout(timer);
         resolve({ failed: true, error: appErrorInfo('APP-001', `${WHERE}.runCommand`, safeText(err)) });
+      });
+      child.on('exit', () => {
+        // Batch 5 chunk 6: the process is gone — settle is no longer
+        // chained to pipe close (a grandchild may hold the pipes
+        // forever). Give the readers ONE short hard bound to catch the
+        // last bytes, then settle with what arrived. Normal runs never
+        // wait this long: 'close' below fires first.
+        if (settled) return;
+        pipeBoundTimer = setTimeout(finish, PIPE_CLOSE_BOUND_MS);
       });
       child.on('close', finish);
     });
@@ -345,7 +439,13 @@ function createBridgeClient(options) {
     const argv = buildArgv(name, args, ['--confirm', 'json']);
     let child;
     try {
-      child = spawnFn(argv[0], argv.slice(1), { env: childEnv(), stdio: ['pipe', 'pipe', 'pipe'] });
+      child = spawnFn(argv[0], argv.slice(1), {
+        env: childEnv(),
+        stdio: ['pipe', 'pipe', 'pipe'],
+        // Batch 5 chunk 6 (4.4 #6): the session engine leads its OWN
+        // process group, so every kill below reaches grandchildren too.
+        detached: true,
+      });
     } catch (err) {
       child = null;
       return deadSession(appErrorInfo('APP-001', `${WHERE}.runConfirmSession`, safeText(err)));
@@ -353,6 +453,10 @@ function createBridgeClient(options) {
 
     const listeners = { event: [], error: [], exit: [] };
     const stderrLines = [];
+    // Batch 5 chunk 3 (4.4 #1, #11): whole streamed lines.
+    const stderrReader = lineCollector((line) => {
+      if (line !== '') stderrLines.push(line);
+    });
     // Fix F4: two limits (I15 bounds both). `idle` = no child output
     // for sessionIdleMs. `prompt-wait` = the child asked a question
     // and the USER has not answered for sessionPromptWaitMs (default
@@ -364,6 +468,35 @@ function createBridgeClient(options) {
     let awaitingAnswer = false;
     let finished = false;
     let exitCode = null;
+    // Batch 5 chunk 6: armed on process 'exit' — the short hard bound
+    // after which the session settles even when a stray grandchild
+    // still holds the pipes open.
+    let pipeBoundTimer = null;
+    // Batch 5 chunk 5 (4.2 #14, story 33): the session's stdout is
+    // untrusted output too — track its bytes against the SAME cap the
+    // one-shot path has and end the session with the named cap error.
+    let stdoutBytes = 0;
+    // Batch 5 chunk 7 (N3; 4.4 #9, #10; stories 22, 29): state for the
+    // ONE settle rule. `stopRequested` is set ONLY by the app's own
+    // stop() (story 22's "Stopped"). `sawAnyEvent`/`sawSummary` track
+    // whether the engine delivered a result (the summary event of a
+    // finished confirm loop, or any event for the shapes whose end IS
+    // a printed answer: the dry-run document, the empty-pool line —
+    // both exit 0 with no summary event by the engine's own design).
+    // `terminalEmitted` makes ONE settled error the maximum, so the
+    // named errors below (APP-008 limits, APP-002 cap/stdin/garbage,
+    // APP-001 spawn, the engine's house line) are never merged into
+    // the new code and never doubled.
+    let stopRequested = false;
+    let sawAnyEvent = false;
+    let sawSummary = false;
+    let terminalEmitted = false;
+
+    function emitTerminal(info) {
+      if (terminalEmitted) return;
+      terminalEmitted = true;
+      emitError(info);
+    }
 
     function armOutputIdle() {
       idleTimer = setTimeout(() => finish(new Error('idle')), sessionIdleMs);
@@ -388,64 +521,143 @@ function createBridgeClient(options) {
       if (finished) return;
       finished = true;
       clearTimeout(idleTimer);
-      try {
-        child.kill('SIGKILL');
-      } catch {
-        /* already gone */
-      }
+      clearTimeout(pipeBoundTimer);
+      // Chunk 6: the whole process group — a grandchild holding the
+      // pipes would otherwise outlive the session.
+      stopEngineTree(child);
       if (cause && cause.message === 'idle') {
-        emitError(appErrorInfo('APP-008', `${WHERE}.runConfirmSession`, `ember ${name} produced no output for ${sessionIdleMs} ms and was stopped`));
+        emitTerminal(appErrorInfo('APP-008', `${WHERE}.runConfirmSession`, `ember ${name} produced no output for ${sessionIdleMs} ms and was stopped`));
       } else if (cause && cause.message === 'prompt-wait') {
-        emitError(appErrorInfo('APP-008', `${WHERE}.runConfirmSession`, `ember ${name} has been waiting for an answer for ${sessionPromptWaitMs} ms and was stopped`));
+        emitTerminal(appErrorInfo('APP-008', `${WHERE}.runConfirmSession`, `ember ${name} has been waiting for an answer for ${sessionPromptWaitMs} ms and was stopped`));
       }
       const first = stderrLines[0] ?? '';
       const parsed = exitCode === 1 ? findHouseError(stderrLines, errorPattern) : null;
-      if (parsed) emitError(parsed);
+      if (parsed) emitTerminal(parsed);
+      // Batch 5 chunk 7 (N3; stories 22, 29): the two-way settle rule.
+      // The app's OWN stop() is a quiet end — no error. An end that
+      // carries NEITHER the app's stop, NOR one of the named errors
+      // above (the two APP-008 limits, the cap/stdin/garbage APP-002s,
+      // the spawn APP-001, the engine's own house line), NOR a
+      // delivered result settles on exactly ONE code:
+      // APP-009 EmberStoppedUnexpectedly. No result means: the child
+      // was killed by a signal (story 22 — any other engine death says
+      // so, even one that had already printed events), or it ended
+      // with no validated session output at all (story 29), or it
+      // exited non-zero with no readable house line and no summary
+      // event (the engine died before its result).
+      const endedBySignal = typeof exitCode !== 'number';
+      const nonZero = typeof exitCode === 'number' && exitCode !== 0;
+      const houseLineFound = nonZero ? findHouseError(stderrLines, errorPattern) : null;
+      if (
+        !stopRequested &&
+        !terminalEmitted &&
+        (endedBySignal || !sawAnyEvent || (nonZero && !sawSummary && houseLineFound === null))
+      ) {
+        const reason = endedBySignal
+          ? `it was killed by a signal (${exitCode ?? 'unknown signal'})`
+          : nonZero
+            ? `it exited with code ${exitCode} and sent no readable error`
+            : 'it ended before its first output';
+        emitTerminal(
+          appErrorInfo('APP-009', `${WHERE}.runConfirmSession`, `ember ${name} ended early (${reason}); nothing was half-written`),
+        );
+      }
       // [app 12] the session is over: the knowledge base may have changed.
       if (onActivity) onActivity(name);
       for (const cb of listeners.exit) cb({ exitCode });
     }
 
-    child.stdout.setEncoding('utf8');
-    let lineBuffer = '';
-    child.stdout.on('data', (chunk) => {
-      bumpIdle();
-      lineBuffer += chunk;
-      let newlineAt = lineBuffer.indexOf('\n');
-      while (newlineAt !== -1) {
-        const line = lineBuffer.slice(0, newlineAt);
-        lineBuffer = lineBuffer.slice(newlineAt + 1);
-        const result = parseEventLine(line);
-        if (!result.ok) {
-          emitError(result.error); // garbage line -> APP-002, D4
-          finish(null);
-          return;
-        }
-        for (const cb of listeners.event) cb(result.event);
-        // F4: a prompt means the engine waits for the USER now, not
-        // for output — arm the long prompt-wait limit.
-        if (result.event.event === 'prompt') {
-          awaitingAnswer = true;
-          bumpIdle();
-        }
-        newlineAt = lineBuffer.indexOf('\n');
+    function handleEventLine(line) {
+      const result = parseEventLine(line);
+      if (!result.ok) {
+        emitTerminal(result.error); // garbage line -> APP-002, D4
+        finish(null);
+        return;
       }
+      // Chunk 7: a DELIVERED event is a result — the shapes that end
+      // by printing (the dry-run document, the empty-pool line) exit 0
+      // with no summary event by the engine's own design.
+      sawAnyEvent = true;
+      if (result.event.event === 'summary') sawSummary = true;
+      for (const cb of listeners.event) cb(result.event);
+      // F4: a prompt means the engine waits for the USER now, not
+      // for output — arm the long prompt-wait limit.
+      if (result.event.event === 'prompt') {
+        awaitingAnswer = true;
+        bumpIdle();
+      }
+    }
+    // Chunk 3: the stream is decoded with a streaming TextDecoder and
+    // lines commit only on '\n' — an event line split across two pipe
+    // writes (even mid multi-byte character) still parses.
+    // Chunk 5 (4.4 #5): bumpIdle is fed by the LINE reader, so the
+    // idle timer resets only when a COMPLETE line arrives — a chatty
+    // child that never finishes a line still times out on idle, even
+    // though its raw chunks keep arriving.
+    const stdoutReader = lineCollector((line) => {
+      bumpIdle();
+      handleEventLine(line);
+    });
+    child.stdout.on('data', (chunk) => {
+      stdoutBytes += chunk.length;
+      if (stdoutBytes > MAX_OUTPUT_BYTES) {
+        // 4.2 #14: end the session with the same named cap error the
+        // one-shot interpret() step returns, then finish() SIGKILLs
+        // the flooding child.
+        if (!finished) {
+          emitTerminal(appErrorInfo('APP-002', `${WHERE}.runConfirmSession`, `ember ${name} printed more than ${MAX_OUTPUT_BYTES} bytes`));
+          finish(null);
+        }
+        return;
+      }
+      stdoutReader.push(chunk);
     });
     child.stderr.on('data', (chunk) => {
-      for (const line of String(chunk).split('\n')) {
-        if (line !== '') stderrLines.push(line);
-      }
+      stderrReader.push(chunk);
+    });
+    // Batch 5 chunk 5 (4.4 #2): an answer written after the engine
+    // stopped reading its stdin raises `write EPIPE` as an 'error'
+    // event on this stdin stream. UNHANDLED, that error would take
+    // down the whole app process (the reproduced exit-crash class of
+    // finding 4.4 #2). With the handler it surfaces as the session's
+    // named error and the session ends quietly.
+    child.stdin.on('error', (err) => {
+      if (finished) return;
+      emitTerminal(appErrorInfo('APP-002', `${WHERE}.runConfirmSession`, `the engine stopped reading its stdin; the answer could not be delivered: ${clip(err instanceof Error ? err.message : String(err))}`));
+      finish(null);
     });
     child.on('error', (err) => {
       exitCode = null;
-      emitError(appErrorInfo('APP-001', `${WHERE}.runConfirmSession`, safeText(err)));
+      emitTerminal(appErrorInfo('APP-001', `${WHERE}.runConfirmSession`, safeText(err)));
       finish(null);
+    });
+    child.on('exit', (code) => {
+      // Batch 5 chunk 6 (4.4 #6): the engine exited — remember its
+      // real exit even if the pipes never close (a grandchild holds
+      // them), and give the readers ONE short hard bound before the
+      // session settles anyway. The 'close' handler below settles
+      // sooner when the pipes close normally.
+      exitCode = typeof code === 'number' ? code : (child.signalCode ?? null);
+      if (finished) return;
+      pipeBoundTimer = setTimeout(() => {
+        // Pipe close never came (4.4 #6): flush the partial lines the
+        // same way the 'close' handler does, then settle.
+        stdoutReader.flush();
+        stderrReader.flush();
+        finish(null);
+      }, PIPE_CLOSE_BOUND_MS);
     });
     child.on('close', (code) => {
-      exitCode = code;
+      exitCode = typeof code === 'number' ? code : (child.signalCode ?? exitCode);
+      if (!finished) {
+        // Chunk 3 (story 30): flush on close — the final partial line
+        // (NO trailing newline, story 30) and any pending multi-byte
+        // bytes commit here, BEFORE the exit callbacks fire.
+        stdoutReader.flush();
+        stderrReader.flush();
+      }
       finish(null);
     });
-
     return {
       /** A validated session event: {event: 'block'|'prompt'|'message'|'summary', ...}. */
       on(channel, cb) {
@@ -471,19 +683,21 @@ function createBridgeClient(options) {
         bumpIdle();
       },
       /** Stop: close stdin (the engine reads it as a quit, exit 2); a
-       * backstop kill fires only if the child ignores the closed pipe. */
+       * backstop kill fires only if the child ignores the closed pipe —
+       * and since chunk 6 it reaches the WHOLE process group, so a
+       * grandchild holding the pipes cannot survive the session.
+       * Chunk 7 (story 22): the flag is NOT just documentation — it is
+       * the ONE thing that separates the app's own Stop ("Stopped", no
+       * error) from every other end in finish()'s settle rule. */
       stop() {
+        stopRequested = true;
         try {
           child.stdin.end();
         } catch {
           /* already closed */
         }
         setTimeout(() => {
-          try {
-            child.kill('SIGKILL');
-          } catch {
-            /* already gone */
-          }
+          killProcessGroup(child, 'SIGKILL');
         }, 2000);
       },
     };

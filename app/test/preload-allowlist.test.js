@@ -7,7 +7,8 @@
  *
  * Three pins:
  * 1. the preload file exposes EXACTLY the named list (15 after step
- *    04; 42 with the Batch 2 Chunk 13 crash channels), over
+ *    04; 42 with the Batch 2 Chunk 13 crash channels; 43 with story
+ *    13's `ember:textFocusChanged` push), over
  *    contextBridge, requiring only `electron`;
  * 2. every renderer file (any subfolder, .js and .mjs) contains no
  *    Node access at all (no require, no process, no Electron import);
@@ -89,6 +90,12 @@ const CRASH_CHANNELS = ['ember:crashReport', 'ember:crashReportFolder'];
    onMenuRequest in the preload, pinned below like the other pushes. */
 const MENU_PUSH_CHANNELS = ['ember:menuRequest'];
 const ADD_PUSH_CHANNELS = ['ember:addEvent', 'ember:addExit'];
+/* Story 13 (finding 4.9 #14): the text-field focus push — ONE invoke
+   channel, renderer -> main, a single boolean payload (true while a
+   text field holds the keys, false the moment none does). Not a push
+   subscription: only main ever acts on it (the Edit menu's role
+   flip); the renderer gets a plain {ok} back. */
+const TEXT_FOCUS_CHANNELS = ['ember:textFocusChanged'];
 /* App 06 (ticket A35): the Link items session channels, merged after
    the Fix and close block (the merged file's order: base, Add,
    Keep safe, Fix and close, Link items). */
@@ -131,8 +138,8 @@ test('the preload exposes exactly the pinned list over contextBridge', () => {
      the two Settings channels (app 10), the four Clean up channels
      (App 08), then the six Link items channels (App 06), then the two
      Quick popup channels (app 11), then the two Crash report channels
-     (Batch 2 Chunk 13). */
-  assert.deepEqual(names, [...EXPECTED_CHANNELS, ...ADD_SESSION_CHANNELS, ...KEEP_SAFE_CHANNELS, ...FIX_CLOSE_CHANNELS, ...SETTINGS_CHANNELS, ...MAINTAIN_CHANNELS, ...LINK_CHANNELS, ...QUICK_POPUP_CHANNELS, ...CRASH_CHANNELS]);
+     (Batch 2 Chunk 13), then the one text-focus channel (story 13). */
+  assert.deepEqual(names, [...EXPECTED_CHANNELS, ...ADD_SESSION_CHANNELS, ...KEEP_SAFE_CHANNELS, ...FIX_CLOSE_CHANNELS, ...SETTINGS_CHANNELS, ...MAINTAIN_CHANNELS, ...LINK_CHANNELS, ...QUICK_POPUP_CHANNELS, ...CRASH_CHANNELS, ...TEXT_FOCUS_CHANNELS]);
   assert.equal((PRELOAD.match(/contextBridge\.exposeInMainWorld/g) ?? []).length, 1, 'exactly one expose');
 });
 
@@ -167,7 +174,7 @@ test('every preloaded call has a registered handler in main/ipc.js (no dead, no 
   for (const channel of EXPECTED_CHANNELS) {
     assert.ok(registered.includes(channel), `${channel} is preloaded but never handled`);
   }
-  assert.deepEqual(registered.sort(), [...EXPECTED_CHANNELS, ...KEEP_SAFE_CHANNELS, ...FIX_CLOSE_CHANNELS, ...SETTINGS_CHANNELS, ...MAINTAIN_CHANNELS, ...QUICK_POPUP_CHANNELS, ...CRASH_CHANNELS].sort(), 'ipc.js registered a channel outside the allowlist');
+  assert.deepEqual(registered.sort(), [...EXPECTED_CHANNELS, ...KEEP_SAFE_CHANNELS, ...FIX_CLOSE_CHANNELS, ...SETTINGS_CHANNELS, ...MAINTAIN_CHANNELS, ...QUICK_POPUP_CHANNELS, ...CRASH_CHANNELS, ...TEXT_FOCUS_CHANNELS].sort(), 'ipc.js registered a channel outside the allowlist');
 });
 
 /* ==== App 05 (ticket A34): the Add session channels are registered by
@@ -210,6 +217,17 @@ test('the relate-session channels are preloaded, registered and pushed by name',
 });
 /* ==== end App 06 block ==== */
 
+/* ==== Batch 5 (story 24 / D-24's safety half): the window is a closed
+   box — navigation and new windows are denied in main.js, pinned here
+   statically next to the isolation switches so neither can regress. ==== */
+test('the main window denies navigation and new windows (story 24)', () => {
+  assert.match(MAIN, /webContents\.on\('will-navigate'/, 'main.js never registers will-navigate');
+  const navigate = MAIN.match(/webContents\.on\('will-navigate'[\s\S]{0,200}/);
+  assert.ok(navigate && navigate[0].includes('preventDefault()'), 'will-navigate must be denied with event.preventDefault()');
+  assert.match(MAIN, /setWindowOpenHandler\(\s*\(\)\s*=>\s*\(\{\s*action:\s*'deny'\s*\}\)\s*\)/, 'setWindowOpenHandler must deny new windows');
+});
+/* ==== end Batch 5 story 24 block ==== */
+
 /* ==== App 12 (ticket A41): the application menu's push channel is
    subscribed by the preload, sent by main by name, and never an
    invoke — pinned here so it cannot go dead or hidden. ==== */
@@ -224,3 +242,28 @@ test('the menu push channel is preloaded, sent by name, and reachable', () => {
   assert.ok(!registered.includes('ember:menuRequest'), 'the push channel must not be an invoke handler');
 });
 /* ==== end App 12 block ==== */
+
+/* ==== Story 13 (finding 4.9 #14): the text-field focus push — the
+   ONE boolean the renderer may hand main, so the Edit menu flips to
+   Electron's text Undo/Redo roles while a field holds the keys (and
+   back to the Ember derivation the moment none does). Pinned here so
+   the route can neither go dead, grow, nor lose its wiring: invoke
+   by name with a boolean, validated once in ipc.js, and main.js
+   reading the value into the menu context and rebuilding on the
+   flip. (The template half — context {textFieldFocused:true} ->
+   roles with no dispatch — is menu-template.test.js's own pin.) ==== */
+test('the text-focus channel is invoke-only by name, boolean-validated, and wired into the menu context (story 13)', () => {
+  // Preload: one allowlist entry + one invoke; never a push subscription.
+  assert.ok(PRELOAD.includes("'ember:textFocusChanged'"), 'ember:textFocusChanged missing from the preload allowlist');
+  assert.match(PRELOAD, /textFocusChanged: \(focused\) => ipcRenderer\.invoke\('ember:textFocusChanged', focused\)/, 'the preload must expose exactly one invoke under this name');
+  assert.equal((PRELOAD.match(/ember:textFocusChanged/g) ?? []).length, 2, 'the channel must appear only in the allowlist and the invoke (no subscription)');
+  // ipc.js registers it and validates the payload ONCE at the edge.
+  assert.match(IPC, /'ember:textFocusChanged':/, 'the text-focus channel is not registered in ipc.js');
+  assert.match(IPC, /typeof payload !== 'boolean'/, 'the text-focus handler must validate the boolean itself');
+  // main.js carries the value through: the hook reaches registerIpcHandlers,
+  // the menu context reads the stored value, and the flip stores it.
+  assert.match(MAIN, /onTextFocusChanged/, 'main.js never hands the focus change to ipc.js');
+  assert.match(MAIN, /textFieldFocused: menuState\.textFieldFocused/, "the menu context does not carry the focus value");
+  assert.match(MAIN, /menuState\.textFieldFocused = focused/, 'main.js never stores the pushed focus value');
+});
+/* ==== end story 13 block ==== */

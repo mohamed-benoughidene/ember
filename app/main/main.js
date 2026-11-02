@@ -48,12 +48,27 @@ let mainWindow = null;
 // The popup's last "open the main window on setup" request, held when
 // the main window's renderer is still loading (see openMainRequest).
 let pendingOpenRequest = null;
+// Batch 5 4.9 #6: true from 'before-quit' until the end — only a REAL
+// quit may destroy windows (the close-to-tray intercept below and the
+// window-all-closed guard both read it).
+let quitting = false;
 
 function appVersion() {
   try {
     return app.getVersion();
   } catch {
     return '0.0.0';
+  }
+}
+
+/** Focus (and restore/hide-reopen) the one main window. The single
+ * seam the tray's Open Ember, the popup's story-93 link via
+ * openMainRequest, and the second-instance event all share. */
+function focusMainWindow() {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    if (mainWindow.isMinimized()) mainWindow.restore();
+    mainWindow.show();
+    mainWindow.focus();
   }
 }
 
@@ -79,6 +94,18 @@ function createWindow({ showOnReady = true } = {}) {
   mainWindow.once('ready-to-show', () => {
     if (showOnReady) mainWindow.show();
   });
+  // Batch 5 (story 24, D-24's safety half): the window is a closed
+  // box. Any in-page navigation attempt is refused (the renderer is
+  // the one local page; its own router never uses real navigation),
+  // and no window.open / target=_blank ever opens a new window.
+  // A same-URL reload is NOT navigation away (Keep safe's "Show the
+  // new file" reloads the one local page after a kb change), so the
+  // deny guard must not swallow it.
+  mainWindow.webContents.on('will-navigate', (event, url) => {
+    if (url === mainWindow.webContents.getURL()) return;
+    event.preventDefault();
+  });
+  mainWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   // The popup's held "open setup" request re-sends once the page can
   // hear it (the early-push race; see openMainRequest).
   mainWindow.webContents.on('did-finish-load', () => {
@@ -86,6 +113,16 @@ function createWindow({ showOnReady = true } = {}) {
       mainWindow.webContents.send('ember:openRequest', pendingOpenRequest);
       pendingOpenRequest = null;
     }
+  });
+  mainWindow.on('close', (event) => {
+    // Batch 5 (story 5, D-24): closing the window never ends Ember —
+    // it hides to the tray (the tray fallback / popup / second-launch
+    // routes can bring it back) and the process stays. Only a REAL
+    // quit (the tray's Quit, app.quit()) reaches here with `quitting`
+    // already set by 'before-quit', so quitting still closes windows.
+    if (quitting) return;
+    event.preventDefault();
+    if (!mainWindow.isDestroyed()) mainWindow.hide();
   });
   mainWindow.on('closed', () => {
     mainWindow = null;
@@ -131,14 +168,6 @@ function wireIpc(services) {
   // Electron edge effects stay here, at the edge (T2).
   const { Tray, Menu } = require('electron');
   const { createShortcutManager, createTrayManager, registerSettingsShortcut, bootShortcutFor } = require('./shortcuts');
-
-  const focusMainWindow = () => {
-    if (mainWindow && !mainWindow.isDestroyed()) {
-      if (mainWindow.isMinimized()) mainWindow.restore();
-      mainWindow.show();
-      mainWindow.focus();
-    }
-  };
 
   /* =================================================================
      APP STEP 11 (ticket A40): the quick popup (stories 90-95; plan
@@ -255,6 +284,9 @@ function wireIpc(services) {
     sidebarHidden: false,
     undo: deriveUndoMenuState(null, 'undo'),
     redo: deriveUndoMenuState(null, 'redo'),
+    // Story 13 (4.9 #14): the renderer's pushed text-field focus state
+    // (ember:textFocusChanged); flips Edit's Undo/Redo to the roles.
+    textFieldFocused: false,
   };
 
   let labelClient = null; // ONE client for the label dry-runs, per file
@@ -421,12 +453,28 @@ function wireIpc(services) {
         jobs: { order: s.menuOrder, hidden: s.menuHidden },
         undo: menuState.undo,
         redo: menuState.redo,
+        textFieldFocused: menuState.textFieldFocused,
       };
     },
     dispatch: dispatchMenuAction,
   });
   menuManager.refresh(); // the menu exists from boot (about/quit/Help work pre-window)
   scheduleUndoLabelRefresh(); // the first real derivation, ~250 ms after boot
+
+  /**
+   * Story 13 (finding 4.9 #14): the renderer pushes its text-field
+   * focus state (one boolean, `ember:textFocusChanged`). The Edit menu
+   * REBUILDS only when the value FLIPS — Electron role Undo/Redo while
+   * a field holds the keys (the role's own text undo, no Ember job
+   * action routable), the Ember derivation the moment no field does
+   * (byte-identical to the old menu). Same rebuild path as every other
+   * context change: the manager replaces the whole menu.
+   */
+  const setTextFocus = (focused) => {
+    if (menuState.textFieldFocused === focused) return;
+    menuState.textFieldFocused = focused;
+    menuManager.refresh();
+  };
   /* === App 12 menu block ends === */
 
 
@@ -535,7 +583,18 @@ function wireIpc(services) {
     onSettingsSaved: () => {
       menuManager.refresh();
       scheduleUndoLabelRefresh();
+      // Batch 5 chunk 21 (story 9, 4.9 #8): a settings save that leaves
+      // a knowledge base set (first run's step-1 save included — it
+      // goes through the same handler) must leave the capture shortcut
+      // live WITHOUT a restart. The same bootShortcutFor choice the
+      // boot block below uses, through the same shortcutManager seam;
+      // an OS refusal lands in the shipped APP-005 tray fallback
+      // (onFailure above — built once per run), never in silence.
+      const accelerator = bootShortcutFor(services.settingsStore.load().settings);
+      if (accelerator !== null) shortcutManager.register(accelerator);
     },
+    // [story 13] the text-field focus flip (see the step-12 block above).
+    onTextFocusChanged: setTextFocus,
     /* --- Batch 2 Chunk 13: the EMBER-000 crash report's OS adapters
        (D-16): the real clipboard and shell for Copy crash report /
        Show file on the Add screen (Chunk 14). --- */
@@ -555,7 +614,8 @@ function wireIpc(services) {
   return { registered, openQuickPopup };
 }
 
-/** The normal boot: window + IPC, then idle until the window closes. */
+/** The normal boot: window + IPC, then idle — the window closing only
+ * parks Ember in the tray (story 5); a real quit ends the process. */
 function boot() {
   const services = buildServices();
   services.settingsStore.load(); // I13: loaded once at boot, passed down
@@ -605,19 +665,46 @@ async function runLaunchCheck() {
   app.exit(0);
 }
 
-app.whenReady().then(() => {
-  if (LAUNCH_CHECK) {
-    runLaunchCheck().catch((err) =>
-      failLaunchCheck(appErrorInfo('APP-000', 'main.main.runLaunchCheck', err instanceof Error ? err.message : 'unknown launch failure')),
-    );
-  } else {
-    boot();
-  }
-});
-
-app.on('window-all-closed', () => {
+// Batch 5 (stories 7, 8; 4.9 #7): ONE Ember at a time. The first
+// instance holds the lock; a second launch exits immediately, and the
+// first one takes the `second-instance` event to focus its window —
+// the user's second click on the icon lands on the window they
+// already have, never a second copy. The lock keys on the userData
+// path, so every throwaway-profile instance (e2e, launch checks) is
+// its own world and never steals another's lock.
+const gotLock = app.requestSingleInstanceLock();
+if (!gotLock) {
   app.quit();
-});
+} else {
+  app.on('second-instance', () => {
+    focusMainWindow();
+  });
+
+  app.whenReady().then(() => {
+    if (LAUNCH_CHECK) {
+      runLaunchCheck().catch((err) =>
+        failLaunchCheck(appErrorInfo('APP-000', 'main.main.runLaunchCheck', err instanceof Error ? err.message : 'unknown launch failure')),
+      );
+    } else {
+      boot();
+    }
+  });
+
+  app.on('before-quit', () => {
+    // The one edge where closing windows is allowed (see the close
+    // intercept in createWindow): a real quit is starting.
+    quitting = true;
+  });
+
+  app.on('window-all-closed', () => {
+    // Batch 5 4.9 #6: this stays the app-LIFETIME edge, but it quits
+    // ONLY when a real quit is in progress. The quick popup hides
+    // (never destroys — main/popup.js) and the main window's close is
+    // intercepted to the tray, so all-windows-gone can only ever
+    // happen while quitting itself is destroying them.
+    if (quitting) app.quit();
+  });
+}
 
 // NOTE: this module is Electron's main entry. The checks live in
 // test/launch-check.js (`npm run check:launch`) and

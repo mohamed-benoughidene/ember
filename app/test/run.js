@@ -19,16 +19,57 @@ const path = require('node:path');
 const filter = process.argv[2];
 const dir = __dirname;
 
-let files = fs
+const ALL_FILES = fs
   .readdirSync(dir)
   .filter((f) => f.endsWith('.test.js'))
   .sort()
   .map((f) => path.join(dir, f));
 
+let files = ALL_FILES;
+
 if (filter) files = files.filter((f) => path.basename(f).includes(filter));
 
 if (files.length === 0) {
   process.stderr.write(`no test file matches "${filter}"\n`);
+  process.exit(1);
+}
+
+/**
+ * Test-hygiene gate (N12, batch 5 chunk 2). A `t.test(...)` subtest that is
+ * neither awaited nor returned outlives its parent: node's runner then
+ * cancels it silently (node 22+) or never settles the run (node 24, the
+ * planted-demo evidence for this chunk). Option B, check-report decision 4:
+ * a text-level check, run over every *.test.js BEFORE `node --test` spawns.
+ * It can miss unusual shapes, but it never misses this one: the house rule
+ * (every file with subtests, e.g. maintain-words.test.js) is
+ * `await t.test(...)` / `return t.test(...)` on one line.
+ *
+ * A file whose line holds a `t.test(` call site not preceded on that line
+ * by `await` or `return` is refused: named, one line, then the run stops.
+ */
+function floatingSubtestLine(file) {
+  const lines = fs.readFileSync(file, 'utf8').split('\n');
+  for (let i = 0; i < lines.length; i++) {
+    const match = /\bt\.test\s*\(/.exec(lines[i]);
+    if (!match) continue;
+    const before = lines[i].slice(0, match.index).trim();
+    if (/(^|\s)(await|return)$/.test(before)) continue;
+    return i + 1;
+  }
+  return null;
+}
+
+const refused = [];
+for (const file of ALL_FILES) {
+  const line = floatingSubtestLine(file);
+  if (line) {
+    const rel = path.relative(path.join(dir, '..'), file);
+    refused.push(`refused by the test-hygiene gate: ${rel}:${line} has a t.test(...) subtest that is neither awaited nor returned — the run stops here (await it or return it)`);
+  }
+}
+
+if (refused.length > 0) {
+  for (const line of refused) process.stderr.write(`${line}\n`);
   process.exit(1);
 }
 

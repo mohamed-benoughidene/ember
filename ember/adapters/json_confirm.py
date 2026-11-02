@@ -12,7 +12,9 @@
   `{"event": "summary", ...}`.
 - stdin carries ANSWERS, one JSON object per line: `{"answer": "<text>"}`.
   stdin data is untrusted and is validated ONCE here (D4): a line that is
-  not exactly `{"answer": <string>}` raises `BRIDGE-001 AnswerLineInvalid`
+  not exactly `{"answer": <string>}` — including one beyond the line
+  length cap, or with bytes that do not decode (N13) — raises
+  `BRIDGE-001 AnswerLineInvalid`
   internally and the prompt is re-asked ONCE; a second bad line, or the end
   of input, raises the engine's own `UserAbort` (exit 2), exactly as the
   terminal classes do on a closed stdin.
@@ -77,6 +79,12 @@ _EDIT_KIND_PREFIXES = (
 
 # One bracketed letter per choice segment: "[y]es / [n]o / [e]dit / [q]uit".
 _CHOICE_LETTER = re.compile(r"\[([a-z])\]")
+
+# The widest answer line the engine will ever read (N13, 4.4 #12). Real
+# answers are a choice letter or short edit text; a line beyond this cap is
+# a flooding feeder, so the reader stops there instead of growing memory
+# without bound (the cap is counted on the line WITHOUT its newline).
+_MAX_ANSWER_LINE = 1_000_000
 
 
 def choices_from_prompt(prompt: str) -> list[str]:
@@ -179,13 +187,25 @@ class _JsonConfirm:
                 raise self.user_abort("invalid answer line") from exc
 
     def _read_answer_line(self) -> str:
-        """Read and validate ONE stdin answer line. A valid `{"answer": ...}`
-        line returns its text; end of input raises the engine's own
-        `UserAbort` (downstream abort signal, nothing to re-ask); an invalid
-        line raises `BRIDGE-001 AnswerLineInvalid` for the caller to count."""
-        line = self._stdin.readline()
+        """Read and validate ONE stdin answer line, bounded (N13). A valid
+        `{"answer": ...}` line returns its text; end of input raises the
+        engine's own `UserAbort` (downstream abort signal, nothing to
+        re-ask); an over-long line, or bytes that do not decode, raise
+        `BRIDGE-001 AnswerLineInvalid` for the caller to count — the same
+        house path, never a raw `UnicodeDecodeError` and never a read
+        beyond the cap, so a flooding feeder cannot grow memory."""
+        try:
+            line = self._stdin.readline(_MAX_ANSWER_LINE + 1)
+        except UnicodeDecodeError as exc:
+            raise AnswerLineInvalid("answer line is not decodable text") from exc
         if line == "":
             raise self.user_abort("input ended")
+        if len(line) > _MAX_ANSWER_LINE and not line.endswith("\n"):
+            # Over the cap with no newline in sight: refuse the flood here,
+            # before any of it is parsed or kept.
+            raise AnswerLineInvalid(
+                f"answer line exceeds {_MAX_ANSWER_LINE} characters"
+            )
         return _parse_answer(line)
 
     def write(self, text: str) -> None:

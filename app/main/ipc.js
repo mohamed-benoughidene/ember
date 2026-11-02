@@ -89,6 +89,11 @@ const WHERE = 'main.ipc';
  *   called after a successful settings save (the Menu pane's
  *   hide/reorder, a knowledge-base switch), so the menu rebuilds and
  *   the undo labels re-derive against the current file (null likewise)
+ * @param {((focused: boolean) => void)|null} [options.onTextFocusChanged]
+ *   story 13 (finding 4.9 #14): called with the renderer's pushed
+ *   text-field focus state after `ember:textFocusChanged`, so the
+ *   shell can flip the Edit menu between Electron's text Undo/Redo
+ *   roles and Ember's own derivation (null keeps the menu unflipped)
  * @param {{writeText: (text: string) => void}|null} [options.clipboard]
  *   the Electron clipboard adapter (Batch 2 Chunk 13: Copy crash
  *   report; null keeps an honest APP-000 refusal)
@@ -122,6 +127,8 @@ function registerIpcHandlers(options) {
     // [app 12] the menu's re-derive hooks; null keeps step-11 behaviour
     onBridgeActivity = null,
     onSettingsSaved = null,
+    // [story 13] the text-field focus hook; null keeps the menu unflipped
+    onTextFocusChanged = null,
     bootNotice = null,
     kbChooser = () => null,
     saveChooser = () => null,
@@ -400,6 +407,13 @@ function registerIpcHandlers(options) {
         !Number.isInteger(summary.item_count)
       ) {
         return { ok: false, error: appErrorInfo('APP-002', `${WHERE}.backupTo`, 'the backup did not report its verified copy') };
+      }
+      // The engine's report names the file it copied (BackupReport.path
+      // echoes the target argv verbatim). Resolved the same way on both
+      // sides, it must BE the chosen target — a report of some other
+      // file is not shown as this backup's copy (4.4 #14).
+      if (path.resolve(summary.path) !== path.resolve(targetPath)) {
+        return { ok: false, error: appErrorInfo('APP-002', `${WHERE}.backupTo`, 'the backup reported a different path than the chosen target') };
       }
       return { ok: true, data: { path: summary.path, schemaVersion: summary.schema_version, itemCount: summary.item_count, rotated: summary.rotated ?? null } };
     },
@@ -735,17 +749,42 @@ function registerIpcHandlers(options) {
   });
   /* --- App 11 block ends --- */
 
+  /* =================================================================
+     STORY 13 (finding 4.9 #14) — the text-field focus push (renderer
+     -> main, invoke-only), added at the END of the registration list
+     as its own bracketed block. One validated boolean: `true` while a
+     text field holds the keys, `false` the moment none does. The
+     shell decides what it means (the Edit menu's role flip, through
+     the onTextFocusChanged hook); a non-boolean is refused at this
+     edge — the handler never guesses.
+     ================================================================= */
+  Object.assign(handlers, {
+    'ember:textFocusChanged': (payload) => {
+      if (typeof payload !== 'boolean') {
+        return { ok: false, error: appErrorInfo('APP-004', `${WHERE}.textFocusChanged`, 'the focus change was not a boolean') };
+      }
+      if (typeof onTextFocusChanged === 'function') onTextFocusChanged(payload);
+      return { ok: true };
+    },
+  });
+  /* --- story 13 block ends --- */
+
   const names = Object.keys(handlers);
   for (const name of names) {
     ipcMain.handle(name, async (_event, payload) => {
       try {
         return await handlers[name](payload);
       } catch (err) {
-        // Never leak a raw error (which could carry paths and values)
-        // to the renderer: turn it into a named APP- error.
+        // Story 25 (4.9 #19): never leak a raw error (it can carry
+        // paths and values) across the IPC edge. The renderer gets the
+        // code and a generic sentence; the raw text stays in the app's
+        // own stderr log — one house line, with the code on it.
+        const message = err instanceof Error ? err.message : 'unknown error';
+        const oneLine = message.replace(/\s*\r?\n\s*/g, ' ');
+        process.stderr.write(`error: APP-002 BridgeOutputInvalid | ${WHERE}.${name} | ${oneLine}\n`);
         return {
           ok: false,
-          error: appErrorInfo('APP-002', `${WHERE}.${name}`, `the call failed unexpectedly: ${err instanceof Error ? err.message : 'unknown error'}`),
+          error: appErrorInfo('APP-002', `${WHERE}.${name}`, 'the call failed unexpectedly. Close and reopen Ember, then try again.'),
         };
       }
     });

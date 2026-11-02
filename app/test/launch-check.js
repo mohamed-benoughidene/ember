@@ -18,6 +18,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { APP_ROOT, REPO_ROOT } = require('./util');
+const { resolveEmberCommand } = require('../main/ember-command');
 
 const TIMEOUT_MS = 90_000;
 
@@ -31,8 +32,10 @@ function main() {
   // bin/ folder — there the SAME CLI runs as `python -m ember` (the
   // spike note: the entry point is ember/__main__.py), and the matrix
   // job builds the venv with the same layout on every OS.
-  // EMBER_APP_COMMAND is a space-split argv prefix (ember-command.js),
-  // so the child form is the same string on every platform.
+  // EMBER_APP_COMMAND is a JSON array — one exact argv (ember-command.js
+  // also accepts the older space-separated form; the array is exact even
+  // when a path holds a space) — so the child form is an argv array on
+  // every platform.
   const isWin = process.platform === 'win32';
   const venvPython = isWin ? path.join(REPO_ROOT, '.venv', 'Scripts', 'python.exe') : path.join(REPO_ROOT, '.venv', 'bin', 'python');
   const seedCmd = isWin ? venvPython : path.join(REPO_ROOT, '.venv', 'bin', 'ember');
@@ -42,17 +45,19 @@ function main() {
   // first move the app's first Add makes (init is a no-op on a file
   // that is already healthy and current, so re-seeding stays safe).
   const seedInitArgs = isWin ? ['-m', 'ember', 'init'] : ['init'];
-  let commandEnv = isWin ? `${venvPython} -m ember` : path.join(REPO_ROOT, '.venv', 'bin', 'ember');
-  const emberPresent = isWin ? seedCmd : commandEnv;
+  let commandArgv = isWin ? [venvPython, '-m', 'ember'] : [path.join(REPO_ROOT, '.venv', 'bin', 'ember')];
+  const emberPresent = commandArgv[0];
   if (!fs.existsSync(emberPresent)) {
     fail(`the project venv ember is missing (${emberPresent}) — this check reads a real knowledge base`);
   }
   // Test-only hook (I5): a fake engine records the FINAL child
   // environment. It replaces only the read command the app runs — the
   // strip, the key guard and the config-dir OK line below stay the
-  // assertion on every real launch.
+  // assertion on every real launch. The hook value parses with the
+  // SAME rule as EMBER_APP_COMMAND (a JSON array, or the older
+  // space-separated prefix — resolveEmberCommand holds one parser).
   if (process.env.EMBER_TEST_ENGINE) {
-    commandEnv = process.env.EMBER_TEST_ENGINE;
+    commandArgv = resolveEmberCommand({ EMBER_APP_COMMAND: process.env.EMBER_TEST_ENGINE });
   }
   // The Electron binary, resolved the portable way: under PLAIN Node
   // the electron npm package exports the path to the real binary on
@@ -104,7 +109,7 @@ function main() {
         ...childEnv,
         EMBER_APP_LAUNCH_CHECK: '1',
         EMBER_APP_DB: kbPath,
-        EMBER_APP_COMMAND: commandEnv,
+        EMBER_APP_COMMAND: JSON.stringify(commandArgv),
         RTI_FAKE_WORKDIR: workDir,
       },
       stdio: ['ignore', 'pipe', 'pipe'],

@@ -609,6 +609,22 @@ export function createAddScreen(ctx) {
     pane.addEventListener('keydown', keydownHandler);
   }
 
+  /* Batch 5 chunk 13 (stories 3, 4; findings 4.9 #3/#4/#5): the pane
+     element OUTLIVES this screen, so every keydown bound here would
+     keep pressing buttons after the user left Add — three visits pile
+     three handlers that never die. The shell calls dispose() on
+     navigation: the keys and the engine-event subscriptions end with
+     the screen (the running add session itself keeps running in the
+     app core; only this screen's listeners die). */
+  function dispose() {
+    if (keydownHandler) {
+      const pane = ctx.paneEl();
+      if (pane) pane.removeEventListener('keydown', keydownHandler);
+      keydownHandler = null;
+    }
+    unlisten();
+  }
+
   /* ---------------- the five-state gate ---------------- */
 
   async function render() {
@@ -628,5 +644,5 @@ export function createAddScreen(ctx) {
     renderGateAndForm();
   }
 
-  return { render, state };
+  return { render, state, dispose, stop: stopSession };
 }
