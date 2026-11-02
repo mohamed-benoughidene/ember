@@ -67,6 +67,7 @@ export function createCleanupScreen(ctx) {
   let rootEl = null;
   let handle = null; // the maintainApply session handle
   let keyHandler = null;
+  let keyOff = null; // the shell's active-screen key scope off() (chunk 13)
 
   /* ---------- frame ---------- */
 
@@ -485,16 +486,33 @@ export function createCleanupScreen(ctx) {
       }
     };
     // The loop owns the whole page while it is open, so the keys are
-    // bound at the document level (focus moves: buttons, the frame).
-    document.addEventListener('keydown', keyHandler);
+    // bound at the document level THROUGH the shell's active-screen
+    // scope (Batch 5 chunk 13, 4.9 #17): a later navigation makes these
+    // keys dead by token, and this screen's dispose removes them.
+    keyOff = ctx.screenKeys(keyHandler);
   }
 
   function disarmKeys() {
     if (keyHandler) {
-      document.removeEventListener('keydown', keyHandler);
+      if (keyOff) keyOff();
+      keyOff = null;
       keyHandler = null;
     }
   }
 
-  return { render, loadPreview };
+  /* Batch 5 chunk 13 (story 4): leaving Clean up mid-sweep ends the
+     sweep the same way the Stop button does — handle.stop() closes the
+     engine's stdin and the engine treats that as a quit (what was
+     written before stays in the ledger) — and the loop's document-level
+     keys die with the screen, so they can never act from another pane. */
+  function dispose() {
+    if (model.phase === 'applying' && handle) {
+      if (model.apply) model.apply.stopped = true;
+      handle.stop();
+      handle = null;
+    }
+    disarmKeys();
+  }
+
+  return { render, loadPreview, dispose };
 }

@@ -80,17 +80,58 @@ function screenCtxWithPaintRight() {
   return { ...ctx, renderFrame: painterFor(renderToken) };
 }
 
+/* --- Batch 5 chunk 13 (stories 3, 4; findings 4.9 #3, #4, #5, #17):
+   the shell owns THE one live screen. `navigate` disposes the screen
+   it leaves: a screen's key listeners and its engine work (its sweep
+   session, its timers) end when the user moves on. Screens attach
+   document-level keys THROUGH the shell (`ctx.screenKeys`), so a
+   hidden screen's keys are dead even if a dispose were forgotten —
+   only handlers created under the CURRENT render token fire. This is
+   the same token discipline as the paint right above, for keys. --- */
+let activeScreen = null;
+
+function disposeActiveScreen() {
+  const screen = activeScreen;
+  activeScreen = null;
+  if (screen && typeof screen.dispose === 'function') screen.dispose();
+}
+
+const screenKeyBindings = []; // {token, handler}; only token === renderToken fires
+
+function activateScreen(screen) {
+  activeScreen = screen;
+  return screen;
+}
+
 const ctx = {
   api: window.ember,
   state: null,
   params: null,
   paneEl: () => paneEl,
+  /** Batch 5 chunk 13 (4.9 #17): attach a document-level key handler
+    * that belongs to THIS screen only. It dies when the screen's own
+    * off() runs (dispose), and it is dead regardless once any later
+    * navigation bumps the render token. */
+  screenKeys(handler) {
+    const entry = { token: renderToken, handler };
+    screenKeyBindings.push(entry);
+    let attached = true;
+    return () => {
+      if (!attached) return;
+      attached = false;
+      const i = screenKeyBindings.indexOf(entry);
+      if (i !== -1) screenKeyBindings.splice(i, 1);
+    };
+  },
   renderFrame(html, wire) {
     paneEl.innerHTML = html;
     if (typeof wire === 'function' && paneEl.isConnected) wire(paneEl);
     paneEl.focus({ preventScroll: true });
   },
   navigate(id, params = null) {
+    // Batch 5 chunk 13: leaving a screen disposes it (its keys and
+    // engine work end with the navigation; stories 3, 4).
+    disposeActiveScreen();
     ctx.params = params;
     // [app 10] the settings screen retitles the window to name its
     // open pane (story 80); every other pane carries the plain title.
@@ -107,6 +148,7 @@ const ctx = {
     navEl.hidden = false;
   },
   openSetup() {
+    disposeActiveScreen(); // Batch 5 chunk 13: the pane is being left
     firstRunActive = true;
     document.body.classList.add('first-run');
     navEl.hidden = true;
@@ -145,6 +187,16 @@ window.ember.onOpenRequest((ask) => {
   if (ask && ask.view === 'setup') ctx.openSetup();
 });
 /* --- App 11 block ends --- */
+
+/* --- Batch 5 chunk 13 (4.9 #17): ONE dispatcher for every screen's
+   document-level keys. A handler created under an older token (a
+   hidden screen's) is never called, so hidden screens' keys are dead
+   by construction — the shell's active-screen scope. --- */
+document.addEventListener('keydown', (event) => {
+  for (const { token, handler } of screenKeyBindings.slice()) {
+    if (token === renderToken) handler(event);
+  }
+});
 
 /* --- [app 12] the application menu's one push channel (ticket A41):
    main only ASKS; this window's router and screens decide (B4). A
@@ -201,7 +253,7 @@ ctx.setCleanupBadge = (count) => {
    BEFORE the placeholder router below, because the interim pane list
    still carries 'cleanup' (placeholder.mjs is untouched). --- */
 function renderCleanupPane(screenCtx) {
-  screens.cleanup = createCleanupScreen(screenCtx);
+  screens.cleanup = activateScreen(createCleanupScreen(screenCtx));
   screens.cleanup.render();
 }
 // --- App 08 registration ends ---
@@ -211,26 +263,26 @@ function renderPane(id) {
   // only this screen instance) may paint; any LATER navigation makes
   // it stale (screenCtxWithPaintRight, top of file).
   const screenCtx = screenCtxWithPaintRight();
-  // [app 10] Settings is a real screen now; the other interim panes
-  // keep their honest placeholders until their build steps.
+  // Batch 5 chunk 13: this instance becomes the shell's ONE live
+  // screen (navigate disposed the previous one just above).
   if (id === 'settings') {
-    screens.settings = createSettingsScreen(screenCtx);
+    screens.settings = activateScreen(createSettingsScreen(screenCtx));
     screens.settings.refresh();
     return;
   }
   if (id === 'home') {
-    screens.home = createHomeScreen(screenCtx);
+    screens.home = activateScreen(createHomeScreen(screenCtx));
     screens.home.render();
     return;
   }
   if (id === 'lookup') {
-    screens.lookup = createLookupScreen(screenCtx);
+    screens.lookup = activateScreen(createLookupScreen(screenCtx));
     screens.lookup.render();
     return;
   }
   /* ==== App 05 (ticket A34): the real Add screen ================ */
   if (id === 'add') {
-    screens.add = createAddScreen(screenCtx);
+    screens.add = activateScreen(createAddScreen(screenCtx));
     screens.add.render();
     return;
   }
@@ -242,13 +294,13 @@ function renderPane(id) {
    * placed after it, the real screen would be unreachable.
    * ================================================================= */
   if (id === 'keepsafe') {
-    screens.keepsafe = createKeepSafeScreen(screenCtx);
+    screens.keepsafe = activateScreen(createKeepSafeScreen(screenCtx));
     screens.keepsafe.render();
     return;
   }
   // app step 07 (Fix and close): the real screen replaces the interim pane.
   if (id === 'fix') {
-    screens.fix = createFixCloseScreen(screenCtx);
+    screens.fix = activateScreen(createFixCloseScreen(screenCtx));
     screens.fix.render();
     return;
   }
@@ -266,16 +318,16 @@ function renderPane(id) {
    * (which would otherwise answer for `link` first).
    * ================================================================= */
   if (id === 'link') {
-    screens.link = createLinkScreen(screenCtx);
+    screens.link = activateScreen(createLinkScreen(screenCtx));
     screens.link.render();
     return;
   }
   // -------------------------------------------------------------------
   if (paneNames().includes(id)) {
-    createPlaceholderScreen(screenCtx, id).render();
+    activateScreen(createPlaceholderScreen(screenCtx, id)).render();
     return;
   }
-  createPlaceholderScreen(screenCtx, 'add').render(); // an unknown id never blanks the pane
+  activateScreen(createPlaceholderScreen(screenCtx, 'add')).render(); // an unknown id never blanks the pane
 }
 
 function buildNav() {
@@ -352,6 +404,7 @@ function firstRun() {
   const token = renderToken;
   const firstRunCtx = { ...ctx, renderFrame: painterFor(token) };
   screens.firstRun = createFirstRunScreen(firstRunCtx);
+  activateScreen(screens.firstRun); // Batch 5 chunk 13: it is the live screen
   firstRunActive = true;
   document.body.classList.add('first-run');
   navEl.hidden = true;
