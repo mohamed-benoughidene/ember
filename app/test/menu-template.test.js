@@ -94,6 +94,59 @@ test('the Edit menu labels Undo/Redo with the action and disables when nothing t
   assert.equal(edit[5].role, 'selectAll');
 });
 
+/* ---------------- story 13: a focused text field means text undo ---------------- */
+
+test('a focused text field renders Edit Undo/Redo as Electron roles, never Ember job actions (story 13)', () => {
+  const t = buildMenuTemplate({ ...BASE, textFieldFocused: true });
+  const edit = t[2].submenu;
+  const undo = edit[0];
+  const redo = edit[1];
+  // Roles, not action ids: the manager (main/app-menu.js wire) gives
+  // role items NO click, so no Ember job action can fire while typing
+  // — Ctrl+Z stays with the text box (finding 4.9 #14).
+  assert.equal(undo.role, 'undo');
+  assert.equal(redo.role, 'redo');
+  assert.equal(undo.id, undefined);
+  assert.equal(redo.id, undefined);
+  // The standard words while editing text (Apple's rule — what a text
+  // undo would undo is not known here), and the role implies enabled.
+  assert.equal(undo.label, 'Undo');
+  assert.equal(redo.label, 'Redo');
+  // No accelerator of ours: the role carries the platform default.
+  assert.equal(undo.accelerator, undefined);
+  assert.equal(redo.accelerator, undefined);
+  // The rest of the Edit menu is untouched.
+  assert.deepEqual(
+    edit.slice(2).map((i) => (i.type === 'separator' ? '---' : i.label)),
+    ['---', 'Cut', 'Copy', 'Paste', 'Select All', '---', 'Find'],
+  );
+  // Without the knob (no field focused) the items stay Ember's own.
+  const idle = buildMenuTemplate(BASE)[2].submenu;
+  assert.equal(idle[0].id, 'edit-undo');
+  assert.equal(idle[1].id, 'edit-redo');
+});
+
+test('the manager gives a focused-field role Undo/Redo no dispatch (they are not Ember actions)', () => {
+  const api = fakeMenuApi();
+  const clicks = [];
+  const manager = createAppMenuManager({
+    MenuApi: api,
+    platform: 'other',
+    context: () => ({ ...BASE, textFieldFocused: true }),
+    dispatch: (id) => clicks.push(id),
+  });
+  manager.refresh();
+  const edit = api.built[0].template[2].submenu;
+  assert.equal(edit[0].role, 'undo');
+  assert.equal(edit[0].click, undefined);
+  assert.equal(edit[1].role, 'redo');
+  assert.equal(edit[1].click, undefined);
+  // The action ids are gone entirely: nothing can route an Ember undo
+  // while a text field holds focus.
+  assert.equal(edit.find((i) => i.id === 'edit-undo'), undefined);
+  assert.equal(edit.find((i) => i.id === 'edit-redo'), undefined);
+});
+
 /* ---------------- View: Show/Hide Sidebar ---------------- */
 
 test('the View menu is the sidebar toggle, worded by the current state', () => {
