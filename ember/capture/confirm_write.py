@@ -17,7 +17,6 @@ from ember.capture.errors import TextNotEncodable, UserAbort
 from ember.capture.item_gatekeeper import (
     NearDupWarning,
     ProposalDraft,
-    RejectedProposal,
     ValidatedItem,
     is_allowed_type,
 )
@@ -121,14 +120,18 @@ def run_confirm_loop(
     *,
     confirm: ConfirmPort,
     commit: ItemCommitPort,
-    revalidate: Callable[[ProposalDraft], ValidatedItem | RejectedProposal],
+    revalidate: Callable[[ProposalDraft], ValidatedItem],
     unit_of_work: Callable[[], AbstractContextManager[None]] | None = None,
 ) -> ConfirmResult:
     """Prompt for every item until it is handled or the user quits.
 
     `revalidate` re-runs the Phase 3 gatekeeper for an edited draft, with a new
     timestamp and the draft's OWN id — an edit never takes a new item id
-    (L3 step 3, section 4.2 `e`; chunk 14, N10 / story 33). On `q` or end of
+    (L3 step 3, section 4.2 `e`; chunk 14, N10 / story 33). An edit is never
+    dropped (finding 4.5 #14, story 34): the loop's `revalidate` returns a
+    `ValidatedItem`, because every draft an edit can produce already passes —
+    `ask_type` and `ask_statement` loop until valid, and the quote is the
+    item's own already-checked quote. On `q` or end of
     input the loop stops and the result carries `aborted=True`; leftover items
     are neither written nor logged. `unit_of_work` (Batch 4 chunk 8, an adapter
     factory over the write connection) makes each accepted item ONE
@@ -175,11 +178,9 @@ def run_confirm_loop(
                 rejected_count += 1
                 index += 1
             elif choice is Choice.EDIT:
-                edited = edit_item(item, confirm=confirm, revalidate=revalidate)
-                if edited is not None:
-                    pending[index] = edited
-                else:
-                    index += 1
+                pending[index] = edit_item(
+                    item, confirm=confirm, revalidate=revalidate
+                )
             else:
                 return ConfirmResult(accepted, rejected_count, warning_count, True)
     except UserAbort:
@@ -254,12 +255,14 @@ def edit_item(
     item: ValidatedItem,
     *,
     confirm: ConfirmPort,
-    revalidate: Callable[[ProposalDraft], ValidatedItem | RejectedProposal],
-) -> ValidatedItem | None:
+    revalidate: Callable[[ProposalDraft], ValidatedItem],
+) -> ValidatedItem:
     """Ask for a new type and statement, then re-validate the edit.
 
-    Returns None when the gatekeeper throws the edit away, so the loop moves on
-    (same as a Phase 3 drop: no item row, no `change_log`).
+    The edit is never dropped (finding 4.5 #14, story 34): the loop's
+    `revalidate` returns a `ValidatedItem` — every draft an edit can produce
+    already passes the Phase 3 checks, so there is no drop branch and no
+    `dropped proposal` line on this path.
     """
     new_type = ask_type(confirm, default=item.type)
     _check_encodable(new_type, item_id=item.id, field="type")
@@ -276,9 +279,6 @@ def edit_item(
         confidence=item.confidence,
     )
     outcome = revalidate(draft)
-    if isinstance(outcome, RejectedProposal):
-        confirm.write(f"dropped proposal: {outcome.rule}")
-        return None
     # Chunk 14 (N10 / story 33): an edit revalidates but never takes a new
     # item id — the edited draft stays the item the confirm block already
     # showed, so `MAX(id)` never moves for an edit.

@@ -10,11 +10,12 @@ from ember.capture.confirm_write import (
     run_confirm_loop,
 )
 from ember.capture.item_gatekeeper import (
+    GatekeeperRun,
     NearDupWarning,
     ProposalDraft,
-    RejectedProposal,
+    validate_add_item,
 )
-from tests.fakes import FakeConfirm, FakeItemCommit, make_item
+from tests.fakes import FIXED_TIME, FakeConfirm, FakeItemCommit, make_item
 
 
 def _never_called(draft: ProposalDraft):
@@ -218,18 +219,34 @@ def test_edit_re_prompts_until_the_type_is_allowed() -> None:
     assert commit.created[0].statement == "New statement"
 
 
-def test_edit_dropped_by_the_gatekeeper_writes_nothing() -> None:
-    def revalidate(draft: ProposalDraft):
-        return RejectedProposal(rule="quote")
-
-    result, confirm, commit = run(
-        [make_item(1)], ["e", "Decision", "x", ""], revalidate=revalidate
+def test_an_edit_is_never_dropped_by_the_gatekeeper() -> None:
+    # Story 34: the edit path has no drop branch. `revalidate` is wired to
+    # the real Phase 3 gatekeeper exactly as the CLI does; every draft an
+    # edit can produce already passes (the type and statement were looped
+    # valid, the quote is the item's own), so the edit writes and no line
+    # anywhere says "dropped proposal".
+    gate_run = GatekeeperRun(
+        source_id=make_item().source_id,
+        source_text="The team decided to use SQLite for local storage.",
+        existing=[],
+        next_id=lambda: 99,  # an edit never takes a new id (chunk 14, N10)
+        clock=lambda: FIXED_TIME,
     )
 
-    assert result.accepted_ids == []
-    assert commit.items == []
-    assert commit.created == []
-    assert any("dropped proposal: quote" in line for line in confirm.written)
+    def revalidate(draft: ProposalDraft):
+        return validate_add_item(draft, gate_run)
+
+    result, confirm, commit = run(
+        [make_item(item_type="Finding")],
+        ["e", "Decision", "Use SQLite for editing", "", "y"],
+        revalidate=revalidate,
+    )
+
+    assert result.accepted_ids == [1]
+    assert result.rejected_count == 0
+    assert commit.created[0].type == "Decision"
+    assert commit.created[0].statement == "Use SQLite for editing"
+    assert not any("dropped proposal" in line for line in confirm.written)
 
 
 # --- the metadata line and the metadata edit prompt (ticket 11, step 05a) ---
