@@ -425,6 +425,7 @@ Earlier logo and character images, kept for history.
 - `tests/test_item_proposal_unit.py`: Phase 2 unit tests on a fake AI and fake item reader, no network.
 - `tests/test_item_proposal_fixtures.py`: Phase 2 parser tests on saved AI answers.
 - `tests/test_llm_adapter_unit.py`: LLM adapter tests on a fake client, no network.
+- `tests/test_embedder_load_split.py`: the embedder's load-time error split tests — missing package vs load timeout get their own codes; no network, no real model.
 - `tests/test_item_gatekeeper_unit.py`: Phase 3 unit tests on a fake source and item list, no DB.
 - `tests/test_confirm_write_unit.py`: Phase 4 unit tests on a fake user and fake commit, no DB.
 - `tests/test_item_store_integration.py`: SQLite item reader and gatekeeper-write tests on a real temp DB.

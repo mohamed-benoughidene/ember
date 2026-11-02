@@ -8,7 +8,7 @@ import pytest
 from openai import OpenAIError
 
 from ember.adapters.llm import OpenAiLinkProposer, build_link_proposer
-from ember.relate.errors import AiCallFailed, AiResponseSchemaInvalid, ConfigMissing
+from ember.relate.errors import AiCallFailed, AiResponseSchemaInvalid, ApiKeyMissing
 from ember.relate.rows import NewItem
 from tests.fakes import FIXED_TIME
 
@@ -67,8 +67,8 @@ def test_propose_links_bad_json_maps_to_033() -> None:
     assert excinfo.value.code == "RELATE-033"
 
 
-def test_build_link_proposer_missing_key_maps_to_035() -> None:
-    with pytest.raises(ConfigMissing) as excinfo:
+def test_build_link_proposer_missing_key_maps_to_038() -> None:
+    with pytest.raises(ApiKeyMissing) as excinfo:
         build_link_proposer({})
 
-    assert excinfo.value.code == "RELATE-035"
+    assert excinfo.value.code == "RELATE-038"

@@ -11,9 +11,11 @@ from ember.adapters.llm import (
     REQUEST_TIMEOUT_SECONDS,
     OpenAiItemProposer,
     build_item_proposer,
+    build_link_proposer,
 )
 from ember.capture.errors import AiCallError, AiSchemaError
 from ember.capture.item_proposal import ContextItem, ItemType
+from ember.errors import EmberError
 
 RAW_TEXT = "We decided to use SQLite."
 ANSWER = json.dumps(
@@ -204,10 +206,24 @@ def test_strange_reply_without_choices_attr_becomes_schema_error() -> None:
 
 
 def test_build_requires_an_api_key() -> None:
-    with pytest.raises(AiCallError) as excinfo:
+    """The missing-key refusal carries its OWN dedicated code, no longer the
+    shared CAPTURE-008 call-failure code (Batch 6, D-08, I17)."""
+    with pytest.raises(EmberError) as excinfo:
         build_item_proposer({})
 
-    assert excinfo.value.code == "CAPTURE-008"
+    assert excinfo.value.code == "CAPTURE-022"
+    assert excinfo.value.code != "CAPTURE-008"
+
+
+def test_build_link_proposer_missing_key_has_dedicated_code() -> None:
+    """The relate side's missing-key refusal carries its OWN dedicated code,
+    no longer the shared RELATE-035 config code (Batch 6, D-08, I17)."""
+    with pytest.raises(EmberError) as excinfo:
+        build_link_proposer({})
+
+    assert excinfo.value.code == "RELATE-038"
+    assert excinfo.value.code != "RELATE-035"
+    assert excinfo.value.name != "ConfigMissing"
 
 
 def test_build_reads_the_env_and_returns_the_adapter() -> None:

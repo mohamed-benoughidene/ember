@@ -140,3 +140,15 @@ class InitRefused(CaptureError):
 
     code = "CAPTURE-021"
     name = "InitRefused"
+
+
+class ApiKeyMissing(CaptureError):
+    """No AI API key is configured (`EMBER_AI_API_KEY` / `OPENROUTER_API_KEY`).
+
+    Its own dedicated code (Batch 6 D-08/I17): the missing-key refusal is a
+    setup problem with different advice from the call-failure code
+    CAPTURE-008 it previously shared.
+    """
+
+    code = "CAPTURE-022"
+    name = "ApiKeyMissing"

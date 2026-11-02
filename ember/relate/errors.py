@@ -163,3 +163,15 @@ class AiResponseWriteFailed(RelateError):
 class EmbeddingReadFailed(RelateError):
     code = "RELATE-037"
     name = "EmbeddingReadFailed"
+
+
+class ApiKeyMissing(RelateError):
+    """No AI API key is configured (`EMBER_AI_API_KEY` / `OPENROUTER_API_KEY`).
+
+    Its own dedicated code (Batch 6 D-08/I17): the missing-key refusal is a
+    setup problem with different advice from the config code RELATE-035 it
+    previously shared.
+    """
+
+    code = "RELATE-038"
+    name = "ApiKeyMissing"
