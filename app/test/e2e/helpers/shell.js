@@ -46,7 +46,7 @@ async function launchShell({ workDir, mode = 'app', withDb = true, fixture = FIX
     ...process.env,
     XDG_CONFIG_HOME: configDir,
     XDG_STATE_HOME: stateDir,
-    EMBER_APP_COMMAND: `node ${FAKE_EMBER}`,
+    EMBER_APP_COMMAND: JSON.stringify(['node', FAKE_EMBER]),
     FAKE_MODE: mode,
     FAKE_FIXTURE: fixture,
     ...extraEnv,
