@@ -96,10 +96,22 @@ LIVE_SUPERSEDES_EDGE = "status = 'Confirmed' AND reversed_at IS NULL"
 
 
 def _connect(db_path: str) -> sqlite3.Connection:
-    """Open a raw SQLite connection with row access by name and foreign keys on."""
-    conn = sqlite3.connect(db_path)
+    """Open a raw SQLite connection with row access by name and foreign keys on.
+
+    The busy limit is set HERE, on every connection this adapter opens
+    (decision I8): `timeout=0` clears the stdlib's library-side default so
+    the explicit `PRAGMA busy_timeout = 5000` below is the ONE visible
+    source of the 5000 ms limit shared by every opener — reads, writes,
+    the migration retry and the parallel-writer tests. There is no
+    behavior change between the two ways of setting it (both drive the
+    same C-level busy timeout); `timeout=0` just makes the pragma the
+    single place the limit lives, so removing it is a visible red test,
+    not a silent fall-back to the stdlib default.
+    """
+    conn = sqlite3.connect(db_path, timeout=0)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
+    conn.execute("PRAGMA busy_timeout = 5000")
     return conn
 
 

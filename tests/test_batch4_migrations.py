@@ -34,7 +34,7 @@ from pathlib import Path
 import pytest
 
 import ember.adapters.sqlite as sqlite_adapter
-from ember.adapters.sqlite import open_database
+from ember.adapters.sqlite import open_database, open_maintain_database
 
 
 def _pinned_error_classes() -> tuple[type, type, type]:
@@ -230,3 +230,34 @@ def test_migrating_a_brand_new_file_makes_no_backup(tmp_path: Path) -> None:
     assert _version(db_path) == 13
     backups = sorted(tmp_path.glob("kb.db.bak*"))
     assert backups == []
+
+
+def test_every_opened_connection_sets_busy_timeout_to_5000(tmp_path: Path) -> None:
+    """Every opened connection sets PRAGMA busy_timeout to 5000 (decision I8).
+
+    I8 says *every* connection: one fresh file through `open_database`
+    (the capture/relate read-write open path) and a second through
+    `open_maintain_database` (the maintain open path) must both report
+    `PRAGMA busy_timeout = 5000`. Python's sqlite3 5-second default is a
+    library-side wait, not the pragma — without the explicit PRAGMA the
+    pragma reads 0. This is the precondition for the chunk-11 migration
+    retry and every parallel-writer test: all openers share one visible
+    limit.
+    """
+    read_path = tmp_path / "read.db"
+    conn_read = open_database(str(read_path))
+    try:
+        assert conn_read.execute("PRAGMA busy_timeout").fetchone()[0] == 5000
+    finally:
+        conn_read.close()
+
+    # `open_maintain_database` refuses a missing file (N8), so the fresh
+    # path starts as a zero-byte file — SQLite's "brand-new" database,
+    # which the open path then migrates to 13.
+    maintain_path = tmp_path / "maintain.db"
+    maintain_path.touch()
+    conn_maintain = open_maintain_database(str(maintain_path))
+    try:
+        assert conn_maintain.execute("PRAGMA busy_timeout").fetchone()[0] == 5000
+    finally:
+        conn_maintain.close()
