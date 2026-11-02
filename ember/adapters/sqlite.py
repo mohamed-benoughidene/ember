@@ -16,6 +16,11 @@ from datetime import datetime, timezone
 from importlib import resources
 from typing import Callable, Iterator
 
+from ember.adapters.errors import (
+    HalfCreatedDatabase,
+    ScriptSetInvalid,
+    VersionTableMissing,
+)
 from ember.capture.errors import (
     DbFileMissing as CaptureDbFileMissing,
     DbOpenFailed as CaptureDbOpenFailed,
@@ -75,6 +80,12 @@ from ember.relate.errors import (
 from ember.relate.rows import ChangeLogEntry, GroupIdPort, Link, NewItem
 
 _MIGRATIONS_MODULE = "ember.adapters.migrations"
+
+# The pinned latest migration version (Batch 4 chunk 9, story 14). The
+# script set discovered on disk must be exactly 1.._LATEST_VERSION before
+# any open migrates anything; a dropped or renamed `.sql` refuses up front
+# with `ScriptSetInvalid` (MIGRATION-001) instead of building a half schema.
+_LATEST_VERSION = 13
 
 _BACKUPS_TO_KEEP = 3
 
@@ -237,12 +248,16 @@ def init_knowledge_base(db_path: str) -> str:
     if not os.path.exists(db_path):
         try:
             open_database(db_path).close()
-        except CaptureDbOpenFailed:
+        except (CaptureDbOpenFailed, HalfCreatedDatabase):
             # Two first-Adds-at-once (story 11): another `ember init` may
             # have created and migrated the same fresh file between the
             # exists check and the open. The healthy-latest check below
             # then decides; a file missing again re-raises the open
-            # failure.
+            # failure. A file mid-flight in another init's migration can
+            # also present the version-0-no-items shape (the version
+            # table is committed before the scripts run), so the story-16
+            # refusal is retried through the same settle window below
+            # instead of deciding on a half-second-old snapshot.
             if not os.path.exists(db_path):
                 raise
         else:
@@ -638,26 +653,61 @@ def _prune_backups(db_path: str) -> None:
 
 
 def _apply_migrations(conn: sqlite3.Connection) -> None:
+    # The pinned script set is checked BEFORE anything is touched (story
+    # 14): a wrong set refuses with `ScriptSetInvalid` without creating
+    # even the version table.
+    scripts = _migration_scripts()
+    existing_tables = _existing_tables(conn)
+    # A pre-version-tracking file is never adopted (story 15): the refusal
+    # fires before the CREATE TABLE below could stamp a version onto it,
+    # so the file stays byte-identical.
+    if existing_tables and "schema_version" not in existing_tables:
+        raise VersionTableMissing(
+            "file has tables but no schema_version table",
+            tables=", ".join(sorted(existing_tables)),
+        )
     conn.execute(
         "CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL)"
     )
     if conn.execute("SELECT COUNT(*) FROM schema_version").fetchone()[0] == 0:
         conn.execute("INSERT INTO schema_version (version) VALUES (0)")
     conn.commit()
-    current = conn.execute("SELECT version FROM schema_version").fetchone()[0]
+    current = int(conn.execute("SELECT version FROM schema_version").fetchone()[0])
+    # A version-0 file with no `items` table never finished being created
+    # (story 16): its own refusal code, distinct from the "schema version
+    # too old" sentence. A brand-new file has NO pre-existing tables, so
+    # `existing_tables` is what keeps the fresh create path out of this
+    # refusal — the version-0 stamp below is our own, not the file's.
+    if existing_tables and current == 0 and "items" not in existing_tables:
+        raise HalfCreatedDatabase(
+            "version 0 with no items table: this file never finished being created",
+            version=0,
+        )
     pending = [
-        (number, script) for number, script in _migration_scripts() if number > current
+        (number, script) for number, script in scripts if number > current
     ]
     # One backup per run, before the first above-version script: a no-op open
-    # must not churn the retention window (L2 §5.0).
-    if pending:
-        _backup_database(conn, int(current))
+    # must not churn the retention window (L2 §5.0). A brand-new file has
+    # nothing to back up (finding 4.5 #17): no pointless `.bak-v0` of an
+    # empty database.
+    if pending and existing_tables:
+        _backup_database(conn, current)
     conn.execute("PRAGMA foreign_keys = OFF")
     try:
         for number, script in pending:
             _apply_migration(conn, number, script)
     finally:
         conn.execute("PRAGMA foreign_keys = ON")
+
+
+def _existing_tables(conn: sqlite3.Connection) -> set[str]:
+    """Return the table names the file holds right now (a read, no writes)."""
+    return {
+        row["name"]
+        for row in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table'"
+        )
+    }
 
 
 def _apply_migration(conn: sqlite3.Connection, number: int, script: str) -> None:
@@ -687,7 +737,27 @@ def _migration_scripts() -> list[tuple[int, str]]:
         if entry.name.endswith(".sql"):
             number = int(entry.name.split("_", 1)[0])
             scripts.append((number, entry.read_text(encoding="utf-8")))
-    return sorted(scripts)
+    scripts.sort()
+    _require_pinned_script_set(scripts)
+    return scripts
+
+
+def _require_pinned_script_set(scripts: list[tuple[int, str]]) -> None:
+    """Refuse unless the discovered script numbers are exactly 1..13 (story 14).
+
+    The check lives on the discovery path (not in the injected or patched
+    script list), so it pins what the repository actually ships: a dropped
+    or renamed `.sql` is caught before ANY open migrates anything —
+    `ScriptSetInvalid` (MIGRATION-001), raised before even the version
+    table is created.
+    """
+    numbers = [number for number, _ in scripts]
+    if numbers != list(range(1, _LATEST_VERSION + 1)):
+        raise ScriptSetInvalid(
+            f"migration scripts are not exactly 1..{_LATEST_VERSION}",
+            expected=f"1..{_LATEST_VERSION}",
+            found=numbers,
+        )
 
 
 def _utc_now() -> str:
