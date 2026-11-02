@@ -2323,6 +2323,11 @@ def _status_new_value(change: StatusChange) -> str:
     return change.new_status
 
 
+# N10: the id-conflict retry is bounded — after 5 conflicting insert
+# attempts the stored error surfaces instead of a live-lock.
+_MAX_ITEM_ID_ATTEMPTS = 5
+
+
 class SqliteItemGatekeeper:
     """Gatekeeper boundary for `items` and `change_log`, plus item reads.
 
@@ -2405,34 +2410,77 @@ class SqliteItemGatekeeper:
         self._next_id += 1
         return value
 
-    def insert_item(self, item: ValidatedItem, *, validated: bool | None) -> None:
+    def insert_item(self, item: ValidatedItem, *, validated: bool | None) -> int:
         """Insert one accepted item, with `validated` set only for Assumptions.
 
-        Raise `ItemDbWriteError` (CAPTURE-013) on a write failure. Inside a
-        `unit_of_work` the caller owns the commit (Batch 4, 4.3 #9): the
-        item row and its `created` row are one transaction.
+        Return the id the row actually carries. Normally that is `item.id`;
+        on a unique-key conflict on `items.id` (another writer took the id
+        between the show and the write, 4.3 #20) the next free id is re-read
+        INSIDE the open transaction and the insert retried, at most 5
+        attempts (N10 / D-03: inside `BEGIN IMMEDIATE` no other writer can
+        insert between the re-read and the retry, so the retry suffices).
+        When a retry cannot help — the re-read did not move past the failed
+        id, or the attempt bound ran out — the stored error is raised:
+        `ItemDbWriteError` (CAPTURE-013). Callers must take the ledger row
+        and the reported id from the RETURNED value, never from `item.id`.
+        Inside a `unit_of_work` the caller owns the commit (Batch 4, 4.3 #9):
+        the item row and its `created` row are one transaction.
+        """
+        saved_id = item.id
+        attempts = 0
+        while True:
+            try:
+                self._conn.execute(
+                    "INSERT INTO items"
+                    " (id, type, statement, source_id, status, created_at, validated,"
+                    " metadata)"
+                    " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        saved_id,
+                        item.type,
+                        item.statement,
+                        item.source_id,
+                        item.status,
+                        item.created_at,
+                        validated,
+                        item.metadata,
+                    ),
+                )
+                break
+            except sqlite3.IntegrityError as exc:
+                attempts += 1
+                next_free = self._next_free_id_on_conflict(failed_id=saved_id)
+                if next_free is None or attempts >= _MAX_ITEM_ID_ATTEMPTS:
+                    raise ItemDbWriteError("db write fail", item_id=item.id) from exc
+                saved_id = next_free
+        if saved_id != item.id:
+            # Keep the run's monotonic counter past the repaired id, so the
+            # next allocation never re-issues the id that was just saved.
+            if self._next_id is None or self._next_id <= saved_id:
+                self._next_id = saved_id + 1
+        if not in_unit_of_work(self._conn):
+            self._conn.commit()
+        return saved_id
+
+    def _next_free_id_on_conflict(self, *, failed_id: int) -> int | None:
+        """Re-read `MAX+1` inside the open transaction after an id conflict.
+
+        Return the next free id, or None when a retry cannot help: the
+        re-read did not move past `failed_id`, so the conflict is not the
+        id allocation and the same insert would fail again.
+
+        Raise `ItemDbReadError` (CAPTURE-011) when the re-read itself fails.
         """
         try:
-            self._conn.execute(
-                "INSERT INTO items"
-                " (id, type, statement, source_id, status, created_at, validated,"
-                " metadata)"
-                " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                (
-                    item.id,
-                    item.type,
-                    item.statement,
-                    item.source_id,
-                    item.status,
-                    item.created_at,
-                    validated,
-                    item.metadata,
-                ),
-            )
-            if not in_unit_of_work(self._conn):
-                self._conn.commit()
+            row = self._conn.execute(
+                "SELECT COALESCE(MAX(id), 0) FROM items"
+            ).fetchone()
         except sqlite3.Error as exc:
-            raise ItemDbWriteError("db write fail", item_id=item.id) from exc
+            raise ItemDbReadError("item read fail") from exc
+        value = int(row[0]) + 1
+        if value <= failed_id:
+            return None
+        return value
 
     def log_created(self, item: ValidatedItem, *, group_id: int | None = None) -> None:
         """Append the `created` change_log row for an accepted item.
