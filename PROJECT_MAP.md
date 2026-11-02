@@ -412,6 +412,7 @@ Earlier logo and character images, kept for history.
 - `ember/adapters/migrations/011_add_links_reversed_at_and_enforcement_triggers.sql`: Adds `links.reversed_at`, the `link_compat` pair table (16 rows), the items/links guard pre-assertions, and the four enforcement triggers (compat pairs on `links`, `Closed` implies `close_reason` on `items`).
 - `ember/adapters/migrations/012_add_items_metadata.sql`: Adds the `items.metadata` column (nullable TEXT, no default, no rebuild, no backfill). NULL means unlabeled. Written by capture (ticket 11, step 05a), read by relate (step 05b).
 - `ember/adapters/migrations/013_add_change_log_group_id.sql`: Adds the `change_log.group_id` column (nullable INTEGER, no default, no rebuild, no backfill). One undo group id = one human action's shared ledger stamp (engine-undo-plan §5.1). Pre-013 rows, sweep rows and capture/relate rows read NULL.
+- `ember/adapters/migrations/014_add_change_log_source_id.sql`: Batch 6 — adds the nullable `change_log.source_id` column holding the source a forgotten-note ledger line refers to (N14, D-07); no backfill, no rename, pre-014 rows read NULL.
 
 ## Tests (`tests/`)
 - `tests/__init__.py`: Marks the tests folder as a package.
@@ -581,6 +582,7 @@ Saved AI answers for parser tests. Each pair is `case_NN.raw_text.txt` (the sour
 - `tests/query/test_search_and_why_integration.py`: `topic-search` and `why` end to end on a real temp DB.
 - `tests/query/test_current_state_why_golden.py`: The `current-state` and `why` no-flags CLI outputs byte-identical to the two golden fixtures added in undo step 01 (captured from the pre-undo build), on a temp DB seeded with fixed clock stamps.
 - `tests/test_migration_013.py`: Migration 013 (undo step 01) on a hand-built v12 database: the nullable `change_log.group_id` column, all rows preserved with NULL on old rows, a one-column schema diff and clean FK check, `.bak-v12` written, the 011 triggers still active, a failed migration leaving the file at v12 with its backup, and a fresh install stamped 13.
+- `tests/test_migration_source_id.py`: Batch 6 — migration 014 on a hand-built v13 database: the nullable `change_log.source_id`, all rows preserved with NULL, one-column schema diff, Closed-guard triggers alive, the safety copy written, a failed migration rolling back to a byte-healthy v13, fresh install stamped 14.
 - `tests/test_v12_read_never_migrates.py`: `ember history`, `export` and `db-check` on an untouched v12 file: all exit 0, the file stays at v12, the bytes are unchanged by every run, no backup is taken.
 - `tests/query/test_history_integration.py`: `history` over a ledger written by the real Relate and Maintain writers.
 - `tests/query/test_query_cli.py`: CLI checks for all four commands: exit codes, `QUERY-001` / `QUERY-002`, and JSON-only stdout.
