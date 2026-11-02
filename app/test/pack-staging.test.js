@@ -41,6 +41,9 @@ const crypto = require('node:crypto');
 
 const APP_ROOT = path.join(__dirname, '..');
 const TMP_ROOT = '/tmp/opencode/batch1/chunk9';
+// Self-heal: the folder is a bare scratch root (nothing of ours lives in
+// it), so a fresh machine (CI) must be able to boot the suite without it.
+fs.mkdirSync(TMP_ROOT, { recursive: true });
 
 const pack = require(path.join(APP_ROOT, 'scripts', 'pack.js'));
 
