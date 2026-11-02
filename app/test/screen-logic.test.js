@@ -50,3 +50,33 @@ test('a timed-out WRITE re-reads state first and says "may not have been done" (
   assert.equal(writeTimeoutNeedsReload(null, true), false);
   assert.equal(writeTimeoutNeedsReload(undefined, true), false);
 });
+
+test('error codes appear only behind the Details affordance (4.9 #23)', async (t) => {
+  await t.test('no bare code text outside the Details reveal in screens or shared', async () => {
+    const fs = require('node:fs');
+    const path = require('node:path');
+    // A code in visible message text: the `(code ${…})` interpolation or a
+    // literal `code APP-nnn` printed inline. The established Details path
+    // (blocks.mjs / components/state-block.mjs) hides the raw code line
+    // behind a `data-testid="error-code"` element the Details button
+    // reveals — lines carrying that marker are the legitimate path.
+    const BARE_CODE_TEXT = /code \$\{|\bcode APP-\d{3}\b/;
+    const offenders = [];
+    for (const dir of ['renderer/screens', 'shared']) {
+      const names = fs.readdirSync(path.join(__dirname, '..', dir)).filter((f) => f.endsWith('.mjs')).sort();
+      for (const name of names) {
+        const lines = fs.readFileSync(path.join(__dirname, '..', dir, name), 'utf8').split('\n');
+        lines.forEach((line, i) => {
+          if (BARE_CODE_TEXT.test(line) && !line.includes('data-testid="error-code"')) {
+            offenders.push(`app/${dir}/${name}:${i + 1}: ${line.trim().slice(0, 120)}`);
+          }
+        });
+      }
+    }
+    assert.deepEqual(
+      offenders,
+      [],
+      `bare error-code text outside a Details affordance (keep the plain words in the message; move the code behind the Details reveal as blocks.mjs does):\n${offenders.join('\n')}`,
+    );
+  });
+});
