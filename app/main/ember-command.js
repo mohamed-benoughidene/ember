@@ -5,8 +5,10 @@
  * knowledge-base file is usable (APP-006 / APP-007).
  *
  * Step 02: the command comes from the `EMBER_APP_COMMAND` environment
- * override (space-separated, e.g. "/path/.venv/bin/ember" or
- * "node /path/fake-ember.js"); the default is plain `ember` on PATH.
+ * override (a JSON array — one exact argv, e.g.
+ * '["/path/with space/ember"]' — or a space-separated value like
+ * "/path/.venv/bin/ember" or "node /path/fake-ember.js"; the default
+ * is plain `ember` on PATH.
  *
  * Step 13 (packaging): the app can also use a BUNDLED Ember runtime —
  * the PyInstaller onedir build of the CLI placed at
@@ -88,7 +90,21 @@ function bundledChildEnv(emberPath) {
 function resolveEmberCommand(env = process.env, bundling = null) {
   const override = env.EMBER_APP_COMMAND;
   if (typeof override === 'string' && override.trim() !== '') {
-    return override.trim().split(/\s+/);
+    const value = override.trim();
+    if (value.startsWith('[')) {
+      // A JSON array carries one exact argv, so a path holding a space
+      // survives (story 26 — argv spawn, never a shell). A value that
+      // starts with "[" but is not valid JSON, or that parses to
+      // something other than an array, must NOT crash: fall back to
+      // the whitespace split below.
+      try {
+        const parsed = JSON.parse(value);
+        if (Array.isArray(parsed)) return parsed;
+      } catch {
+        // malformed JSON: fall through to the split
+      }
+    }
+    return value.split(/\s+/);
   }
   if (bundling && bundling.emberPath) return [bundling.emberPath];
   return ['ember'];
