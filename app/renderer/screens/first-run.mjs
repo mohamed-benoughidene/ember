@@ -32,8 +32,10 @@ export function createFirstRunScreen(ctx) {
 
   const refresh = () => ctx.renderFrame(firstRunHtml(state), wire);
 
-  function showMessage(kind, text) {
-    state.message = { kind, text };
+  function showMessage(kind, text, code = null) {
+    // The code is never in the visible words; it sits behind the Details
+    // reveal (blocks.mjs's affordance), reported only on demand.
+    state.message = { kind, text, code };
     refresh();
   }
 
@@ -61,8 +63,15 @@ export function createFirstRunScreen(ctx) {
         state.message = null;
         refresh();
       } else if (chosen && chosen.error) {
-        showMessage('error', `${chosen.error.detail} (code ${chosen.error.code})`);
+        showMessage('error', `${chosen.error.detail}`, chosen.error.code);
       }
+    });
+
+    // The Details reveal for the setup message's code (same affordance
+    // as the state-block error: hidden line, one click shows it).
+    bind(root, 'setup-details', () => {
+      const code = root.querySelector('[data-testid="error-code"]');
+      if (code) code.hidden = !code.hidden;
     });
 
     bind(root, 'setup-file-continue', async () => {
@@ -187,7 +196,11 @@ function firstRunHtml(state) {
   else body = stepReadyHtml(state);
   const message =
     state.message && state.message.kind === 'error'
-      ? `<div class="errbox" role="alert" data-testid="setup-message"><strong>${esc(state.message.text)}</strong></div>`
+      ? `<div class="errbox" role="alert" data-testid="setup-message"><strong>${esc(state.message.text)}</strong>${
+          state.message.code
+            ? `<p class="help" data-testid="error-code" hidden>Reported as ${esc(state.message.code)}.</p>${buttonHtml({ label: 'Details', action: 'setup-details', variant: 'text' })}`
+            : ''
+        }</div>`
       : state.message
         ? `<div class="ok" role="status" data-testid="setup-message">${esc(state.message.text)}</div>`
         : '';
