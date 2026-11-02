@@ -577,6 +577,16 @@ Object.assign(ERROR_SENTENCES, {
     what: 'The AI service address (the base URL) set in the environment is not a valid web address.',
     next: 'Check the AI base URL setting, then try again. Nothing was created.',
   },
+  'CAPTURE-020': {
+    title: 'That knowledge base file does not exist.',
+    what: 'The command points at a knowledge base file that is not there, so it refused to start rather than create one.',
+    next: 'Create the file first (`ember init --db <path>`) or pick the right file, then try again.',
+  },
+  'CAPTURE-021': {
+    title: 'That file cannot be used as a knowledge base.',
+    what: '`ember init` found a file there that is not a healthy Ember knowledge base already at the current format, so it changed nothing.',
+    next: 'Pick a new file path to create, or check the existing file (Keep safe) before trying again.',
+  },
   'RELATE-000': {
     title: 'A problem in the relate engine was reported.',
     what: 'Ember reported a general problem in the part that links items.',
