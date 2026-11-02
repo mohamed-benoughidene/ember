@@ -19,6 +19,7 @@
 
 const { app, BrowserWindow, safeStorage, ipcMain, dialog, clipboard, shell } = require('electron');
 const path = require('node:path');
+const { spawn } = require('node:child_process');
 const {
   resolveEmberCommand,
   checkEmberCommand,
@@ -29,6 +30,10 @@ const {
 const { trayIconPath, windowIconPath } = require('./app-icon');
 const { loadErrorPattern } = require('./error-pattern');
 const { createBridgeClient } = require('./bridge-client');
+// F7a: the shared PURE parser for one `ember --version` answer, used
+// by readEngineVersion below (module scope — unlike the menu block's
+// require further down, which sits inside wireIpc).
+const { engineVersionFromStdout } = require('../shared/menu-template.mjs');
 const { createSettingsStore } = require('./settings-store');
 const { createKeyStore } = require('./key-store');
 const { registerIpcHandlers } = require('./ipc');
@@ -59,6 +64,63 @@ function appVersion() {
   } catch {
     return '0.0.0';
   }
+}
+
+/**
+ * Batch 6 chunk 17 (F7a): the engine's version for the About box, read
+ * ONCE per app run through the SAME resolved ember command every other
+ * child uses (services.emberCommand — the main/ember-command.js
+ * command-resolution path). `ember --version` (Batch 1) answers
+ * "ember, version 0.1.0" on stdout; ANY other outcome — a spawn
+ * failure, non-zero exit, a timeout, unparsable output — settles null
+ * and the About box shows the app version only. Never rejects and
+ * never throws (a silent engine must not break About). Main process
+ * only; nothing here crosses to the renderer, so the preload
+ * allowlist is untouched. It cannot ride bridge-client's runCommand:
+ * that builder always appends a subcommand and `--db`, and `--version`
+ * is a top-level flag.
+ *
+ * @param {string[]} emberCommand the resolved command argv prefix
+ * @param {typeof import('node:child_process').spawn} [spawnFn] test seam
+ * @returns {Promise<string|null>}
+ */
+function readEngineVersion(emberCommand, spawnFn = spawn) {
+  return new Promise((resolve) => {
+    let settled = false;
+    const settle = (value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(value);
+    };
+    // I15: a time limit on every child call. The version read is a
+    // cheap one; 5 s is generous.
+    const timer = setTimeout(() => {
+      try {
+        child.kill();
+      } catch {
+        /* already gone */
+      }
+      settle(null);
+    }, 5000);
+    let child;
+    try {
+      child = spawnFn(emberCommand[0], [...emberCommand.slice(1), '--version'], {
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+    } catch {
+      settle(null);
+      return;
+    }
+    let stdoutText = '';
+    child.stdout.on('data', (chunk) => {
+      stdoutText += chunk;
+    });
+    child.on('error', () => settle(null));
+    child.on('close', (code) => {
+      settle(code === 0 ? engineVersionFromStdout(stdoutText) : null);
+    });
+  });
 }
 
 /** Focus (and restore/hide-reopen) the one main window. The single
@@ -261,6 +323,24 @@ function wireIpc(services) {
   const { validateKnowledgeBasePath: menuKbGuard } = require('./ember-command');
 
   /**
+   * F7a: the engine version for the About box, read ONCE per run and
+   * cached (the first ask warms it; every later ask reuses the cache).
+   * The read goes through the SAME resolved ember command every other
+   * child uses (services.emberCommand) — no new IPC route, no preload
+   * or allowlist change, nothing crosses to the renderer. A null
+   * answer (engine missing, slow, or silent) is cached alike: the
+   * About box shows the app version only, per the pinned fallback.
+   */
+  let engineVersionPromise = null;
+  const engineVersionOnce = () => {
+    if (engineVersionPromise === null) {
+      engineVersionPromise = readEngineVersion(services.emberCommand);
+    }
+    return engineVersionPromise;
+  };
+  void engineVersionOnce(); // warm at boot, so the first About click already has the answer
+
+  /**
    * Commands that CANNOT change the ledger: no label re-derive after
    * them (the reads, and the file-producing backup/export). `maintain`
    * is deliberately NOT skipped: its apply run writes. The refresh runs
@@ -374,11 +454,14 @@ function wireIpc(services) {
     mainWindow.webContents.send('ember:menuRequest', payload);
   };
 
-  /** Story 108: the About box carries the font/licence credits. */
-  const showAbout = () => {
+  /** Story 108: the About box carries the versions and the font/licence
+   * credits (F7a) — the engine's version when it answers, the app
+   * version only when it does not (the pinned fallback). */
+  const showAbout = async () => {
+    const engineVersion = await engineVersionOnce();
     const credits = aboutCreditsText({
-      version: appVersion(),
-      fontsPath: path.join(__dirname, '..', 'assets', 'fonts'),
+      appVersion: appVersion(),
+      engineVersion,
     });
     if (process.platform === 'darwin') {
       app.setAboutPanelOptions({ credits });
