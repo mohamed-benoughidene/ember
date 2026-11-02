@@ -787,7 +787,10 @@ def close_item(item_id: int, reason: str, output: OutputOptions) -> None:
     )
     if output.fmt != "json":
         for line in format_report(changes, total_items):
-            click.echo(line)
+            if output.dry_run:
+                click.echo(f"{line} (dry-run)")
+            else:
+                click.echo(line)
 
 
 @main.command("set-status")

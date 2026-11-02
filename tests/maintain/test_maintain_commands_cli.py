@@ -173,6 +173,32 @@ def test_close_item_dry_run_prints_close_and_dependents_writes_nothing(
     assert _row_counts(db_path) == before
 
 
+def test_close_item_dry_run_output_ends_with_the_preview_marker(db_path) -> None:
+    Path(db_path).touch()
+    _seed(db_path)
+
+    result = _invoke(
+        [
+            "close-item",
+            "--item",
+            "1",
+            "--reason",
+            "invalidated",
+            "--dry-run",
+            "--format",
+            "text",
+            "--db",
+            db_path,
+        ]
+    )
+
+    assert result.exit_code == 0
+    output_lines = result.output.splitlines()
+    assert output_lines  # the report printed at least one line
+    for line in output_lines:
+        assert line.endswith(" (dry-run)"), line
+
+
 def test_set_status_to_closed_exits_1_with_006(db_path) -> None:
     Path(db_path).touch()
     _seed(db_path)
