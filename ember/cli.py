@@ -69,6 +69,7 @@ from ember.capture.item_gatekeeper import (
     validate_add_item,
     validate_proposals,
     validate_set_validated,
+    validated_change_is_noop,
 )
 from ember.capture.item_proposal import (
     ProposalResponse,
@@ -1225,7 +1226,11 @@ def _run_undo_or_redo(
     edge, the same document and report line. `run` is run_undo or
     run_redo - the only difference between the two commands."""
     conn = (
-        open_maintain_database_readonly(output.db_path, required_version=11)
+        # The undo groups are the ledger's `group_id` rows (migration 013),
+        # so a read-only dry-run demands floor 13, not the maintain floor
+        # 11 (G2-B): an older file gets the honest SchemaOutdated answer
+        # instead of a misleading nothing-to-undo (4.6 #11).
+        open_maintain_database_readonly(output.db_path, required_version=13)
         if output.dry_run
         else open_maintain_database(output.db_path)
     )
@@ -1538,11 +1543,22 @@ def db_check(output: OutputOptions) -> None:
 
 
 def _write_validated_flag(item_id: int, db_path: str, *, new_value: bool) -> None:
-    """Write the flag on an Assumption. `new_value` is data, not a mode switch."""
+    """Write the flag on an Assumption. `new_value` is data, not a mode switch.
+
+    Finding 4.5 #18: a set that changes nothing writes NO ledger row — a
+    `true -> true` row would be history for a change that never happened.
+    The command still exits 0 and says honestly that nothing was written.
+    """
     conn = open_existing_database(db_path)
     ids = SqliteGroupIdPort(conn)
     gatekeeper = SqliteItemGatekeeper(conn, group_ids=ids)
     item = validate_set_validated(gatekeeper.find_item(item_id), item_id)
+    if validated_change_is_noop(item, new_value):
+        click.echo(
+            f"item {item.id} validated: {str(new_value).lower()}"
+            " (unchanged, nothing written)"
+        )
+        return
     gatekeeper.save_validated_flag(
         item, validated=new_value, group_id=ids.next_group_id()
     )
