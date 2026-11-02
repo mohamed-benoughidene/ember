@@ -105,6 +105,14 @@ async function launchPopupApp({ workDir, aiBaseUrl, quickAdd = false, withDb = t
   const kbPath = path.join(workDir, 'kb.db');
   if (withDb) {
     // A real knowledge base (no AI needed): pre-Add read commands answer honestly.
+    // B4-05 (D-25): capture-source REFUSES a missing file (CAPTURE-020),
+    // so the seed runs `ember init` first — the same create-on-purpose
+    // first move launch-check.js makes (init is a no-op on a file that
+    // is already healthy and current).
+    execFileSync(EMBER, ['init', '--db', kbPath], {
+      cwd: REPO_ROOT,
+      stdio: ['pipe', 'ignore', 'inherit'],
+    });
     execFileSync(EMBER, ['capture-source', '--db', kbPath], {
       input: 'A throwaway source text for the popup e2e.\n',
       cwd: REPO_ROOT,
