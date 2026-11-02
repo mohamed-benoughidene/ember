@@ -759,9 +759,9 @@ function registerIpcHandlers(options) {
   const addWiring = wireAddChannels(ipcMain, {
     startSession: (args) => clientFor(dbPath()).runConfirmSession('capture', args),
     validateAddTarget: () => {
-      // Add may CREATE the knowledge base (capture opens and migrates
-      // it): a not-yet-existing file is fine. An existing file must be
-      // an Ember file (APP-006).
+      // Add may CREATE the knowledge base (B4-07: the first Add runs
+      // `ember init` first, so a missing file is allowed — init will
+      // create it). An existing file must be an Ember file (APP-006).
       const status = knowledgeBaseStatus(dbPath());
       if (status.exists && !status.looksValid) {
         return {
@@ -771,6 +771,11 @@ function registerIpcHandlers(options) {
       }
       return { ok: true };
     },
+    // B4-07: the first-Add seed seams — the SAME knowledge-base path
+    // the capture session gets and the SAME resolved command prefix
+    // the bridge client uses (add-session.js spawns `ember init`).
+    knowledgeBasePath: dbPath,
+    emberCommand,
     writeTempText: (text) => writeTempText(userDataPath, text),
     removeTempFile,
     cleanStaleTempFiles: () => cleanStaleTempFiles(userDataPath),

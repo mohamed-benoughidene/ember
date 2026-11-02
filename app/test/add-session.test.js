@@ -63,19 +63,39 @@ function fakeSender() {
   return { sent: [], destroyed: false, send(channel, data) { this.sent.push({ channel, data }); }, isDestroyed() { return this.destroyed; } };
 }
 
-/** Wire the channels with a fake session factory + real temp-dir fakes. */
-function harness({ validate = () => ({ ok: true }), writeTemp = null } = {}) {
+/** Wire the channels with a fake session factory + real temp-dir fakes.
+ *
+ * B4-07: `dbPath`/`emberCommand`/`seed` feed the first-Add seed seams —
+ * when a db path is given the fake engine records `ember init --db <path>`
+ * into `engine` (the ONE ordered child record) and answers with `seed`;
+ * when `dbPath` is null (every test below) no seed can ever run.
+ */
+function harness({
+  validate = () => ({ ok: true }),
+  writeTemp = null,
+  dbPath = null,
+  emberCommand = null,
+  seed = { status: 0, stderr: '', stdout: '' },
+} = {}) {
   const ipc = fakeIpc();
   const sessions = [];
   const started = [];
   let tempCalls = [];
+  const engine = [];
   const wiring = wireAddChannels(ipc, {
     startSession: (args) => {
       const session = fakeSession();
       sessions.push(session);
+      engine.push({ kind: 'capture-session', args });
       return session;
     },
     validateAddTarget: validate,
+    knowledgeBasePath: dbPath === null ? () => null : () => dbPath,
+    emberCommand: dbPath === null ? null : (emberCommand ?? ['ember-fake']),
+    spawnSyncFn: (file, argv) => {
+      engine.push({ kind: 'init-child', argv: [file, ...argv] });
+      return { status: seed.status, stderr: seed.stderr ?? '', stdout: seed.stdout ?? '' };
+    },
     writeTempText:
       writeTemp ??
       ((text) => {
@@ -98,7 +118,7 @@ function harness({ validate = () => ({ ok: true }), writeTemp = null } = {}) {
     cleanStaleTempFiles: () => 0,
     onCommand: (name, args) => started.push({ name, args }),
   });
-  return { ipc, sessions, started, wiring, remainingTemps: () => [...tempCalls], attach: () => ipc.handlers['ember:addAttach']({ sender: null }) };
+  return { ipc, sessions, started, engine, wiring, remainingTemps: () => [...tempCalls], attach: () => ipc.handlers['ember:addAttach']({ sender: null }) };
 }
 
 /* ---------- ember:addStart ---------- */
@@ -201,6 +221,61 @@ test('a summary seen means a clean exit carries NO error (the stop case, exit 2)
   h.attach();
   const exit = sender.sent.find((m) => m.channel === 'ember:addExit');
   assert.deepEqual(exit.data, { exitCode: 2, error: null });
+});
+
+/* ---------- B4-07: the first Add seeds a missing knowledge base ---------- */
+
+test('the_first_add_runs_init_before_capture_when_the_file_is_missing', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ember-addinit-'));
+  fakeTempDirs.push(dir);
+  const kbPath = path.join(dir, 'kb.db'); // a path that does NOT exist yet
+  const h = harness({ dbPath: kbPath, emberCommand: ['node', 'fake-ember.js'] });
+  const sender = fakeSender();
+  const res = h.ipc.handlers['ember:addStart']({ sender }, { text: 'the first add\n' });
+  assert.deepEqual(res, { ok: true });
+  // The fake engine's own rule: `ember init --db <path>` must be on the
+  // child record BEFORE the capture session — "capture started without
+  // init" is the failure this test exists to catch.
+  assert.deepEqual(
+    h.engine,
+    [
+      { kind: 'init-child', argv: ['node', 'fake-ember.js', 'init', '--db', kbPath] },
+      { kind: 'capture-session', args: ['--file', h.remainingTemps()[0]] },
+    ],
+    'capture started without init',
+  );
+});
+
+test('add on an EXISTING knowledge base starts capture directly — no init', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ember-addinit-'));
+  fakeTempDirs.push(dir);
+  const kbPath = path.join(dir, 'kb.db');
+  fs.writeFileSync(kbPath, 'SQLite format 3 looks-a-like stub', 'utf8'); // the file is there
+  const h = harness({ dbPath: kbPath, emberCommand: ['node', 'fake-ember.js'] });
+  const res = h.ipc.handlers['ember:addStart']({ sender: fakeSender() }, { text: 'text' });
+  assert.deepEqual(res, { ok: true });
+  assert.deepEqual(
+    h.engine,
+    [{ kind: 'capture-session', args: ['--file', h.remainingTemps()[0]] }],
+    'an existing knowledge base must be captured directly, with no init child',
+  );
+});
+
+test('a failed init refuses the add and starts no capture session', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ember-addinit-'));
+  fakeTempDirs.push(dir);
+  const kbPath = path.join(dir, 'kb.db'); // still missing: init would have to create it
+  const h = harness({
+    dbPath: kbPath,
+    emberCommand: ['node', 'fake-ember.js'],
+    seed: { status: 1, stderr: 'error: INIT-002 NewFileRefused | ember | refused\n' },
+  });
+  const res = h.ipc.handlers['ember:addStart']({ sender: fakeSender() }, { text: 'text' });
+  assert.equal(res.ok, false);
+  assert.equal(res.error.code, 'APP-002');
+  assert.match(res.error.detail, /ember init/);
+  assert.deepEqual(h.engine.filter((e) => e.kind === 'capture-session'), [], 'no capture when the seed failed');
+  assert.deepEqual(h.remainingTemps(), [], 'no temp file is written when the seed failed');
 });
 
 /* ---------- ember:addAnswer — the BRIDGE-001 pin ---------- */

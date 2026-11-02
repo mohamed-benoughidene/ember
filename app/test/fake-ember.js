@@ -56,6 +56,20 @@ if (!argv.includes('--db')) {
 
 noteSpawn();
 
+/* `ember init --db <path>` — the stub's minimum for the create-on-purpose
+   command the engine has had since Batch 4 chunk 5. A missing file is
+   created (a real init writes the full migrated schema; the stub-driven
+   scenarios never read the file's contents), an existing file is left
+   untouched and still succeeds (N8 idempotence). The FAKE_MODE env vars
+   do NOT apply here: a crash or a mid-session death is a capture-session
+   story, and the app's first-Add seed (B4-07) must run like the real
+   engine's init does. */
+if (argv[0] === 'init') {
+  const target = argv[argv.indexOf('--db') + 1] ?? null;
+  if (!fs.existsSync(target)) fs.writeFileSync(target, '');
+  process.exit(0);
+}
+
 /* Batch 2 Chunk 14 (see the crash mode above). Mirrors the real edge
    handler's leave-behind loosely: the crash file keeps a raw traceback
    shape; the last stderr line is the one house line naming the id. */
