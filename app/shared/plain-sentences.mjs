@@ -104,6 +104,11 @@ export const ERROR_SENTENCES = {
     what: 'The date filter needs a full date; the text given did not read as one.',
     next: 'Pick the date again from the date field and try once more.',
   },
+  'QUERY-010': {
+    title: 'A link points at an item that is gone.',
+    what: 'The item you asked about links to another item that is no longer in the knowledge base.',
+    next: 'Run the health check (Keep safe) and follow the advice there. Nothing was changed.',
+  },
 };
 
 /** Family names for the generic fallback: code prefix -> plain family. */
