@@ -154,6 +154,7 @@ All other commands run only on your computer. After its first download, the `rel
 
 | Command | What it does | Needs a key |
 |---|---|---|
+| `init` | Creates the knowledge base file; on an existing file verifies it and changes nothing | No |
 | `capture` | Reads a note, proposes items, saves the ones you confirm | Yes |
 | `capture-source` | Stores a raw note only, with no AI | No |
 | `set-validated` | Marks an Assumption as verified | No |

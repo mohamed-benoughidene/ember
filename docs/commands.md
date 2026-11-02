@@ -34,6 +34,12 @@ The whole table above (one row per command: sample arguments, document keys, fla
 
 ## Engine A: Capture (writes entries into the knowledge base)
 
+### `ember init --db PATH` - no key
+
+The one command that creates the knowledge base file, on purpose (D-25): every other command refuses a missing file before opening it (`CAPTURE-020 DbFileMissing`) instead of creating it, so nothing in Ember writes a database file except `ember init`.
+
+On a path with no file, it creates the file and runs every migration, then prints `initialized <path>`. On a path that already holds a file, it succeeds only when that file is a healthy Ember database already at the latest schema version with all expected tables intact; it then changes nothing (the file stays byte-identical) and prints `<path> is already up to date; no changes`, exit 0. Anything else is refused with `CAPTURE-021 InitRefused` and left untouched (exit 1): a file that is not an Ember database, tables but no version table, an older or newer schema version, or missing tables — nothing is ever adopted. Just behind the latest version, or a busy read, is re-inspected for up to 5 seconds first, because another `ember init` on the same file may still be mid-migration. No API key, no AI call.
+
 ### `ember capture [--file PATH] [--db PATH]` - needs key
 
 The full Phase 1-4 pipeline. Reads raw text from a file or STDIN (file input capped at 5 MiB, UTF-8), dedupes by SHA-256 content hash, asks the AI for typed proposals, validates each (type, non-empty statement, the quote must appear in the stored source, near-duplicate warning), then opens the confirm loop.
