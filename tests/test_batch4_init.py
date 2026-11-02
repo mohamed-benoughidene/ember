@@ -220,6 +220,68 @@ def test_two_init_capture_pairs_racing_on_a_new_file_both_succeed(
     assert sources == 1
 
 
+def test_four_parallel_capture_sources_on_a_new_file_all_succeed(
+    tmp_path: Path,
+) -> None:
+    """Four threads each run `init` then `capture-source` on ONE fresh path.
+
+    This is the app's real first-Add shape under the plan CORRECTION
+    (lead-ruled, recorded): after chunk 5, capture-source refuses a missing
+    file (CAPTURE-020), so a bare `capture-source` race can never run — each
+    thread runs `ember init` THEN `capture-source` on the same fresh path,
+    exactly like chunk 5's own race test but with a DISTINCT text per thread
+    (so no dedupe hides a lost write). Init racing is proven by chunk 5's
+    test; this test pins the capture side (story 11 / 4.3 #1 write half,
+    chunk 11's migration exclusive lock). All four exit 0 and the file ends
+    at version 13, healthy.
+
+    Proof it's real (spec seam 4, "4 and 8 openers"): `parallelism` was
+    raised to 8 for a one-off proof run — exit 0 on all 16 subprocess
+    results, version 13, 8 distinct source rows, 1 passed in 7.13s — and
+    restored to 4 afterwards. (A first 8-thread attempt failed only on a
+    hardcoded `sources == 4` assertion of the test itself, not the lock:
+    all 8 threads had already exited 0 with version 13 and the correct 8
+    rows; the count now derives from `parallelism`.)
+    """
+    db_path = tmp_path / "kb.db"
+    parallelism = 4
+    barrier = threading.Barrier(parallelism)
+    results: list[list[subprocess.CompletedProcess[bytes]]] = [
+        [] for _ in range(parallelism)
+    ]
+
+    def worker(index: int) -> None:
+        raw = tmp_path / f"note-{index}.txt"
+        raw.write_text(
+            f"Thread {index} text: the parser caches glyphs per file.\n",
+            encoding="utf-8",
+        )
+        barrier.wait()
+        results[index].append(_run("init", "--db", str(db_path)))
+        results[index].append(
+            _run("capture-source", "--file", str(raw), "--db", str(db_path))
+        )
+
+    threads = [
+        threading.Thread(target=worker, args=(i,)) for i in range(parallelism)
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    for index in range(parallelism):
+        for step, result in zip(("init", "capture-source"), results[index]):
+            assert result.returncode == 0, f"thread {index} {step}: {_error_text(result)}"
+    assert _version(db_path) == 13
+    conn = sqlite3.connect(db_path)
+    try:
+        sources = conn.execute("SELECT COUNT(*) FROM sources").fetchone()[0]
+    finally:
+        conn.close()
+    assert sources == parallelism  # distinct texts: a lost write would fail here
+
+
 def _error_text(result: subprocess.CompletedProcess[bytes]) -> str:
     stdout = result.stdout.decode(errors="replace")
     stderr = result.stderr.decode(errors="replace")
