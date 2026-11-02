@@ -79,6 +79,11 @@ export const ERROR_SENTENCES = {
     what: 'A read was tried twice; a write is never repeated automatically, so nothing was done twice.',
     next: 'Try again. If it keeps happening, close and reopen the app.',
   },
+  'APP-009': {
+    title: 'Ember stopped unexpectedly.',
+    what: 'The Ember program ended before it finished its work (nothing was half-written; every saved change is complete).',
+    next: 'Nothing is broken. You can try the action again.',
+  },
   'QUERY-001': {
     title: 'There is no item with that number.',
     what: 'The item number is not in this knowledge base. It may have never existed on this file.',

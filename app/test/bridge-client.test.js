@@ -622,6 +622,92 @@ test('an engine that exits early settles the session, it does not hang', async (
   assert.equal(settle.exitCode, 0);
 }, 20_000);
 
+// --- Batch 5 chunk 7: one settle rule for engines that die unexpectedly (N3; 4.4 #9, #10) ---
+
+test('a stop() the app asked for settles with NO error (story 22)', async () => {
+  // The two-way settle rule (chunk 7, N3): the app's OWN stop() is a
+  // quiet end. The engine sits at its prompt (no summary yet) when the
+  // app stops it: the exit callback still fires (the fake reads the
+  // closed stdin as a user quit, exit 2 — the earlier "stop() closes
+  // stdin" pin), but NO error may be emitted for it. This extends that
+  // earlier case honestly to the new rule; the engine deliberately has
+  // NOT delivered its summary, so the quiet end can only come from the
+  // stop flag itself.
+  const client = makeClient({
+    sessionIdleMs: 20_000,
+    sessionPromptWaitMs: 20_000,
+    spawnFn: (exe, args, opts) =>
+      spawn(exe, args, {
+        ...opts,
+        env: {
+          ...opts.env,
+          FAKE_MODE: 'session',
+          FAKE_SESSION_SCRIPT: JSON.stringify([
+            { event: 'message', text: 'working' },
+            { event: 'prompt', kind: 'choice', text: '[y]es / [n]o / [q]uit', choices: ['y', 'n', 'q'] },
+          ]),
+        },
+      }),
+  });
+  const { session, events, errors, exitPromise } = openSession(client, 'maintain');
+  await testHelpers.waitFor(() => events.some((e) => e.event === 'prompt'), 5000);
+  session.stop();
+  const exit = await exitPromise;
+  assert.equal(exit.exitCode, 2, 'the fake reads the closed stdin as a quiet quit');
+  assert.deepEqual(errors, [], `the app's own stop is never an error: ${JSON.stringify(errors)}`);
+}, 15000);
+
+test('a signal-killed child settles with the new Ember-stopped-unexpectedly code (4.4 #10, story 22)', async () => {
+  // The engine emits part of its script (a message, then a prompt) and
+  // is then killed by a signal — an engine death the app did NOT ask
+  // for. One new app code (APP-009 EmberStoppedUnexpectedly) must
+  // settle the session; no code of any kind existed for this before.
+  const childRef = { current: null };
+  const client = makeClient({
+    sessionIdleMs: 20_000,
+    sessionPromptWaitMs: 20_000,
+    spawnFn: (exe, args, opts) => {
+      const child = spawn(exe, args, {
+        ...opts,
+        env: {
+          ...opts.env,
+          FAKE_MODE: 'session',
+          FAKE_SESSION_SCRIPT: JSON.stringify([
+            { event: 'message', text: 'working' },
+            { event: 'prompt', kind: 'choice', text: '[y]es / [n]o / [q]uit', choices: ['y', 'n', 'q'] },
+          ]),
+        },
+      });
+      childRef.current = child;
+      return child;
+    },
+  });
+  const { errors, events, exitPromise } = openSession(client, 'capture');
+  await testHelpers.waitFor(() => events.some((e) => e.event === 'prompt'), 5000);
+  childRef.current.kill('SIGKILL');
+  const exit = await exitPromise;
+  assert.ok(errors.length >= 1, 'a killed engine must settle with an error event');
+  assert.ok(
+    errors.every((e) => e.code === 'APP-009' && e.name === 'EmberStoppedUnexpectedly'),
+    `every error must be the one Ember-stopped-unexpectedly code, got: ${JSON.stringify(errors)}`,
+  );
+  assert.notEqual(exit.exitCode, 0, 'the child was killed, it did not exit cleanly');
+}, 10_000);
+
+test('an exit with no summary settles with the same code (story 29)', async () => {
+  // The engine exits right after spawn with NO output at all — the
+  // "ended without a summary" path (story 29) settles with the SAME
+  // one code as a signal kill, so all three unexpected paths agree.
+  const client = makeClient({ fakeMode: 'session', env: { FAKE_EXIT_EARLY: '1' } });
+  const { errors, exitPromise } = openSession(client, 'capture');
+  const exit = await exitPromise;
+  assert.equal(exit.exitCode, 0);
+  assert.ok(
+    errors.some((e) => e.code === 'APP-009' && e.name === 'EmberStoppedUnexpectedly'),
+    `expected APP-009 for the exit with no summary, got: ${JSON.stringify(errors)}`,
+  );
+}, 10_000);
+
 // --- tiny poll helper (sessions are event-driven) ------------------------------
 
 const testHelpers = {

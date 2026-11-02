@@ -476,6 +476,27 @@ function createBridgeClient(options) {
     // untrusted output too — track its bytes against the SAME cap the
     // one-shot path has and end the session with the named cap error.
     let stdoutBytes = 0;
+    // Batch 5 chunk 7 (N3; 4.4 #9, #10; stories 22, 29): state for the
+    // ONE settle rule. `stopRequested` is set ONLY by the app's own
+    // stop() (story 22's "Stopped"). `sawAnyEvent`/`sawSummary` track
+    // whether the engine delivered a result (the summary event of a
+    // finished confirm loop, or any event for the shapes whose end IS
+    // a printed answer: the dry-run document, the empty-pool line —
+    // both exit 0 with no summary event by the engine's own design).
+    // `terminalEmitted` makes ONE settled error the maximum, so the
+    // named errors below (APP-008 limits, APP-002 cap/stdin/garbage,
+    // APP-001 spawn, the engine's house line) are never merged into
+    // the new code and never doubled.
+    let stopRequested = false;
+    let sawAnyEvent = false;
+    let sawSummary = false;
+    let terminalEmitted = false;
+
+    function emitTerminal(info) {
+      if (terminalEmitted) return;
+      terminalEmitted = true;
+      emitError(info);
+    }
 
     function armOutputIdle() {
       idleTimer = setTimeout(() => finish(new Error('idle')), sessionIdleMs);
@@ -505,13 +526,42 @@ function createBridgeClient(options) {
       // pipes would otherwise outlive the session.
       stopEngineTree(child);
       if (cause && cause.message === 'idle') {
-        emitError(appErrorInfo('APP-008', `${WHERE}.runConfirmSession`, `ember ${name} produced no output for ${sessionIdleMs} ms and was stopped`));
+        emitTerminal(appErrorInfo('APP-008', `${WHERE}.runConfirmSession`, `ember ${name} produced no output for ${sessionIdleMs} ms and was stopped`));
       } else if (cause && cause.message === 'prompt-wait') {
-        emitError(appErrorInfo('APP-008', `${WHERE}.runConfirmSession`, `ember ${name} has been waiting for an answer for ${sessionPromptWaitMs} ms and was stopped`));
+        emitTerminal(appErrorInfo('APP-008', `${WHERE}.runConfirmSession`, `ember ${name} has been waiting for an answer for ${sessionPromptWaitMs} ms and was stopped`));
       }
       const first = stderrLines[0] ?? '';
       const parsed = exitCode === 1 ? findHouseError(stderrLines, errorPattern) : null;
-      if (parsed) emitError(parsed);
+      if (parsed) emitTerminal(parsed);
+      // Batch 5 chunk 7 (N3; stories 22, 29): the two-way settle rule.
+      // The app's OWN stop() is a quiet end — no error. An end that
+      // carries NEITHER the app's stop, NOR one of the named errors
+      // above (the two APP-008 limits, the cap/stdin/garbage APP-002s,
+      // the spawn APP-001, the engine's own house line), NOR a
+      // delivered result settles on exactly ONE code:
+      // APP-009 EmberStoppedUnexpectedly. No result means: the child
+      // was killed by a signal (story 22 — any other engine death says
+      // so, even one that had already printed events), or it ended
+      // with no validated session output at all (story 29), or it
+      // exited non-zero with no readable house line and no summary
+      // event (the engine died before its result).
+      const endedBySignal = typeof exitCode !== 'number';
+      const nonZero = typeof exitCode === 'number' && exitCode !== 0;
+      const houseLineFound = nonZero ? findHouseError(stderrLines, errorPattern) : null;
+      if (
+        !stopRequested &&
+        !terminalEmitted &&
+        (endedBySignal || !sawAnyEvent || (nonZero && !sawSummary && houseLineFound === null))
+      ) {
+        const reason = endedBySignal
+          ? `it was killed by a signal (${exitCode ?? 'unknown signal'})`
+          : nonZero
+            ? `it exited with code ${exitCode} and sent no readable error`
+            : 'it ended before its first output';
+        emitTerminal(
+          appErrorInfo('APP-009', `${WHERE}.runConfirmSession`, `ember ${name} ended early (${reason}); nothing was half-written`),
+        );
+      }
       // [app 12] the session is over: the knowledge base may have changed.
       if (onActivity) onActivity(name);
       for (const cb of listeners.exit) cb({ exitCode });
@@ -520,10 +570,15 @@ function createBridgeClient(options) {
     function handleEventLine(line) {
       const result = parseEventLine(line);
       if (!result.ok) {
-        emitError(result.error); // garbage line -> APP-002, D4
+        emitTerminal(result.error); // garbage line -> APP-002, D4
         finish(null);
         return;
       }
+      // Chunk 7: a DELIVERED event is a result — the shapes that end
+      // by printing (the dry-run document, the empty-pool line) exit 0
+      // with no summary event by the engine's own design.
+      sawAnyEvent = true;
+      if (result.event.event === 'summary') sawSummary = true;
       for (const cb of listeners.event) cb(result.event);
       // F4: a prompt means the engine waits for the USER now, not
       // for output — arm the long prompt-wait limit.
@@ -550,7 +605,7 @@ function createBridgeClient(options) {
         // one-shot interpret() step returns, then finish() SIGKILLs
         // the flooding child.
         if (!finished) {
-          emitError(appErrorInfo('APP-002', `${WHERE}.runConfirmSession`, `ember ${name} printed more than ${MAX_OUTPUT_BYTES} bytes`));
+          emitTerminal(appErrorInfo('APP-002', `${WHERE}.runConfirmSession`, `ember ${name} printed more than ${MAX_OUTPUT_BYTES} bytes`));
           finish(null);
         }
         return;
@@ -568,12 +623,12 @@ function createBridgeClient(options) {
     // named error and the session ends quietly.
     child.stdin.on('error', (err) => {
       if (finished) return;
-      emitError(appErrorInfo('APP-002', `${WHERE}.runConfirmSession`, `the engine stopped reading its stdin; the answer could not be delivered: ${clip(err instanceof Error ? err.message : String(err))}`));
+      emitTerminal(appErrorInfo('APP-002', `${WHERE}.runConfirmSession`, `the engine stopped reading its stdin; the answer could not be delivered: ${clip(err instanceof Error ? err.message : String(err))}`));
       finish(null);
     });
     child.on('error', (err) => {
       exitCode = null;
-      emitError(appErrorInfo('APP-001', `${WHERE}.runConfirmSession`, safeText(err)));
+      emitTerminal(appErrorInfo('APP-001', `${WHERE}.runConfirmSession`, safeText(err)));
       finish(null);
     });
     child.on('exit', (code) => {
@@ -630,8 +685,12 @@ function createBridgeClient(options) {
       /** Stop: close stdin (the engine reads it as a quit, exit 2); a
        * backstop kill fires only if the child ignores the closed pipe —
        * and since chunk 6 it reaches the WHOLE process group, so a
-       * grandchild holding the pipes cannot survive the session. */
+       * grandchild holding the pipes cannot survive the session.
+       * Chunk 7 (story 22): the flag is NOT just documentation — it is
+       * the ONE thing that separates the app's own Stop ("Stopped", no
+       * error) from every other end in finish()'s settle rule. */
       stop() {
+        stopRequested = true;
         try {
           child.stdin.end();
         } catch {

@@ -27,7 +27,9 @@ test('plain sentences', async (t) => {
   const { NAMES } = require('../shared/errors');
 
   await t.test('every APP- code has a full sentence and the stable name', () => {
-    for (let n = 0; n <= 8; n += 1) {
+    // through 9: APP-009 EmberStoppedUnexpectedly (batch 5 chunk 7,
+    // N3 / decision I9) is in the namespace now.
+    for (let n = 0; n <= 9; n += 1) {
       const code = `APP-00${n}`;
       const entry = ERROR_SENTENCES[code];
       assert.ok(entry, `${code} has no entry`);
