@@ -16,7 +16,9 @@
  *      and at Largest (no horizontal overflow at 200%);
  *   5. the same scan CATCHES planted violations (unnamed button, missing
  *      focus ring, horizontal overflow) — so screens 04-11, which run
- *      this scan in their own e2e, can trust a green result.
+ *      this scan in their own e2e, can trust a green result;
+ *   6. the demo toolbar wears the shared .btn in the banner's light ink
+ *      (Batch 6 design audit, finding 11 #1).
  */
 
 const { _electron } = require('playwright');
@@ -174,11 +176,39 @@ async function main() {
     if (!ringCaught) fail(`the no-ring planted button was not named in the catch: ${JSON.stringify(violations)}`);
     process.stdout.write(`a11y scan caught all three planted violations (${violations.length} total)\n`);
 
+    // --- 6. the demo toolbar: the shared .btn, light ink on the banner ---
+    // (Batch 6 design audit, finding 11 #1: the demo-bar buttons were
+    // unstyled browser buttons. They must wear the shared Button compo-
+    // nent class and read in the banner's light ink.)
+    const demoBar = await win.evaluate(() => {
+      const bar = document.querySelector('[data-testid="demo-bar"]');
+      if (!bar) return null;
+      const buttons = [...bar.querySelectorAll('button')];
+      const ink = getComputedStyle(bar).color;
+      return {
+        count: buttons.length,
+        withoutBtn: buttons.filter((b) => !b.classList.contains('btn')).map((b) => b.dataset.testid),
+        wrongInk: buttons.filter((b) => getComputedStyle(b).color !== ink).map((b) => b.dataset.testid),
+        buttonInk: buttons.length ? getComputedStyle(buttons[0]).color : null,
+        ink,
+      };
+    });
+    if (!demoBar || demoBar.count !== 7) {
+      fail(`expected 7 demo-bar buttons (theme, five sizes, motion), saw ${demoBar ? demoBar.count : 'no demo bar'}`);
+    }
+    if (demoBar.withoutBtn.length > 0) {
+      fail(`demo-bar buttons missing the .btn class: ${demoBar.withoutBtn.join(', ')}`);
+    }
+    if (demoBar.wrongInk.length > 0) {
+      fail(`demo-bar buttons not in the banner ink (bar ${demoBar.ink}): ${JSON.stringify(demoBar)}`);
+    }
+    process.stdout.write(`demo toolbar: 7 buttons, all .btn, button ink ${demoBar.buttonInk} = banner ink ${demoBar.ink}\n`);
+
     if (outsideRequests.length > 0) {
       fail(`outside requests appeared during the run: ${JSON.stringify(outsideRequests)}`);
     }
 
-    process.stdout.write('e2e design OK: gallery renders all components and states in both themes, self-hosted fonts load, the settle motion runs and Reduce Motion kills it, the a11y scan is clean at Default and Largest and catches planted violations, no outside request\n');
+    process.stdout.write('e2e design OK: gallery renders all components and states in both themes, self-hosted fonts load, the settle motion runs and Reduce Motion kills it, the a11y scan is clean at Default and Largest and catches planted violations, the demo toolbar is .btn in the banner ink, no outside request\n');
   } finally {
     await app.close();
   }

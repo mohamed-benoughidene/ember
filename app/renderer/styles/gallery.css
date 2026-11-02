@@ -14,6 +14,17 @@
 }
 .demo-bar :focus-visible { outline-color: var(--banner-ink); }
 
+/* The demo-bar controls are the shared Button (Batch 6 design audit,
+   finding 11 #1): .btn carries the component shape; on the darker
+   banner ground the buttons take the banner's light ink so the labels
+   read. */
+.demo-bar .btn {
+  background: transparent;
+  border-color: var(--banner-ink);
+  color: var(--banner-ink);
+}
+.demo-bar .btn:hover { background: rgba(255, 255, 255, 0.09); }
+
 .gallery-main {
   padding: var(--s6);
   max-width: 62rem;

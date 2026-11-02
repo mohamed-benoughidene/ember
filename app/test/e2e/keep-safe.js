@@ -345,6 +345,16 @@ async function openDifferentFile() {
     // file is unchanged (step file §1).
     await win.click('[data-testid="ks-open-pick"]');
     await win.waitForSelector('[data-testid="ks-open-confirm"]');
+    // The confirm is an INLINE group on the screen (Batch 6 design
+    // audit, finding 11 #2): a named group, never a dialog role — it
+    // does not take over the window and traps no focus.
+    const confirmRole = await win.getAttribute('[data-testid="ks-open-confirm"]', 'role');
+    if (confirmRole !== 'group') {
+      fail(`the open-file confirm must be role="group" (an inline group), saw role="${confirmRole}"`);
+    }
+    const confirmLabel = await win.getAttribute('[data-testid="ks-open-confirm"]', 'aria-label');
+    if (!confirmLabel) fail('the open-file confirm group must carry an aria-label naming it');
+    process.stdout.write(`open confirm is a named inline group (role=group, aria-label="${confirmLabel}")\n`);
     const confirm = await win.textContent('[data-testid="ks-open-confirm"]');
     if (!confirm.includes(v12File)) fail(`the confirmation must name the chosen file: ${confirm.slice(0, 300)}`);
     if (!/stays exactly as it is/.test(confirm)) fail(`the confirmation must say the current file is unchanged: ${confirm.slice(0, 300)}`);
