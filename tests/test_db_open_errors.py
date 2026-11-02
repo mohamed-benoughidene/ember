@@ -1,13 +1,17 @@
 """Open failures are house errors with the file name only.
 
-Story 7/8/23, plan Chunk 5: a `--db` Ember cannot open (missing directory,
-or a file that is not a database at all) must produce exactly one house
-error line — not a raw `sqlite3` traceback — and the detail on that line
-names the file, never the full temp path (Chunk 3's rule).
+Story 7/8/23, plan Chunk 5: a `--db` Ember cannot open (a missing file, or
+a file that is not a database at all) must produce exactly one house error
+line — not a raw `sqlite3` traceback — and the detail on that line names
+the file, never the full temp path (Chunk 3's rule). Since Batch 4 chunk 5
+(D-25), a missing file is refused with its own code `CAPTURE-020
+DbFileMissing` before anything can be created; the file that exists but is
+not a database still fails the open with `CAPTURE-017 DbOpenFailed`.
 """
 
 from __future__ import annotations
 
+import os
 import sqlite3
 
 from click.testing import CliRunner
@@ -18,19 +22,23 @@ from tests.bridge import harness
 NOT_A_DATABASE = "this file is not a database!!"  # 29 bytes of plain text
 
 
-def test_capture_source_missing_db_dir_is_one_capture_017_line(tmp_path) -> None:
-    db = str(tmp_path / "nodir" / "x.db")  # parent missing: open cannot succeed
+def test_capture_source_missing_db_is_one_capture_020_refusal_line(tmp_path) -> None:
+    db = str(tmp_path / "nodir" / "x.db")  # file missing: refused before any open
 
     result = CliRunner().invoke(main, ["capture-source", "--db", db], input="hello")
 
     lines = (result.stderr or "").splitlines()
     assert result.exit_code == 1
     assert len(lines) == 1
-    assert lines[0].startswith("error: CAPTURE-017 DbOpenFailed |")
+    # D-25 (Batch 4 chunk 5): a missing file is refused with its own code
+    # before the open could create or migrate anything.
+    assert lines[0].startswith("error: CAPTURE-020 DbFileMissing |")
     assert "Traceback" not in (result.stderr or "")
     # Chunk 3: the detail names the file, never the full temp path.
     assert str(tmp_path) not in lines[0]
     assert "x.db" in lines[0]
+    # Nothing was created, not even the directory marker.
+    assert not os.path.exists(db)
 
 
 def test_capture_source_text_file_db_is_one_capture_017_line(tmp_path) -> None:

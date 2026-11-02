@@ -1,6 +1,6 @@
 """The bridge contract table (bridge step 04, L2 §7.1): one row per command.
 
-The table is ONE row per registered `ember` command (22 at this step). Per
+The table is ONE row per registered `ember` command (23 at this step). Per
 row it pins:
 
 - `sample_args`: one sample invocation (`{db}` / `{work}` are substituted
@@ -78,6 +78,18 @@ def _seed_assumption(db_path: str) -> None:
         conn.close()
 
 
+def _seed_knowledge_base(db_path: str) -> None:
+    """Just the file, created and migrated (what `ember init` does).
+
+    D-25 (Batch 4 chunk 5): a missing file is refused — the sample runs of
+    `capture-source` need an existing knowledge base like every other
+    command's sample now needs its seed.
+    """
+    from ember.adapters.sqlite import open_database
+
+    open_database(db_path).close()
+
+
 @dataclass(frozen=True)
 class Row:
     """One command's contract (see the module docstring)."""
@@ -105,6 +117,7 @@ ROWS: tuple[Row, ...] = (
     Row(
         command="capture-source",
         sample_args=("capture-source", "--db", "{db}"),
+        seed=_seed_knowledge_base,
         stdin=NOTE,
         json_keys=("content_hash", "raw_text", "source_id"),
     ),
@@ -233,6 +246,10 @@ ROWS: tuple[Row, ...] = (
         json_keys=("item", "links_in", "links_out", "source"),
     ),
     # --- Engine E: Utility ---
+    Row(
+        command="init",
+        sample_args=("init", "--db", "{db}"),
+    ),
     Row(
         command="db-check",
         sample_args=("db-check", "--db", "{db}"),
