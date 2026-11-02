@@ -112,6 +112,22 @@ def test_close_item_reversed_reason_exits_1_with_003(db_path) -> None:
     assert "MAINTAIN-003" in _error_text(result)
 
 
+def test_close_item_refuses_a_bad_reason_before_opening_the_database(
+    tmp_path,
+) -> None:
+    missing_db = str(tmp_path / "never-created.db")
+
+    result = _invoke(
+        ["close-item", "--item", "1", "--reason", "typo", "--db", missing_db]
+    )
+
+    assert result.exit_code == 1
+    stderr_lines = (getattr(result, "stderr", None) or "").splitlines()
+    assert len(stderr_lines) == 1
+    assert "MAINTAIN-002" in stderr_lines[0]
+    assert not Path(missing_db).exists()
+
+
 def test_close_item_twice_second_exits_1_with_004(db_path) -> None:
     Path(db_path).touch()
     _seed(db_path)
@@ -351,3 +367,29 @@ def test_maintain_cli_silent_on_preclear_evidence(db_path) -> None:
         conn.close()
     assert row[0] == "Active"
     assert row[1] == "manual"
+
+
+def test_edit_item_refuses_a_bad_field_before_opening_the_database(
+    tmp_path,
+) -> None:
+    missing_db = str(tmp_path / "never-created.db")
+
+    result = _invoke(
+        [
+            "edit-item",
+            "--item",
+            "1",
+            "--field",
+            "bogus",
+            "--value",
+            "x",
+            "--db",
+            missing_db,
+        ]
+    )
+
+    assert result.exit_code == 1
+    stderr_lines = (getattr(result, "stderr", None) or "").splitlines()
+    assert len(stderr_lines) == 1
+    assert "MAINTAIN-013" in stderr_lines[0]
+    assert not Path(missing_db).exists()

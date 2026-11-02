@@ -76,8 +76,16 @@ from ember.crash_report import write_crash_file
 from ember.errors import EmberError
 from ember.maintain.close_proposer import ProposalOutcome, stale_close_candidates
 from ember.maintain.derive import derive_status_changes
-from ember.maintain.errors import UserAbort as MaintainUserAbort
+from ember.maintain.errors import (
+    CloseReasonInvalid,
+    CloseReasonMismatch,
+    EditFieldUnknown,
+    UserAbort as MaintainUserAbort,
+)
 from ember.maintain.human_actions import (
+    CLOSE_REASONS,
+    EDIT_FIELDS,
+    HUMAN_SETTABLE_REASONS,
     validate_close_item,
     validate_edit_item,
     validate_remove_link,
@@ -733,6 +741,19 @@ def close_item(item_id: int, reason: str, output: OutputOptions) -> None:
     Prints the same report as `maintain`. `--dry-run` loads and validates only;
     it writes no `items` or `change_log` row.
     """
+    # Option checks run BEFORE the database opens (B4-01): a bad `--reason`
+    # must not create a database file. Same errors, same sentences as the
+    # validator in human_actions.py raises.
+    if reason not in CLOSE_REASONS:
+        raise CloseReasonInvalid(
+            "close-item: unknown --reason", item_id=item_id, reason=reason
+        )
+    if reason not in HUMAN_SETTABLE_REASONS:
+        raise CloseReasonMismatch(
+            "close-item: reason is not human-settable",
+            item_id=item_id,
+            reason=reason,
+        )
     conn = open_maintain_database(output.db_path)
     ports = MaintainPorts(
         lookup=SqliteMaintainContext(conn),
@@ -889,6 +910,13 @@ def edit_item(
     A same-value edit is a no-op (exit 0, nothing written). The human invoking
     the command IS the confirmation and no AI runs in this path.
     """
+    # Option checks run BEFORE the database opens (B4-01): a bad `--field`
+    # must not create a database file. Same error, same sentence as the
+    # validator in human_actions.py raises.
+    if field not in EDIT_FIELDS:
+        raise EditFieldUnknown(
+            "edit-item: unknown --field", item_id=item_id, field=field
+        )
     conn = open_maintain_database(output.db_path)
     ports = MaintainPorts(
         lookup=SqliteMaintainContext(conn),
