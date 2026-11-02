@@ -284,6 +284,9 @@ function wireIpc(services) {
     sidebarHidden: false,
     undo: deriveUndoMenuState(null, 'undo'),
     redo: deriveUndoMenuState(null, 'redo'),
+    // Story 13 (4.9 #14): the renderer's pushed text-field focus state
+    // (ember:textFocusChanged); flips Edit's Undo/Redo to the roles.
+    textFieldFocused: false,
   };
 
   let labelClient = null; // ONE client for the label dry-runs, per file
@@ -450,12 +453,28 @@ function wireIpc(services) {
         jobs: { order: s.menuOrder, hidden: s.menuHidden },
         undo: menuState.undo,
         redo: menuState.redo,
+        textFieldFocused: menuState.textFieldFocused,
       };
     },
     dispatch: dispatchMenuAction,
   });
   menuManager.refresh(); // the menu exists from boot (about/quit/Help work pre-window)
   scheduleUndoLabelRefresh(); // the first real derivation, ~250 ms after boot
+
+  /**
+   * Story 13 (finding 4.9 #14): the renderer pushes its text-field
+   * focus state (one boolean, `ember:textFocusChanged`). The Edit menu
+   * REBUILDS only when the value FLIPS — Electron role Undo/Redo while
+   * a field holds the keys (the role's own text undo, no Ember job
+   * action routable), the Ember derivation the moment no field does
+   * (byte-identical to the old menu). Same rebuild path as every other
+   * context change: the manager replaces the whole menu.
+   */
+  const setTextFocus = (focused) => {
+    if (menuState.textFieldFocused === focused) return;
+    menuState.textFieldFocused = focused;
+    menuManager.refresh();
+  };
   /* === App 12 menu block ends === */
 
 
@@ -574,6 +593,8 @@ function wireIpc(services) {
       const accelerator = bootShortcutFor(services.settingsStore.load().settings);
       if (accelerator !== null) shortcutManager.register(accelerator);
     },
+    // [story 13] the text-field focus flip (see the step-12 block above).
+    onTextFocusChanged: setTextFocus,
     /* --- Batch 2 Chunk 13: the EMBER-000 crash report's OS adapters
        (D-16): the real clipboard and shell for Copy crash report /
        Show file on the Add screen (Chunk 14). --- */
