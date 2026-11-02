@@ -145,7 +145,7 @@ def test_migration_011_preserves_all_rows_and_values(db_path) -> None:
     ]
     assert _rows(raw, _LINKS_SELECT) == links_before
     assert _rows(raw, "SELECT * FROM change_log ORDER BY id") == [
-        row + (None,) for row in log_before
+        row + (None, None) for row in log_before
     ]
     raw.close()
 
@@ -248,14 +248,17 @@ def test_migration_011_preserves_existing_schema(db_path) -> None:
             assert added[4] is None  # no default
             assert added[5] == 0  # not pk
         elif name == "change_log":
+            # 014 rides the same open, so change_log gains a SECOND trailing
+            # nullable column (source_id) after 013's group_id.
             assert [row[-1] for row in info] == [
-                row[-1] for row in infos_after[name][:-1]
+                row[-1] for row in infos_after[name][:-2]
             ]
-            added = infos_after[name][-1]
+            added = infos_after[name][-2]
             assert added[1] == "group_id"
             assert added[2] == "INTEGER"
             assert added[3] == 0  # notnull
             assert added[4] is None  # no default
+            assert added[5] == 0  # not pk
             assert added[5] == 0  # not pk
         else:
             assert infos_after[name] == info
@@ -394,7 +397,8 @@ def test_fresh_install_applies_all_migrations_through_012(db_path) -> None:
     conn = open_database(db_path)
 
     version = conn.execute("SELECT version FROM schema_version").fetchone()[0]
-    assert version == 13
+    # Fresh installs go through 012 AND everything after it (014 today).
+    assert version >= 13
     triggers = {
         row["name"]
         for row in conn.execute(

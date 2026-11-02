@@ -396,7 +396,7 @@ def test_every_seeded_row_appears_in_export_text(db_path) -> None:
     assert result.exit_code == 0
     text = result.output
     assert text.startswith("# Ember knowledge base export\n")
-    assert "# schema version: 13" in text
+    assert "# schema version: 14" in text
     assert f"# as of (latest ledger event): {NEWEST}" in text
     assert "# counts: 5 items, 3 links, 4 ledger rows, 1 sources" in text
     # Items: every row leads with type, id, status and carries its fields.
@@ -510,7 +510,7 @@ def test_gather_export_matches_the_cli_bytes(db_path) -> None:
     finally:
         conn.close()
 
-    assert data.schema_version == 13
+    assert data.schema_version == 14
     assert len(data.items) == 5
     assert len(data.links) == 3
     assert len(data.sources) == 1
