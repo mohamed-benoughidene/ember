@@ -875,7 +875,15 @@ class SqliteGroupIdPort:
         self._conn = conn
 
     def next_group_id(self) -> int:
-        """Return `MAX(group_id)+1` over `change_log`, `1` when none."""
+        """Return `MAX(group_id)+1` over `change_log`, `1` when none.
+
+        Chunk 13 (D-03): call this INSIDE the write transaction that will
+        stamp the group's rows. Inside the `unit_of_work`'s `BEGIN
+        IMMEDIATE` the read and the write are one lock, so two concurrent
+        writers never read the same next group id; read outside it, both
+        can read the same id and their two actions merge into one undo
+        group (4.3 #19, 4.6 #4).
+        """
         row = self._conn.execute(
             "SELECT COALESCE(MAX(group_id), 0) FROM change_log"
         ).fetchone()
@@ -917,7 +925,12 @@ class SqliteSourceStore:
     def insert_source(self, *, title: str, full_text: str, content_hash: str) -> int:
         """Insert one source, return the new id.
 
-        Raise `SourceDbWriteError` (CAPTURE-006) on a write failure.
+        Raise `SourceDbWriteError` (CAPTURE-006) on a write failure. Inside a
+        `unit_of_work` the caller owns the commit (Batch 4, 4.3 #9): the
+        source-reuse decision and this insert are one transaction, so the
+        insert must not end the caller's `BEGIN IMMEDIATE` early — a
+        mid-transaction commit would release the write two writers serialize
+        on (D-03, chunk 13: id, group and source decisions in one action).
         """
         timestamp = self._clock()
         try:
@@ -926,8 +939,11 @@ class SqliteSourceStore:
                 " VALUES (?, ?, ?, ?)",
                 (title, full_text, timestamp, content_hash),
             )
-            self._conn.commit()
+            if not in_unit_of_work(self._conn):
+                self._conn.commit()
         except sqlite3.Error as exc:
+            if not in_unit_of_work(self._conn):
+                self._conn.rollback()
             raise SourceDbWriteError("db write fail", content_hash=content_hash) from exc
         return int(cursor.lastrowid)
 
@@ -2369,6 +2385,12 @@ class SqliteItemGatekeeper:
     def next_item_id(self) -> int:
         """Return a fresh item id, counting up from the highest stored id.
 
+        Chunk 13 (D-03): call this INSIDE the write transaction — the
+        `unit_of_work` around the item insert and its `created` row. The
+        `BEGIN IMMEDIATE` lock then covers the read and the insert, so two
+        writers never read the same next id; read outside it, the id can
+        collide and the loser gets a PK error (4.3 #20).
+
         Raise `ItemDbReadError` (CAPTURE-011) on a read failure.
         """
         try:
@@ -2412,20 +2434,25 @@ class SqliteItemGatekeeper:
         except sqlite3.Error as exc:
             raise ItemDbWriteError("db write fail", item_id=item.id) from exc
 
-    def log_created(self, item: ValidatedItem) -> None:
+    def log_created(self, item: ValidatedItem, *, group_id: int | None = None) -> None:
         """Append the `created` change_log row for an accepted item.
 
         Raise `ItemDbWriteError` (CAPTURE-013) on a write failure. Inside a
         `unit_of_work` the caller owns the commit (Batch 4, 4.3 #9): the
         item row and this row are one transaction.
+
+        `group_id` stamps the ledger row (undo step 01); `None` leaves it
+        NULL (today's capture behaviour, byte for byte). The caller reads
+        the id from the `GroupIdPort` INSIDE the write transaction (chunk
+        13, D-03: two writers never read the same next group id).
         """
         try:
             self._conn.execute(
                 "INSERT INTO change_log"
                 " (item_id, link_id, field_changed, old_value, new_value, timestamp,"
-                " trigger_cause)"
-                " VALUES (?, NULL, 'created', NULL, ?, ?, 'user_confirmed')",
-                (item.id, item.statement, self._clock()),
+                " trigger_cause, group_id)"
+                " VALUES (?, NULL, 'created', NULL, ?, ?, 'user_confirmed', ?)",
+                (item.id, item.statement, self._clock(), group_id),
             )
             if not in_unit_of_work(self._conn):
                 self._conn.commit()
