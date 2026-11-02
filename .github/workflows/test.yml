@@ -63,7 +63,12 @@ jobs:
         working-directory: app
       - name: The app's own import check (T9, renderer imports no Node) — Linux only
         if: runner.os == 'Linux'
-        run: npm test
+        # The suite launches Electron once (the harness-no-key case).
+        # A CI runner has no X server of its own, and Chromium exits
+        # with "The platform failed to initialize" (the DBus error is
+        # only the last line its stderr shows) — the same reason the
+        # launch check below runs under xvfb.
+        run: xvfb-run --auto-servernum npm test
         working-directory: app
       - name: Install-size report (the bundled Electron runtime)
         run: |
