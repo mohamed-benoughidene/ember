@@ -48,6 +48,13 @@
  *   boundary, and the LAST line arrives WITHOUT its newline (story
  *   30) — the reader must flush that final partial line when the
  *   child closes.
+ * - FAKE_FLOOD=1 (Batch 5 chunk 5, 4.2 #14; any mode): stream ~40 MB
+ *   to stdout in drain-aware chunks and end by CLOSING stdout — every
+ *   byte really reaches the parent's reader, so the 32 MB cap is
+ *   really hit.
+ * - FAKE_SESSION_CLOSE_STDIN=1 (with FAKE_MODE=session, Batch 5 chunk
+ *   5, 4.4 #2): the engine stops reading its stdin while the process
+ *   stays alive — the app's next answer() hits a broken pipe (EPIPE).
  */
 
 const fs = require('node:fs');
@@ -76,6 +83,39 @@ function splitWrite(stream, lineBuffer, done) {
     stream.write(lineBuffer.subarray(cut));
     done();
   }, 25);
+}
+
+/* ==== Batch 5 chunk 5 (4.2 #14, story 33; the db-check F8 pattern) ==
+   FAKE_FLOOD=1: stream ~40 MB (640 event lines of 64 KB) to
+   stdout in DRAIN-AWARE writes (wait for 'drain', so no byte sits in
+   the child's own buffer) and end by CLOSING stdout. Deliberately
+   NOT `process.exit()` (4.2 #2): exit would drop still-pending bytes
+   and the parent could settle under its output cap without ever
+   seeing them. `process.exitCode` + the natural end after stdout
+   closes guarantees every byte really reaches the parent's reader.
+   For the SESSION half (story 33) the chunks are VALID confirm event
+   lines: a chatty engine floods with event lines, and line-shaped
+   chunks keep the parent's carry reader at its normal cost — a
+   newline-free megabyte flood would grind the reader's carry buffer
+   long before the cap (see the chunk-5 report note). The stream still
+   really exceeds the 32 MB cap, which is what the tests pin. ====== */
+function runFlood() {
+  // ~640 lines of 64 KB = ~40 MB. Small lines keep the parent's per-
+  // line parse cheap (a 1 MB JSON text per line made the same test
+  // take 7.7 s in GC); the byte total still really exceeds the cap.
+  const big = Buffer.from(`${JSON.stringify({ event: 'message', text: 'x'.repeat(64 * 1024 - 64) })}\n`);
+  let n = 0;
+  function writeChunk() {
+    if (n >= 640) {
+      process.exitCode = 0;
+      process.stdout.end();
+      return;
+    }
+    n += 1;
+    if (process.stdout.write(big)) writeChunk();
+    else process.stdout.once('drain', writeChunk);
+  }
+  writeChunk();
 }
 
 const mode = process.env.FAKE_MODE ?? 'list';
@@ -159,7 +199,11 @@ function printListDocument() {
   process.exit(0);
 }
 
-if (mode === 'hang') {
+if (process.env.FAKE_FLOOD === '1') {
+  // Batch 5 chunk 5 (4.2 #14): the flood comes first — whatever the
+  // mode would have printed, the test wants ~40 MB of stdout.
+  runFlood();
+} else if (mode === 'hang') {
   hangAndSleep();
 } else if (mode === 'app') {
   runAppMode(argv);
@@ -243,7 +287,21 @@ if (mode === 'hang') {
   process.exit(1);
 }
 
-function runSession() {  const events = process.env.FAKE_SESSION_IDLE === '1'
+function runSession() {
+  /* ==== Batch 5 chunk 5 (4.4 #5): a CHATTY child that never finishes
+     a line — fragment after fragment, no '\n' — never resets the idle
+     timer (only COMPLETE lines feed bumpIdle), so the inactivity
+     limit must end it even though raw chunks keep arriving. NO other
+     output and especially NO prompt: a prompt would arm the 30-minute
+     prompt-wait limit instead of the output idle limit. ==== */
+  if (process.env.FAKE_SESSION_NO_FULL_LINE === '1') {
+    setInterval(() => {
+      process.stdout.write('working fragment, never terminated');
+    }, 50);
+    return;
+  }
+
+  const events = process.env.FAKE_SESSION_IDLE === '1'
     // Fix F4: a frozen engine has asked NO question — only non-prompt
     // output, so the client's normal inactivity limit must end it.
     ? [{ event: 'message', text: 'working' }]
@@ -298,6 +356,25 @@ function runSession() {  const events = process.env.FAKE_SESSION_IDLE === '1'
   }
   for (const e of events) {
     process.stdout.write(`${JSON.stringify(e)}\n`);
+  }
+
+  /* ==== Batch 5 chunk 5 (4.4 #2): the engine stops reading its stdin
+     (the way a crashed or past-prompt engine does) while the PROCESS
+     stays alive. The next answer the app writes then hits a broken
+     pipe (EPIPE); the session must surface that as an error event,
+     never a crash. Verified in a standalone repro: Node's
+     process.stdin.destroy() does NOT close fd 0 (stdio fds are kept
+     open on purpose), so the REAL fd is closed here — the parent's
+     write then raises write EPIPE, and without an 'error' handler on
+     child.stdin the parent process DIES on the unhandled error. */
+  if (process.env.FAKE_SESSION_CLOSE_STDIN === '1') {
+    try {
+      fs.closeSync(0);
+    } catch {
+      /* already closed */
+    }
+    setInterval(() => {}, 10_000);
+    return;
   }
 
   /* ==== App 05 (ticket A34): die mid-session, for the add e2e ======
