@@ -401,6 +401,13 @@ function registerIpcHandlers(options) {
       ) {
         return { ok: false, error: appErrorInfo('APP-002', `${WHERE}.backupTo`, 'the backup did not report its verified copy') };
       }
+      // The engine's report names the file it copied (BackupReport.path
+      // echoes the target argv verbatim). Resolved the same way on both
+      // sides, it must BE the chosen target — a report of some other
+      // file is not shown as this backup's copy (4.4 #14).
+      if (path.resolve(summary.path) !== path.resolve(targetPath)) {
+        return { ok: false, error: appErrorInfo('APP-002', `${WHERE}.backupTo`, 'the backup reported a different path than the chosen target') };
+      }
       return { ok: true, data: { path: summary.path, schemaVersion: summary.schema_version, itemCount: summary.item_count, rotated: summary.rotated ?? null } };
     },
 
