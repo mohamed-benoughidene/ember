@@ -178,6 +178,21 @@ def test_validate_proposals_gives_each_item_its_own_id() -> None:
     assert [item.id for item in result.validated] == [4, 5]
 
 
+def test_two_identical_proposals_in_one_note_warn_on_the_second() -> None:
+    # Finding 4.5 #7 (story 31): the near-duplicate scan must also see items
+    # accepted earlier in the SAME note, not only the stored snapshot taken
+    # before the loop. The second identical proposal carries the warning;
+    # the first has nothing to warn about.
+    result = validate_proposals([_proposal(), _proposal()], _run(ids=(4, 5)))
+
+    assert [item.id for item in result.validated] == [4, 5]
+    assert result.rejected == []
+    assert result.validated[0].near_dup_warning is None
+    second = result.validated[1].near_dup_warning
+    assert second is not None
+    assert second.matching_item_id == 4
+
+
 # --- small helpers --------------------------------------------------------
 
 

@@ -163,7 +163,7 @@ def delete_database(db_file: Path) -> None:
         candidate = Path(str(db_file) + suffix)
         if candidate.exists():
             candidate.unlink()
-    for backup in db_file.parent.glob(db_file.name + ".bak-v*"):
+    for backup in db_file.parent.glob(db_file.name + ".bak-*"):
         backup.unlink()
 
 

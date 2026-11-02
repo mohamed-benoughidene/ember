@@ -9,6 +9,7 @@ after, the same pattern the read-only query commands use.
 from __future__ import annotations
 
 import hashlib
+import importlib.resources
 import os
 import sqlite3
 from pathlib import Path
@@ -23,10 +24,12 @@ from ember.adapters.errors import (
     TargetWriteFailed,
     VerifyFailed,
 )
+from ember.adapters.paths import same_path
 from ember.adapters.sqlite import open_database
 from ember.cli import main
 from tests.fakes import insert_item, insert_link, insert_source
 from tests.query.fakes import make_v9
+from tests.test_migration_011 import _MIGRATIONS_TO_10
 
 
 @pytest.fixture
@@ -314,3 +317,124 @@ def test_backup_help_ends_with_restore_warning() -> None:
         "Restore: copy the file back, or point Ember at it with `--db`."
         " There is deliberately no restore command (GLOSSARY)."
     )
+
+
+# 7. Path identity: two spellings of one file are one file
+
+
+def test_same_path_treats_a_symlinked_spelling_as_one_file(tmp_path) -> None:
+    real_dir = tmp_path / "real"
+    real_dir.mkdir()
+    link_dir = tmp_path / "link"
+    link_dir.symlink_to(real_dir, target_is_directory=True)
+    # The compared file is named once through the symlink and once
+    # through the real path, and it does not exist on either side.
+    via_link = str(link_dir / "backup.db")
+    via_real = str(real_dir / "backup.db")
+    assert not os.path.exists(via_link)
+    assert not os.path.exists(via_real)
+
+    assert same_path(via_link, via_real) is True
+
+
+# 8. A backup is proven before the old one moves (B4-16, stories 20-23)
+
+
+def _v10(db_path: str) -> None:
+    """Build a real v10 database by hand (scripts 001-010, one item)."""
+    conn = sqlite3.connect(db_path)
+    conn.execute("CREATE TABLE schema_version (version INTEGER NOT NULL)")
+    conn.execute("INSERT INTO schema_version (version) VALUES (10)")
+    package = importlib.resources.files("ember.adapters.migrations")
+    for name in _MIGRATIONS_TO_10:
+        conn.executescript(package.joinpath(name).read_text(encoding="utf-8"))
+    source_id = insert_source(conn)
+    insert_item(conn, source_id=source_id, item_id=1, statement="old decision")
+    conn.commit()
+    conn.close()
+
+
+def _migration_snapshots(tmp_path: Path, name: str = "test.db") -> list[str]:
+    """The `.bak-<timestamp>` pre-migration snapshots beside one file."""
+    return sorted(
+        p.name
+        for p in tmp_path.glob(f"{name}.bak-*")
+        if not p.name.startswith(f"{name}.bak-v")  # the legacy family
+    )
+
+
+def test_rotation_happens_only_after_the_new_snapshot_is_proven(
+    db_path, target_path
+) -> None:
+    _seed(db_path)
+    create_backup(db_path, target_path)
+    proven = _sha256(target_path)
+    # This source fails at OPEN (BACKUP-001): not a SQLite file at all.
+    bad_source = str(db_path) + ".garbage"
+    Path(bad_source).write_bytes(b"this is not a sqlite database header")
+
+    with pytest.raises(SourceOpenFailed):
+        create_backup(bad_source, target_path)
+
+    # The old backup was never moved aside: it still sits at the ORIGINAL
+    # target path, byte for byte, and no `.old-1` rotation happened.
+    assert not os.path.exists(f"{target_path}.old-1")
+    assert os.path.exists(target_path)
+    assert _sha256(target_path) == proven
+
+
+def test_the_migration_pre_backup_is_an_online_snapshot_with_a_timestamp_name(
+    tmp_path,
+) -> None:
+    db = str(tmp_path / "test.db")
+    _v10(db)
+
+    open_database(db).close()
+
+    # The copy is NOT reusable: the name is a timestamp, so it can never
+    # collide with (and overwrite) a `.bak-v<version>` name again.
+    assert not os.path.exists(f"{db}.bak-v10")
+    snapshots = _migration_snapshots(tmp_path)
+    assert len(snapshots) == 1
+    conn = sqlite3.connect(str(tmp_path / snapshots[0]))
+    try:
+        assert conn.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+        version = int(
+            conn.execute("SELECT version FROM schema_version").fetchone()[0]
+        )
+    finally:
+        conn.close()
+    assert version == 10
+
+
+def test_three_timestamped_migration_backups_are_kept(tmp_path) -> None:
+    db = str(tmp_path / "test.db")
+    _v10(db)
+    v10_bytes = Path(db).read_bytes()
+
+    open_database(db).close()
+    assert len(_migration_snapshots(tmp_path)) == 1
+
+    Path(db).write_bytes(v10_bytes)
+    open_database(db).close()
+    after_two = _migration_snapshots(tmp_path)
+    # Two pre-backup runs leave two distinct names.
+    assert len(after_two) == 2
+    assert after_two[0] != after_two[1]
+
+    # Retention keeps at most 3: two fake snapshots stamped in the year 0
+    # (the same fixed-width house stamp, older than anything real) are
+    # evicted by the third run, whose snapshot takes their window slots.
+    for hex_suffix in ("000000", "000001"):
+        Path(
+            f"{db}.bak-00000000T000000Z-{hex_suffix}"
+        ).write_bytes(b"ancient")
+    Path(db).write_bytes(v10_bytes)
+    open_database(db).close()
+
+    kept = _migration_snapshots(tmp_path)
+    assert len(kept) == 3
+    assert not any("00000000T000000Z" in name for name in kept)
+    assert after_two[0] in kept
+    assert after_two[1] in kept
+

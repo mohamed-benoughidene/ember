@@ -115,6 +115,39 @@ def test_since_drops_older_rows() -> None:
         validate_history_page(HistoryPage(since="2026-01-15"))
 
 
+def test_history_since_parses_timestamps_instead_of_comparing_text() -> None:
+    """`--since` compares instants, not ISO text (finding 4.7 #9, story 38).
+
+    Two rows whose TEXT order runs opposite their instant order: row 1 is
+    stored in a `-10:00` spelling but is the LATER instant (06:00Z on the
+    15th); row 2 is a `+02:00` spelling of an instant BEFORE the window
+    (22:30Z on the 14th). A raw text compare keeps the wrong row and drops
+    the right one; parsing both sides keeps exactly row 1.
+    """
+    rows = [
+        make_change_row(1, timestamp="2026-01-14T20:00:00-10:00"),
+        make_change_row(2, timestamp="2026-01-15T00:30:00+02:00"),
+    ]
+    # The full view still shows both rows, stored spellings rendered verbatim.
+    assert [event.timestamp for event in history(rows, [], None)] == [
+        "2026-01-14T20:00:00-10:00",
+        "2026-01-15T00:30:00+02:00",
+    ]
+
+    page = validate_history_page(HistoryPage(since="2026-01-15T00:00:00+00:00"))
+    assert page.since == "2026-01-15T00:00:00+00:00"
+    events = history(rows, [], None, page)
+    assert [event.timestamp for event in events] == [
+        "2026-01-14T20:00:00-10:00",
+    ]
+
+    # The cut composes with the item view behind the same instant rule.
+    item_events = history(rows, [], 1, page)
+    assert [event.timestamp for event in item_events] == [
+        "2026-01-14T20:00:00-10:00",
+    ]
+
+
 def test_offset_skips_then_limit_caps() -> None:
     rows = _five_rows()
 

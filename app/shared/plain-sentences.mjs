@@ -104,6 +104,11 @@ export const ERROR_SENTENCES = {
     what: 'The date filter needs a full date; the text given did not read as one.',
     next: 'Pick the date again from the date field and try once more.',
   },
+  'QUERY-010': {
+    title: 'A link points at an item that is gone.',
+    what: 'The item you asked about links to another item that is no longer in the knowledge base.',
+    next: 'Run the health check (Keep safe) and follow the advice there. Nothing was changed.',
+  },
 };
 
 /** Family names for the generic fallback: code prefix -> plain family. */
@@ -116,6 +121,7 @@ export const ERROR_FAMILIES = {
   MAINTAIN: 'in the maintain engine (the sweep)',
   BACKUP: 'in the backup command',
   EXPORT: 'in the export command',
+  MIGRATION: 'while upgrading the knowledge base format',
   EMBER: 'inside the Ember program (an unexpected problem)',
 };
 
@@ -572,6 +578,16 @@ Object.assign(ERROR_SENTENCES, {
     what: 'The AI service address (the base URL) set in the environment is not a valid web address.',
     next: 'Check the AI base URL setting, then try again. Nothing was created.',
   },
+  'CAPTURE-020': {
+    title: 'That knowledge base file does not exist.',
+    what: 'The command points at a knowledge base file that is not there, so it refused to start rather than create one.',
+    next: 'Create the file first (`ember init --db <path>`) or pick the right file, then try again.',
+  },
+  'CAPTURE-021': {
+    title: 'That file cannot be used as a knowledge base.',
+    what: '`ember init` found a file there that is not a healthy Ember knowledge base already at the current format, so it changed nothing.',
+    next: 'Pick a new file path to create, or check the existing file (Keep safe) before trying again.',
+  },
   'RELATE-000': {
     title: 'A problem in the relate engine was reported.',
     what: 'Ember reported a general problem in the part that links items.',
@@ -761,6 +777,26 @@ Object.assign(ERROR_SENTENCES, {
     title: 'A problem with the backup was reported.',
     what: 'Ember reported a general backup problem.',
     next: 'Try again. Your knowledge base file is unchanged.',
+  },
+  'MIGRATION-000': {
+    title: 'The knowledge base file is not a shape Ember can upgrade.',
+    what: 'Upgrading the file would risk guessing about your items, so Ember refused before changing anything.',
+    next: 'Check the file (Keep safe) or start a fresh one with `ember init`; your original file is unchanged.',
+  },
+  'MIGRATION-001': {
+    title: 'The upgrade steps on this machine are incomplete.',
+    what: 'The list of upgrade steps inside the Ember installation is not the exact set Ember expects, so it refused before changing anything.',
+    next: 'Reinstall or repair Ember, then try again. Your file is unchanged.',
+  },
+  'MIGRATION-002': {
+    title: 'This file is not an Ember knowledge base.',
+    what: 'The file has database tables but none of the marks Ember writes, so Ember does not adopt it.',
+    next: 'Check you picked the right file; create a fresh one with `ember init` if needed. The file is unchanged.',
+  },
+  'MIGRATION-003': {
+    title: 'This file was never finished being created.',
+    what: 'The file shows a start of a knowledge base with no items in it — an earlier creation never finished.',
+    next: 'Start again with `ember init` on a new path, or run the health check (Keep safe) on this file. Nothing was changed.',
   },
   'EXPORT-000': {
     title: 'A problem with the export was reported.',

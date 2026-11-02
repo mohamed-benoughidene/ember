@@ -115,3 +115,28 @@ class BaseUrlInvalid(CaptureError):
 
     code = "CAPTURE-019"
     name = "BaseUrlInvalid"
+
+
+class DbFileMissing(CaptureError):
+    """The database file of a user command does not exist (D-25, N8).
+
+    Only `ember init` creates the knowledge base, on purpose; every other
+    capture-side command refuses here BEFORE the open can create the file
+    implicitly (SQLite connects with create semantics).
+    """
+
+    code = "CAPTURE-020"
+    name = "DbFileMissing"
+
+
+class InitRefused(CaptureError):
+    """`ember init` found a file that is not a healthy current knowledge base (N8).
+
+    The one healthy shape `ember init` accepts is an Ember database with the
+    `schema_version` table at the pinned latest version and the expected
+    tables intact. Anything else — a non-Ember file, no version table, an
+    older or newer version, missing tables — is refused, never adopted.
+    """
+
+    code = "CAPTURE-021"
+    name = "InitRefused"

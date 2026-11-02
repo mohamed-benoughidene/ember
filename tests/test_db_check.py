@@ -13,18 +13,26 @@ import importlib.resources
 import sqlite3
 from pathlib import Path
 
+import pytest
+
 from click.testing import CliRunner
 
 from ember.cli import main
+from ember.adapters.db_check import _ledger_rows
 from ember.adapters.sqlite import (
+    SqliteGroupIdPort,
     SqliteMaintainContext,
     SqliteMaintainStore,
+    _connect_readonly,
+    column_exists,
     open_maintain_database,
 )
+from ember.errors import EmberError
 from ember.maintain.run_maintain import (
     MaintainPorts,
     MaintainRequest,
     run_reverse_supersedes,
+    run_set_status,
     run_sweep,
 )
 from tests.fakes import FIXED_TIME, insert_item, insert_link, insert_source
@@ -275,3 +283,124 @@ def test_db_check_group_check_not_applicable_on_v12(db_path) -> None:
     assert "group_id: not applicable (schema v12)" in lines
     assert "result: OK" == lines[-1]
     assert _sha256(db_path) == before
+
+
+def test_db_check_ledger_rows_carry_their_group_id(db_path) -> None:
+    """The check's ledger read carries the undo-group stamp (4.7 #11 spot).
+
+    `_ledger_rows` rebuilt its `ChangeRow` objects without `group_id`, so
+    every grouped row silently read as groupless. On 13+ the stamp must
+    travel with the row; a pre-013 file (no such column) keeps `None`
+    instead of failing the whole check. Read-only proof: the file hash is
+    unchanged after the read.
+    """
+    Path(db_path).touch()
+    conn = open_maintain_database(db_path)
+    try:
+        source_id = insert_source(conn)
+        insert_item(conn, source_id=source_id, item_id=1, status="Active")
+        conn.commit()
+        ports = MaintainPorts(
+            lookup=SqliteMaintainContext(conn),
+            store=SqliteMaintainStore(conn, clock=lambda: FIXED_TIME),
+            group_ids=SqliteGroupIdPort(conn),
+        )
+        run_set_status(ports, MaintainRequest(item_id=1, to_status="Challenged"))
+    finally:
+        conn.commit()
+        conn.close()
+
+    before = _sha256(db_path)
+    conn = _connect_readonly(db_path)
+    try:
+        rows = _ledger_rows(conn)
+        expected = {
+            row[0]
+            for row in conn.execute(
+                "SELECT DISTINCT group_id FROM change_log"
+                " WHERE group_id IS NOT NULL"
+            )
+        }
+    finally:
+        conn.close()
+
+    assert expected == {1}
+    assert {row.group_id for row in rows if row.group_id is not None} == expected
+    assert _sha256(db_path) == before
+
+
+# ---------------------------------------------------------------------------
+# Chunk 15: the check verifies rules (tables, trigger SQL, the version
+# window), not just the trigger NAMES (findings 4.3 #7, #8, #12, #21).
+# ---------------------------------------------------------------------------
+
+
+def test_db_check_flags_a_missing_table(db_path) -> None:
+    """A dropped expected table is drift, not a healthy OK (4.3 #7)."""
+    _build_healthy_db(db_path)
+    conn = sqlite3.connect(db_path)
+    conn.execute("DROP TABLE sources")
+    conn.commit()
+    conn.close()
+
+    result = CliRunner().invoke(main, ["db-check", "--db", db_path])
+
+    assert result.exit_code == 1
+    lines = result.output.splitlines()
+    assert "tables: missing sources" in lines
+    assert "result: DRIFT" == lines[-1]
+    assert "Traceback" not in result.output
+
+
+def test_db_check_flags_a_no_op_trigger_with_the_right_name(db_path) -> None:
+    """A trigger whose name is right but whose SQL is a no-op drifts (4.3 #8)."""
+    _build_healthy_db(db_path)
+    conn = sqlite3.connect(db_path)
+    conn.execute("DROP TRIGGER links_compat_insert")
+    conn.execute(
+        "CREATE TRIGGER links_compat_insert BEFORE INSERT ON links"
+        " FOR EACH ROW BEGIN SELECT 1; END"
+    )
+    conn.commit()
+    conn.close()
+
+    result = CliRunner().invoke(main, ["db-check", "--db", db_path])
+
+    assert result.exit_code == 1
+    lines = result.output.splitlines()
+    assert (
+        "triggers: SQL does not match the expected definition"
+        " - links_compat_insert" in lines
+    )
+    assert "result: DRIFT" == lines[-1]
+
+
+def test_db_check_flags_version_99(db_path) -> None:
+    """A version above the pinned latest 13 is drift, never a pass (4.3 #12)."""
+    _build_healthy_db(db_path)
+    conn = sqlite3.connect(db_path)
+    conn.execute("UPDATE schema_version SET version = 99")
+    conn.commit()
+    conn.close()
+
+    result = CliRunner().invoke(main, ["db-check", "--db", db_path])
+
+    assert result.exit_code == 1
+    lines = result.output.splitlines()
+    assert "version: 99" in lines
+    assert "version 99 above latest 13" in " ".join(lines)
+    assert "result: DRIFT" == lines[-1]
+    assert "Traceback" not in result.output
+
+
+def test_column_exists_refuses_an_unknown_table() -> None:
+    """`column_exists` interpolates the table into PRAGMA — nothing outside
+    the fixed Ember table set is ever executed (finding 4.3 #21)."""
+    conn = sqlite3.connect(":memory:")
+    try:
+        with pytest.raises(EmberError) as raised:
+            column_exists(conn, "not_an_ember_table", "x")
+        assert raised.value.code == "EMBER-000"
+        assert "unknown table" in raised.value.message
+    finally:
+        conn.close()

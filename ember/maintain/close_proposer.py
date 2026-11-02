@@ -146,6 +146,12 @@ def stale_close_candidates(
     for link in snapshot.links:
         if link.status != "Confirmed" or link.link_type != "answers":
             continue
+        # Finding 4.6 #8: the id guard runs BEFORE the (created_at, id)
+        # tuple comparison — a None id would raise `None > int` against a
+        # real id on an exact created_at tie. A synthetic None-id link is
+        # not a candidate, never raises.
+        if link.id is None:
+            continue
         created = _confirmed_at(link)
         if created is None:
             continue

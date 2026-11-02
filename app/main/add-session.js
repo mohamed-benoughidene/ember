@@ -11,9 +11,10 @@
  *   user-data temp file (capture-temp.js), starts
  *   `capture --file <temp> --confirm json --db <kb>` and forwards the
  *   VALIDATED session events to the invoking sender as `ember:addEvent`
- *   messages. The knowledge base may be created by the add (until the
- *   first Add the file does not exist, app step file §1); an existing
- *   file must be an Ember file (APP-006).
+ *   messages. On a NOT-YET-EXISTING knowledge base the first Add first
+ *   runs `ember init --db <kb>` once: init creates the file on purpose
+ *   (B4-07, D-25), then capture starts against a file that is really
+ *   there; an existing file must be an Ember file (APP-006).
  * - `ember:addAnswer <text>`: one answer; the bridge client writes
  *   exactly one `{"answer": "<text>"}` stdin line, so BRIDGE-001 (a
  *   refused answer line) can never be triggered by the app — a unit
@@ -28,6 +29,8 @@
  * summary (a crash: nothing was half-written, but the UI must say so).
  */
 
+const { spawnSync } = require('node:child_process');
+const fs = require('node:fs');
 const { appErrorInfo } = require('../shared/errors');
 
 const WHERE = 'main.add-session';
@@ -45,10 +48,52 @@ const EXIT_CHANNEL = 'ember:addExit';
  * @param {(text: string) => {ok: true, path: string} | {ok: false, error: object}} options.writeTempText
  * @param {(path: string|null) => void} options.removeTempFile
  * @param {() => number} options.cleanStaleTempFiles crash cleanup at registration
+ * @param {() => string|null} [options.knowledgeBasePath] B4-07: the same
+ *   knowledge-base path the capture session gets (`--db`); null (the
+ *   tests' default) means the seed can never run.
+ * @param {string[]|null} [options.emberCommand] B4-07: the resolved
+ *   ember command prefix (the SAME one the bridge client uses), e.g.
+ *   ["/path/ember"] or ["node", "/path/fake-ember.js"].
+ * @param {typeof import('node:child_process').spawnSync} [options.spawnSyncFn] test seam
  * @param {(name: string, args: string[]) => void} [options.onCommand] test seam
  */
-function wireAddChannels(ipcMain, { startSession, validateAddTarget, writeTempText, removeTempFile, cleanStaleTempFiles, onCommand = () => {} }) {
+function wireAddChannels(ipcMain, { startSession, validateAddTarget, writeTempText, removeTempFile, cleanStaleTempFiles, knowledgeBasePath = () => null, emberCommand = null, spawnSyncFn = spawnSync, onCommand = () => {} }) {
   cleanStaleTempFiles();
+
+  /**
+   * B4-07 (D-25): ONE synchronous `ember init --db <path>` child. The
+   * same argv shape as the bridge client's one-shot commands
+   * ([...command, name, '--db', path]); the child's last stderr line
+   * is the honest failure detail (never guessed). Synchronous because
+   * the capture session must not open against a file that is not
+   * there yet — and because addStart is a sync handler.
+   */
+  function runInitSeed(kbPath) {
+    let run;
+    try {
+      run = spawnSyncFn(emberCommand[0], [...emberCommand.slice(1), 'init', '--db', kbPath], { encoding: 'utf8' });
+    } catch (err) {
+      return {
+        ok: false,
+        error: appErrorInfo('APP-001', `${WHERE}.addStart`, `the knowledge base could not be created: ${err instanceof Error ? err.message : 'unknown error'}`),
+      };
+    }
+    if (run.error) {
+      return {
+        ok: false,
+        error: appErrorInfo('APP-001', `${WHERE}.addStart`, `the knowledge base could not be created: ${run.error.message ?? String(run.error)}`),
+      };
+    }
+    if (run.status !== 0) {
+      const lines = String(run.stderr ?? '').split('\n').filter((line) => line.trim() !== '');
+      const cause = lines.length > 0 ? lines[lines.length - 1] : `ember init exited ${String(run.status)}`;
+      return {
+        ok: false,
+        error: appErrorInfo('APP-002', `${WHERE}.addStart`, `the knowledge base could not be created (ember init): ${cause}`),
+      };
+    }
+    return { ok: true };
+  }
 
   /** The ONE active session, or null: {session, tempPath, sender}. */
   let active = null;
@@ -92,6 +137,17 @@ function wireAddChannels(ipcMain, { startSession, validateAddTarget, writeTempTe
       }
       const target = validateAddTarget();
       if (!target.ok) return { ok: false, error: target.error };
+      // B4-07 (D-25): the first Add seeds a missing knowledge base ON
+      // PURPOSE. `ember init` is a no-op on a healthy current file, so
+      // two first Adds racing both run this seed and both succeed;
+      // without it, capture would start against a file that is not
+      // there. No path or command resolved (the tests' defaults) keeps
+      // the old behaviour exactly.
+      const kbPath = knowledgeBasePath();
+      if (kbPath !== null && emberCommand !== null && !fs.existsSync(kbPath)) {
+        const seed = runInitSeed(kbPath);
+        if (!seed.ok) return { ok: false, error: seed.error };
+      }
       const temp = writeTempText(text);
       if (!temp.ok) return { ok: false, error: temp.error };
 

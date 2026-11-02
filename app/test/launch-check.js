@@ -8,6 +8,7 @@
  * never silently).
  *
  * It builds a throwaway knowledge base with the project venv's
+ * `ember init` (create on purpose) followed by
  * `ember capture-source` (no AI key needed), then launches the real
  * Electron shell with EMBER_APP_LAUNCH_CHECK=1.
  */
@@ -36,6 +37,11 @@ function main() {
   const venvPython = isWin ? path.join(REPO_ROOT, '.venv', 'Scripts', 'python.exe') : path.join(REPO_ROOT, '.venv', 'bin', 'python');
   const seedCmd = isWin ? venvPython : path.join(REPO_ROOT, '.venv', 'bin', 'ember');
   const seedBaseArgs = isWin ? ['-m', 'ember', 'capture-source'] : ['capture-source'];
+  // B4-07 (D-25): capture-source REFUSES a missing file (CAPTURE-020),
+  // so the seed runs `ember init` first — the same create-on-purpose
+  // first move the app's first Add makes (init is a no-op on a file
+  // that is already healthy and current, so re-seeding stays safe).
+  const seedInitArgs = isWin ? ['-m', 'ember', 'init'] : ['init'];
   let commandEnv = isWin ? `${venvPython} -m ember` : path.join(REPO_ROOT, '.venv', 'bin', 'ember');
   const emberPresent = isWin ? seedCmd : commandEnv;
   if (!fs.existsSync(emberPresent)) {
@@ -73,9 +79,22 @@ function main() {
     fail(`OPENROUTER_API_KEY survived the strip (${String(childEnv.OPENROUTER_API_KEY)}) — no AI key may reach the launch-check child`);
   }
   childEnv.XDG_CONFIG_HOME = configDir;
+  // B4-07 (code resolution): every spawned `ember` child — the seed
+  // and the app's read command — must run THIS checkout's engine.
+  // The venv is shared across worktrees and its editable install maps
+  // `ember` at the ORIGINAL checkout, so a worktree run would silently
+  // exercise the main checkout's code: keeping REPO_ROOT at the FRONT
+  // of PYTHONPATH makes every console-script child resolve this
+  // tree's `ember` package first (a no-op in the normal checkout).
+  childEnv.PYTHONPATH = [REPO_ROOT, childEnv.PYTHONPATH].filter(Boolean).join(isWin ? ';' : ':');
   try {
+    execFileSync(seedCmd, [...seedInitArgs, '--db', kbPath], {
+      env: childEnv,
+      stdio: ['ignore', 'inherit', 'inherit'],
+    });
     execFileSync(seedCmd, [...seedBaseArgs, '--db', kbPath], {
       input: 'A throwaway source text for the app launch check.\n',
+      env: childEnv,
       stdio: ['pipe', 'ignore', 'inherit'],
     });
 

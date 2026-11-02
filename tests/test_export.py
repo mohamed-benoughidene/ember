@@ -40,7 +40,7 @@ from tests.fakes import (
     insert_link_reversed,
     insert_source,
 )
-from tests.query.fakes import make_v9
+from tests.query.fakes import make_v10, make_v9
 
 LATER = "2026-01-02T00:00:00+00:00"
 NEWEST = "2026-01-03T00:00:00+00:00"
@@ -275,8 +275,8 @@ def test_rejected_and_reversed_links_labelled_with_state() -> None:
 
     assert "link 2 | contradicts | Rejected (removed)" in rendered
     assert "link 3 | supersedes | Confirmed (reversed)" in rendered
-    assert f"reversed_at:        {LATER}" in rendered
-    assert "status:             Rejected" in rendered
+    assert f"reversed_at:      {LATER}" in rendered
+    assert "status:" + " " * 11 + "Rejected" in rendered
 
 
 def test_ledger_values_untruncated() -> None:
@@ -414,12 +414,12 @@ def test_every_seeded_row_appears_in_export_text(db_path) -> None:
         "Finding statement",
         "Question statement",
         "Decision that superseded item 1",
-        "metadata:           cap-plan",
-        "rationale:          because the panel said so",
-        "source:             applied twice on site",
-        "validated:          1",
-        "close_reason:       answered",
-        "status_origin:      derived",
+        "metadata:" + " " * 9 + "cap-plan",
+        "rationale:" + " " * 8 + "because the panel said so",
+        "source:" + " " * 11 + "applied twice on site",
+        "validated:" + " " * 8 + "1",
+        "close_reason:" + " " * 5 + "answered",
+        "status_origin:" + " " * 4 + "derived",
         "created_at:",
     ):
         assert field in text, field
@@ -427,15 +427,30 @@ def test_every_seeded_row_appears_in_export_text(db_path) -> None:
     assert "link 1 | depends_on | Confirmed" in text
     assert "link 2 | contradicts | Rejected (removed)" in text
     assert "link 3 | supersedes | Confirmed (reversed)" in text
-    assert "reversed_at:        " + NEWEST in text
-    assert "source_item_id:     3" in text
-    assert "target_item_id:     1" in text
+    assert "reversed_at:      " + NEWEST in text
+    assert "source_item_id:" + " " * 3 + "3" in text
+    assert "target_item_id:" + " " * 3 + "1" in text
     # Sources: header, hash and the verbatim block, round-tripped.
     fixture_text = FIXTURE_PATH.read_text(encoding="utf-8")
     assert f"source 1 | t | {FIXED_TIME}" in text
-    # The seeded content_hash is "hash-" + the fixture text: only the label
-    # and prefix are asserted here, the bytes are round-tripped below.
-    assert "content_hash:       hash-" in text
+    # The seeded content_hash is "hash-" + the fixture text: the stored
+    # value spans lines, so it renders inside its own fence. The fence's
+    # bytes/digest round-trip the original value below.
+    assert (
+        "  content_hash:" + " " * 5 + "----- content_hash text begin -----"
+        in text
+    )
+    hash_raw = ("hash-" + fixture_text).encode("utf-8")
+    hash_digest = hashlib.sha256(hash_raw).hexdigest()
+    assert (
+        "----- content_hash text end"
+        f" (bytes={len(hash_raw)}, sha256={hash_digest}) -----" in text
+    )
+    assert _extract_value_block(text, "content_hash") == (
+        "hash-" + fixture_text
+        if ("hash-" + fixture_text).endswith("\n")
+        else "hash-" + fixture_text + "\n"
+    )
     raw = fixture_text.encode("utf-8")
     digest = hashlib.sha256(raw).hexdigest()
     assert (
@@ -455,10 +470,10 @@ def test_every_seeded_row_appears_in_export_text(db_path) -> None:
     )
     assert "ledger 3 | 2026-01-02T00:00:00+00:00 | user_confirmed" in text
     assert "ledger 4 | 2026-01-03T00:00:00+00:00 | user_removed" in text
-    assert "new_value:          depends_on:2" in text
-    assert "old_value:          Confirmed" in text
-    assert "field_changed:      link_removed" in text
-    assert "trigger_cause:      user_removed" in text
+    assert "new_value:" + " " * 8 + "depends_on:2" in text
+    assert "old_value:" + " " * 8 + "Confirmed" in text
+    assert "field_changed:" + " " * 4 + "link_removed" in text
+    assert "trigger_cause:" + " " * 4 + "user_removed" in text
 
 
 def test_two_exports_of_one_database_are_byte_identical(db_path) -> None:
@@ -648,8 +663,8 @@ def test_group_id_renders_stamped_or_a_dash() -> None:
 
     rendered = render_export(data)
 
-    assert "group_id:           3" in rendered
-    assert "group_id:           -" in rendered
+    assert "group_id:" + " " * 9 + "3" in rendered
+    assert "group_id:" + " " * 9 + "-" in rendered
 
 
 def test_export_v13_prints_every_ledger_rows_group_id(db_path) -> None:
@@ -668,10 +683,10 @@ def test_export_v13_prints_every_ledger_rows_group_id(db_path) -> None:
     # Deterministic with the group ids in, and the database untouched.
     assert first.output == second.output
     assert _sha256(db_path) == before
-    assert "group_id:           3" in first.output
+    assert "group_id:" + " " * 9 + "3" in first.output
     # The other three seeded ledger rows are unstamped (capture/relate/sweep
     # rows stay NULL): one dash line per row.
-    assert first.output.count("group_id:           -") == 3
+    assert first.output.count("group_id:" + " " * 9 + "-") == 3
 
 
 def test_export_on_a_v12_file_prints_dashes_and_stays_v12(db_path) -> None:
@@ -696,7 +711,7 @@ def test_export_on_a_v12_file_prints_dashes_and_stays_v12(db_path) -> None:
 
     assert result.exit_code == 0, result.output
     assert "# schema version: 12" in result.output
-    assert "group_id:           -" in result.output
+    assert "group_id:" + " " * 9 + "-" in result.output
     assert _sha256(db_path) == before  # read-only, never migrated
     version = sqlite3.connect(db_path).execute(
         "SELECT version FROM schema_version"
@@ -745,3 +760,172 @@ def test_export_out_existing_directory_is_one_export_001_line(db_path, tmp_path)
     assert len(lines) == 1
     assert lines[0].startswith("error: EXPORT-001 OutputWriteFailed |")
     assert "Traceback" not in (result.stderr or "")
+
+
+# 8. Batch 4 chunk 17: the export never lies and never destroys
+#    (stories 25-28, 44; findings 4.3 #3, #15, #16, #28; 4.7 #10)
+
+
+def _extract_value_block(rendered: str, label: str) -> str:
+    """Pull the payload between a field's begin and end markers (as D1 does).
+
+    The begin line is `----- <label> text begin -----`; the end line is
+    `----- <label> text end (bytes=<n>, sha256=<h>) -----`, naming the
+    exact byte count and sha256 of the raw value, so the block is
+    self-checking exactly like a source block.
+    """
+    begin = f"----- {label} text begin -----\n"
+    start = rendered.index(begin) + len(begin)
+    marker_index = rendered.index(f"----- {label} text end (", start)
+    # Payload runs to the newline BEFORE the end marker's line: compared
+    # to a source block, the end marker repeats the field's label prefix,
+    # so cut at the start of that line, not inside the marker.
+    line_start = rendered.rindex("\n", 0, marker_index) + 1
+    return rendered[start:line_start]
+
+
+def test_a_failed_export_leaves_the_previous_export_intact(tmp_path) -> None:
+    """Finding 4.3 #15, story 25: a failed export destroys nothing.
+
+    The target sits in a folder the writer cannot create a temp file in,
+    so the atomic write fails before the old file is touched: the write
+    raises EXPORT-001, the old file's bytes are unchanged, and no
+    half-written temp file is left behind. (Today `write_export` opens
+    the target with `"w"` — the open succeeds on an existing file even in
+    this unwritable folder and destroys the old bytes in place.)
+    """
+    prevented = tmp_path / "prevented"
+    prevented.mkdir()
+    out = prevented / "export.txt"
+    old_text = "# Ember knowledge base export\n(still the good one)\n"
+    out.write_text(old_text, encoding="utf-8")
+    kept = _sha256(str(out))
+
+    prevented.chmod(0o555)
+    try:
+        with pytest.raises(OutputWriteFailed) as raised:
+            write_export("# Ember knowledge base export\n(new one)\n", str(out))
+    finally:
+        prevented.chmod(0o755)
+
+    assert raised.value.code == "EXPORT-001"
+    assert _sha256(str(out)) == kept
+    assert out.read_text(encoding="utf-8") == old_text
+    assert [entry.name for entry in prevented.iterdir()] == ["export.txt"]
+
+
+def test_a_value_containing_a_section_line_stays_delimited() -> None:
+    """Finding 4.3 #16, story 26: a value cannot fake a section.
+
+    An item statement and a ledger value each carry a forgeable
+    `== links (0) ==` line. Both values span lines, so both render
+    verbatim between their field's own hash-stamped markers — the forged
+    line sits INSIDE the extracted block (payload, never a boundary),
+    each end marker occurs exactly once, and its bytes/digest verify the
+    original (same contract as the source markers above).
+    """
+    forged = "== links (0) =="
+    statement = f"keep\n{forged}\ntail"
+    old_value = f"Active\n{forged}"
+    data = _sample_data()
+    stated = data.items[1].model_copy(update={"statement": statement})
+    valued = data.ledger[0].model_copy(update={"old_value": old_value})
+    data = data.model_copy(
+        update={
+            "items": [stated, data.items[0]],
+            "ledger": [valued, data.ledger[1]],
+        }
+    )
+
+    rendered = render_export(data)
+
+    # The statement's fenced block carries the forged line as payload ...
+    statement_raw = statement.encode("utf-8")
+    assert "  statement:" + " " * 8 + "----- statement text begin -----" in rendered
+    statement_end = (
+        "----- statement text end"
+        f" (bytes={len(statement_raw)},"
+        f" sha256={hashlib.sha256(statement_raw).hexdigest()}) -----"
+    )
+    assert rendered.count(statement_end) == 1
+    assert rendered.count(
+        "  statement:" + " " * 8 + "----- statement text begin -----"
+    ) == 1
+    block = _extract_value_block(rendered, "statement")
+    assert block == statement + "\n"
+    assert f"\n{forged}\n" in "\n" + block
+    # ... and the ledger value gets the same treatment, with its own fence.
+    value_raw = old_value.encode("utf-8")
+    value_end = (
+        "----- old_value text end"
+        f" (bytes={len(value_raw)},"
+        f" sha256={hashlib.sha256(value_raw).hexdigest()}) -----"
+    )
+    assert rendered.count(value_end) == 1
+    value_block = _extract_value_block(rendered, "old_value")
+    assert value_block == old_value + "\n"
+    assert f"\n{forged}" in "\n" + value_block
+
+
+def test_metadata_is_selected_only_when_the_version_has_it(db_path, tmp_path) -> None:
+    """Finding 4.3 #3, story 27: export works on every readable version.
+
+    A real v10 file (fixture, finding 4.7 #10) has no `items.metadata`
+    column; the gather must not select it. The `--out` export succeeds,
+    the file stays v10 and byte-identical, and the rendered item shows
+    `(null)` where the missing column would be.
+    """
+    conn = make_v10(db_path)
+    try:
+        source_id = insert_source(conn, "v10 body")
+        insert_item(conn, source_id=source_id, item_id=1)
+        conn.commit()
+    finally:
+        conn.close()
+    before = _sha256(db_path)
+    out = tmp_path / "out.txt"
+
+    result = CliRunner().invoke(main, ["export", "--db", db_path, "--out", str(out)])
+
+    assert result.exit_code == 0, (result.output, result.stderr)
+    text = out.read_text(encoding="utf-8")
+    assert text.startswith("# Ember knowledge base export\n")
+    assert "# schema version: 10" in text
+    assert "metadata:" + " " * 9 + "(null)" in text
+    assert "Decision 1 | Active" in text
+    assert _sha256(db_path) == before
+    version = sqlite3.connect(db_path).execute(
+        "SELECT version FROM schema_version"
+    ).fetchone()[0]
+    assert version == 10
+
+
+def test_field_values_sit_at_the_documented_column_20() -> None:
+    """Finding 4.3 #28, story 28: the value column is the documented 20.
+
+    Two labels of different length, one rendered line each: the single-
+    line value always starts exactly at column 20 (today the padding
+    math lands it at 22). A delimited multi-line value's begin marker
+    (its rendered "value") starts there too.
+    """
+    data = _sample_data()
+    stated = data.items[0].model_copy(update={"statement": "spans\nlines"})
+    data = data.model_copy(update={"items": [stated, data.items[1]]})
+
+    rendered = render_export(data)
+
+    reversed_at = next(
+        l for l in rendered.split("\n")
+        if l.startswith("  reversed_at:") and "(null)" not in l
+    )
+    assert reversed_at == "  reversed_at:" + " " * 6 + str(LATER)
+    metadata = next(
+        l for l in rendered.split("\n")
+        if l.startswith("  metadata:") and "(null)" not in l
+    )
+    assert metadata == "  metadata:" + " " * 9 + "cap-plan"
+    begin = next(
+        l for l in rendered.split("\n")
+        if l.startswith("  statement:") and "text begin" in l
+    )
+    assert begin == "  statement:" + " " * 8 + "----- statement text begin -----"

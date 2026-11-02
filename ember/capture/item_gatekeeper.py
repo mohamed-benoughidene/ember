@@ -8,7 +8,7 @@ warning only; it never blocks a proposal (L2 section 3, Phase 3).
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from difflib import SequenceMatcher
 from typing import Callable, Protocol
 
@@ -171,6 +171,19 @@ def validate_set_validated(item: StoredItem | None, item_id: int) -> StoredItem:
     return item
 
 
+def validated_change_is_noop(item: StoredItem, new_value: bool) -> bool:
+    """Check the flag change CHANGES something (finding 4.5 #18).
+
+    True when the item already carries `new_value`: writing anyway would
+    append a fake `true -> true` (or `false -> false`) ledger row —
+    history for a change that never happened. The caller must skip the
+    write and answer honestly instead. A never-set flag (`None`) is
+    always a real change, even toward `false`: `None -> false` is new
+    history worth recording.
+    """
+    return item.validated is not None and bool(item.validated) == new_value
+
+
 def validate_add_item(
     draft: ProposalDraft,
     run: GatekeeperRun,
@@ -206,13 +219,25 @@ def validate_proposals(
     proposals: list[ItemProposal],
     run: GatekeeperRun,
 ) -> GatekeeperResult:
-    """Phase 3 loop: validate every proposal, keep the good ones."""
+    """Phase 3 loop: validate every proposal, keep the good ones.
+
+    The near-duplicate scan also sees items accepted earlier in the SAME
+    note (finding 4.5 #7): the snapshot `run.existing` is read once, so the
+    loop extends it with every accepted item's id and statement before
+    validating the next proposal.
+    """
     validated: list[ValidatedItem] = []
     rejected: list[RejectedProposal] = []
+    scanned = list(run.existing)
     for proposal in proposals:
-        outcome = validate_add_item(_to_draft(proposal), run)
+        outcome = validate_add_item(
+            _to_draft(proposal), replace(run, existing=scanned)
+        )
         if isinstance(outcome, RejectedProposal):
             rejected.append(outcome)
         else:
             validated.append(outcome)
+            scanned.append(
+                ExistingItem(item_id=outcome.id, statement=outcome.statement)
+            )
     return GatekeeperResult(validated=validated, rejected=rejected)

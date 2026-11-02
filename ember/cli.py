@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import json
 import os
+import sqlite3
 import sys
 import traceback
 from datetime import datetime, timezone
 from dataclasses import dataclass
-from functools import wraps
+from functools import partial, wraps
 from typing import Any, Callable
 
 import click
@@ -48,11 +49,15 @@ from ember.adapters.sqlite import (
     SqliteSourceStore,
     build_ai_response_store,
     build_embedding_store,
+    init_knowledge_base,
     open_database,
+    open_existing_database,
     open_maintain_database,
     open_maintain_database_readonly,
     open_query_database,
-    open_relate_database,
+    open_relate_database_readonly,
+    open_relate_database_write,
+    unit_of_work,
 )
 from ember.bridge.json_out import OutputDocument, render_document
 from ember.capture.confirm_write import run_confirm_loop
@@ -64,6 +69,7 @@ from ember.capture.item_gatekeeper import (
     validate_add_item,
     validate_proposals,
     validate_set_validated,
+    validated_change_is_noop,
 )
 from ember.capture.item_proposal import (
     ProposalResponse,
@@ -76,8 +82,16 @@ from ember.crash_report import write_crash_file
 from ember.errors import EmberError
 from ember.maintain.close_proposer import ProposalOutcome, stale_close_candidates
 from ember.maintain.derive import derive_status_changes
-from ember.maintain.errors import UserAbort as MaintainUserAbort
+from ember.maintain.errors import (
+    CloseReasonInvalid,
+    CloseReasonMismatch,
+    EditFieldUnknown,
+    UserAbort as MaintainUserAbort,
+)
 from ember.maintain.human_actions import (
+    CLOSE_REASONS,
+    EDIT_FIELDS,
+    HUMAN_SETTABLE_REASONS,
     validate_close_item,
     validate_edit_item,
     validate_remove_link,
@@ -366,6 +380,30 @@ def main() -> None:
     """Ember: project context management system."""
 
 
+@main.command("init")
+@click.option(
+    "--db",
+    "db_path",
+    default=DEFAULT_DB_PATH,
+    help="SQLite database path to create or verify.",
+)
+def init_command(db_path: str) -> None:
+    """Create and migrate a new knowledge base file (N8, D-25).
+
+    The ONE command that creates the file, on purpose. On a missing file it
+    creates and migrates it; on an existing file it succeeds only when the
+    file is a healthy Ember database already at the latest schema version,
+    and then changes nothing (byte-identical, exit 0). Anything else — a
+    file that is not an Ember database, a version other than the latest,
+    missing tables — is refused with CAPTURE-021 and left untouched.
+    """
+    outcome = init_knowledge_base(db_path)
+    if outcome == "created":
+        click.echo(f"initialized {db_path}")
+    else:
+        click.echo(f"{db_path} is already up to date; no changes")
+
+
 @main.command("capture-source")
 @click.option(
     "--file",
@@ -384,7 +422,7 @@ def capture_source(file_path: str | None, db_path: str) -> None:
     """Phase 1: store raw input, dedup by content hash, print source reference."""
     mode = InputMode.FILE if file_path else InputMode.STDIN
     raw_text = read_raw_text(mode=mode, path=file_path)
-    conn = open_database(db_path)
+    conn = open_existing_database(db_path)
     store = SqliteSourceStore(conn)
     result = store_source(store, raw_text)
     if result.reused:
@@ -445,6 +483,8 @@ def capture(file_path: str | None, output: OutputOptions) -> None:
         confirm=confirm,
         commit=gatekeeper,
         revalidate=lambda draft: validate_add_item(draft, run),
+        # One accepted item = one transaction (Batch 4 chunk 8, 4.3 #9).
+        unit_of_work=partial(unit_of_work, conn),
     )
     sink.summary(
         f"accepted: {len(result.accepted_ids)}"
@@ -493,6 +533,72 @@ def clear_validated(item_id: int, db_path: str) -> None:
     _write_validated_flag(item_id, db_path, new_value=False)
 
 
+class _RelateWriteConnection:
+    """The ONE short-lived relate write connection (decision N9).
+
+    Opened lazily on the first write — after the read-only open and the
+    pool reads have done their part — never migrated, no backup, and closed
+    as soon as the command ends. Every relate write (embedding-cache upserts
+    and the model-change wipe, the raw AI reply save, and the confirmed-link
+    writes) goes through the connection this holder returns, so a relate run
+    opens at most one writing connection at a time.
+    """
+
+    def __init__(self, db_path: str) -> None:
+        self._db_path = db_path
+        self._conn: sqlite3.Connection | None = None
+        self._embedding_store: Any = None
+
+    def connection(self) -> sqlite3.Connection:
+        """Open the write connection on first use; return it afterwards."""
+        if self._conn is None:
+            self._conn = open_relate_database_write(self._db_path)
+        return self._conn
+
+    def embedding_store(self) -> Any:
+        """Build the embedding cache on the write connection (once)."""
+        if self._embedding_store is None:
+            self._embedding_store = build_embedding_store(self.connection())
+        return self._embedding_store
+
+    def close(self) -> None:
+        """Close the write connection if one was ever opened."""
+        if self._conn is not None:
+            self._conn.close()
+            self._conn = None
+            self._embedding_store = None
+
+
+class _RelateEmbeddingCache:
+    """Embedding-cache reads on the read-only connection, writes on the
+    ONE short-lived write connection (decision N9).
+
+    Wraps the `EmbeddingStorePort` built on the read-only connection for the
+    three reads (`get`, `model_name_of`, `first_model_name`) and routes the
+    two writes (`upsert`, `wipe`) to the same port type built on the
+    short-lived write connection.
+    """
+
+    def __init__(self, read_store: Any, writes: _RelateWriteConnection) -> None:
+        self._read_store = read_store
+        self._writes = writes
+
+    def get(self, item_id: int) -> Any:
+        return self._read_store.get(item_id)
+
+    def model_name_of(self, item_id: int) -> Any:
+        return self._read_store.model_name_of(item_id)
+
+    def first_model_name(self) -> Any:
+        return self._read_store.first_model_name()
+
+    def upsert(self, item_id: int, vector: list[float], model_name: str) -> None:
+        self._writes.embedding_store().upsert(item_id, vector, model_name)
+
+    def wipe(self) -> None:
+        self._writes.embedding_store().wipe()
+
+
 @main.command("relate")
 @click.option("--item", "item_id", type=int, default=None, help="Item id to relate.")
 @click.option(
@@ -510,6 +616,11 @@ def relate(item_id: int | None, latest: bool, output: OutputOptions) -> None:
     error, and 2 when the user quits mid-prompt. An empty candidate pool
     prints the Phase 2 JSON and exits 0 without an AI call. `--confirm json`
     (bridge step 03) turns every stdout line into one JSON event object.
+
+    N9: every read runs on a STRICTLY read-only connection that never
+    migrates and never backs up; the writes (embedding cache, raw AI reply,
+    confirmed links) share ONE short-lived write connection that never
+    migrates either.
     """
     if item_id is not None and latest:
         raise click.UsageError("use either --item or --latest, not both")
@@ -518,47 +629,54 @@ def relate(item_id: int | None, latest: bool, output: OutputOptions) -> None:
     sink, confirm = _confirm_io(output, JsonRelateConfirm, RelateTerminalConfirm)
     aborted = False
     validate_embedder_config()
-    conn = open_relate_database(output.db_path)
-    lookup = SqliteLinkContext(conn)
-    store = SqliteLinkStore(conn)
-    link_proposer = build_link_proposer(os.environ)
-    ai_response_store = build_ai_response_store(conn)
-    if latest:
-        result = load_latest_candidates(lookup)
-    else:
-        result = load_item_candidates(lookup, item_id=item_id, db_path=output.db_path)
-    if result is None:
-        sink.echo("no unrelated items")
-        return
-    if result.universe.items:
-        pool = build_candidate_pool(
-            result,
-            link_lookup=lookup,
-            embedding_store=build_embedding_store(conn),
-            embedder=build_embedder(),
-        )
-    else:
-        pool = Pool.empty()
-    if pool.warning:
-        click.echo(pool.warning, err=True)
-    if not pool.ranked:
-        sink.echo(
-            json.dumps(
-                {"phase": 2, "pool_size": 0, "signals": pool.counts}
+    conn = open_relate_database_readonly(output.db_path)
+    writes = _RelateWriteConnection(output.db_path)
+    try:
+        lookup = SqliteLinkContext(conn)
+        link_proposer = build_link_proposer(os.environ)
+        if latest:
+            result = load_latest_candidates(lookup)
+        else:
+            result = load_item_candidates(
+                lookup, item_id=item_id, db_path=output.db_path
             )
+        if result is None:
+            sink.echo("no unrelated items")
+            return
+        if result.universe.items:
+            pool = build_candidate_pool(
+                result,
+                link_lookup=lookup,
+                embedding_store=_RelateEmbeddingCache(
+                    build_embedding_store(conn), writes
+                ),
+                embedder=build_embedder(),
+            )
+        else:
+            pool = Pool.empty()
+        if pool.warning:
+            click.echo(pool.warning, err=True)
+        if not pool.ranked:
+            sink.echo(
+                json.dumps(
+                    {"phase": 2, "pool_size": 0, "signals": pool.counts}
+                )
+            )
+            return
+        ports = RelatePorts(
+            link_lookup=lookup,
+            link_store=SqliteLinkStore(writes.connection()),
+            link_proposer=link_proposer,
+            ai_response_store=build_ai_response_store(writes.connection()),
+            confirm=confirm,
         )
-        return
-    ports = RelatePorts(
-        link_lookup=lookup,
-        link_store=store,
-        link_proposer=link_proposer,
-        ai_response_store=ai_response_store,
-        confirm=confirm,
-    )
-    request = RelateRequest(
-        new_item=result.new_item, ranked=pool.ranked, env=os.environ
-    )
-    outcome = run_relate(ports, request)
+        request = RelateRequest(
+            new_item=result.new_item, ranked=pool.ranked, env=os.environ
+        )
+        outcome = run_relate(ports, request)
+    finally:
+        writes.close()
+        conn.close()
     for rejection in outcome.gatekeeper_rejections:
         if rejection.detail:
             sink.echo(
@@ -606,6 +724,9 @@ def maintain(output: OutputOptions) -> None:
     sweep_changes: list[StatusChange] = []
     total_items = 0
     stale_truncated = False
+    # The Phase 5 error to re-raise AFTER the document of what completed is
+    # printed (Batch 4 chunk 8, 4.6 #3 / 4.3 #22); None keeps today's flow.
+    proposal_error: EmberError | None = None
     # G2-B: a `--dry-run` is a read — it opens STRICTLY read-only and
     # never migrates an older file (plan §5.5, story 76).
     conn = (
@@ -617,6 +738,8 @@ def maintain(output: OutputOptions) -> None:
         lookup=SqliteMaintainContext(conn),
         store=SqliteMaintainStore(conn),
         group_ids=SqliteGroupIdPort(conn),
+        # One user action is one transaction (Batch 4 chunk 8, 4.3 #9).
+        unit_of_work=partial(unit_of_work, conn),
     )
     if output.dry_run:
         snapshot = _load(ports.lookup)
@@ -661,16 +784,33 @@ def maintain(output: OutputOptions) -> None:
         if shortlist.truncated and not json_mode:
             sink.echo("stale shortlist capped at 10 items (list truncated)")
         if shortlist.candidates:
-            outcome = run_close_proposals(
-                CloseProposalPorts(
-                    lookup=ports.lookup,
-                    store=ports.store,
-                    close_proposer=build_close_proposer(os.environ),
-                    ai_response_store=SqliteAiResponseStore(conn),
-                    confirm=confirm,
-                ),
-                now=datetime.now(timezone.utc),
-            )
+            try:
+                outcome = run_close_proposals(
+                    CloseProposalPorts(
+                        lookup=ports.lookup,
+                        store=ports.store,
+                        close_proposer=build_close_proposer(os.environ),
+                        ai_response_store=SqliteAiResponseStore(conn),
+                        confirm=confirm,
+                        unit_of_work=ports.unit_of_work,
+                    ),
+                    now=datetime.now(timezone.utc),
+                )
+            except EmberError as exc:
+                # 4.6 #3 / 4.3 #22 (Batch 4 chunk 8): the sweep completed and
+                # WROTE its changes before this later action failed. In JSON
+                # mode the document is the report, so it is printed first;
+                # the error is re-raised after it, and the edge handler names
+                # it and exits 1. Text mode keeps today's single error line.
+                if not json_mode:
+                    raise
+                outcome = ProposalOutcome(
+                    stale=len(shortlist.candidates),
+                    proposed=0,
+                    accepted=0,
+                    rejected=0,
+                )
+                proposal_error = exc
     if json_mode:
         summary = summary_counts(sweep_changes, total_items)
         summary.update(
@@ -708,6 +848,8 @@ def maintain(output: OutputOptions) -> None:
                 "aborted": outcome.aborted,
             },
         )
+    if proposal_error is not None:
+        raise proposal_error
     if outcome.aborted:
         sys.exit(2)
 
@@ -733,11 +875,32 @@ def close_item(item_id: int, reason: str, output: OutputOptions) -> None:
     Prints the same report as `maintain`. `--dry-run` loads and validates only;
     it writes no `items` or `change_log` row.
     """
-    conn = open_maintain_database(output.db_path)
+    # Option checks run BEFORE the database opens (B4-01): a bad `--reason`
+    # must not create a database file. Same errors, same sentences as the
+    # validator in human_actions.py raises.
+    if reason not in CLOSE_REASONS:
+        raise CloseReasonInvalid(
+            "close-item: unknown --reason", item_id=item_id, reason=reason
+        )
+    if reason not in HUMAN_SETTABLE_REASONS:
+        raise CloseReasonMismatch(
+            "close-item: reason is not human-settable",
+            item_id=item_id,
+            reason=reason,
+        )
+    # G2-B: a `--dry-run` is a read — it opens STRICTLY read-only and
+    # never migrates an older file (plan §5.5, story 76).
+    conn = (
+        open_maintain_database_readonly(output.db_path, required_version=11)
+        if output.dry_run
+        else open_maintain_database(output.db_path)
+    )
     ports = MaintainPorts(
         lookup=SqliteMaintainContext(conn),
         store=SqliteMaintainStore(conn),
         group_ids=SqliteGroupIdPort(conn),
+        # One user action is one transaction (Batch 4 chunk 8, 4.3 #9).
+        unit_of_work=partial(unit_of_work, conn),
     )
     if output.dry_run:
         snapshot = _load(ports.lookup)
@@ -760,7 +923,10 @@ def close_item(item_id: int, reason: str, output: OutputOptions) -> None:
     )
     if output.fmt != "json":
         for line in format_report(changes, total_items):
-            click.echo(line)
+            if output.dry_run:
+                click.echo(f"{line} (dry-run)")
+            else:
+                click.echo(line)
 
 
 @main.command("set-status")
@@ -790,6 +956,8 @@ def set_status(item_id: int, to_status: str, output: OutputOptions) -> None:
         lookup=SqliteMaintainContext(conn),
         store=SqliteMaintainStore(conn),
         group_ids=SqliteGroupIdPort(conn),
+        # One user action is one transaction (Batch 4 chunk 8, 4.3 #9).
+        unit_of_work=partial(unit_of_work, conn),
     )
     result = run_set_status(
         ports, MaintainRequest(item_id=item_id, to_status=to_status)
@@ -889,7 +1057,20 @@ def edit_item(
     A same-value edit is a no-op (exit 0, nothing written). The human invoking
     the command IS the confirmation and no AI runs in this path.
     """
-    conn = open_maintain_database(output.db_path)
+    # Option checks run BEFORE the database opens (B4-01): a bad `--field`
+    # must not create a database file. Same error, same sentence as the
+    # validator in human_actions.py raises.
+    if field not in EDIT_FIELDS:
+        raise EditFieldUnknown(
+            "edit-item: unknown --field", item_id=item_id, field=field
+        )
+    # G2-B: a `--dry-run` is a read — it opens STRICTLY read-only and
+    # never migrates an older file (plan §5.5, story 76).
+    conn = (
+        open_maintain_database_readonly(output.db_path, required_version=11)
+        if output.dry_run
+        else open_maintain_database(output.db_path)
+    )
     ports = MaintainPorts(
         lookup=SqliteMaintainContext(conn),
         store=SqliteMaintainStore(conn),
@@ -944,7 +1125,13 @@ def remove_link(link_id: int, output: OutputOptions) -> None:
     the same link is an error (MAINTAIN-015), not a silent no-op. The human
     invoking the command IS the confirmation and no AI runs in this path.
     """
-    conn = open_maintain_database(output.db_path)
+    # G2-B: a `--dry-run` is a read — it opens STRICTLY read-only and
+    # never migrates an older file (plan §5.5, story 76).
+    conn = (
+        open_maintain_database_readonly(output.db_path, required_version=11)
+        if output.dry_run
+        else open_maintain_database(output.db_path)
+    )
     ports = MaintainPorts(
         lookup=SqliteMaintainContext(conn),
         store=SqliteMaintainStore(conn),
@@ -1039,7 +1226,11 @@ def _run_undo_or_redo(
     edge, the same document and report line. `run` is run_undo or
     run_redo - the only difference between the two commands."""
     conn = (
-        open_maintain_database_readonly(output.db_path, required_version=11)
+        # The undo groups are the ledger's `group_id` rows (migration 013),
+        # so a read-only dry-run demands floor 13, not the maintain floor
+        # 11 (G2-B): an older file gets the honest SchemaOutdated answer
+        # instead of a misleading nothing-to-undo (4.6 #11).
+        open_maintain_database_readonly(output.db_path, required_version=13)
         if output.dry_run
         else open_maintain_database(output.db_path)
     )
@@ -1352,11 +1543,22 @@ def db_check(output: OutputOptions) -> None:
 
 
 def _write_validated_flag(item_id: int, db_path: str, *, new_value: bool) -> None:
-    """Write the flag on an Assumption. `new_value` is data, not a mode switch."""
-    conn = open_database(db_path)
+    """Write the flag on an Assumption. `new_value` is data, not a mode switch.
+
+    Finding 4.5 #18: a set that changes nothing writes NO ledger row — a
+    `true -> true` row would be history for a change that never happened.
+    The command still exits 0 and says honestly that nothing was written.
+    """
+    conn = open_existing_database(db_path)
     ids = SqliteGroupIdPort(conn)
     gatekeeper = SqliteItemGatekeeper(conn, group_ids=ids)
     item = validate_set_validated(gatekeeper.find_item(item_id), item_id)
+    if validated_change_is_noop(item, new_value):
+        click.echo(
+            f"item {item.id} validated: {str(new_value).lower()}"
+            " (unchanged, nothing written)"
+        )
+        return
     gatekeeper.save_validated_flag(
         item, validated=new_value, group_id=ids.next_group_id()
     )

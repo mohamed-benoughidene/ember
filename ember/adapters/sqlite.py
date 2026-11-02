@@ -4,18 +4,28 @@ from __future__ import annotations
 
 import json
 import os
-import shutil
+import re
+import secrets
 import sqlite3
 import sys
+import time
 import urllib.parse
 from array import array
 from collections import deque
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from importlib import resources
-from typing import Callable
+from typing import Callable, Iterator
 
+from ember.adapters.errors import (
+    HalfCreatedDatabase,
+    ScriptSetInvalid,
+    VersionTableMissing,
+)
 from ember.capture.errors import (
+    DbFileMissing as CaptureDbFileMissing,
     DbOpenFailed as CaptureDbOpenFailed,
+    InitRefused as CaptureInitRefused,
     ItemDbReadError,
     ItemDbWriteError,
     SourceDbReadError,
@@ -72,7 +82,19 @@ from ember.relate.rows import ChangeLogEntry, GroupIdPort, Link, NewItem
 
 _MIGRATIONS_MODULE = "ember.adapters.migrations"
 
+# The pinned latest migration version (Batch 4 chunk 9, story 14). The
+# script set discovered on disk must be exactly 1.._LATEST_VERSION before
+# any open migrates anything; a dropped or renamed `.sql` refuses up front
+# with `ScriptSetInvalid` (MIGRATION-001) instead of building a half schema.
+_LATEST_VERSION = 13
+
 _BACKUPS_TO_KEEP = 3
+
+# The house UTC file-name stamp (the same `%Y%m%dT%H%M%SZ` pattern the
+# crash reports use): fixed width, so the names sort in age order, and
+# the `Z` says UTC.
+_TIME_FORMAT = "%Y%m%dT%H%M%SZ"
+_BACKUP_STAMP = re.compile(r"\d{8}T\d{6}Z(?:-[0-9a-f]{6})?")
 
 # One definition for "a supersedes edge the cycle rules walk" (rule 8/9): the
 # row is Confirmed and was never reversed. Shared by supersedes_ancestors and
@@ -81,10 +103,22 @@ LIVE_SUPERSEDES_EDGE = "status = 'Confirmed' AND reversed_at IS NULL"
 
 
 def _connect(db_path: str) -> sqlite3.Connection:
-    """Open a raw SQLite connection with row access by name and foreign keys on."""
-    conn = sqlite3.connect(db_path)
+    """Open a raw SQLite connection with row access by name and foreign keys on.
+
+    The busy limit is set HERE, on every connection this adapter opens
+    (decision I8): `timeout=0` clears the stdlib's library-side default so
+    the explicit `PRAGMA busy_timeout = 5000` below is the ONE visible
+    source of the 5000 ms limit shared by every opener — reads, writes,
+    the migration retry and the parallel-writer tests. There is no
+    behavior change between the two ways of setting it (both drive the
+    same C-level busy timeout); `timeout=0` just makes the pragma the
+    single place the limit lives, so removing it is a visible red test,
+    not a silent fall-back to the stdlib default.
+    """
+    conn = sqlite3.connect(db_path, timeout=0)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
+    conn.execute("PRAGMA busy_timeout = 5000")
     return conn
 
 
@@ -121,6 +155,219 @@ def open_database(db_path: str) -> sqlite3.Connection:
         raise CaptureDbOpenFailed(
             "db open fail", db_path=os.path.basename(db_path)
         ) from exc
+
+
+def open_existing_database(db_path: str) -> sqlite3.Connection:
+    """Open an EXISTING capture database; refuse a missing file (N8, D-25).
+
+    The open path behind the user commands that must never create the
+    knowledge base (`capture-source`, and through the validated write the
+    `set-validated` / `clear-validated` pair): the file is checked BEFORE
+    any open, so a missing file is refused with `DbFileMissing`
+    (CAPTURE-020) and nothing is created or migrated. `open_database` itself
+    keeps its connect-create semantics — it is `ember init`'s create path
+    and the test seeding path (N8: one command creates on purpose).
+    """
+    if not os.path.exists(db_path):
+        raise CaptureDbFileMissing(
+            "db file missing", db_path=os.path.basename(db_path)
+        )
+    return open_database(db_path)
+
+
+# One transaction per user action (Batch 4 chunk 8, spec 4.3 #9). The
+# per-connection depth marks the write methods that sit inside a unit of
+# work: IN one, no store commits or rolls back on its own (the unit of work
+# owns the transaction); OUTSIDE one, every store keeps today's own
+# commit/rollback behaviour byte for byte.
+#
+# `sqlite3.Connection` cannot be weak-referenced, so the depth lives in a
+# plain `id()`-keyed map. Safe: an entry exists only while its connection is
+# alive inside the `unit_of_work` frame that put it there, and it is removed
+# again when the depth returns to 0.
+_UNIT_OF_WORK_DEPTH: dict[int, int] = {}
+
+
+def _uow_depth(conn: sqlite3.Connection) -> int:
+    return _UNIT_OF_WORK_DEPTH.get(id(conn), 0)
+
+
+def in_unit_of_work(conn: sqlite3.Connection) -> bool:
+    """Whether `conn` currently runs inside a `unit_of_work` block.
+
+    Store write methods consult this before their own commit/rollback: a
+    store never ends the transaction it only participates in.
+    """
+    return _uow_depth(conn) > 0
+
+
+@contextmanager
+def unit_of_work(conn: sqlite3.Connection) -> Iterator[None]:
+    """Run ONE user action's writes in ONE transaction.
+
+    `BEGIN IMMEDIATE` takes the connection's write lock before the first
+    statement (chunk 13's multi-writer paths build on this), a single
+    `COMMIT` ends the action when the block succeeds, and a single
+    `ROLLBACK` undoes EVERYTHING the action wrote when it fails — so a user
+    action is never half-written (4.3 #9). Nesting counts a depth, so an
+    inner unit of work neither commits nor rolls back; only the outermost
+    one owns the transaction.
+    """
+    depth = _uow_depth(conn)
+    if depth == 0:
+        conn.execute("BEGIN IMMEDIATE")
+    _UNIT_OF_WORK_DEPTH[id(conn)] = depth + 1
+    try:
+        yield
+    except BaseException:
+        if depth == 0:
+            conn.rollback()
+        raise
+    else:
+        if depth == 0:
+            conn.commit()
+    finally:
+        if depth == 0:
+            _UNIT_OF_WORK_DEPTH.pop(id(conn), None)
+        else:
+            _UNIT_OF_WORK_DEPTH[id(conn)] = depth
+
+
+_EXPECTED_TABLES_AT_LATEST = frozenset(
+    {
+        "schema_version",
+        "sources",
+        "items",
+        "change_log",
+        "ai_responses",
+        "links",
+        "item_embeddings",
+        "link_compat",
+    }
+)
+
+
+def init_knowledge_base(db_path: str) -> str:
+    """Create and migrate a NEW knowledge base; accept nothing else (N8).
+
+    The create side of `ember init` (decision D-25: that one command is the
+    only thing in Ember that creates the file, on purpose). Returns
+    `"created"` after creating and migrating a missing file, and
+    `"current"` when the path already holds a healthy Ember database at the
+    latest migration version — checked strictly read-only, so an already-
+    current file stays byte-identical.
+
+    The healthy check (N8's essentials): the `schema_version` table
+    present, its version equal to the latest migration number, and the
+    expected tables intact. Anything else raises `InitRefused`
+    (CAPTURE-021): a file that is not an Ember database, no version table,
+    a version other than the latest, or missing tables. Nothing is ever
+    adopted and nothing is migrated by `init` after the first create.
+    """
+    if not os.path.exists(db_path):
+        try:
+            open_database(db_path).close()
+        except (CaptureDbOpenFailed, HalfCreatedDatabase):
+            # Two first-Adds-at-once (story 11): another `ember init` may
+            # have created and migrated the same fresh file between the
+            # exists check and the open. The healthy-latest check below
+            # then decides; a file missing again re-raises the open
+            # failure. A file mid-flight in another init's migration can
+            # also present the version-0-no-items shape (the version
+            # table is committed before the scripts run), so the story-16
+            # refusal is retried through the same settle window below
+            # instead of deciding on a half-second-old snapshot.
+            if not os.path.exists(db_path):
+                raise
+        else:
+            return "created"
+    return _require_healthy_current(db_path)
+
+
+def _require_healthy_current(db_path: str) -> str:
+    """Return `"current"` for a healthy latest-version database, refuse the rest.
+
+    Opened STRICTLY read-only: a current file is left byte-identical, and a
+    refusal writes nothing. Raise `InitRefused` (CAPTURE-021) on every
+    shape `ember init` cannot accept (see `init_knowledge_base`).
+
+    Only the TRANSIENT shapes get a settle window (5 s, the busy-timeout
+    scale): a file reading as an Ember database BEHIND the latest version,
+    or a busy read, may be another `ember init` mid-migration (story 11's
+    two first-Adds-at-once), so it is re-inspected until it reaches the
+    latest or the window ends. The permanent shapes — not an Ember
+    database, no readable version table, a version ABOVE the latest,
+    missing tables at the latest — are refused immediately; no waiting
+    makes those healthy.
+    """
+    latest = max(number for number, _ in _migration_scripts())
+    deadline = time.monotonic() + 5.0
+    while True:
+        where, detail, transient = _inspect_health(db_path, latest)
+        if where == "current":
+            return "current"
+        if not transient or time.monotonic() >= deadline:
+            raise CaptureInitRefused(
+                where, detail=detail, db_path=os.path.basename(db_path)
+            )
+        time.sleep(0.05)
+
+
+def _inspect_health(db_path: str, latest: int) -> tuple[str, str, bool]:
+    """Read the file's health once, STRICTLY read-only (no writes, ever).
+
+    Returns `(refusal_where, detail, transient)`, or `("current", ..., False)`
+    for a healthy database at the latest version. The transient shapes (a
+    behind version, a busy file) may be another `ember init` mid-migration
+    and get the settle window; every other shape refuses immediately.
+    """
+    conn: sqlite3.Connection | None = None
+    try:
+        conn = _connect_readonly(db_path)
+        tables = {
+            row["name"]
+            for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            )
+        }
+        if "schema_version" not in tables:
+            return ("no schema_version table", "the version table is missing", False)
+        row = conn.execute("SELECT version FROM schema_version").fetchone()
+        if row is None:
+            return ("empty schema_version table", "no version row", False)
+        version = int(row["version"])
+        if version > latest:
+            return (
+                "schema version is not the latest",
+                f"version={version} required={latest} (version above latest)",
+                False,
+            )
+        if version < latest:
+            return (
+                "schema version is not the latest",
+                f"version={version} required={latest}",
+                True,
+            )
+        missing = sorted(_EXPECTED_TABLES_AT_LATEST - tables)
+        if missing:
+            return ("missing tables", ", ".join(missing), False)
+        return ("current", "", False)
+    except (TypeError, ValueError):
+        return (
+            "empty schema_version table",
+            "the version row is not a number",
+            False,
+        )
+    except sqlite3.Error as exc:
+        message = str(exc).lower()
+        if "locked" in message or "busy" in message:
+            # Another writer holds the file; its outcome decides at the
+            # next poll, so this is a retryable read, not a verdict.
+            return ("schema version is not the latest", f"file busy ({exc})", True)
+        return ("not an ember database", f"unreadable ({exc})", False)
+    finally:
+        if conn is not None:
+            conn.close()
 
 
 def open_relate_database(db_path: str) -> sqlite3.Connection:
@@ -167,6 +414,74 @@ def ensure_relate_schema(conn: sqlite3.Connection) -> None:
         raise DbOpenFailed("schema version read fail") from exc
     if version < 12:
         raise SchemaOutdated("schema version too old", version=version, required=12)
+
+
+def open_relate_database_readonly(db_path: str) -> sqlite3.Connection:
+    """Open an existing relate DB STRICTLY read-only, never migrate (N9).
+
+    For the relate reads (candidate universe, link and cache lookups,
+    gatekeeper reads): opening or reading a file must never migrate it
+    silently and never write a pre-migration backup; the version bump, when
+    one is ever needed, happens when a write opens the database. Raise
+    `DbOpenFailed` (RELATE-012) when the file is missing, is not a readable
+    SQLite database, or the version cannot be read, and `SchemaOutdated`
+    (RELATE-014) when the version is below the floor 12 (the relate engine
+    reads `items.metadata` from migration 012 on).
+    """
+    if not os.path.exists(db_path):
+        raise DbOpenFailed("db file missing", db_path=os.path.basename(db_path))
+    conn: sqlite3.Connection | None = None
+    try:
+        conn = _connect_readonly(db_path)
+        conn.execute("SELECT COUNT(*) FROM sqlite_master").fetchone()
+    except sqlite3.Error as exc:
+        if conn is not None:
+            conn.close()
+        raise DbOpenFailed("db open fail", db_path=os.path.basename(db_path)) from exc
+    try:
+        version = int(
+            conn.execute("SELECT version FROM schema_version").fetchone()["version"]
+        )
+    except (sqlite3.Error, TypeError, ValueError) as exc:
+        conn.close()
+        raise DbOpenFailed("schema version read fail") from exc
+    if version < 12:
+        conn.close()
+        raise SchemaOutdated(
+            "schema version too old (relate never migrates)",
+            version=version,
+            required=12,
+        )
+    return conn
+
+
+def open_relate_database_write(db_path: str) -> sqlite3.Connection:
+    """Open the ONE short-lived relate write connection; never migrates (N9).
+
+    Relate's writes (embedding-cache upserts and the model-change wipe, the
+    raw AI reply save, and the confirmed-link writes) share this one
+    connection. It checks the floor 12 version but applies no migration and
+    makes no backup: the read-only open before it has already verified the
+    file is readable and current, so no migration, `.bak` copy, or version
+    bump ever happens here. Raise the same errors as the read-only opener
+    (`RELATE-012`, `RELATE-014`).
+    """
+    if not os.path.exists(db_path):
+        raise DbOpenFailed("db file missing", db_path=os.path.basename(db_path))
+    conn: sqlite3.Connection | None = None
+    try:
+        conn = _connect(db_path)
+        conn.execute("SELECT COUNT(*) FROM sqlite_master").fetchone()
+        ensure_relate_schema(conn)
+    except EmberError:
+        if conn is not None:
+            conn.close()
+        raise
+    except sqlite3.Error as exc:
+        if conn is not None:
+            conn.close()
+        raise DbOpenFailed("db open fail", db_path=os.path.basename(db_path)) from exc
+    return conn
 
 
 def open_maintain_database(db_path: str) -> sqlite3.Connection:
@@ -326,51 +641,125 @@ def _database_file(conn: sqlite3.Connection) -> str | None:
     return None
 
 
-def _backup_database(conn: sqlite3.Connection, current: int) -> None:
-    """Copy the database file once before any above-version script runs.
+def _backup_database(conn: sqlite3.Connection) -> None:
+    """Snapshot the database file online before any above-version script runs.
 
-    The copy is `<db>.bak-v<current>` (D7), taken with `copy2` so metadata
-    survives. Retention: keep the newest 3 `<db>.bak-v*` files, delete older.
-    Raise the raw `OSError` on failure. Per-engine boot call sites wrap it.
+    The copy is `<db>.bak-<UTC timestamp>` (B4-16): the name is NOT
+    reusable, so a repeated run never overwrites the same file the way
+    the old `.bak-v<current>` name did — every pending run leaves its own
+    snapshot. The snapshot is taken with SQLite's online backup API
+    (`conn.backup`), never `copy2`, so the copy is a consistent page
+    image even if a writer was mid-transaction (4.3 #13). The 6-hex
+    suffix keeps two runs in the same second distinct (the house crash-id
+    convention), and the file is fsynced before it may ever be relied on.
+    Retention: keep the newest 3 timestamped snapshots, delete older
+    (`_prune_backups`). Raise the raw error on failure — a partial copy
+    is deleted first — and the per-engine boot call sites wrap it.
     """
     db_path = _database_file(conn)
     if db_path is None:
         return
-    shutil.copy2(db_path, f"{db_path}.bak-v{current}")
+    stamp = datetime.now(timezone.utc).strftime(_TIME_FORMAT)
+    backup_path = f"{db_path}.bak-{stamp}-{secrets.token_hex(3)}"
+    dest: sqlite3.Connection | None = None
+    try:
+        dest = sqlite3.connect(backup_path)
+        conn.backup(dest)
+        dest.close()
+        dest = None
+        fd = os.open(backup_path, os.O_RDONLY)
+        try:
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+    except (OSError, sqlite3.Error):
+        if dest is not None:
+            dest.close()
+        try:
+            os.remove(backup_path)
+        except OSError:
+            pass
+        raise
     _prune_backups(db_path)
 
 
 def _prune_backups(db_path: str) -> None:
-    """Keep the newest 3 `<db>.bak-v*` files next to `db_path`, delete older."""
+    """Keep the newest 3 pre-migration backups next to `db_path`, delete older.
+
+    Two name families share the retention, each pruned to the newest 3 in
+    its own age order (B4-16): the timestamped `.bak-<stamp>-<hex>`
+    snapshots (names sort = age order) and the legacy `.bak-v<N>` files
+    (highest N is newest), so files written by an older check-out still
+    age out of the window.
+    """
     directory = os.path.dirname(os.path.abspath(db_path))
-    prefix = os.path.basename(os.path.abspath(db_path)) + ".bak-v"
-    backups: list[tuple[int, str]] = []
-    for name in os.listdir(directory):
-        if not name.startswith(prefix):
-            continue
-        suffix = name[len(prefix):]
-        if suffix.isdigit():
-            backups.append((int(suffix), name))
-    backups.sort(reverse=True)
-    for _, name in backups[_BACKUPS_TO_KEEP:]:
-        os.remove(os.path.join(directory, name))
+    name = os.path.basename(os.path.abspath(db_path))
+    legacy: list[tuple[int, str]] = []
+    stamps: list[str] = []
+    for entry in os.listdir(directory):
+        if entry.startswith(f"{name}.bak-v"):
+            suffix = entry[len(name) + 6:]
+            if suffix.isdigit():
+                legacy.append((int(suffix), entry))
+        elif entry.startswith(f"{name}.bak-"):
+            suffix = entry[len(name) + 5:]
+            if _BACKUP_STAMP.fullmatch(suffix):
+                stamps.append(entry)
+    for _, entry in sorted(legacy, reverse=True)[_BACKUPS_TO_KEEP:]:
+        os.remove(os.path.join(directory, entry))
+    for entry in sorted(stamps)[: max(0, len(stamps) - _BACKUPS_TO_KEEP)]:
+        os.remove(os.path.join(directory, entry))
 
 
 def _apply_migrations(conn: sqlite3.Connection) -> None:
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL)"
-    )
-    if conn.execute("SELECT COUNT(*) FROM schema_version").fetchone()[0] == 0:
-        conn.execute("INSERT INTO schema_version (version) VALUES (0)")
-    conn.commit()
-    current = conn.execute("SELECT version FROM schema_version").fetchone()[0]
+    # The pinned script set is checked BEFORE anything is touched (story
+    # 14): a wrong set refuses with `ScriptSetInvalid` without creating
+    # even the version table.
+    scripts = _migration_scripts()
+    existing_tables = _existing_tables(conn)
+    # A pre-version-tracking file is never adopted (story 15): the refusal
+    # fires before the CREATE TABLE below could stamp a version onto it,
+    # so the file stays byte-identical.
+    if existing_tables and "schema_version" not in existing_tables:
+        raise VersionTableMissing(
+            "file has tables but no schema_version table",
+            tables=", ".join(sorted(existing_tables)),
+        )
+    # The migration lock (chunk 11, finding 4.3 #1): the version table is
+    # bootstrapped inside ONE `BEGIN EXCLUSIVE` transaction, so parallel
+    # openers of a brand-new file serialize on the write lock instead of
+    # racing their first writes.
+    _begin_exclusive(conn)
+    try:
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL)"
+        )
+        if conn.execute("SELECT COUNT(*) FROM schema_version").fetchone()[0] == 0:
+            conn.execute("INSERT INTO schema_version (version) VALUES (0)")
+        conn.commit()
+    except sqlite3.Error:
+        conn.rollback()
+        raise
+    current = int(conn.execute("SELECT version FROM schema_version").fetchone()[0])
+    # A version-0 file with no `items` table never finished being created
+    # (story 16): its own refusal code, distinct from the "schema version
+    # too old" sentence. A brand-new file has NO pre-existing tables, so
+    # `existing_tables` is what keeps the fresh create path out of this
+    # refusal — the version-0 stamp below is our own, not the file's.
+    if existing_tables and current == 0 and "items" not in existing_tables:
+        raise HalfCreatedDatabase(
+            "version 0 with no items table: this file never finished being created",
+            version=0,
+        )
     pending = [
-        (number, script) for number, script in _migration_scripts() if number > current
+        (number, script) for number, script in scripts if number > current
     ]
     # One backup per run, before the first above-version script: a no-op open
-    # must not churn the retention window (L2 §5.0).
-    if pending:
-        _backup_database(conn, int(current))
+    # must not churn the retention window (L2 §5.0). A brand-new file has
+    # nothing to back up (finding 4.5 #17): no pointless snapshot of an
+    # empty database.
+    if pending and existing_tables:
+        _backup_database(conn)
     conn.execute("PRAGMA foreign_keys = OFF")
     try:
         for number, script in pending:
@@ -379,24 +768,107 @@ def _apply_migrations(conn: sqlite3.Connection) -> None:
         conn.execute("PRAGMA foreign_keys = ON")
 
 
+def _existing_tables(conn: sqlite3.Connection) -> set[str]:
+    """Return the table names the file holds right now (a read, no writes)."""
+    return {
+        row["name"]
+        for row in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table'"
+        )
+    }
+
+
+# The one migration lock budget: the same 5000 ms every connection sets
+# (decision I8, chunk 10). SQLite's PRAGMA busy_timeout is the primary
+# busy retry on the lock request itself; this deadline bounds the extra
+# explicit retries below to the same visible limit.
+_MIGRATION_LOCK_TIMEOUT_SECONDS = 5.0
+
+
+def _begin_exclusive(conn: sqlite3.Connection) -> None:
+    """Open ONE `BEGIN EXCLUSIVE` transaction, retrying while busy.
+
+    `BEGIN EXCLUSIVE` is what makes four parallel openers serialize
+    (chunk 11, finding 4.3 #1): the full write lock is taken BEFORE the
+    first statement, so a second opener just waits inside its 5000 ms
+    busy timeout (I8) instead of racing a deferred transaction upgrade —
+    the one `SQLITE_BUSY` shape no busy timeout can help, because two
+    waiting writers holding the file's SHARED lock are a deadlock the
+    busy handler must not sleep on. Retries here are bounded by the same
+    5000 ms budget the pragma owns; past the deadline the error surfaces.
+    """
+    deadline = time.monotonic() + _MIGRATION_LOCK_TIMEOUT_SECONDS
+    while True:
+        try:
+            conn.execute("BEGIN EXCLUSIVE")
+            return
+        except sqlite3.OperationalError as exc:
+            message = str(exc)
+            if "locked" not in message and "busy" not in message:
+                raise
+            if time.monotonic() >= deadline:
+                raise
+
+
 def _apply_migration(conn: sqlite3.Connection, number: int, script: str) -> None:
     """Apply one migration and its version bump in one transaction.
 
-    Scripts must contain plain statements only. The runner owns the
-    transaction and the foreign-key switch, so a script with its own
-    `BEGIN` / `COMMIT` would nest transactions.
+    The transaction is `BEGIN EXCLUSIVE` (chunk 11): a plain `executescript`
+    ran a DEFERRED `BEGIN`, so two parallel openers could each hold the
+    file's SHARED lock and both try to upgrade — an immediate
+    `database is locked` crash on ~3 of 4 openers of a brand-new file.
+
+    Inside the lock the version is RE-READ: every opener computed its
+    `pending` list from a pre-lock read, so an opener that lost the race
+    skips each step the winner already applied instead of re-running it
+    on a changed schema.
+
+    Scripts must contain plain statements only. They are executed
+    statement by statement here — `executescript` commits any pending
+    transaction first, which would surrender this step's exclusive lock
+    mid-migration — and the runner owns the transaction and the
+    foreign-key switch, so a script with its own `BEGIN` / `COMMIT`
+    would nest transactions.
     """
-    wrapped = (
-        "BEGIN;\n"
-        f"{script}\n"
-        f"UPDATE schema_version SET version = {int(number)};\n"
-        "COMMIT;"
-    )
+    _begin_exclusive(conn)
     try:
-        conn.executescript(wrapped)
+        current = int(
+            conn.execute("SELECT version FROM schema_version").fetchone()[0]
+        )
+        if current >= number:
+            # Another opener applied this step while we waited for the
+            # lock; keep the file exactly as the winner left it.
+            conn.rollback()
+            return
+        for statement in _script_statements(script):
+            conn.execute(statement)
+        conn.execute(
+            "UPDATE schema_version SET version = ?", (int(number),)
+        )
+        conn.commit()
     except sqlite3.Error:
         conn.rollback()
         raise
+
+
+def _script_statements(script: str) -> list[str]:
+    """Split a migration script into complete SQL statements.
+
+    Boundaries come from `sqlite3.complete_statement`, which understands
+    trigger bodies (`BEGIN ... END;`) and quoted strings, so the
+    semicolons inside them never split a statement mid-body. Comments
+    ride along with the statement they precede.
+    """
+    statements: list[str] = []
+    buffer = ""
+    for char in script:
+        buffer += char
+        if char == ";" and sqlite3.complete_statement(buffer):
+            statements.append(buffer)
+            buffer = ""
+    if buffer.strip():
+        raise ValueError("migration script ends with an incomplete statement")
+    return statements
 
 
 def _migration_scripts() -> list[tuple[int, str]]:
@@ -406,7 +878,27 @@ def _migration_scripts() -> list[tuple[int, str]]:
         if entry.name.endswith(".sql"):
             number = int(entry.name.split("_", 1)[0])
             scripts.append((number, entry.read_text(encoding="utf-8")))
-    return sorted(scripts)
+    scripts.sort()
+    _require_pinned_script_set(scripts)
+    return scripts
+
+
+def _require_pinned_script_set(scripts: list[tuple[int, str]]) -> None:
+    """Refuse unless the discovered script numbers are exactly 1..13 (story 14).
+
+    The check lives on the discovery path (not in the injected or patched
+    script list), so it pins what the repository actually ships: a dropped
+    or renamed `.sql` is caught before ANY open migrates anything —
+    `ScriptSetInvalid` (MIGRATION-001), raised before even the version
+    table is created.
+    """
+    numbers = [number for number, _ in scripts]
+    if numbers != list(range(1, _LATEST_VERSION + 1)):
+        raise ScriptSetInvalid(
+            f"migration scripts are not exactly 1..{_LATEST_VERSION}",
+            expected=f"1..{_LATEST_VERSION}",
+            found=numbers,
+        )
 
 
 def _utc_now() -> str:
@@ -430,7 +922,15 @@ class SqliteGroupIdPort:
         self._conn = conn
 
     def next_group_id(self) -> int:
-        """Return `MAX(group_id)+1` over `change_log`, `1` when none."""
+        """Return `MAX(group_id)+1` over `change_log`, `1` when none.
+
+        Chunk 13 (D-03): call this INSIDE the write transaction that will
+        stamp the group's rows. Inside the `unit_of_work`'s `BEGIN
+        IMMEDIATE` the read and the write are one lock, so two concurrent
+        writers never read the same next group id; read outside it, both
+        can read the same id and their two actions merge into one undo
+        group (4.3 #19, 4.6 #4).
+        """
         row = self._conn.execute(
             "SELECT COALESCE(MAX(group_id), 0) FROM change_log"
         ).fetchone()
@@ -472,7 +972,12 @@ class SqliteSourceStore:
     def insert_source(self, *, title: str, full_text: str, content_hash: str) -> int:
         """Insert one source, return the new id.
 
-        Raise `SourceDbWriteError` (CAPTURE-006) on a write failure.
+        Raise `SourceDbWriteError` (CAPTURE-006) on a write failure. Inside a
+        `unit_of_work` the caller owns the commit (Batch 4, 4.3 #9): the
+        source-reuse decision and this insert are one transaction, so the
+        insert must not end the caller's `BEGIN IMMEDIATE` early — a
+        mid-transaction commit would release the write two writers serialize
+        on (D-03, chunk 13: id, group and source decisions in one action).
         """
         timestamp = self._clock()
         try:
@@ -481,8 +986,11 @@ class SqliteSourceStore:
                 " VALUES (?, ?, ?, ?)",
                 (title, full_text, timestamp, content_hash),
             )
-            self._conn.commit()
+            if not in_unit_of_work(self._conn):
+                self._conn.commit()
         except sqlite3.Error as exc:
+            if not in_unit_of_work(self._conn):
+                self._conn.rollback()
             raise SourceDbWriteError("db write fail", content_hash=content_hash) from exc
         return int(cursor.lastrowid)
 
@@ -1059,7 +1567,18 @@ def column_exists(conn: sqlite3.Connection, table: str, column: str) -> bool:
     from before the migration that added the column keeps reading, with the
     model default (`None`) in its place. Precedent: `export.py` gates
     `change_log.group_id` the same way.
+
+    The table name is interpolated into `PRAGMA table_info(...)`, so only
+    the fixed Ember table set is ever executed (finding 4.3 #21): anything
+    else refuses. Every caller passes a literal schema name, so an unknown
+    table can only be a code bug — the house internal error `EmberError`
+    (EMBER-000) is the fit; no new code is minted for it.
     """
+    if table not in _EXPECTED_TABLES_AT_LATEST:
+        raise EmberError(
+            f"column_exists: unknown table {table!r} -"
+            " the Ember table set only"
+        )
     return column in {
         row["name"] for row in conn.execute(f"PRAGMA table_info({table})")
     }
@@ -1147,13 +1666,21 @@ class SqliteQueryContext:
     def list_change_log(self) -> list[ChangeRow]:
         """Return every `change_log` row, ordered by id ascending.
 
-        Raise `ItemsReadFailed` (QUERY-005) on a read failure.
+        `group_id` is selected only when the column exists (migration 013):
+        on a pre-013 file every `ChangeRow` keeps the model default `None`
+        (finding 4.7 #11). Raise `ItemsReadFailed` (QUERY-005) on a read
+        failure.
         """
         try:
+            columns = (
+                "id, item_id, link_id, field_changed, old_value, new_value,"
+                " timestamp, trigger_cause"
+            )
+            has_groups = column_exists(self._conn, "change_log", "group_id")
+            if has_groups:
+                columns += ", group_id"
             rows = self._conn.execute(
-                "SELECT id, item_id, link_id, field_changed, old_value,"
-                " new_value, timestamp, trigger_cause"
-                " FROM change_log ORDER BY id"
+                f"SELECT {columns} FROM change_log ORDER BY id"
             ).fetchall()
         except sqlite3.Error as exc:
             raise QueryItemsReadFailed(
@@ -1169,6 +1696,9 @@ class SqliteQueryContext:
                 new_value=row["new_value"],
                 timestamp=row["timestamp"],
                 trigger_cause=row["trigger_cause"],
+                group_id=(
+                    int(row["group_id"]) if has_groups and row["group_id"] is not None else None
+                ),
             )
             for row in rows
         ]
@@ -1209,6 +1739,24 @@ class SqliteQueryContext:
             raise QueryItemsReadFailed("source text read fail", item_id=item_id)
         return str(row["full_text"])
 
+    @contextmanager
+    def read_transaction(self) -> Iterator[None]:
+        """Run reads inside one explicit read transaction (a fixed snapshot).
+
+        `show-item` and `why` join items, links and source text, so the
+        three reads must see one instant: a concurrent writer between two
+        separate SELECTs can leave the caller a link whose other end is
+        already gone (finding 4.7 #2). SQLite gives the consistent read
+        inside one transaction, opened before the first read and ended
+        after the last; it is read-only, so there is nothing to commit and
+        ending it never touches the file (byte-identical proof stays true).
+        """
+        self._conn.execute("BEGIN")
+        try:
+            yield
+        finally:
+            self._conn.rollback()
+
 
 class SqliteMaintainStore:
     """`MaintainStorePort` on SQLite: one atomic status write per batch.
@@ -1217,6 +1765,11 @@ class SqliteMaintainStore:
     transaction with a single `commit()` at the end, so the batch is
     all-or-nothing (Constitution D3). A failure on either half rolls the whole
     batch back, so a caller never sees a status written without its log row.
+
+    Inside a `unit_of_work` (Batch 4 chunk 8, 4.3 #9) the store skips its
+    own commit and rollback: the unit of work owns the transaction, so a
+    whole user action — e.g. a status batch plus its manual shield — is
+    one all-or-nothing write.
     """
 
     def __init__(
@@ -1274,7 +1827,8 @@ class SqliteMaintainStore:
                         (change.new_status, change.close_reason, change.item_id),
                     )
             except sqlite3.Error as exc:
-                self._conn.rollback()
+                if not in_unit_of_work(self._conn):
+                    self._conn.rollback()
                 raise MaintainStatusWriteFailed(
                     "status update fail", item_id=change.item_id
                 ) from exc
@@ -1312,11 +1866,13 @@ class SqliteMaintainStore:
                         ),
                     )
             except sqlite3.Error as exc:
-                self._conn.rollback()
+                if not in_unit_of_work(self._conn):
+                    self._conn.rollback()
                 raise MaintainChangeLogWriteFailed(
                     "change_log insert fail", item_id=change.item_id
                 ) from exc
-        self._conn.commit()
+        if not in_unit_of_work(self._conn):
+            self._conn.commit()
         return len(changes)
 
     def apply_status_origin(
@@ -1327,7 +1883,10 @@ class SqliteMaintainStore:
         `group_id` stamps the ledger row (undo step 01); `None` leaves it
         NULL. Raise `StatusWriteFailed` (MAINTAIN-011) when the `items` UPDATE
         fails, and `ChangeLogWriteFailed` (MAINTAIN-012) when the `change_log`
-        INSERT fails. Either failure rolls the whole write back.
+        INSERT fails. Either failure surfaces as those errors. Outside a
+        `unit_of_work` a failure also rolls the whole write back itself;
+        inside one, the unit of work owns commit and rollback (Batch 4,
+        4.3 #9).
         """
         try:
             row = self._conn.execute(
@@ -1339,7 +1898,8 @@ class SqliteMaintainStore:
                 (origin, item_id),
             )
         except sqlite3.Error as exc:
-            self._conn.rollback()
+            if not in_unit_of_work(self._conn):
+                self._conn.rollback()
             raise MaintainStatusWriteFailed(
                 "status_origin update fail", item_id=item_id
             ) from exc
@@ -1353,11 +1913,13 @@ class SqliteMaintainStore:
                 (item_id, old_origin, origin, self._clock(), group_id),
             )
         except sqlite3.Error as exc:
-            self._conn.rollback()
+            if not in_unit_of_work(self._conn):
+                self._conn.rollback()
             raise MaintainChangeLogWriteFailed(
                 "change_log insert fail", item_id=item_id
             ) from exc
-        self._conn.commit()
+        if not in_unit_of_work(self._conn):
+            self._conn.commit()
 
     def apply_reversal(
         self,
@@ -1808,6 +2370,11 @@ def _status_new_value(change: StatusChange) -> str:
     return change.new_status
 
 
+# N10: the id-conflict retry is bounded — after 5 conflicting insert
+# attempts the stored error surfaces instead of a live-lock.
+_MAX_ITEM_ID_ATTEMPTS = 5
+
+
 class SqliteItemGatekeeper:
     """Gatekeeper boundary for `items` and `change_log`, plus item reads.
 
@@ -1870,6 +2437,12 @@ class SqliteItemGatekeeper:
     def next_item_id(self) -> int:
         """Return a fresh item id, counting up from the highest stored id.
 
+        Chunk 13 (D-03): call this INSIDE the write transaction — the
+        `unit_of_work` around the item insert and its `created` row. The
+        `BEGIN IMMEDIATE` lock then covers the read and the insert, so two
+        writers never read the same next id; read outside it, the id can
+        collide and the loser gets a PK error (4.3 #20).
+
         Raise `ItemDbReadError` (CAPTURE-011) on a read failure.
         """
         try:
@@ -1884,46 +2457,100 @@ class SqliteItemGatekeeper:
         self._next_id += 1
         return value
 
-    def insert_item(self, item: ValidatedItem, *, validated: bool | None) -> None:
+    def insert_item(self, item: ValidatedItem, *, validated: bool | None) -> int:
         """Insert one accepted item, with `validated` set only for Assumptions.
 
-        Raise `ItemDbWriteError` (CAPTURE-013) on a write failure.
+        Return the id the row actually carries. Normally that is `item.id`;
+        on a unique-key conflict on `items.id` (another writer took the id
+        between the show and the write, 4.3 #20) the next free id is re-read
+        INSIDE the open transaction and the insert retried, at most 5
+        attempts (N10 / D-03: inside `BEGIN IMMEDIATE` no other writer can
+        insert between the re-read and the retry, so the retry suffices).
+        When a retry cannot help — the re-read did not move past the failed
+        id, or the attempt bound ran out — the stored error is raised:
+        `ItemDbWriteError` (CAPTURE-013). Callers must take the ledger row
+        and the reported id from the RETURNED value, never from `item.id`.
+        Inside a `unit_of_work` the caller owns the commit (Batch 4, 4.3 #9):
+        the item row and its `created` row are one transaction.
+        """
+        saved_id = item.id
+        attempts = 0
+        while True:
+            try:
+                self._conn.execute(
+                    "INSERT INTO items"
+                    " (id, type, statement, source_id, status, created_at, validated,"
+                    " metadata)"
+                    " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        saved_id,
+                        item.type,
+                        item.statement,
+                        item.source_id,
+                        item.status,
+                        item.created_at,
+                        validated,
+                        item.metadata,
+                    ),
+                )
+                break
+            except sqlite3.IntegrityError as exc:
+                attempts += 1
+                next_free = self._next_free_id_on_conflict(failed_id=saved_id)
+                if next_free is None or attempts >= _MAX_ITEM_ID_ATTEMPTS:
+                    raise ItemDbWriteError("db write fail", item_id=item.id) from exc
+                saved_id = next_free
+        if saved_id != item.id:
+            # Keep the run's monotonic counter past the repaired id, so the
+            # next allocation never re-issues the id that was just saved.
+            if self._next_id is None or self._next_id <= saved_id:
+                self._next_id = saved_id + 1
+        if not in_unit_of_work(self._conn):
+            self._conn.commit()
+        return saved_id
+
+    def _next_free_id_on_conflict(self, *, failed_id: int) -> int | None:
+        """Re-read `MAX+1` inside the open transaction after an id conflict.
+
+        Return the next free id, or None when a retry cannot help: the
+        re-read did not move past `failed_id`, so the conflict is not the
+        id allocation and the same insert would fail again.
+
+        Raise `ItemDbReadError` (CAPTURE-011) when the re-read itself fails.
         """
         try:
-            self._conn.execute(
-                "INSERT INTO items"
-                " (id, type, statement, source_id, status, created_at, validated,"
-                " metadata)"
-                " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                (
-                    item.id,
-                    item.type,
-                    item.statement,
-                    item.source_id,
-                    item.status,
-                    item.created_at,
-                    validated,
-                    item.metadata,
-                ),
-            )
-            self._conn.commit()
+            row = self._conn.execute(
+                "SELECT COALESCE(MAX(id), 0) FROM items"
+            ).fetchone()
         except sqlite3.Error as exc:
-            raise ItemDbWriteError("db write fail", item_id=item.id) from exc
+            raise ItemDbReadError("item read fail") from exc
+        value = int(row[0]) + 1
+        if value <= failed_id:
+            return None
+        return value
 
-    def log_created(self, item: ValidatedItem) -> None:
+    def log_created(self, item: ValidatedItem, *, group_id: int | None = None) -> None:
         """Append the `created` change_log row for an accepted item.
 
-        Raise `ItemDbWriteError` (CAPTURE-013) on a write failure.
+        Raise `ItemDbWriteError` (CAPTURE-013) on a write failure. Inside a
+        `unit_of_work` the caller owns the commit (Batch 4, 4.3 #9): the
+        item row and this row are one transaction.
+
+        `group_id` stamps the ledger row (undo step 01); `None` leaves it
+        NULL (today's capture behaviour, byte for byte). The caller reads
+        the id from the `GroupIdPort` INSIDE the write transaction (chunk
+        13, D-03: two writers never read the same next group id).
         """
         try:
             self._conn.execute(
                 "INSERT INTO change_log"
                 " (item_id, link_id, field_changed, old_value, new_value, timestamp,"
-                " trigger_cause)"
-                " VALUES (?, NULL, 'created', NULL, ?, ?, 'user_confirmed')",
-                (item.id, item.statement, self._clock()),
+                " trigger_cause, group_id)"
+                " VALUES (?, NULL, 'created', NULL, ?, ?, 'user_confirmed', ?)",
+                (item.id, item.statement, self._clock(), group_id),
             )
-            self._conn.commit()
+            if not in_unit_of_work(self._conn):
+                self._conn.commit()
         except sqlite3.Error as exc:
             raise ItemDbWriteError("db write fail", item_id=item.id) from exc
 

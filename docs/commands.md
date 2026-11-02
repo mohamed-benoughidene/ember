@@ -34,6 +34,12 @@ The whole table above (one row per command: sample arguments, document keys, fla
 
 ## Engine A: Capture (writes entries into the knowledge base)
 
+### `ember init --db PATH` - no key
+
+The one command that creates the knowledge base file, on purpose (D-25): every other command refuses a missing file before opening it (`CAPTURE-020 DbFileMissing`) instead of creating it, so nothing in Ember writes a database file except `ember init`.
+
+On a path with no file, it creates the file and runs every migration, then prints `initialized <path>`. On a path that already holds a file, it succeeds only when that file is a healthy Ember database already at the latest schema version with all expected tables intact; it then changes nothing (the file stays byte-identical) and prints `<path> is already up to date; no changes`, exit 0. Anything else is refused with `CAPTURE-021 InitRefused` and left untouched (exit 1): a file that is not an Ember database, tables but no version table, an older or newer schema version, or missing tables — nothing is ever adopted. Just behind the latest version, or a busy read, is re-inspected for up to 5 seconds first, because another `ember init` on the same file may still be mid-migration. No API key, no AI call.
+
 ### `ember capture [--file PATH] [--db PATH]` - needs key
 
 The full Phase 1-4 pipeline. Reads raw text from a file or STDIN (file input capped at 5 MiB, UTF-8), dedupes by SHA-256 content hash, asks the AI for typed proposals, validates each (type, non-empty statement, the quote must appear in the stored source, near-duplicate warning), then opens the confirm loop.
@@ -124,7 +130,7 @@ Live statuses only: `Active` and `Challenged` items, `Closed` omitted, `Challeng
 BM25 keyword search over item statements (all statuses, `Closed` included). `--status` accepts `Active|Challenged|Closed`, `--type` accepts `Decision|Assumption|Finding|Question`; filters narrow the corpus before scoring. `--limit 0` is an explicit empty result; negative values exit 1 (`QUERY-006`). Envelope: `mode`, `query`, `count`, `results`.
 
 ### `ember why --item N [--db PATH]`
-The reasons behind an item: follows `depends_on` (to its target) and `supports` (to its source), Confirmed links only, transitively, cycle-safe. Unknown ids exit 1 (`QUERY-001`). Envelope: `mode`, `item`, `count`, `reasons` (ordered by depth then id, carrying each reason's rationale text).
+The reasons behind an item: follows `depends_on` (to its target) and `supports` (to its source), Confirmed links only, transitively, cycle-safe. Unknown ids exit 1 (`QUERY-001`); a link whose other end is gone from the file answers `QUERY-010` and exits 1, nothing changed. Envelope: `mode`, `item`, `count`, `reasons` (ordered by depth then id, carrying each reason's rationale text).
 
 ### `ember history [--item N] [--limit N] [--offset N] [--since TS] [--db PATH]`
 The ledger view, item-scoped or global. Item scope includes rows whose `link_id` touches the item; a row matching both ways appears once. Events are classified into readable kinds (`created`, `link_confirmed`, `status_changed`, `link_reversed`, and — since Undo — `undone` / `redone` for the undo/redo pointers and the same kind as the original on undo/redo inverse rows; anything unmatchable is `unknown`). Sort is `(timestamp, id)` ascending; `--limit 0` is an explicit empty page. `--since` must parse as ISO-8601 **with a UTC offset** (naive or garbage input exits 1, `QUERY-007`). Envelope: `mode`, `item_id`, `count`, `events`.
@@ -133,7 +139,7 @@ The ledger view, item-scoped or global. Item scope includes rows whose `link_id`
 Every item in any status, `Closed` included — that is the point: `current-state` hides them. `--status` accepts `Active|Challenged|Closed` and `--type` accepts `Decision|Assumption|Finding|Question` (same values and `QUERY-006` handling as `ember topic-search`); `total` is the count after the filters but before the page crops it, and `--limit 0` is an explicit empty list. Each item carries `id`, `type`, `statement`, `status`, `close_reason`, `rationale`, `source`, `validated`, `created_at`. Envelope: `total`, `items`.
 
 ### `ember show-item --item N [--db PATH]`
-One item, its verbatim source text, and ALL its links in both directions (`links_out`: the item is the source, `links_in`: the item is the target), Rejected and reversed links included. Each link carries `id`, `type`, `status`, the other item's `other_item_id` / `other_item_type` / `other_item_statement` / `other_item_status`, and `reversed_at` (the reversal timestamp; `null` on a live link, and always `null` on a pre-011 schema file where the column does not exist — the file is never migrated). Unknown ids exit 1 (`QUERY-001`). Envelope: `item`, `source`, `links_out`, `links_in`.
+One item, its verbatim source text, and ALL its links in both directions (`links_out`: the item is the source, `links_in`: the item is the target), Rejected and reversed links included. Each link carries `id`, `type`, `status`, the other item's `other_item_id` / `other_item_type` / `other_item_statement` / `other_item_status`, and `reversed_at` (the reversal timestamp; `null` on a live link, and always `null` on a pre-011 schema file where the column does not exist — the file is never migrated). Unknown ids exit 1 (`QUERY-001`); a link whose other end is gone from the file answers `QUERY-010` and exits 1, nothing changed. Envelope: `item`, `source`, `links_out`, `links_in`.
 
 ---
 
