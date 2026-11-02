@@ -246,5 +246,6 @@ test('every other code rides the shared plain-sentence table (family fallback)',
   assert.equal(s.retry, true);
   assert.equal(s.openSetup, false);
   const unknown = addErrorSentence({ code: 'CAPTURE-016', name: 'NotAnAssumption', where: 'x', detail: 'nope' });
-  assert.match(unknown.title, /capture engine/); // the family sentence, never blank
+  // Batch 6 (D-08): CAPTURE-016 has its own entry now — no family fallback.
+  assert.equal(unknown.title, 'Only an Assumption can carry the verified mark.');
 });
