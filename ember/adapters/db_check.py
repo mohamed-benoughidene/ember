@@ -13,11 +13,18 @@ file never reads as drift).
 
 from __future__ import annotations
 
+import importlib.resources
 import os
+import re
 import sqlite3
 
 from ember.adapters.link_replay import replay_reversals
-from ember.adapters.sqlite import _connect_readonly, column_exists
+from ember.adapters.sqlite import (
+    _EXPECTED_TABLES_AT_LATEST,
+    _LATEST_VERSION,
+    _connect_readonly,
+    column_exists,
+)
 from ember.query.rows import ChangeRow
 from ember.relate.compat import TYPE_COMPAT
 
@@ -27,6 +34,18 @@ EXPECTED_TRIGGERS = (
     "items_closed_reason_insert",
     "items_closed_reason_update",
 )
+
+# Where the expected trigger definitions live (Batch 4 chunk 15): the
+# stored `sqlite_master.sql` of each expected trigger must match the
+# definition the pinned script set ships, not just the NAME (4.3 #8).
+_TRIGGER_DEFINITIONS_SCRIPT = (
+    "011_add_links_reversed_at_and_enforcement_triggers.sql"
+)
+
+# Lazily extracted `' '.join()`-normalised definitions, keyed by trigger
+# name. `set()` (empty dict) means the script could not be read; the check
+# then reports drift rather than crashing (the report never raises, I12).
+_EXPECTED_TRIGGER_SQL: dict[str, str] | None = None
 
 FLOORS: tuple[tuple[str, int], ...] = (
     ("relate", 12),
@@ -82,12 +101,25 @@ def check_database(db_path: str) -> DbCheckReport:
             return DbCheckReport(lines, DRIFT)
         lines.append(f"version: {version}")
         unmet = [f"{name} needs {floor}" for name, floor in FLOORS if version < floor]
+        if version > _LATEST_VERSION:
+            # Story 18 (4.3 #12): a version beyond the pinned latest reads
+            # as drift, never as "unknown, let it pass" — a file written by
+            # a NEWER Ember is not something this build can vouch for.
+            unmet.append(f"version {version} above latest {_LATEST_VERSION}")
         if unmet:
             lines.append("floors: unmet - " + ", ".join(unmet))
             lines.append(f"result: {DRIFT}")
             return DbCheckReport(lines, DRIFT)
         drifted = False
         lines.append(_floors_line())
+        line, hit = _tables_line(conn)
+        lines.append(line)
+        if hit:
+            # Stop the walk when an expected table is gone (same rule as
+            # unmet floors: the deeper checks walk those tables, so replay
+            # there would be meaningless — and could read as a crash).
+            lines.append(f"result: {DRIFT}")
+            return DbCheckReport(lines, DRIFT)
         line, hit = _triggers_line(conn)
         lines.append(line)
         drifted = drifted or hit
@@ -125,14 +157,87 @@ def _floors_line() -> str:
     return "floors: " + ", ".join(parts) + ", capture none"
 
 
+def _tables_line(conn: sqlite3.Connection) -> tuple[str, bool]:
+    """The full expected table list is present exactly (story 17, 4.3 #7).
+
+    `sqlite_`-prefixed internals (`sqlite_sequence`) are SQLite's own
+    bookkeeping and never count for or against the shape. At the latest
+    version AND on v12 the Ember table set is the same (013 only adds a
+    column), so one expected list serves every file that passes floors.
+    """
+    rows = conn.execute(
+        "SELECT name FROM sqlite_master"
+        " WHERE type = 'table' AND name NOT LIKE 'sqlite_%'"
+    ).fetchall()
+    actual = {row["name"] for row in rows}
+    missing = sorted(_EXPECTED_TABLES_AT_LATEST - actual)
+    if missing:
+        return "tables: missing " + ", ".join(missing), True
+    extra = sorted(actual - _EXPECTED_TABLES_AT_LATEST)
+    if extra:
+        return "tables: unexpected " + ", ".join(extra), True
+    return f"tables: {len(_EXPECTED_TABLES_AT_LATEST)} expected - present", False
+
+
+_TRIGGER_SHAPE = re.compile(r"CREATE TRIGGER\s+(\w+)(.*?)\bEND\s*;", re.DOTALL)
+
+
+def _expected_trigger_sql() -> dict[str, str]:
+    """The normalised trigger definitions the pinned script set ships.
+
+    Extracted from the 011 script (the one migration that creates all four
+    expected triggers) so the expectation can never drift from what real
+    opens build. Extraction failing (a wiped package) answers `{}`: the
+    check then reports drift instead of crashing (I12).
+    """
+    global _EXPECTED_TRIGGER_SQL
+    if _EXPECTED_TRIGGER_SQL is None:
+        expected: dict[str, str] = {}
+        try:
+            package = importlib.resources.files("ember.adapters.migrations")
+            text = package.joinpath(_TRIGGER_DEFINITIONS_SCRIPT).read_text(
+                encoding="utf-8"
+            )
+        except (OSError, AttributeError):
+            text = ""
+        for match in _TRIGGER_SHAPE.finditer(text):
+            definition = " ".join(match.group(0).split())
+            # `sqlite_master.sql` stores the statement without its final
+            # `;`; the extracted script text still carries it.
+            expected[match.group(1)] = definition[:-1] if definition.endswith(";") else definition
+        _EXPECTED_TRIGGER_SQL = expected
+    return _EXPECTED_TRIGGER_SQL
+
+
+def _trigger_sql_matches(name: str, stored: str | None) -> bool:
+    """Whether the stored definition IS the expected one, whitespace aside."""
+    expected = _expected_trigger_sql().get(name)
+    if not expected or not stored:
+        return False
+    return " ".join(stored.split()) == expected
+
+
 def _triggers_line(conn: sqlite3.Connection) -> tuple[str, bool]:
     rows = conn.execute(
-        "SELECT name FROM sqlite_master WHERE type = 'trigger'"
+        "SELECT name, sql FROM sqlite_master WHERE type = 'trigger'"
     ).fetchall()
-    present = {row["name"] for row in rows}
+    present = {row["name"]: row["sql"] for row in rows}
     missing = [name for name in EXPECTED_TRIGGERS if name not in present]
     if missing:
         return "triggers: missing " + ", ".join(missing), True
+    # A right name with a hollow body guards nothing (story 18, 4.3 #8):
+    # the stored SQL must be the shipped definition, whitespace aside.
+    mismatched = [
+        name
+        for name in EXPECTED_TRIGGERS
+        if not _trigger_sql_matches(name, present[name])
+    ]
+    if mismatched:
+        return (
+            "triggers: SQL does not match the expected definition - "
+            + ", ".join(mismatched),
+            True,
+        )
     return "triggers: " + ", ".join(EXPECTED_TRIGGERS) + " - present", False
 
 

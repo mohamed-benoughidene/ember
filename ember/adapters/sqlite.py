@@ -1504,7 +1504,18 @@ def column_exists(conn: sqlite3.Connection, table: str, column: str) -> bool:
     from before the migration that added the column keeps reading, with the
     model default (`None`) in its place. Precedent: `export.py` gates
     `change_log.group_id` the same way.
+
+    The table name is interpolated into `PRAGMA table_info(...)`, so only
+    the fixed Ember table set is ever executed (finding 4.3 #21): anything
+    else refuses. Every caller passes a literal schema name, so an unknown
+    table can only be a code bug — the house internal error `EmberError`
+    (EMBER-000) is the fit; no new code is minted for it.
     """
+    if table not in _EXPECTED_TABLES_AT_LATEST:
+        raise EmberError(
+            f"column_exists: unknown table {table!r} -"
+            " the Ember table set only"
+        )
     return column in {
         row["name"] for row in conn.execute(f"PRAGMA table_info({table})")
     }
