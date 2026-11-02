@@ -423,6 +423,10 @@ function createBridgeClient(options) {
     let awaitingAnswer = false;
     let finished = false;
     let exitCode = null;
+    // Batch 5 chunk 5 (4.2 #14, story 33): the session's stdout is
+    // untrusted output too — track its bytes against the SAME cap the
+    // one-shot path has and end the session with the named cap error.
+    let stdoutBytes = 0;
 
     function armOutputIdle() {
       idleTimer = setTimeout(() => finish(new Error('idle')), sessionIdleMs);
@@ -483,13 +487,41 @@ function createBridgeClient(options) {
     // Chunk 3: the stream is decoded with a streaming TextDecoder and
     // lines commit only on '\n' — an event line split across two pipe
     // writes (even mid multi-byte character) still parses.
-    const stdoutReader = lineCollector(handleEventLine);
-    child.stdout.on('data', (chunk) => {
+    // Chunk 5 (4.4 #5): bumpIdle is fed by the LINE reader, so the
+    // idle timer resets only when a COMPLETE line arrives — a chatty
+    // child that never finishes a line still times out on idle, even
+    // though its raw chunks keep arriving.
+    const stdoutReader = lineCollector((line) => {
       bumpIdle();
+      handleEventLine(line);
+    });
+    child.stdout.on('data', (chunk) => {
+      stdoutBytes += chunk.length;
+      if (stdoutBytes > MAX_OUTPUT_BYTES) {
+        // 4.2 #14: end the session with the same named cap error the
+        // one-shot interpret() step returns, then finish() SIGKILLs
+        // the flooding child.
+        if (!finished) {
+          emitError(appErrorInfo('APP-002', `${WHERE}.runConfirmSession`, `ember ${name} printed more than ${MAX_OUTPUT_BYTES} bytes`));
+          finish(null);
+        }
+        return;
+      }
       stdoutReader.push(chunk);
     });
     child.stderr.on('data', (chunk) => {
       stderrReader.push(chunk);
+    });
+    // Batch 5 chunk 5 (4.4 #2): an answer written after the engine
+    // stopped reading its stdin raises `write EPIPE` as an 'error'
+    // event on this stdin stream. UNHANDLED, that error would take
+    // down the whole app process (the reproduced exit-crash class of
+    // finding 4.4 #2). With the handler it surfaces as the session's
+    // named error and the session ends quietly.
+    child.stdin.on('error', (err) => {
+      if (finished) return;
+      emitError(appErrorInfo('APP-002', `${WHERE}.runConfirmSession`, `the engine stopped reading its stdin; the answer could not be delivered: ${clip(err instanceof Error ? err.message : String(err))}`));
+      finish(null);
     });
     child.on('error', (err) => {
       exitCode = null;

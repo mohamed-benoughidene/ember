@@ -457,6 +457,78 @@ test('garbage in a confirm stream raises APP-002 and never reaches the renderer'
   assert.ok(errors.some((e) => e.code === 'APP-002'), JSON.stringify(errors));
 });
 
+// --- Batch 5 chunk 5: sessions cap their bytes; stdin survives (4.4 #2, #5; 4.2 #14) ---
+
+test('confirm-session stdout beyond the 32 MB cap settles with a named error', async () => {
+  // 4.2 #14, story 33: a confirm session's stdout is untrusted output
+  // too — the same 32 MB cap the one-shot path has must end the
+  // session with a NAMED cap error (APP-002, the same wording), not
+  // let a chatty engine stream forever. The fake floods ~40 MB (40 x
+  // 1 MB, drain-aware, so every byte really reaches the reader).
+  const client = makeClient({
+    sessionIdleMs: 20_000, // the CAP must end it, never the idle limit
+    spawnFn: (exe, args, opts) =>
+      spawn(exe, args, { ...opts, env: { ...opts.env, FAKE_MODE: 'session', FAKE_FLOOD: '1' } }),
+  });
+  const { errors, exitPromise } = openSession(client, 'maintain');
+  await exitPromise;
+  assert.ok(
+    errors.some((e) => e.code === 'APP-002' && /more than \d+ bytes/.test(e.detail)),
+    `expected the named output-cap error, got: ${JSON.stringify(errors)}`,
+  );
+}, 30_000);
+
+test('writing an answer to a session whose stdin closed is an error event, not a crash', async () => {
+  // 4.4 #2: an answer written after the engine stopped reading its
+  // stdin raises EPIPE as an 'error' event on the parent's stdin
+  // stream — without a handler that unhandled error would take down
+  // the whole app process. The session must surface it as an error
+  // event and end, quietly.
+  const client = makeClient({
+    sessionIdleMs: 20_000,
+    spawnFn: (exe, args, opts) =>
+      spawn(exe, args, { ...opts, env: { ...opts.env, FAKE_MODE: 'session', FAKE_SESSION_CLOSE_STDIN: '1' } }),
+  });
+  const { session, events, errors, exitPromise } = openSession(client, 'maintain');
+  await testHelpers.waitFor(() => events.some((e) => e.event === 'prompt'), 5000);
+  session.answer('y'); // the engine no longer reads its stdin -> EPIPE
+  const exit = await exitPromise;
+  assert.ok(
+    errors.some((e) => e.code === 'APP-002' && /stdin/.test(e.detail)),
+    `expected the named broken-stdin error, got: ${JSON.stringify(errors)}`,
+  );
+}, 20_000);
+
+test('one-shot output beyond the cap returns the cap error', async () => {
+  // 4.2 #14: the MAX_OUTPUT_BYTES branch in the ONE-SHOT path (kill at
+  // > 32 MB, then the interpret() step returns the cap error) had no
+  // test. The same flood, run through runCommand, must come back as
+  // APP-002 naming the byte count.
+  const client = makeClient({ fakeMode: 'list', env: { FAKE_FLOOD: '1' }, timeoutReadMs: 30_000 });
+  const result = await client.runCommand('list-items', []);
+  assert.equal(result.ok, false, JSON.stringify(result));
+  assert.equal(result.error.code, 'APP-002', JSON.stringify(result.error));
+  assert.match(result.error.detail, /more than \d+ bytes/, result.error.detail);
+}, 60_000);
+
+test('a chatty child that never completes a line still times out on idle (4.4 #5)', async () => {
+  // 4.4 #5: raw stdout chunks must NOT reset the idle timer — only
+  // COMPLETE lines do (the line reader feeds bumpIdle). This child
+  // writes a small fragment every 50 ms and never a '\n': the session
+  // must still end with the named idle error.
+  const client = makeClient({
+    sessionIdleMs: 300,
+    spawnFn: (exe, args, opts) =>
+      spawn(exe, args, { ...opts, env: { ...opts.env, FAKE_MODE: 'session', FAKE_SESSION_NO_FULL_LINE: '1' } }),
+  });
+  const { errors, exitPromise } = openSession(client, 'maintain');
+  await exitPromise;
+  assert.ok(
+    errors.some((e) => e.code === 'APP-008' && /produced no output/.test(e.detail)),
+    `expected the idle timeout despite constant raw output, got: ${JSON.stringify(errors)}`,
+  );
+}, 10_000);
+
 // --- tiny poll helper (sessions are event-driven) ------------------------------
 
 const testHelpers = {
