@@ -48,6 +48,51 @@ function findHouseError(stderrLines, errorPattern) {
   return null;
 }
 
+/**
+ * Batch 5 chunk 3 (4.4 #1, #11; stories 18, 19, 30): a streaming line
+ * reader for one untrusted child stream.
+ *
+ * WHY: a real pipe does not care where lines end. A house error line
+ * can arrive in two piecewise writes (the first carries NO newline),
+ * and a multi-byte character can be cut at a chunk boundary. Decoding
+ * each chunk on its own (`String(chunk)`) splits such a line into
+ * broken halves and mangles the half characters into U+FFFD; a reader
+ * that only commits on '\n' drops the final unterminated line.
+ *
+ * This reader decodes with a STREAMING TextDecoder (a multi-byte
+ * character cut at a chunk boundary survives), keeps the tail in a
+ * carry buffer, commits a line only on '\n', and `flush()` (called
+ * once, on child close) commits the final partial line (story 30).
+ *
+ * @param {(line: string) => void} [onLine] called for every complete line
+ * @returns {{push: (chunk: Buffer) => void, flush: () => void}}
+ */
+function lineCollector(onLine) {
+  const decoder = new TextDecoder();
+  let carry = '';
+  function commit(text) {
+    // NOTE: empty lines are passed through — the stderr caller filters
+    // them (as before); the stdout caller parses them like any line.
+    if (onLine) onLine(text);
+  }
+  return {
+    push(chunk) {
+      carry += decoder.decode(chunk, { stream: true });
+      let newlineAt = carry.indexOf('\n');
+      while (newlineAt !== -1) {
+        commit(carry.slice(0, newlineAt));
+        carry = carry.slice(newlineAt + 1);
+        newlineAt = carry.indexOf('\n');
+      }
+    },
+    flush() {
+      carry += decoder.decode(); // ends any pending multi-byte sequence
+      if (carry !== '') commit(carry);
+      carry = '';
+    },
+  };
+}
+
 /** Reads: timeout + at most one automatic retry (plan §5.1). */
 const READ_COMMANDS = new Set([
   'list-items',
@@ -163,8 +208,13 @@ function createBridgeClient(options) {
         resolve({ failed: true, error: appErrorInfo('APP-001', `${WHERE}.runCommand`, safeText(err)) });
         return;
       }
-      const stdoutChunks = [];
       const stderrLines = [];
+      // Batch 5 chunk 3 (4.4 #1, #11): whole streamed lines.
+      const stdoutDecoder = new TextDecoder();
+      const stderrReader = lineCollector((line) => {
+        if (line !== '') stderrLines.push(line);
+      });
+      let stdoutText = '';
       let stdoutBytes = 0;
       let tooLarge = false;
       let timedOut = false;
@@ -197,24 +247,29 @@ function createBridgeClient(options) {
           }
           return;
         }
-        stdoutChunks.push(chunk);
+        // Streamed decode (chunk 3): a multi-byte character cut at a
+        // chunk boundary survives; the pieces join into the document.
+        stdoutText += stdoutDecoder.decode(chunk, { stream: true });
       });
       child.stderr.on('data', (chunk) => {
-        for (const line of String(chunk).split('\n')) {
-          if (line !== '') stderrLines.push(line);
-        }
+        stderrReader.push(chunk); // whole streamed lines, chunk 3
       });
 
       const finish = () => {
         if (settled) return;
         settled = true;
         clearTimeout(timer);
+        // Chunk 3: flush on close — the final partial lines (no
+        // trailing newline, and any pending multi-byte bytes) commit
+        // here, which is the ONLY place that can see them.
+        stdoutText += stdoutDecoder.decode();
+        stderrReader.flush();
         resolve({
           failed: false,
           timedOut,
           tooLarge,
           exitCode: typeof child.exitCode === 'number' ? child.exitCode : child.signalCode,
-          stdout: Buffer.concat(stdoutChunks).toString('utf8'),
+          stdout: stdoutText,
           stderrLines,
         });
       };
@@ -353,6 +408,10 @@ function createBridgeClient(options) {
 
     const listeners = { event: [], error: [], exit: [] };
     const stderrLines = [];
+    // Batch 5 chunk 3 (4.4 #1, #11): whole streamed lines.
+    const stderrReader = lineCollector((line) => {
+      if (line !== '') stderrLines.push(line);
+    });
     // Fix F4: two limits (I15 bounds both). `idle` = no child output
     // for sessionIdleMs. `prompt-wait` = the child asked a question
     // and the USER has not answered for sessionPromptWaitMs (default
@@ -406,35 +465,31 @@ function createBridgeClient(options) {
       for (const cb of listeners.exit) cb({ exitCode });
     }
 
-    child.stdout.setEncoding('utf8');
-    let lineBuffer = '';
+    function handleEventLine(line) {
+      const result = parseEventLine(line);
+      if (!result.ok) {
+        emitError(result.error); // garbage line -> APP-002, D4
+        finish(null);
+        return;
+      }
+      for (const cb of listeners.event) cb(result.event);
+      // F4: a prompt means the engine waits for the USER now, not
+      // for output — arm the long prompt-wait limit.
+      if (result.event.event === 'prompt') {
+        awaitingAnswer = true;
+        bumpIdle();
+      }
+    }
+    // Chunk 3: the stream is decoded with a streaming TextDecoder and
+    // lines commit only on '\n' — an event line split across two pipe
+    // writes (even mid multi-byte character) still parses.
+    const stdoutReader = lineCollector(handleEventLine);
     child.stdout.on('data', (chunk) => {
       bumpIdle();
-      lineBuffer += chunk;
-      let newlineAt = lineBuffer.indexOf('\n');
-      while (newlineAt !== -1) {
-        const line = lineBuffer.slice(0, newlineAt);
-        lineBuffer = lineBuffer.slice(newlineAt + 1);
-        const result = parseEventLine(line);
-        if (!result.ok) {
-          emitError(result.error); // garbage line -> APP-002, D4
-          finish(null);
-          return;
-        }
-        for (const cb of listeners.event) cb(result.event);
-        // F4: a prompt means the engine waits for the USER now, not
-        // for output — arm the long prompt-wait limit.
-        if (result.event.event === 'prompt') {
-          awaitingAnswer = true;
-          bumpIdle();
-        }
-        newlineAt = lineBuffer.indexOf('\n');
-      }
+      stdoutReader.push(chunk);
     });
     child.stderr.on('data', (chunk) => {
-      for (const line of String(chunk).split('\n')) {
-        if (line !== '') stderrLines.push(line);
-      }
+      stderrReader.push(chunk);
     });
     child.on('error', (err) => {
       exitCode = null;
@@ -443,9 +498,15 @@ function createBridgeClient(options) {
     });
     child.on('close', (code) => {
       exitCode = code;
+      if (!finished) {
+        // Chunk 3 (story 30): flush on close — the final partial line
+        // (NO trailing newline, story 30) and any pending multi-byte
+        // bytes commit here, BEFORE the exit callbacks fire.
+        stdoutReader.flush();
+        stderrReader.flush();
+      }
       finish(null);
     });
-
     return {
       /** A validated session event: {event: 'block'|'prompt'|'message'|'summary', ...}. */
       on(channel, cb) {

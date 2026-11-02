@@ -160,6 +160,46 @@ test('a traceback with no house line keeps the LAST non-empty stderr line in the
   assert.ok(!result.error.detail.includes('Traceback'), result.error.detail);
 });
 
+// --- Batch 5 chunk 3 (4.4 #1, #11): whole streamed lines -----------------------
+
+test('a house error line split across two writes parses to the engine\'s code', async () => {
+  // The fake writes the house line in TWO piecewise pipe writes (the
+  // first carries no newline), the way a real engine's stderr can
+  // arrive. A reader that splits each chunk on '\n' sees two broken
+  // half-lines and loses the house code.
+  const client = makeClient({ fakeMode: 'error', env: { FAKE_STDERR_SPLIT: '1' } });
+  const result = await client.runCommand('list-items', []);
+  assert.equal(result.ok, false);
+  assert.equal(result.error.code, 'QUERY-003', JSON.stringify(result.error));
+  assert.equal(result.error.name, 'DbOpenFailed');
+  assert.equal(result.error.where, 'fake.ember');
+});
+
+test('a stderr line split mid-multi-byte character is intact', async () => {
+  // The two writes cut INSIDE the ellipsis (U+2026, three UTF-8
+  // bytes): decoding each chunk on its own replaces the broken half
+  // characters with U+FFFD, so the detail must NOT contain one.
+  const client = makeClient({ fakeMode: 'error', env: { FAKE_STDERR_SPLIT: '1' } });
+  const result = await client.runCommand('list-items', []);
+  assert.equal(result.ok, false);
+  assert.ok(result.error.detail.includes('db file… missing'), result.error.detail);
+  assert.ok(!result.error.detail.includes('\uFFFD'), result.error.detail);
+});
+
+test('the final unterminated stdout line is read', async () => {
+  // Story 30: the session's LAST event line arrives WITHOUT its
+  // newline — the reader must flush that partial line when the child
+  // closes, not drop the summary event.
+  const client = makeClient({ env: { FAKE_STDOUT_SPLIT: '1' } });
+  const { events, errors, exitPromise } = openSession(client, 'capture');
+  await exitPromise;
+  assert.deepEqual(events.map((e) => e.event), ['message', 'block', 'prompt', 'summary']);
+  assert.deepEqual(errors, [], JSON.stringify(errors));
+  assert.equal(events[3].aborted, false);
+  // The split line was cut inside its ellipsis: the text survives.
+  assert.ok(events[0].text.includes('…reading the file'), JSON.stringify(events[0]));
+});
+
 test('stdout that is not one JSON document is APP-002', async () => {
   const client = createBridgeClient({
     emberCommand: ['node', FAKE_EMBER],

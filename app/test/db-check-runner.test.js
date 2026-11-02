@@ -136,6 +136,24 @@ test('a house line on stderr after line 1 is still parsed', async () => {
   }
 });
 
+test('a stderr house line split across two reads parses', async () => {
+  // Batch 5 chunk 3 (4.4 #1): the pipe delivers the house line in TWO
+  // piecewise writes — the first carries NO newline — so a reader that
+  // splits each chunk on '\n' sees two broken half-lines and the house
+  // code is lost. Whole streamed lines must rejoin it.
+  const fake = fakeEmber(
+    `process.stderr.write('error: QUERY-003 KnowledgeBaseMissing | ember.que');\nsetTimeout(() => {\n  process.stderr.write('ry.rows | db file missing\\n');\n  process.exit(3);\n}, 25);`,
+  );
+  try {
+    const result = await runDbCheck({ emberCommand: fake.command, errorPattern: errorPatternFixture(), dbPath: '/tmp/x.db', attempts: 1 });
+    assert.equal(result.ok, false);
+    assert.equal(result.error.code, 'QUERY-003', JSON.stringify(result.error));
+    assert.equal(result.error.name, 'KnowledgeBaseMissing');
+  } finally {
+    fake.cleanup();
+  }
+});
+
 test('exit 2 without a house line -> APP-002 (usage/abort)', async () => {
   const fake = fakeEmber(`process.exit(2);`);
   try {
