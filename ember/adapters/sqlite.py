@@ -170,6 +170,74 @@ def ensure_relate_schema(conn: sqlite3.Connection) -> None:
         raise SchemaOutdated("schema version too old", version=version, required=12)
 
 
+def open_relate_database_readonly(db_path: str) -> sqlite3.Connection:
+    """Open an existing relate DB STRICTLY read-only, never migrate (N9).
+
+    For the relate reads (candidate universe, link and cache lookups,
+    gatekeeper reads): opening or reading a file must never migrate it
+    silently and never write a pre-migration backup; the version bump, when
+    one is ever needed, happens when a write opens the database. Raise
+    `DbOpenFailed` (RELATE-012) when the file is missing, is not a readable
+    SQLite database, or the version cannot be read, and `SchemaOutdated`
+    (RELATE-014) when the version is below the floor 12 (the relate engine
+    reads `items.metadata` from migration 012 on).
+    """
+    if not os.path.exists(db_path):
+        raise DbOpenFailed("db file missing", db_path=os.path.basename(db_path))
+    conn: sqlite3.Connection | None = None
+    try:
+        conn = _connect_readonly(db_path)
+        conn.execute("SELECT COUNT(*) FROM sqlite_master").fetchone()
+    except sqlite3.Error as exc:
+        if conn is not None:
+            conn.close()
+        raise DbOpenFailed("db open fail", db_path=os.path.basename(db_path)) from exc
+    try:
+        version = int(
+            conn.execute("SELECT version FROM schema_version").fetchone()["version"]
+        )
+    except (sqlite3.Error, TypeError, ValueError) as exc:
+        conn.close()
+        raise DbOpenFailed("schema version read fail") from exc
+    if version < 12:
+        conn.close()
+        raise SchemaOutdated(
+            "schema version too old (relate never migrates)",
+            version=version,
+            required=12,
+        )
+    return conn
+
+
+def open_relate_database_write(db_path: str) -> sqlite3.Connection:
+    """Open the ONE short-lived relate write connection; never migrates (N9).
+
+    Relate's writes (embedding-cache upserts and the model-change wipe, the
+    raw AI reply save, and the confirmed-link writes) share this one
+    connection. It checks the floor 12 version but applies no migration and
+    makes no backup: the read-only open before it has already verified the
+    file is readable and current, so no migration, `.bak` copy, or version
+    bump ever happens here. Raise the same errors as the read-only opener
+    (`RELATE-012`, `RELATE-014`).
+    """
+    if not os.path.exists(db_path):
+        raise DbOpenFailed("db file missing", db_path=os.path.basename(db_path))
+    conn: sqlite3.Connection | None = None
+    try:
+        conn = _connect(db_path)
+        conn.execute("SELECT COUNT(*) FROM sqlite_master").fetchone()
+        ensure_relate_schema(conn)
+    except EmberError:
+        if conn is not None:
+            conn.close()
+        raise
+    except sqlite3.Error as exc:
+        if conn is not None:
+            conn.close()
+        raise DbOpenFailed("db open fail", db_path=os.path.basename(db_path)) from exc
+    return conn
+
+
 def open_maintain_database(db_path: str) -> sqlite3.Connection:
     """Open an existing maintain DB, apply migrations, check the schema.
 
