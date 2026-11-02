@@ -55,8 +55,19 @@
  * - FAKE_SESSION_CLOSE_STDIN=1 (with FAKE_MODE=session, Batch 5 chunk
  *   5, 4.4 #2): the engine stops reading its stdin while the process
  *   stays alive — the app's next answer() hits a broken pipe (EPIPE).
+ * - FAKE_EXIT_EARLY=1 (Batch 5 chunk 6, 4.4 #6 / story 20; any mode):
+ *   the engine dies right after spawn, with NO output on either
+ *   stream — the app must settle on the process exit, never hang.
+ * - FAKE_GRANDCHILD=1 (with FAKE_MODE=session, Batch 5 chunk 6, 4.4 #6
+ *   / story 21): the fake spawns a grandchild that INHERITS its
+ *   stdout/stderr pipes and then exits itself. The parent's stdio can
+ *   then only close when the grandchild dies — and the grandchild
+ *   never dies on its own (a bare setInterval). The grandchild's pid
+ *   is logged to FAKE_GRANDCHILD_LOG so a test can pin that the app's
+ *   process-group kill really ended the stuck helper.
  */
 
+const { spawn } = require('node:child_process');
 const fs = require('node:fs');
 const path = require('node:path');
 
@@ -139,6 +150,14 @@ noteSpawn();
 if (argv[0] === 'init') {
   const target = argv[argv.indexOf('--db') + 1] ?? null;
   if (!fs.existsSync(target)) fs.writeFileSync(target, '');
+  process.exit(0);
+}
+
+/* Batch 5 chunk 6 (4.4 #6, story 20): FAKE_EXIT_EARLY=1 — the engine
+   dies right after spawn, with NO output on either stream. The app
+   must settle the session (or call) on the process exit itself, never
+   hang waiting for a summary that will not come. */
+if (process.env.FAKE_EXIT_EARLY === '1') {
   process.exit(0);
 }
 
@@ -356,6 +375,28 @@ function runSession() {
   }
   for (const e of events) {
     process.stdout.write(`${JSON.stringify(e)}\n`);
+  }
+
+  /* ==== Batch 5 chunk 6 (4.4 #6, story 21): FAKE_GRANDCHILD=1 ========
+     The fake emits its scripted events, then spawns a GRANDCHILD that
+     inherits its stdout/stderr pipes, then exits itself. The parent's
+     stdio can then only close when the grandchild dies — the
+     `setInterval` child never does — so a settle that waits on pipe
+     close waits on the grandchild's lifetime. The grandchild's pid is
+     logged to FAKE_GRANDCHILD_LOG so the test can pin that the app's
+     process-group kill ended the stuck helper. ===================== */
+  if (process.env.FAKE_GRANDCHILD === '1') {
+    const grandchild = spawn('node', ['-e', 'setInterval(() => {}, 1000)'], {
+      // Inherit the SESSION pipes: the child holds the same stdout and
+      // stderr the app's reader is waiting on. NOT detached — the
+      // grandchild stays in the fake's process group, which is exactly
+      // what the app's group kill must reach.
+      stdio: ['ignore', 'inherit', 'inherit'],
+    });
+    if (process.env.FAKE_GRANDCHILD_LOG) {
+      fs.appendFileSync(process.env.FAKE_GRANDCHILD_LOG, `${grandchild.pid}\n`);
+    }
+    process.exit(0);
   }
 
   /* ==== Batch 5 chunk 5 (4.4 #2): the engine stops reading its stdin

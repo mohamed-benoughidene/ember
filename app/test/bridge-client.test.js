@@ -529,6 +529,99 @@ test('a chatty child that never completes a line still times out on idle (4.4 #5
   );
 }, 10_000);
 
+// --- Batch 5 chunk 6: timeouts are hard bounds (4.4 #6; stories 20, 21) ---
+
+/** True while the fake's logged grandchild still answers at that pid. */
+function grandchildAlive(pidFile) {
+  let pid = NaN;
+  try {
+    pid = Number(fs.readFileSync(pidFile, 'utf8').trim());
+  } catch {
+    return true; // the fake has not logged it yet — assume still alive
+  }
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false; // ESRCH: nothing is left at that pid
+  }
+}
+
+test('with a short timeout, a session whose grandchild holds the pipes settles within a short bound after the kill, not when the grandchild dies', async () => {
+  // 4.4 #6, story 21. The engine emits its events, asks its question,
+  // leaves a GRANDCHILD holding its stdout/stderr, and exits. The
+  // grandchild never exits on its own (a bare setInterval), so the
+  // child's pipes stay open forever: a settle that waits for stdio to
+  // close waits for the grandchild's death and hangs the call. The
+  // settle must be the process exit plus a short hard bound for pipe
+  // close, and the client's kill must reach the whole process group so
+  // the stuck helper cannot outlive the session. The fake logs the
+  // grandchild's pid so this test can pin the helper really ended.
+  const grandchildLog = tempPath('grandchild.pid');
+  const client = makeClient({
+    fakeMode: 'session',
+    // No builtin limit may settle this on its own: the settle must be
+    // the engine's own exit plus a short bound, never a timer.
+    sessionIdleMs: 60_000,
+    env: {
+      FAKE_SESSION_SCRIPT: JSON.stringify([
+        { event: 'message', text: 'working' },
+        { event: 'prompt', kind: 'choice', text: '[y]es / [n]o / [q]uit', choices: ['y', 'n', 'q'] },
+      ]),
+      FAKE_GRANDCHILD: '1',
+      FAKE_GRANDCHILD_LOG: grandchildLog,
+    },
+  });
+  const start = Date.now();
+  const { session, events, exitPromise } = openSession(client, 'capture');
+  try {
+    const settle = await Promise.race([
+      exitPromise,
+      new Promise((resolve) => setTimeout(() => resolve('bound'), 8000)),
+    ]);
+    if (settle === 'bound') {
+      assert.fail(
+        `the session did not settle within ${Date.now() - start} ms: the engine exited at once, so the settle was left waiting for the pipes the grandchild holds`,
+      );
+    }
+    const elapsed = Date.now() - start;
+    assert.ok(elapsed < 8000, `settled after ${elapsed} ms — too close to the grandchild's lifetime`);
+    assert.deepEqual(events.map((e) => e.event), ['message', 'prompt']);
+    assert.equal(settle.exitCode, 0, JSON.stringify(settle));
+    // The stuck helper must not outlive the session: the app's kill
+    // reaches the whole process group, grandchild included.
+    session.stop();
+    await testHelpers.waitFor(() => !grandchildAlive(grandchildLog), 8000);
+  } finally {
+    // Hygiene on ANY path (a failing settle must not leak a node
+    // process): end the session, then kill the grandchild directly.
+    session.stop();
+    try {
+      const pid = Number(fs.readFileSync(grandchildLog, 'utf8').trim());
+      process.kill(pid, 'SIGKILL');
+    } catch {
+      /* already gone or never started */
+    }
+  }
+}, 20_000);
+
+test('an engine that exits early settles the session, it does not hang', async () => {
+  // 4.4 #6 / story 20: an engine that dies right after spawn with NO
+  // output must settle the session on its process exit — the call may
+  // never hang waiting for a summary that will not come.
+  const client = makeClient({ fakeMode: 'session', env: { FAKE_EXIT_EARLY: '1' } });
+  const start = Date.now();
+  const { exitPromise } = openSession(client, 'capture');
+  const settle = await Promise.race([
+    exitPromise,
+    new Promise((resolve) => setTimeout(() => resolve('bound'), 8000)),
+  ]);
+  assert.notEqual(settle, 'bound', `the session did not settle within ${Date.now() - start} ms`);
+  const elapsed = Date.now() - start;
+  assert.ok(elapsed < 5000, `the engine died at once but the session settled only after ${elapsed} ms`);
+  assert.equal(settle.exitCode, 0);
+}, 20_000);
+
 // --- tiny poll helper (sessions are event-driven) ------------------------------
 
 const testHelpers = {
