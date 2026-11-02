@@ -678,12 +678,21 @@ def _apply_migrations(conn: sqlite3.Connection) -> None:
             "file has tables but no schema_version table",
             tables=", ".join(sorted(existing_tables)),
         )
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL)"
-    )
-    if conn.execute("SELECT COUNT(*) FROM schema_version").fetchone()[0] == 0:
-        conn.execute("INSERT INTO schema_version (version) VALUES (0)")
-    conn.commit()
+    # The migration lock (chunk 11, finding 4.3 #1): the version table is
+    # bootstrapped inside ONE `BEGIN EXCLUSIVE` transaction, so parallel
+    # openers of a brand-new file serialize on the write lock instead of
+    # racing their first writes.
+    _begin_exclusive(conn)
+    try:
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL)"
+        )
+        if conn.execute("SELECT COUNT(*) FROM schema_version").fetchone()[0] == 0:
+            conn.execute("INSERT INTO schema_version (version) VALUES (0)")
+        conn.commit()
+    except sqlite3.Error:
+        conn.rollback()
+        raise
     current = int(conn.execute("SELECT version FROM schema_version").fetchone()[0])
     # A version-0 file with no `items` table never finished being created
     # (story 16): its own refusal code, distinct from the "schema version
@@ -722,24 +731,97 @@ def _existing_tables(conn: sqlite3.Connection) -> set[str]:
     }
 
 
+# The one migration lock budget: the same 5000 ms every connection sets
+# (decision I8, chunk 10). SQLite's PRAGMA busy_timeout is the primary
+# busy retry on the lock request itself; this deadline bounds the extra
+# explicit retries below to the same visible limit.
+_MIGRATION_LOCK_TIMEOUT_SECONDS = 5.0
+
+
+def _begin_exclusive(conn: sqlite3.Connection) -> None:
+    """Open ONE `BEGIN EXCLUSIVE` transaction, retrying while busy.
+
+    `BEGIN EXCLUSIVE` is what makes four parallel openers serialize
+    (chunk 11, finding 4.3 #1): the full write lock is taken BEFORE the
+    first statement, so a second opener just waits inside its 5000 ms
+    busy timeout (I8) instead of racing a deferred transaction upgrade —
+    the one `SQLITE_BUSY` shape no busy timeout can help, because two
+    waiting writers holding the file's SHARED lock are a deadlock the
+    busy handler must not sleep on. Retries here are bounded by the same
+    5000 ms budget the pragma owns; past the deadline the error surfaces.
+    """
+    deadline = time.monotonic() + _MIGRATION_LOCK_TIMEOUT_SECONDS
+    while True:
+        try:
+            conn.execute("BEGIN EXCLUSIVE")
+            return
+        except sqlite3.OperationalError as exc:
+            message = str(exc)
+            if "locked" not in message and "busy" not in message:
+                raise
+            if time.monotonic() >= deadline:
+                raise
+
+
 def _apply_migration(conn: sqlite3.Connection, number: int, script: str) -> None:
     """Apply one migration and its version bump in one transaction.
 
-    Scripts must contain plain statements only. The runner owns the
-    transaction and the foreign-key switch, so a script with its own
-    `BEGIN` / `COMMIT` would nest transactions.
+    The transaction is `BEGIN EXCLUSIVE` (chunk 11): a plain `executescript`
+    ran a DEFERRED `BEGIN`, so two parallel openers could each hold the
+    file's SHARED lock and both try to upgrade — an immediate
+    `database is locked` crash on ~3 of 4 openers of a brand-new file.
+
+    Inside the lock the version is RE-READ: every opener computed its
+    `pending` list from a pre-lock read, so an opener that lost the race
+    skips each step the winner already applied instead of re-running it
+    on a changed schema.
+
+    Scripts must contain plain statements only. They are executed
+    statement by statement here — `executescript` commits any pending
+    transaction first, which would surrender this step's exclusive lock
+    mid-migration — and the runner owns the transaction and the
+    foreign-key switch, so a script with its own `BEGIN` / `COMMIT`
+    would nest transactions.
     """
-    wrapped = (
-        "BEGIN;\n"
-        f"{script}\n"
-        f"UPDATE schema_version SET version = {int(number)};\n"
-        "COMMIT;"
-    )
+    _begin_exclusive(conn)
     try:
-        conn.executescript(wrapped)
+        current = int(
+            conn.execute("SELECT version FROM schema_version").fetchone()[0]
+        )
+        if current >= number:
+            # Another opener applied this step while we waited for the
+            # lock; keep the file exactly as the winner left it.
+            conn.rollback()
+            return
+        for statement in _script_statements(script):
+            conn.execute(statement)
+        conn.execute(
+            "UPDATE schema_version SET version = ?", (int(number),)
+        )
+        conn.commit()
     except sqlite3.Error:
         conn.rollback()
         raise
+
+
+def _script_statements(script: str) -> list[str]:
+    """Split a migration script into complete SQL statements.
+
+    Boundaries come from `sqlite3.complete_statement`, which understands
+    trigger bodies (`BEGIN ... END;`) and quoted strings, so the
+    semicolons inside them never split a statement mid-body. Comments
+    ride along with the statement they precede.
+    """
+    statements: list[str] = []
+    buffer = ""
+    for char in script:
+        buffer += char
+        if char == ";" and sqlite3.complete_statement(buffer):
+            statements.append(buffer)
+            buffer = ""
+    if buffer.strip():
+        raise ValueError("migration script ends with an incomplete statement")
+    return statements
 
 
 def _migration_scripts() -> list[tuple[int, str]]:

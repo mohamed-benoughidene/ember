@@ -29,12 +29,14 @@ import os
 import sqlite3
 import subprocess
 import sys
+import threading
 from pathlib import Path
 
 import pytest
 
 import ember.adapters.sqlite as sqlite_adapter
 from ember.adapters.sqlite import open_database, open_maintain_database
+from tests.fakes import insert_item, insert_link, insert_source
 
 
 def _pinned_error_classes() -> tuple[type, type, type]:
@@ -70,6 +72,10 @@ _SCRIPTS_001_TO_012 = (
     "011_add_links_reversed_at_and_enforcement_triggers.sql",
     "012_add_items_metadata.sql",
 )
+
+# Chunk 11: the first ten scripts build a real v10 file (the version the
+# 011 backfill runs against in production — reversing exists in v10).
+_SCRIPTS_001_TO_010 = _SCRIPTS_001_TO_012[:10]
 
 
 def _run(*args: str) -> subprocess.CompletedProcess[bytes]:
@@ -261,3 +267,115 @@ def test_every_opened_connection_sets_busy_timeout_to_5000(tmp_path: Path) -> No
         assert conn_maintain.execute("PRAGMA busy_timeout").fetchone()[0] == 5000
     finally:
         conn_maintain.close()
+
+
+def _build_v10_file(db_path: Path) -> None:
+    """Build a real v10 file: scripts 001-010 applied, version stamped 10.
+
+    The same hand-built shape as `_build_v10_db` in
+    `tests/test_migration_011.py` — real scripts, no runner, nothing past
+    version 10.
+    """
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    conn.execute("CREATE TABLE schema_version (version INTEGER NOT NULL)")
+    conn.execute("INSERT INTO schema_version (version) VALUES (10)")
+    package = importlib.resources.files("ember.adapters.migrations")
+    for name in _SCRIPTS_001_TO_010:
+        conn.executescript(package.joinpath(name).read_text(encoding="utf-8"))
+    conn.commit()
+    conn.close()
+
+
+def test_migration_011_backfill_accounts_for_reversed_links(tmp_path: Path) -> None:
+    """A link reversed and THEN un-reversed ends with `reversed_at` NULL.
+
+    The 011 backfill must follow the replay rule the rest of the house
+    reads by (maintain_lookup step 03): the HIGHEST-id marker among
+    `link_reversed` / `link_unreversed` decides. Today the backfill reads
+    ONLY `link_reversed` rows, so a link whose ledger ends in
+    `link_unreversed` (it was reversed, then un-reversed) is wrongly
+    stamped `reversed_at` at migration time.
+    """
+    db_path = tmp_path / "kb.db"
+    _build_v10_file(db_path)
+
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    source_id = insert_source(conn)
+    insert_item(conn, source_id=source_id, item_id=1, statement="old decision")
+    insert_item(conn, source_id=source_id, item_id=2, statement="new decision")
+    link_id = insert_link(conn, 1, 2, "depends_on")
+    # The ledger order is the point: reversed FIRST, un-reversed SECOND.
+    # The link's last marker is `link_unreversed` — the link is live.
+    conn.execute(
+        "INSERT INTO change_log"
+        " (item_id, link_id, field_changed, old_value, new_value, timestamp,"
+        " trigger_cause)"
+        " VALUES (1, ?, 'link_reversed', 'Confirmed', 'Reversed', ?, 'reversal')",
+        (link_id, "2026-05-01T10:00:00+00:00"),
+    )
+    conn.execute(
+        "INSERT INTO change_log"
+        " (item_id, link_id, field_changed, old_value, new_value, timestamp,"
+        " trigger_cause)"
+        " VALUES (1, ?, 'link_unreversed', 'Reversed', 'Confirmed', ?, 'user_undo')",
+        (link_id, "2026-05-02T10:00:00+00:00"),
+    )
+    conn.commit()
+    conn.close()
+
+    conn = open_database(str(db_path))
+    try:
+        assert _version(db_path) == 13
+        reversed_at = conn.execute(
+            "SELECT reversed_at FROM links WHERE id = ?", (link_id,)
+        ).fetchone()[0]
+        # An un-reversed link is live: no reversal stamp.
+        assert reversed_at is None
+    finally:
+        conn.close()
+
+
+def test_four_parallel_openers_of_a_new_file_all_succeed(tmp_path: Path) -> None:
+    """4 threads race `open_database` on ONE fresh path; none raises.
+
+    The openers truly race: a `threading.Barrier` releases all four only
+    after every one is connected and waiting, so they hit the empty file
+    at the same moment (the app's two first-Adds-at-once and the check
+    report's confirmed crash: ~3 of 4 openers died on `database is
+    locked`). After the race the file must be exactly at the pinned
+    latest version.
+    """
+    db_path = tmp_path / "kb.db"
+    openers = 4
+    barrier = threading.Barrier(openers)
+    outcomes: list[str] = [""] * openers
+
+    def opener(index: int) -> None:
+        conn: sqlite3.Connection | None = None
+        try:
+            barrier.wait(timeout=30)
+            conn = open_database(str(db_path))
+            outcomes[index] = "ok"
+        except Exception as exc:
+            outcomes[index] = repr(exc)
+        finally:
+            # The worker opens it, the worker closes it: SQLite objects
+            # are single-thread by default (`check_same_thread`).
+            if conn is not None:
+                conn.close()
+
+    threads = [threading.Thread(target=opener, args=(i,)) for i in range(openers)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=120)
+    for thread in threads:
+        assert not thread.is_alive(), "an opener hung instead of failing fast"
+
+    failures = [o for o in outcomes if o != "ok"]
+    # The headline: no opener crashed, nobody got a half-migrated file.
+    assert failures == [], f"{len(failures)} of {openers} openers failed"
+
+    assert _version(db_path) == 13
