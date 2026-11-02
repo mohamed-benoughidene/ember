@@ -10,9 +10,10 @@ import sys
 import urllib.parse
 from array import array
 from collections import deque
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from importlib import resources
-from typing import Callable
+from typing import Callable, Iterator
 
 from ember.capture.errors import (
     DbOpenFailed as CaptureDbOpenFailed,
@@ -1147,13 +1148,21 @@ class SqliteQueryContext:
     def list_change_log(self) -> list[ChangeRow]:
         """Return every `change_log` row, ordered by id ascending.
 
-        Raise `ItemsReadFailed` (QUERY-005) on a read failure.
+        `group_id` is selected only when the column exists (migration 013):
+        on a pre-013 file every `ChangeRow` keeps the model default `None`
+        (finding 4.7 #11). Raise `ItemsReadFailed` (QUERY-005) on a read
+        failure.
         """
         try:
+            columns = (
+                "id, item_id, link_id, field_changed, old_value, new_value,"
+                " timestamp, trigger_cause"
+            )
+            has_groups = column_exists(self._conn, "change_log", "group_id")
+            if has_groups:
+                columns += ", group_id"
             rows = self._conn.execute(
-                "SELECT id, item_id, link_id, field_changed, old_value,"
-                " new_value, timestamp, trigger_cause"
-                " FROM change_log ORDER BY id"
+                f"SELECT {columns} FROM change_log ORDER BY id"
             ).fetchall()
         except sqlite3.Error as exc:
             raise QueryItemsReadFailed(
@@ -1169,6 +1178,9 @@ class SqliteQueryContext:
                 new_value=row["new_value"],
                 timestamp=row["timestamp"],
                 trigger_cause=row["trigger_cause"],
+                group_id=(
+                    int(row["group_id"]) if has_groups and row["group_id"] is not None else None
+                ),
             )
             for row in rows
         ]
@@ -1208,6 +1220,24 @@ class SqliteQueryContext:
         if row is None:
             raise QueryItemsReadFailed("source text read fail", item_id=item_id)
         return str(row["full_text"])
+
+    @contextmanager
+    def read_transaction(self) -> Iterator[None]:
+        """Run reads inside one explicit read transaction (a fixed snapshot).
+
+        `show-item` and `why` join items, links and source text, so the
+        three reads must see one instant: a concurrent writer between two
+        separate SELECTs can leave the caller a link whose other end is
+        already gone (finding 4.7 #2). SQLite gives the consistent read
+        inside one transaction, opened before the first read and ended
+        after the last; it is read-only, so there is nothing to commit and
+        ending it never touches the file (byte-identical proof stays true).
+        """
+        self._conn.execute("BEGIN")
+        try:
+            yield
+        finally:
+            self._conn.rollback()
 
 
 class SqliteMaintainStore:

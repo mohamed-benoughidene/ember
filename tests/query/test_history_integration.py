@@ -3,15 +3,26 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 from ember.adapters.sqlite import (
+    SqliteGroupIdPort,
     SqliteLinkStore,
+    SqliteMaintainContext,
     SqliteMaintainStore,
     SqliteQueryContext,
     open_database,
+    open_maintain_database,
     open_query_database,
 )
 from ember.maintain.rows import StatusChange
+from ember.maintain.run_maintain import (
+    MaintainPorts,
+    MaintainRequest,
+    run_set_status,
+    run_undo,
+    UndoRequest,
+)
 from ember.query.run_query import run_history
 from ember.relate.rows import ChangeLogEntry, Link
 from tests.fakes import FIXED_TIME, insert_item, insert_source
@@ -21,11 +32,14 @@ from tests.query.fakes import make_v10
 def _seed_ledger(db_path: str) -> int:
     """Write one confirmed link and one machine close through the real writers.
 
-    Returns the link id. Item 2 supersedes item 1 (Decision -> Decision is
-    compat-legal), so the ledger holds Engine B's `link_confirmed` row and
-    Engine C's `status` row.
+    The real writers stamp their ledger rows with undo group ids
+    (`change_log.group_id`, migration 013), so the seed needs a CURRENT
+    file: `open_database` migrates the fresh file to 13 and returns a
+    writing handle. Returns the link id. Item 2 supersedes item 1
+    (Decision -> Decision is compat-legal), so the ledger holds Engine B's
+    `link_confirmed` row and Engine C's `status` row.
     """
-    conn = make_v10(db_path)
+    conn = open_database(db_path)
     try:
         source_id = insert_source(conn)
         insert_item(conn, source_id=source_id, item_id=1, statement="Old decision")
@@ -125,3 +139,50 @@ def test_history_for_an_item_with_no_events_is_not_an_error(db_path) -> None:
         conn.close()
 
     assert document["count"] == 0
+
+
+def test_history_rows_carry_their_group_id(db_path) -> None:
+    """The ledger read carries `change_log.group_id` (migration 013).
+
+    One real human action, then one real undo: the status row is stamped
+    with the action's group id and the `undo_of` marker row with the undo's
+    own new group id (engine-undo-plan §5.1). Engine D's `list_change_log`
+    must select that column (gated by `column_exists`, so a pre-013 file
+    keeps `None`), otherwise every grouped row silently reads groupless
+    (finding 4.7 #11).
+    """
+    Path(db_path).touch()
+    conn = open_maintain_database(db_path)
+    try:
+        source_id = insert_source(conn)
+        insert_item(conn, source_id=source_id, item_id=1, status="Active")
+        conn.commit()
+        ports = MaintainPorts(
+            lookup=SqliteMaintainContext(conn),
+            store=SqliteMaintainStore(conn),
+            group_ids=SqliteGroupIdPort(conn),
+        )
+        run_set_status(ports, MaintainRequest(item_id=1, to_status="Challenged"))
+        conn.commit()
+        run_undo(ports, UndoRequest())
+        conn.commit()
+    finally:
+        conn.close()
+
+    conn = open_query_database(db_path)
+    try:
+        rows = SqliteQueryContext(conn).list_change_log()
+    finally:
+        conn.close()
+
+    # The undo's inverse rows and its `undo_of` marker are the newest rows;
+    # every one of them carries the undo's OWN new group id.
+    fields = [row.field_changed for row in rows]
+    assert fields[0] == "status"  # the group-stamped human action
+    assert "undo_of" in fields
+    marker = next(row for row in rows if row.field_changed == "undo_of")
+    assert marker.group_id is not None
+    assert marker.group_id != rows[0].group_id
+    # And the inverse rows the undo wrote are stamped like their marker.
+    inverses = [row for row in rows if row.group_id == marker.group_id]
+    assert len(inverses) >= 2

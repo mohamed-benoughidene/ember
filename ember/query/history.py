@@ -8,6 +8,8 @@ so the two cannot disagree.
 
 from __future__ import annotations
 
+from datetime import datetime
+
 from ember.maintain.rows import split_status_value
 from ember.query.rows import ChangeRow, HistoryEvent, HistoryPage
 from ember.relate.rows import Link
@@ -82,6 +84,22 @@ def _belongs_to(row: ChangeRow, item_id: int, links: dict[int, Link]) -> bool:
     return item_id in (link.source_item_id, link.target_item_id)
 
 
+def _instant(stored: str) -> datetime | None:
+    """Parse one stored timestamp into an aware instant, or `None`.
+
+    A hand-edited row can hold text that does not parse, or a naive
+    spelling with no offset — there is no instant without an offset, and
+    comparing one to an aware `--since` would crash. Either way the row
+    renders everywhere else but is invisible to a `--since` cut (recorded
+    here, not hidden).
+    """
+    try:
+        parsed = datetime.fromisoformat(stored)
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo is not None else None
+
+
 def _to_event(row: ChangeRow, link: Link | None) -> HistoryEvent:
     """Build the rendered event for one row, filling the link's fields."""
     kind = classify_change_row(row)
@@ -119,13 +137,14 @@ def history(
     the global view only. Order is `(timestamp, id)`, unchanged.
 
     The window composes strictly after that union and sort: `page.since`
-    keeps rows with `timestamp >= since` as opaque ISO text (the exact
-    comparison the sort already uses, the validator has normalised it to
-    UTC), then `page.offset` skips, then `page.limit` caps. `None` on an
+    keeps rows whose parsed INSTANT is `>=` the `--since` instant (the
+    validator has normalised `since` to UTC, but stored spellings may name
+    any offset, and TEXT order can run opposite instant order — finding
+    4.7 #9), then `page.offset` skips, then `page.limit` caps. `None` on an
     axis means no cut, so the default page crops nothing and the no-page
     call behaves exactly as before. A stored timestamp that cannot parse
-    renders everywhere today but is invisible to a `--since` view (a
-    hand-edited row, recorded here, not hidden).
+    (or names no offset) renders everywhere today but is invisible to a
+    `--since` view (a hand-edited row, recorded here, not hidden).
     """
     links_by_id = {int(link.id): link for link in links if link.id is not None}
     selected: list[tuple[ChangeRow, HistoryEvent]] = []
@@ -136,7 +155,13 @@ def history(
     selected.sort(key=lambda pair: (pair[0].timestamp, pair[0].id))
     events = [event for _, event in selected]
     if page.since is not None:
-        events = [event for event in events if event.timestamp >= page.since]
+        since_instant = datetime.fromisoformat(page.since)
+        events = [
+            event
+            for event in events
+            if (instant := _instant(event.timestamp)) is not None
+            and instant >= since_instant
+        ]
     if page.offset is not None:
         events = events[page.offset :]
     if page.limit is not None:

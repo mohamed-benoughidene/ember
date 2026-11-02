@@ -5,6 +5,9 @@ No mode argument and no boolean flag: the mode is the entry point (I2).
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+from contextlib import contextmanager
+
 from ember.query.current_state import current_state
 from ember.query.history import history
 from ember.query.list_items import list_items
@@ -30,6 +33,22 @@ from ember.query.topic_search import topic_search
 from ember.query.why import why
 
 
+@contextmanager
+def _one_read(lookup: QueryLookupPort) -> Iterator[None]:
+    """Load inside one read transaction when the adapter offers one.
+
+    `SqliteQueryContext.read_transaction` holds SQLite's one-instance
+    snapshot across the joins (finding 4.7 #2). The in-memory test fakes
+    have no transaction to offer, so they pass through untouched.
+    """
+    open_read = getattr(lookup, "read_transaction", None)
+    if open_read is None:
+        yield
+    else:
+        with open_read():
+            yield
+
+
 def run_current_state(lookup: QueryLookupPort) -> str:
     """Load every item, derive the live view, render the JSON document."""
     return render_current_state(current_state(lookup.list_items()))
@@ -53,9 +72,16 @@ def run_topic_search(
 
 
 def run_why(lookup: QueryLookupPort, item_id: int) -> str:
-    """Gate the item id, load items and links, walk, render the JSON document."""
+    """Gate the item id, load, walk, render the JSON document.
+
+    The gate (QUERY-001) runs before any load, then items and links load in
+    one read transaction (finding 4.7 #2), then derive, render.
+    """
     validate_query_item(lookup, item_id)
-    return render_why(why(lookup.list_items(), lookup.list_links(), item_id))
+    with _one_read(lookup):
+        items = lookup.list_items()
+        links = lookup.list_links()
+    return render_why(why(items, links, item_id))
 
 
 def run_history(
@@ -98,11 +124,13 @@ def run_show_item(lookup: QueryLookupPort, item_id: int) -> str:
     """Show one item, its verbatim source text and all its links, as JSON.
 
     Bridge step 02. The pipeline order is gate the item id (QUERY-001)
-    before any load, then load, derive (both link directions inside),
-    render. The source text comes through the one `source_text_for` read.
+    before any load, then items, links and source in ONE read transaction
+    (finding 4.7 #2), then derive (both link directions inside; a dangling
+    other end answers QUERY-010), render.
     """
     validate_query_item(lookup, item_id)
-    items = lookup.list_items()
-    links = lookup.list_links()
-    source_text = lookup.source_text_for(item_id)
+    with _one_read(lookup):
+        items = lookup.list_items()
+        links = lookup.list_links()
+        source_text = lookup.source_text_for(item_id)
     return render_show_item(show_item(item_id, items, links, source_text))

@@ -24,7 +24,7 @@ from tests.fakes import (
     insert_link,
     insert_source,
 )
-from tests.query.fakes import make_v10
+from tests.query.fakes import make_v10, make_v11
 
 _MIGRATIONS_TO_10 = (
     "001_create_sources.sql",
@@ -77,8 +77,15 @@ def _seed_mixed_statuses(db_path: str) -> None:
 
 
 def _seed_links(db_path: str, *, with_reversal: bool) -> None:
-    """Give item 3 one out-link (Rejected) and one in-link (Confirmed)."""
-    conn = make_v10(db_path)
+    """Give item 3 one out-link (Rejected) and one in-link (Confirmed).
+
+    A reversal seed needs the `links.reversed_at` column, which exists only
+    from migration 011, so it builds a genuine v11 file (scripts 001-011,
+    the minimal honest version). Without a reversal the strictest case is
+    still the genuine pre-011 v10 file, where the column does not exist at
+    all and the link read reports `reversed_at: null`.
+    """
+    conn = make_v11(db_path) if with_reversal else make_v10(db_path)
     try:
         source_id = insert_source(conn, "note body")
         for item_id in range(1, 4):
@@ -324,6 +331,47 @@ def test_show_item_unknown_id_exits_1_with_query_001_on_stderr(db_path) -> None:
     assert result.exit_code == 1
     assert result.stdout == ""
     assert "error: QUERY-001 QueryItemNotFound" in (result.stderr or "")
+
+
+def test_show_item_answers_with_a_house_code_when_a_links_other_end_is_gone(
+    db_path,
+) -> None:
+    """A dangling link end answers with ONE house-code line, exit 1.
+
+    Nothing stops a hand edit from deleting the item row at a link's other
+    end while the link row survives (links and items are separate tables).
+    `show-item --item 1` must not crash on the missing row: it prints
+    exactly one `error: QUERY-...` line on stderr, never a traceback
+    (finding 4.7 #2), and its stdout stays empty.
+    """
+    conn = make_v10(db_path)
+    try:
+        source_id = insert_source(conn)
+        insert_item(conn, source_id=source_id, item_id=1, statement="Shown item")
+        insert_item(conn, source_id=source_id, item_id=2, statement="Other end")
+        insert_link(conn, 1, 2, "depends_on")
+        conn.commit()
+    finally:
+        conn.close()
+
+    # Delete the other end directly: a dangling target, not a user error.
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.execute("DELETE FROM items WHERE id = 2")
+        conn.commit()
+    finally:
+        conn.close()
+
+    result = CliRunner().invoke(main, ["show-item", "--item", "1", "--db", db_path])
+
+    assert result.exit_code == 1
+    assert result.stdout == ""
+    stderr = result.stderr or ""
+    assert "Traceback" not in stderr
+    assert "Traceback" not in result.output
+    lines = stderr.strip().splitlines()
+    assert len(lines) == 1
+    assert lines[0].startswith("error: QUERY-010 QueryLinkEndGone")
 
 
 def test_list_items_bad_status_exits_1_with_query_006_field_status(db_path) -> None:

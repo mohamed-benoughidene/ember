@@ -23,6 +23,10 @@ _V10_MIGRATIONS = (
     "010_add_item_close_reason.sql",
 )
 
+_V11_MIGRATIONS = _V10_MIGRATIONS + (
+    "011_add_links_reversed_at_and_enforcement_triggers.sql",
+)
+
 
 class FakeQueryLookup:
     """Working stand-in for `QueryLookupPort` that records every call.
@@ -185,6 +189,31 @@ def make_v10(db_path: str) -> sqlite3.Connection:
     conn.execute("INSERT INTO schema_version (version) VALUES (10)")
     package = importlib.resources.files("ember.adapters.migrations")
     for name in _V10_MIGRATIONS:
+        conn.executescript(package.joinpath(name).read_text(encoding="utf-8"))
+    return conn
+
+
+def make_v11(db_path: str) -> sqlite3.Connection:
+    """Create a real schema-version-11 database and return a writing handle.
+
+    Same recipe as `make_v10`, one migration further: scripts 001-011 are
+    applied by hand and the version is stamped 11, so nothing past 011 ever
+    runs. The file genuinely has `links.reversed_at` (migration 011) but no
+    `items.metadata` (012) and no `change_log.group_id` (013). Calling it
+    again on an already-built file just returns a writing handle.
+    """
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    built = conn.execute(
+        "SELECT COUNT(*) FROM sqlite_master"
+        " WHERE type = 'table' AND name = 'schema_version'"
+    ).fetchone()[0]
+    if built:
+        return conn
+    conn.execute("CREATE TABLE schema_version (version INTEGER NOT NULL)")
+    conn.execute("INSERT INTO schema_version (version) VALUES (11)")
+    package = importlib.resources.files("ember.adapters.migrations")
+    for name in _V11_MIGRATIONS:
         conn.executescript(package.joinpath(name).read_text(encoding="utf-8"))
     return conn
 

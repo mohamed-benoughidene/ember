@@ -16,15 +16,19 @@ from pathlib import Path
 from click.testing import CliRunner
 
 from ember.cli import main
+from ember.adapters.db_check import _ledger_rows
 from ember.adapters.sqlite import (
+    SqliteGroupIdPort,
     SqliteMaintainContext,
     SqliteMaintainStore,
+    _connect_readonly,
     open_maintain_database,
 )
 from ember.maintain.run_maintain import (
     MaintainPorts,
     MaintainRequest,
     run_reverse_supersedes,
+    run_set_status,
     run_sweep,
 )
 from tests.fakes import FIXED_TIME, insert_item, insert_link, insert_source
@@ -274,4 +278,48 @@ def test_db_check_group_check_not_applicable_on_v12(db_path) -> None:
     lines = result.output.splitlines()
     assert "group_id: not applicable (schema v12)" in lines
     assert "result: OK" == lines[-1]
+    assert _sha256(db_path) == before
+
+
+def test_db_check_ledger_rows_carry_their_group_id(db_path) -> None:
+    """The check's ledger read carries the undo-group stamp (4.7 #11 spot).
+
+    `_ledger_rows` rebuilt its `ChangeRow` objects without `group_id`, so
+    every grouped row silently read as groupless. On 13+ the stamp must
+    travel with the row; a pre-013 file (no such column) keeps `None`
+    instead of failing the whole check. Read-only proof: the file hash is
+    unchanged after the read.
+    """
+    Path(db_path).touch()
+    conn = open_maintain_database(db_path)
+    try:
+        source_id = insert_source(conn)
+        insert_item(conn, source_id=source_id, item_id=1, status="Active")
+        conn.commit()
+        ports = MaintainPorts(
+            lookup=SqliteMaintainContext(conn),
+            store=SqliteMaintainStore(conn, clock=lambda: FIXED_TIME),
+            group_ids=SqliteGroupIdPort(conn),
+        )
+        run_set_status(ports, MaintainRequest(item_id=1, to_status="Challenged"))
+    finally:
+        conn.commit()
+        conn.close()
+
+    before = _sha256(db_path)
+    conn = _connect_readonly(db_path)
+    try:
+        rows = _ledger_rows(conn)
+        expected = {
+            row[0]
+            for row in conn.execute(
+                "SELECT DISTINCT group_id FROM change_log"
+                " WHERE group_id IS NOT NULL"
+            )
+        }
+    finally:
+        conn.close()
+
+    assert expected == {1}
+    assert {row.group_id for row in rows if row.group_id is not None} == expected
     assert _sha256(db_path) == before
