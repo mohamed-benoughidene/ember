@@ -587,11 +587,14 @@ function wireIpc(services) {
       // a knowledge base set (first run's step-1 save included — it
       // goes through the same handler) must leave the capture shortcut
       // live WITHOUT a restart. The same bootShortcutFor choice the
-      // boot block below uses, through the same shortcutManager seam;
-      // an OS refusal lands in the shipped APP-005 tray fallback
-      // (onFailure above — built once per run), never in silence.
+      // boot block below uses, through the SAME step-10 seam the
+      // Settings screen uses (unregister the old grab first, then
+      // register) — never a raw re-register riding on the OS tolerating
+      // a same-key second registration. An OS refusal lands in the
+      // shipped APP-005 tray fallback (onFailure above — built once per
+      // run), never in silence.
       const accelerator = bootShortcutFor(services.settingsStore.load().settings);
-      if (accelerator !== null) shortcutManager.register(accelerator);
+      if (accelerator !== null) registerSettingsShortcut({ manager: shortcutManager, accelerator });
     },
     // [story 13] the text-field focus flip (see the step-12 block above).
     onTextFocusChanged: setTextFocus,
