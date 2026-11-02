@@ -45,12 +45,18 @@ jobs:
       - name: Install the app's pinned dev dependencies (electron 45.1.0, playwright)
         run: npm ci
         working-directory: app
-      # Electron's runtime (node_modules/electron/dist) comes from the
-      # package's own postinstall script. Installing with the shell cd'd
-      # into app/ (not `--prefix`) keeps that script and every path below
-      # pointing at ONE unambiguous node_modules. The sandbox fix must
-      # run BEFORE npm test: the suite launches Electron once (the
-      # harness-no-key case) and aborts without a fixed sandbox helper.
+      # Electron 45 ships its runtime download as an explicit installer
+      # (bin "install-electron"); the npm package has NO postinstall
+      # script, so `npm ci` alone leaves node_modules/electron/dist
+      # EMPTY on a fresh machine (npm ci finished in 1.6 s on the CI
+      # run of 2026-11-02 — proof). Download it explicitly here; the
+      # installer is idempotent (exits 0 when dist already exists).
+      # On Linux the sandbox fix must also run BEFORE npm test: the
+      # suite launches Electron once (the harness-no-key case) and
+      # aborts without a fixed sandbox helper.
+      - name: Download Electron's runtime (electron 45 ships no postinstall)
+        run: node node_modules/electron/install.js
+        working-directory: app
       - name: Fix chrome-sandbox ownership and mode (Electron's sandbox helper)
         if: runner.os == 'Linux'
         run: sudo chown root:root node_modules/electron/dist/chrome-sandbox && sudo chmod 4755 node_modules/electron/dist/chrome-sandbox
@@ -88,6 +94,14 @@ jobs:
         run: .venv/bin/python -m pip install -e .
       - name: Install the app's pinned dev dependencies (electron 45.1.0, playwright)
         run: npm ci
+        working-directory: app
+      # Same reason as the launch-check job: electron 45 has no
+      # postinstall; without this step dist is empty and every Electron
+      # launch would lazily download mid-run (hidden, slow, and AFTER
+      # the sandbox fix below would already have failed on the missing
+      # file).
+      - name: Download Electron's runtime (electron 45 ships no postinstall)
+        run: node node_modules/electron/install.js
         working-directory: app
       - name: Fix chrome-sandbox ownership and mode (Electron's sandbox helper)
         run: sudo chown root:root node_modules/electron/dist/chrome-sandbox && sudo chmod 4755 node_modules/electron/dist/chrome-sandbox
