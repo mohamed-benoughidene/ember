@@ -107,6 +107,24 @@ def _rows(conn: sqlite3.Connection, sql: str) -> list[tuple]:
     return [tuple(row) for row in conn.execute(sql).fetchall()]
 
 
+def _pre_migration_snapshot(db_path: str) -> Path:
+    """The one timestamped `.bak-<UTC stamp>-<hex>` pre-migration snapshot.
+
+    Since B4-16 the runner names the copy `<db>.bak-<stamp>-<6hex>`, never
+    again the reusable `.bak-v<version>`, so a repeated run leaves its own
+    snapshot instead of overwriting one file.
+    """
+    directory = Path(db_path).parent
+    name = Path(db_path).name
+    snapshots = sorted(
+        p
+        for p in directory.glob(f"{name}.bak-*")
+        if not p.name.startswith(f"{name}.bak-v")  # the legacy family
+    )
+    assert len(snapshots) == 1, f"expected one snapshot, got {snapshots}"
+    return snapshots[0]
+
+
 def test_migration_011_preserves_all_rows_and_values(db_path) -> None:
     _build_v10_db(db_path)
     raw = sqlite3.connect(db_path)
@@ -339,20 +357,37 @@ def test_migration_011_links_guard_rejects_preexisting_illegal_pair(db_path) -> 
 def test_backup_only_when_pending_and_keeps_newest_three(db_path) -> None:
     _build_v10_db(db_path)
     backup_dir = Path(db_path).parent
-    for version in (1, 2, 3):
+    for version in (1, 2, 3, 4):
         Path(f"{db_path}.bak-v{version}").write_text("old", encoding="utf-8")
 
     open_database(db_path).close()
 
-    # The 011 run backed up once (v10) and pruned to the newest 3 backups.
+    # The 011 run backed up once (v10), into its own timestamped snapshot
+    # (B4-16): healthy, at the pre-migration version. Both name families
+    # prune to the newest 3, so the oldest planted `.bak-v1` is evicted.
+    snapshots = sorted(
+        p
+        for p in backup_dir.glob("test.db.bak-*")
+        if not p.name.startswith("test.db.bak-v")
+    )
+    assert len(snapshots) == 1
+    backup = sqlite3.connect(str(snapshots[0]))
+    assert backup.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+    assert backup.execute("SELECT version FROM schema_version").fetchone()[0] == 10
+    backup.close()
     names = sorted(p.name for p in backup_dir.glob("*.bak-v*"))
-    assert len(names) == 3
-    assert {"test.db.bak-v2", "test.db.bak-v3", "test.db.bak-v10"} == set(names)
+    assert names == ["test.db.bak-v2", "test.db.bak-v3", "test.db.bak-v4"]
 
     # A no-op open has no pending scripts, so it must not churn the window.
     open_database(db_path).close()
     names_after = sorted(p.name for p in backup_dir.glob("*.bak-v*"))
+    snapshots_after = sorted(
+        p
+        for p in backup_dir.glob("test.db.bak-*")
+        if not p.name.startswith("test.db.bak-v")
+    )
     assert names_after == names
+    assert snapshots_after == snapshots
 
 
 def test_fresh_install_applies_all_migrations_through_012(db_path) -> None:
@@ -395,16 +430,16 @@ def test_failed_migration_leaves_intact_prior_database(db_path, monkeypatch) -> 
         open_database(db_path)
 
     # The prior database file is intact at v10, and the pre-migration backup
-    # was taken before the failing script ran.
+    # was taken before the failing script ran — its own timestamped
+    # snapshot (B4-16), a healthy copy at the pre-migration version.
     raw = sqlite3.connect(db_path)
     assert raw.execute("SELECT version FROM schema_version").fetchone()[0] == 10
     assert _rows(raw, "SELECT * FROM items ORDER BY id") == items_before
     assert _rows(raw, _LINKS_SELECT) == links_before
     raw.close()
 
-    backup_path = Path(f"{db_path}.bak-v10")
-    assert backup_path.is_file()
-    backup = sqlite3.connect(f"{db_path}.bak-v10")
+    backup = sqlite3.connect(str(_pre_migration_snapshot(db_path)))
+    assert backup.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
     assert backup.execute("SELECT version FROM schema_version").fetchone()[0] == 10
     assert _rows(backup, _LINKS_SELECT) == links_before
     backup.close()

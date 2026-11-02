@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import json
 import os
-import shutil
+import re
+import secrets
 import sqlite3
 import sys
 import time
@@ -88,6 +89,12 @@ _MIGRATIONS_MODULE = "ember.adapters.migrations"
 _LATEST_VERSION = 13
 
 _BACKUPS_TO_KEEP = 3
+
+# The house UTC file-name stamp (the same `%Y%m%dT%H%M%SZ` pattern the
+# crash reports use): fixed width, so the names sort in age order, and
+# the `Z` says UTC.
+_TIME_FORMAT = "%Y%m%dT%H%M%SZ"
+_BACKUP_STAMP = re.compile(r"\d{8}T\d{6}Z(?:-[0-9a-f]{6})?")
 
 # One definition for "a supersedes edge the cycle rules walk" (rule 8/9): the
 # row is Confirmed and was never reversed. Shared by supersedes_ancestors and
@@ -634,34 +641,74 @@ def _database_file(conn: sqlite3.Connection) -> str | None:
     return None
 
 
-def _backup_database(conn: sqlite3.Connection, current: int) -> None:
-    """Copy the database file once before any above-version script runs.
+def _backup_database(conn: sqlite3.Connection) -> None:
+    """Snapshot the database file online before any above-version script runs.
 
-    The copy is `<db>.bak-v<current>` (D7), taken with `copy2` so metadata
-    survives. Retention: keep the newest 3 `<db>.bak-v*` files, delete older.
-    Raise the raw `OSError` on failure. Per-engine boot call sites wrap it.
+    The copy is `<db>.bak-<UTC timestamp>` (B4-16): the name is NOT
+    reusable, so a repeated run never overwrites the same file the way
+    the old `.bak-v<current>` name did — every pending run leaves its own
+    snapshot. The snapshot is taken with SQLite's online backup API
+    (`conn.backup`), never `copy2`, so the copy is a consistent page
+    image even if a writer was mid-transaction (4.3 #13). The 6-hex
+    suffix keeps two runs in the same second distinct (the house crash-id
+    convention), and the file is fsynced before it may ever be relied on.
+    Retention: keep the newest 3 timestamped snapshots, delete older
+    (`_prune_backups`). Raise the raw error on failure — a partial copy
+    is deleted first — and the per-engine boot call sites wrap it.
     """
     db_path = _database_file(conn)
     if db_path is None:
         return
-    shutil.copy2(db_path, f"{db_path}.bak-v{current}")
+    stamp = datetime.now(timezone.utc).strftime(_TIME_FORMAT)
+    backup_path = f"{db_path}.bak-{stamp}-{secrets.token_hex(3)}"
+    dest: sqlite3.Connection | None = None
+    try:
+        dest = sqlite3.connect(backup_path)
+        conn.backup(dest)
+        dest.close()
+        dest = None
+        fd = os.open(backup_path, os.O_RDONLY)
+        try:
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+    except (OSError, sqlite3.Error):
+        if dest is not None:
+            dest.close()
+        try:
+            os.remove(backup_path)
+        except OSError:
+            pass
+        raise
     _prune_backups(db_path)
 
 
 def _prune_backups(db_path: str) -> None:
-    """Keep the newest 3 `<db>.bak-v*` files next to `db_path`, delete older."""
+    """Keep the newest 3 pre-migration backups next to `db_path`, delete older.
+
+    Two name families share the retention, each pruned to the newest 3 in
+    its own age order (B4-16): the timestamped `.bak-<stamp>-<hex>`
+    snapshots (names sort = age order) and the legacy `.bak-v<N>` files
+    (highest N is newest), so files written by an older check-out still
+    age out of the window.
+    """
     directory = os.path.dirname(os.path.abspath(db_path))
-    prefix = os.path.basename(os.path.abspath(db_path)) + ".bak-v"
-    backups: list[tuple[int, str]] = []
-    for name in os.listdir(directory):
-        if not name.startswith(prefix):
-            continue
-        suffix = name[len(prefix):]
-        if suffix.isdigit():
-            backups.append((int(suffix), name))
-    backups.sort(reverse=True)
-    for _, name in backups[_BACKUPS_TO_KEEP:]:
-        os.remove(os.path.join(directory, name))
+    name = os.path.basename(os.path.abspath(db_path))
+    legacy: list[tuple[int, str]] = []
+    stamps: list[str] = []
+    for entry in os.listdir(directory):
+        if entry.startswith(f"{name}.bak-v"):
+            suffix = entry[len(name) + 6:]
+            if suffix.isdigit():
+                legacy.append((int(suffix), entry))
+        elif entry.startswith(f"{name}.bak-"):
+            suffix = entry[len(name) + 5:]
+            if _BACKUP_STAMP.fullmatch(suffix):
+                stamps.append(entry)
+    for _, entry in sorted(legacy, reverse=True)[_BACKUPS_TO_KEEP:]:
+        os.remove(os.path.join(directory, entry))
+    for entry in sorted(stamps)[: max(0, len(stamps) - _BACKUPS_TO_KEEP)]:
+        os.remove(os.path.join(directory, entry))
 
 
 def _apply_migrations(conn: sqlite3.Connection) -> None:
@@ -709,10 +756,10 @@ def _apply_migrations(conn: sqlite3.Connection) -> None:
     ]
     # One backup per run, before the first above-version script: a no-op open
     # must not churn the retention window (L2 §5.0). A brand-new file has
-    # nothing to back up (finding 4.5 #17): no pointless `.bak-v0` of an
+    # nothing to back up (finding 4.5 #17): no pointless snapshot of an
     # empty database.
     if pending and existing_tables:
-        _backup_database(conn, current)
+        _backup_database(conn)
     conn.execute("PRAGMA foreign_keys = OFF")
     try:
         for number, script in pending:
