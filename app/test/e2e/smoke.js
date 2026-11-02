@@ -87,6 +87,9 @@ const EXPECTED_API = [
   'onOpenRequest',
   // App 12 (ticket A41): the application menu's one push subscription.
   'onMenuRequest',
+  // Batch 5 (story 13): the renderer's text-field focus reporter the
+  // Edit menu's role-vs-Ember switching reads.
+  'textFocusChanged',
 ];
 
 async function main() {
