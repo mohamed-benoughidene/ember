@@ -13,7 +13,8 @@ import { textScale } from '../design/text-scale.mjs';
 // [app 10] the real Settings screen replaces the interim placeholder
 import { createSettingsScreen } from './settings.mjs';
 import { bannerHtml } from '../components/banner.mjs';
-import { sentenceFor } from '../../shared/plain-sentences.mjs';
+import { esc } from '../design/escape-html.mjs';
+import { groupFailuresByCode } from '../../shared/home-failures.mjs';
 import { createFirstRunScreen } from './first-run.mjs';
 import { createHomeScreen } from './home.mjs';
 import { createLookupScreen } from './lookup.mjs';
@@ -383,17 +384,31 @@ function showNotices() {
     bannerEl.innerHTML = '';
     return;
   }
-  const error = notices[0];
-  const sentence = sentenceFor(error.code);
-  bannerEl.innerHTML = `${bannerHtml({
-    text: `${sentence.what} ${sentence.next}`,
-    actionLabel: 'Details',
-    action: 'notice-details',
-  })}<p class="help mono" data-testid="notice-code" hidden style="padding:0 var(--s6)">${`${error.code} ${error.name} | ${error.detail}`}</p>`;
-  bannerEl.querySelector('[data-action="notice-details"]')?.addEventListener('click', () => {
-    const code = bannerEl.querySelector('[data-testid="notice-code"]');
-    if (code) code.hidden = !code.hidden;
-  });
+  // Story 14 (4.9 #20), Batch 3's B3-1 rule carried to boot: ONE
+  // grouped notice per error code, in first-seen order — every boot
+  // notice shows, never only the first. The grouping is Batch 3's own
+  // helper (home-failures); each notice rides as its group's member
+  // and every detail line stays visible behind Details.
+  const groups = groupFailuresByCode(notices.map((error) => ({ error })));
+  bannerEl.innerHTML = groups
+    .map((group) => {
+      const lines = notices
+        .filter((notice) => (notice.code ?? null) === group.code)
+        .map((notice) => `${esc(`${notice.code} ${notice.name}`)} | ${esc(notice.detail ?? '')}`)
+        .join('<br>');
+      return `<div data-testid="boot-notice">${bannerHtml({
+        text: `${group.words.what} ${group.words.next}`,
+        actionLabel: 'Details',
+        action: 'notice-details',
+      })}<p class="help mono" data-testid="notice-code" hidden style="padding:0 var(--s6)">${lines}</p></div>`;
+    })
+    .join('');
+  for (const wrap of bannerEl.querySelectorAll('[data-testid="boot-notice"]')) {
+    wrap.querySelector('[data-action="notice-details"]')?.addEventListener('click', () => {
+      const code = wrap.querySelector('[data-testid="notice-code"]');
+      if (code) code.hidden = !code.hidden;
+    });
+  }
 }
 
 /** First run opens when no knowledge-base path is chosen (story 1). */
