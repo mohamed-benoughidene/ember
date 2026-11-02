@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import io
 import json
+import time
 
 import pytest
 
@@ -361,3 +362,65 @@ def test_maintain_drifted_block_still_emits_the_raw_text() -> None:
         event["text"]
         == "Proposal broken head\n  missing answers link line\n  no close proposed"
     )
+
+
+# --- the engine caps its stdin lines (N13, 4.4 #12) ---------------------------
+
+
+class _CountingStdin(io.StringIO):
+    """An in-memory stdin that remembers how many characters were pulled
+    out of it — the observable stand-in for memory growth on a flooding
+    feeder: a bounded reader strips a capped prefix, an unbounded one
+    strips the whole line."""
+
+    def __init__(self, text: str) -> None:
+        super().__init__(text)
+        self.consumed = 0
+
+    def readline(self, size: int = -1) -> str:
+        line = super().readline(size)
+        self.consumed += len(line)
+        return line
+
+
+def test_an_oversized_answer_line_aborts_without_reading_the_whole_line() -> None:
+    """N13 (4.4 #12): a ~10 MB answer line settles in the SAME house path
+    as any two bad lines (one re-ask, then the engine's own abort) — and
+    the reader pulls only capped prefixes of it, never the whole line,
+    however big the flood grows. Even a VALID `{"answer": ...}` shape is
+    refused past the cap: refusal happens at the cap, before parsing."""
+    flood = '{"answer": "' + "x" * 10_000_000 + '"}\n'
+    stdin = _CountingStdin(flood)
+    sink, stream = _sink()
+    confirm = JsonCaptureConfirm(sink, stdin=stdin)
+
+    started = time.monotonic()
+    with pytest.raises(CaptureUserAbort):
+        confirm.ask(CAPTURE_PROMPT)
+    elapsed = time.monotonic() - started
+
+    assert elapsed < 10.0  # the ask completes in bounded time, it never hangs
+    assert stdin.consumed < len(flood) // 2  # capped prefixes, not the flood
+    assert [event["event"] for event in _events(stream)] == [
+        "prompt",
+        "prompt",
+    ]  # the ask and the ONE re-ask of the BRIDGE-001 flow, then the abort
+
+
+def test_undecodable_stdin_bytes_land_in_the_abort_path_never_a_traceback() -> None:
+    """N13 (4.4 #12): stdin bytes that are not UTF-8 (here `\\xff\\xfe`)
+    take the SAME BRIDGE-001/user-abort house path — one re-ask, the
+    engine's own abort — never a raw `UnicodeDecodeError` traceback."""
+    sink, stream = _sink()
+    stdin = io.TextIOWrapper(
+        io.BytesIO(b"\xff\xfe not utf-8\n"), encoding="utf-8"
+    )
+    confirm = JsonCaptureConfirm(sink, stdin=stdin)
+
+    with pytest.raises(CaptureUserAbort):
+        confirm.ask(CAPTURE_PROMPT)
+
+    assert [event["event"] for event in _events(stream)] == [
+        "prompt",
+        "prompt",
+    ]
