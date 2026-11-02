@@ -49,6 +49,28 @@
  *    document-level sweep keys must be dead on the OTHER pane —
  *    pressing y on Home must answer nothing, and no further sweep
  *    events may arrive after leaving.
+ *
+ *  Batch 5 chunk 19 closes the window lifetime (stories 5-8; findings
+ *  4.9 #6/#7; D-24) with two more cases over the plain fake shell:
+ *
+ *  Case D (story 5, story 6's route; D-24): close the main window the
+ *    way the titlebar X does (a real BrowserWindow 'close' event) —
+ *    the app PROCESS must stay alive and the window must hide to the
+ *    tray (still there, just not visible, NOT destroyed); then the
+ *    "Open Ember" route — driven through the REAL preload door
+ *    (`window.ember.quickOpenMain`, the same handler the tray's Open
+ *    Ember item and the popup's story-93 link reach today) — must show
+ *    the SAME window again, with the same still-working page.
+ *  Case E (stories 7, 8; 4.9 #7): launching a second instance against
+ *    the same profile folder must NOT start a second Ember — the
+ *    second process exits and the FIRST window keeps the app: still
+ *    one main process, still exactly one Ember window, and the first
+ *    window holds the focus again.
+ *    Focus note (probed 2026-11-02): under Xvfb the window-level
+ *    `BrowserWindow.isFocused()` flickers (4/30 true reads right after
+ *    show()+focus(), under a real WM too), but the renderer read the
+ *    user actually experiences — `document.hasFocus()` (where the
+ *    keyboard lands) — was 30/30 stable. Case E asserts hasFocus().
  */
 
 const fs = require('node:fs');
@@ -569,12 +591,195 @@ async function leavingCleanupStopsTheSweep() {
   }
 }
 
+/* ================== chunk 19: the window closes, the app stays ======
+   Stories 5-8 over the plain fake shell (launchShell, FAKE_MODE=app):
+   no knowledge base work here, just the app shell's own lifetime. */
+
+/** Read the whole Ember-window state from the main process in one hop
+ * (the same main-process window reads the popup e2e trusts over the
+ * Playwright-forced document visibility). */
+function readEmberWindow(app) {
+  return app.evaluate(({ BrowserWindow }) => {
+    const w = BrowserWindow.getAllWindows().find((x) => x.getTitle() === 'Ember');
+    return w
+      ? { there: true, visible: w.isVisible(), countOfWindows: BrowserWindow.getAllWindows().length }
+      : { there: false, visible: false, countOfWindows: BrowserWindow.getAllWindows().length };
+  });
+}
+
+async function waitEmberVisible(app, want, timeoutMs = 15000) {
+  const started = Date.now();
+  for (;;) {
+    const state = await readEmberWindow(app);
+    if (state.there && state.visible === want) return state;
+    if (Date.now() - started > timeoutMs) {
+      throw new Error(`the Ember window never became ${want ? 'visible' : 'hidden'} (${JSON.stringify(state)})`);
+    }
+    await sleep(100);
+  }
+}
+
+/** The user-experienced focus read (see the header note): does this
+ * first window's page hold the keyboard? */
+function firstWindowHasFocus(win) {
+  return win.evaluate(() => document.hasFocus());
+}
+
+/* ---------- chunk 19 case D (story 5, story 6's route; D-24) ---------- */
+
+async function closingTheWindowKeepsEmberAlive() {
+  process.stdout.write('--- case D: close the main window — the process stays, "Open Ember" shows it again ---\n');
+  const workDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ember-e2e-lifetime-tray-'));
+  const { app } = await launchShell({ workDir });
+  try {
+    const win = await app.firstWindow();
+    await win.waitForSelector('[data-testid="home-pane"]');
+
+    // Close the window exactly the way the titlebar X does: a real
+    // BrowserWindow 'close' event (page.close() would tear the page
+    // down itself and prove nothing about the app's close handling).
+    await app.evaluate(({ BrowserWindow }) => {
+      const w = BrowserWindow.getAllWindows().find((x) => x.getTitle() === 'Ember');
+      w.close();
+    });
+
+    // The OLD behaviour quits the whole app here; give that plenty of
+    // room so a green run can never pass by racing ahead of a quit.
+    await sleep(2500);
+
+    // 1) the app process must still be alive...
+    let ready = false;
+    try {
+      ready = await app.evaluate(({ app: theApp }) => theApp.isReady());
+    } catch (err) {
+      fail(`the app PROCESS DIED when the main window was closed (story 5; D-24): ${String(err.message).split('\n')[0]}`);
+    }
+    if (!ready) fail('the app PROCESS DIED when the main window was closed (story 5; D-24): the main process past the closed event is not ready');
+
+    // 2) ...and the window must be hidden to the tray, NOT destroyed.
+    let state = null;
+    try {
+      state = await readEmberWindow(app);
+    } catch (err) {
+      fail(`the window is gone after closing (story 5; D-24): ${String(err.message).split('\n')[0]}`);
+    }
+    if (!state.there) fail('closing the window DESTROYED it (the Ember window no longer exists; story 5 keeps it in the tray)');
+    if (state.visible) fail('after closing, the window is still VISIBLE — it must hide to the tray (D-24)');
+
+    // 3) "Open Ember" (the REAL route: the tray item and the popup's
+    // story-93 link both land on openMainRequest via the preload door)
+    // must show the SAME window again — the one page, still working.
+    const opened = await win.evaluate(() => window.ember.quickOpenMain());
+    if (!opened || opened.ok !== true) fail(`the "Open Ember" route refused to show the window again: ${JSON.stringify(opened)}`);
+    await waitEmberVisible(app, true);
+    await win.waitForSelector('[data-testid="home-pane"]');
+    process.stdout.write('case D OK: closing the window left the process alive, the window hidden in the tray; "Open Ember" showed the same, still-working window\n');
+  } finally {
+    await closeShell(app, workDir);
+  }
+}
+
+/* ---------- chunk 19 case E (stories 7, 8; 4.9 #7) ---------- */
+
+async function secondLaunchGoesToTheFirstWindow() {
+  process.stdout.write('--- case E: a second launch exits and the FIRST window keeps the app ---\n');
+  const workDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ember-e2e-lifetime-single-'));
+  let app = null;
+  let app2 = null;
+  try {
+    ({ app } = await launchShell({ workDir }));
+    const win = await app.firstWindow();
+    await win.waitForSelector('[data-testid="home-pane"]');
+
+    // The second launch: the SAME throwaway profile folder, so it keys
+    // on the same single-instance lock (the lock lives on the userData
+    // path; every launchShell scenario has its own, never the dev's).
+    let second;
+    try {
+      ({ app: app2 } = await launchShell({ workDir }));
+      const exit = await new Promise((resolve) => {
+        const timer = setTimeout(() => resolve({ stillRunning: true }), 20000);
+        app2.process().once('exit', (code) => {
+          clearTimeout(timer);
+          resolve({ code });
+        });
+      });
+      if (exit.stillRunning) {
+        second = { stillRunning: true };
+      } else if (exit.code !== 0) {
+        second = { exitCode: exit.code };
+      } else {
+        second = { exitCode: 0 };
+      }
+    } catch (err) {
+      // The driver could not even connect: the second instance died at
+      // boot — that is the lock working, just before any window rode it.
+      second = { bootExit: String(err.message ?? err).split('\n')[0] };
+    }
+    const problems = [];
+    if (second.stillRunning) {
+      problems.push('the second instance is STILL RUNNING as its own Ember process — two mains (story 8)');
+    } else if (second.exitCode !== undefined && second.exitCode !== 0) {
+      problems.push(`the second instance exited abnormally (code ${second.exitCode}) — that is a crash, not the single-instance exit`);
+    }
+    process.stdout.write(`the second launch ended as: ${JSON.stringify(second)}\n`);
+
+    // Still ONE main process: the first app must keep answering.
+    let alive = false;
+    try {
+      alive = await app.evaluate(({ app: theApp }) => theApp.isReady());
+    } catch (err) {
+      problems.push(`the FIRST app also stopped answering (${String(err.message).split('\n')[0]})`);
+    }
+    if (alive === false && !problems.some((p) => p.startsWith('the FIRST app'))) {
+      problems.push('the FIRST app no longer answers — the first window lost its app');
+    }
+
+    // Still exactly ONE Ember window, and it is the shown one.
+    let state = null;
+    try {
+      state = await readEmberWindow(app);
+    } catch (err) {
+      problems.push(`the first window could not be read anymore (${String(err.message).split('\n')[0]})`);
+    }
+    if (state) {
+      const emberWindows = await app.evaluate(
+        ({ BrowserWindow }) => BrowserWindow.getAllWindows().filter((x) => x.getTitle() === 'Ember').length,
+      );
+      if (emberWindows !== 1) problems.push(`expected exactly one Ember window, found ${emberWindows} (a second window was started)`);
+      if (!state.visible) problems.push('the FIRST window is not shown anymore after the second launch');
+    }
+
+    // The first window holds the user's focus again (the user-experienced
+    // focus read; see the header note on the isFocused() flicker).
+    let hadFocus = false;
+    const started = Date.now();
+    while (Date.now() - started < 5000) {
+      try {
+        if (await firstWindowHasFocus(win)) { hadFocus = true; break; }
+      } catch (err) {
+        break;
+      }
+      await sleep(100);
+    }
+    if (!hadFocus) problems.push('the FIRST window does not hold the focus after the second launch');
+
+    if (problems.length > 0) fail(`case E failed (stories 7, 8; 4.9 #7): ${problems.join('; ')}`);
+    process.stdout.write('case E OK: the second instance exited (single-instance exit) and the FIRST window kept the app: one process, one shown window, the focus back on it\n');
+  } finally {
+    if (app2) await app2.close().catch(() => {});
+    if (app) await closeShell(app, workDir);
+  }
+}
+
 async function main() {
   await staleResultCannotPaint();
   await lateResultPaintsInsideKeepSafe();
   await addKeysDieWithTheScreen();
   await leavingCleanupStopsTheSweep();
-  process.stdout.write("e2e screen-lifetime OK: a stale screen's late result paints nothing; staying on Keep safe still gets the result; leaving a screen disposes its keys and stops its sweep\n");
+  await closingTheWindowKeepsEmberAlive();
+  await secondLaunchGoesToTheFirstWindow();
+  process.stdout.write("e2e screen-lifetime OK: a stale screen's late result paints nothing; staying on Keep safe still gets the result; leaving a screen disposes its keys and stops its sweep; closing the window keeps the process (Open Ember shows it again); a second launch focuses the first window\n");
 }
 
 main().catch((err) => {
