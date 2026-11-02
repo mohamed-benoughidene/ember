@@ -208,14 +208,20 @@ export function createFixCloseScreen(ctx) {
 
   async function applyUndoRedo(direction) {
     if (busy) return;
+    // The busy flag goes up BEFORE the refresh (4.9 #12, story 11): two
+    // fast Ctrl+Z presses must not both pass the gate while the first
+    // one is still re-deriving the bar.
+    busy = true;
     // Re-derive first: a keystroke can arrive while a previous write's
     // refresh is still in flight, and the engine — not a stale bar —
     // decides what is undoable right now. A genuinely disabled state
     // stays an honest no-op.
     await refreshUndoBar();
     const state = view.undoBar[direction];
-    if (state.kind === 'disabled') return;
-    busy = true;
+    if (state.kind === 'disabled') {
+      busy = false; // an honest no-op releases the gate again
+      return;
+    }
     setMessage(null);
     const result = await ctx.api.fixAction({ action: direction, args: {} });
     busy = false;

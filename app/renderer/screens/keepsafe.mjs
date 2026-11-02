@@ -36,7 +36,12 @@ import { sentenceFor, dbCheckVerdictWords, dbCheckRowSentence } from '../../shar
 import { defaultBackupTarget, defaultExportTarget, isSelfOverwrite, validateChosenPath } from '../../shared/keep-safe-paths.mjs';
 
 export function createKeepSafeScreen(ctx) {
-  const kbPath = (ctx.state && ctx.state.effectiveKbPath) || '';
+  // [4.9 #10] The boot snapshot below is only the FIRST paint's
+  // placeholder. Each time the pane opens (a new screen instance per
+  // navigation), readKbPath() replaces it with the CURRENT knowledge
+  // base path from a fresh kbStatus read, so a file switched in
+  // Settings after boot shows its new name here.
+  let kbPath = (ctx.state && ctx.state.effectiveKbPath) || '';
   const state = {
     backup: { phase: 'idle', target: null, result: null, error: null, caution: false },
     export: { phase: 'idle', target: null, result: null, error: null },
@@ -49,6 +54,15 @@ export function createKeepSafeScreen(ctx) {
   }
 
   function render() {
+    refresh();
+    readKbPath();
+  }
+
+  /** The live knowledge-base path (4.9 #10): one fresh read per pane open. */
+  async function readKbPath() {
+    const status = await ctx.api.kbStatus().catch(() => null);
+    if (!status || typeof status.path !== 'string' || status.path === '' || status.path === kbPath) return;
+    kbPath = status.path;
     refresh();
   }
 
@@ -262,18 +276,37 @@ export function createKeepSafeScreen(ctx) {
 
   let checkStarted = false; // the check auto-runs once when the pane opens
 
+  /**
+   * A wiring whose promise REJECTS (the IPC edge itself failed) used to
+   * be swallowed — its block's "Writing the backup copy…" line could
+   * sit there for ever (4.9 #13, story 12). A rejection now settles the
+   * action's OWN block as a failure: the same plain-words error area a
+   * refused action gets. The knowledge base file itself was never
+   * written (backup and export only read it).
+   */
+  function intoBlockError(which, thrown) {
+    state[which] = {
+      ...state[which],
+      phase: 'error',
+      error: thrown && thrown.code
+        ? thrown
+        : { code: 'APP-002', name: 'BridgeOutputInvalid', where: 'keepsafe', detail: 'the action did not finish; try again' },
+    };
+    refresh();
+  }
+
   function wire(root) {
-    root.querySelector('[data-action="ks-backup-run"]')?.addEventListener('click', () => runBackup().catch(() => {}));
-    root.querySelector('[data-action="ks-export-run"]')?.addEventListener('click', () => runExport().catch(() => {}));
-    root.querySelector('[data-action="ks-check-retry"]')?.addEventListener('click', () => loadCheck().catch(() => {}));
-    root.querySelector('[data-action="ks-backup-retry"]')?.addEventListener('click', () => runBackup().catch(() => {}));
-    root.querySelector('[data-action="ks-export-retry"]')?.addEventListener('click', () => runExport().catch(() => {}));
+    root.querySelector('[data-action="ks-backup-run"]')?.addEventListener('click', () => runBackup().catch((thrown) => intoBlockError('backup', thrown)));
+    root.querySelector('[data-action="ks-export-run"]')?.addEventListener('click', () => runExport().catch((thrown) => intoBlockError('export', thrown)));
+    root.querySelector('[data-action="ks-check-retry"]')?.addEventListener('click', () => loadCheck().catch((thrown) => intoBlockError('check', thrown)));
+    root.querySelector('[data-action="ks-backup-retry"]')?.addEventListener('click', () => runBackup().catch((thrown) => intoBlockError('backup', thrown)));
+    root.querySelector('[data-action="ks-export-retry"]')?.addEventListener('click', () => runExport().catch((thrown) => intoBlockError('export', thrown)));
     root.querySelector('[data-action="ks-open-retry2"]')?.addEventListener('click', () => {
       state.open = { phase: 'idle', chosen: null, current: kbPath, check: null, error: null };
       refresh();
     });
-    root.querySelector('[data-action="ks-open-pick"]')?.addEventListener('click', () => openPicked().catch(() => {}));
-    root.querySelector('[data-action="ks-open-confirm"]')?.addEventListener('click', () => openConfirm().catch(() => {}));
+    root.querySelector('[data-action="ks-open-pick"]')?.addEventListener('click', () => openPicked().catch((thrown) => intoBlockError('open', thrown)));
+    root.querySelector('[data-action="ks-open-confirm"]')?.addEventListener('click', () => openConfirm().catch((thrown) => intoBlockError('open', thrown)));
     root.querySelector('[data-action="ks-open-cancel"]')?.addEventListener('click', () => {
       state.open = { phase: 'idle', chosen: null, current: kbPath, check: null, error: null };
       refresh();
@@ -284,7 +317,7 @@ export function createKeepSafeScreen(ctx) {
     // the Retry button re-runs it explicitly.
     if (!checkStarted) {
       checkStarted = true;
-      loadCheck().catch(() => {});
+      loadCheck().catch((thrown) => intoBlockError('check', thrown));
     }
     // The error blocks' Details reveal the code (story 102): each error
     // area's own code line sits right after its state block.
