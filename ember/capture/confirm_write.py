@@ -140,13 +140,19 @@ def run_confirm_loop(
     pending = list(items)
     rejected_count = 0
     warning_count = 0
+    warned_ids: set[int] = set()
     index = 0
     try:
         while index < len(pending):
             item = pending[index]
             confirm.write(format_block(item))
             if item.near_dup_warning is not None:
-                warning_count += 1
+                # One edit re-shows the same warning (finding 4.5 #12): an
+                # item keeps its id across the edit, so count each item's
+                # warning once, however often it is presented.
+                if item.id not in warned_ids:
+                    warned_ids.add(item.id)
+                    warning_count += 1
                 warning = item.near_dup_warning
                 confirm.write(
                     f"warning: near-duplicate of item {warning.matching_item_id}"

@@ -162,6 +162,27 @@ def test_prefilter_uses_newest_answers_link_when_two_exist() -> None:
     assert candidate.newest_answer_created_at == OLD
 
 
+def test_the_close_proposer_handles_a_missing_link_id_before_comparing() -> None:
+    # Finding 4.6 #8 (story 39): a Confirmed answers link with id=None is
+    # skipped, not a TypeError. Today the (created_at, link.id) tuple
+    # comparison runs before the id guard, so two links with the same
+    # created_at — one synthetic with id=None — raise `None > int`.
+    orphan = Link(
+        id=None,
+        source_item_id=4,
+        target_item_id=7,
+        link_type="answers",
+        status="Confirmed",
+        created_at=OLD,
+    )
+    snapshot = _snapshot([_item(7)], [_link(11, target=7), orphan])
+
+    shortlist = stale_close_candidates(snapshot, now=NOW)
+
+    assert [candidate.item_id for candidate in shortlist.candidates] == [7]
+    assert shortlist.candidates[0].newest_answers_link_id == 11
+
+
 def test_prefilter_boundary_exactly_stale_days_is_candidate() -> None:
     boundary_now = datetime(2026, 1, 31, tzinfo=timezone.utc)
     snapshot = _snapshot([_item(7)], [_link(11, target=7)])

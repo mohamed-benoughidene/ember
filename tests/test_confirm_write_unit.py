@@ -153,6 +153,28 @@ def test_near_dup_warning_is_written_and_counted() -> None:
     assert any("near-duplicate of item 5" in line for line in confirm.written)
 
 
+def test_an_edit_counts_each_warning_once() -> None:
+    # Finding 4.5 #12 (story 32): the edited item is shown again with its
+    # warning line, but the warning is counted once, not twice.
+    warning = NearDupWarning(matching_item_id=5, similarity=0.95)
+
+    def revalidate(draft: ProposalDraft):
+        return make_item(warning=warning, statement=draft.statement)
+
+    result, confirm, _ = run(
+        [make_item(warning=warning)],
+        ["e", "Decision", "Use SQLite, locally", "", "y"],
+        revalidate=revalidate,
+    )
+
+    assert result.accepted_ids == [1]
+    assert result.warning_count == 1
+    # Both presentations still show the warning itself.
+    assert (
+        sum("near-duplicate of item 5" in line for line in confirm.written) == 2
+    )
+
+
 # --- edit path ------------------------------------------------------------
 
 
