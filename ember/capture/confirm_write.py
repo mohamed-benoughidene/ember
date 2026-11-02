@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 from collections.abc import Callable
 from contextlib import AbstractContextManager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import Enum
 from typing import Protocol
 
@@ -66,8 +66,15 @@ class ConfirmPort(Protocol):
 class ItemCommitPort(Protocol):
     """Gatekeeper commit boundary: every `items` and `change_log` write."""
 
-    def insert_item(self, item: ValidatedItem, *, validated: bool | None) -> None:
-        """Insert one accepted item with the Phase 3 id, timestamp and status."""
+    def insert_item(self, item: ValidatedItem, *, validated: bool | None) -> int | None:
+        """Insert one accepted item with the Phase 3 id, timestamp and status.
+
+        Return the id the row actually carries, or None when the commit does
+        not track it (fakes). Chunk 14 (N10): on a unique-key conflict on
+        `items.id` the store re-allocates the next free id inside the write
+        transaction and returns THAT id — the ledger row and the reported
+        id must follow the returned value, not the pre-write `item.id`.
+        """
         ...
 
     def log_created(self, item: ValidatedItem) -> None:
@@ -120,13 +127,14 @@ def run_confirm_loop(
     """Prompt for every item until it is handled or the user quits.
 
     `revalidate` re-runs the Phase 3 gatekeeper for an edited draft, with a new
-    id and timestamp (L3 step 3, section 4.2 `e`). On `q` or end of input the
-    loop stops and the result carries `aborted=True`; leftover items are neither
-    written nor logged. `unit_of_work` (Batch 4 chunk 8, an adapter factory
-    over the write connection) makes each accepted item ONE transaction —
-    the item row and its `created` ledger row all-or-nothing (4.3 #9);
-    `None` keeps the accept path's per-store-commit behaviour (unit tests
-    with fakes).
+    timestamp and the draft's OWN id — an edit never takes a new item id
+    (L3 step 3, section 4.2 `e`; chunk 14, N10 / story 33). On `q` or end of
+    input the loop stops and the result carries `aborted=True`; leftover items
+    are neither written nor logged. `unit_of_work` (Batch 4 chunk 8, an adapter
+    factory over the write connection) makes each accepted item ONE
+    transaction — the item row and its `created` ledger row all-or-nothing
+    (4.3 #9); `None` keeps the accept path's per-store-commit behaviour (unit
+    tests with fakes).
     """
     accepted: list[int] = []
     pending = list(items)
@@ -184,19 +192,38 @@ def accept(
 
     `validated` is set only on Assumption rows (spec 3.5). A fresh assumption
     starts unvalidated, so its value is False; the other 3 types get null.
-    `unit_of_work` (Batch 4 chunk 8) wraps the pair in ONE transaction, so a
-    failed ledger row cannot leave the item row behind (4.3 #9); `None`
-    keeps the pre-chunk per-store-commit behaviour (unit tests with fakes).
+    The commit returns the id the row actually carries (chunk 14, N10): on an
+    id conflict the store re-allocates the next free id inside the lock, and
+    the ledger row plus the reported id follow the RETURNED id — the id shown
+    in the confirm block is re-read and only the genuinely saved one is
+    reported. `unit_of_work` (Batch 4 chunk 8) wraps the pair in ONE
+    transaction, so a failed ledger row cannot leave the item row behind
+    (4.3 #9); `None` keeps the pre-chunk per-store-commit behaviour (unit
+    tests with fakes).
     """
     validated = False if item.type == ASSUMPTION else None
     if unit_of_work is None:
-        commit.insert_item(item, validated=validated)
+        item = _with_saved_id(commit.insert_item(item, validated=validated), item)
         commit.log_created(item)
     else:
         with unit_of_work():
-            commit.insert_item(item, validated=validated)
+            item = _with_saved_id(
+                commit.insert_item(item, validated=validated), item
+            )
             commit.log_created(item)
     accepted.append(item.id)
+
+
+def _with_saved_id(saved_id: int | None, item: ValidatedItem) -> ValidatedItem:
+    """Make the item's id honest with what the store actually wrote.
+
+    The store returns the inserted id (chunk 14, N10): unchanged on a normal
+    insert, the next free id after a conflict retry. On `None` (fakes that
+    do not track the id) the item keeps its own.
+    """
+    if saved_id is None or saved_id == item.id:
+        return item
+    return replace(item, id=saved_id)
 
 
 def _check_encodable(text: str, *, item_id: int, field: str) -> None:
@@ -246,7 +273,10 @@ def edit_item(
     if isinstance(outcome, RejectedProposal):
         confirm.write(f"dropped proposal: {outcome.rule}")
         return None
-    return outcome
+    # Chunk 14 (N10 / story 33): an edit revalidates but never takes a new
+    # item id — the edited draft stays the item the confirm block already
+    # showed, so `MAX(id)` never moves for an edit.
+    return replace(outcome, id=item.id)
 
 
 def ask_type(confirm: ConfirmPort, *, default: str) -> str:
