@@ -754,7 +754,13 @@ def close_item(item_id: int, reason: str, output: OutputOptions) -> None:
             item_id=item_id,
             reason=reason,
         )
-    conn = open_maintain_database(output.db_path)
+    # G2-B: a `--dry-run` is a read — it opens STRICTLY read-only and
+    # never migrates an older file (plan §5.5, story 76).
+    conn = (
+        open_maintain_database_readonly(output.db_path, required_version=11)
+        if output.dry_run
+        else open_maintain_database(output.db_path)
+    )
     ports = MaintainPorts(
         lookup=SqliteMaintainContext(conn),
         store=SqliteMaintainStore(conn),
@@ -917,7 +923,13 @@ def edit_item(
         raise EditFieldUnknown(
             "edit-item: unknown --field", item_id=item_id, field=field
         )
-    conn = open_maintain_database(output.db_path)
+    # G2-B: a `--dry-run` is a read — it opens STRICTLY read-only and
+    # never migrates an older file (plan §5.5, story 76).
+    conn = (
+        open_maintain_database_readonly(output.db_path, required_version=11)
+        if output.dry_run
+        else open_maintain_database(output.db_path)
+    )
     ports = MaintainPorts(
         lookup=SqliteMaintainContext(conn),
         store=SqliteMaintainStore(conn),
@@ -972,7 +984,13 @@ def remove_link(link_id: int, output: OutputOptions) -> None:
     the same link is an error (MAINTAIN-015), not a silent no-op. The human
     invoking the command IS the confirmation and no AI runs in this path.
     """
-    conn = open_maintain_database(output.db_path)
+    # G2-B: a `--dry-run` is a read — it opens STRICTLY read-only and
+    # never migrates an older file (plan §5.5, story 76).
+    conn = (
+        open_maintain_database_readonly(output.db_path, required_version=11)
+        if output.dry_run
+        else open_maintain_database(output.db_path)
+    )
     ports = MaintainPorts(
         lookup=SqliteMaintainContext(conn),
         store=SqliteMaintainStore(conn),
