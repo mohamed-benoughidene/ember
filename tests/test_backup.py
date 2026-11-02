@@ -23,6 +23,7 @@ from ember.adapters.errors import (
     TargetWriteFailed,
     VerifyFailed,
 )
+from ember.adapters.paths import same_path
 from ember.adapters.sqlite import open_database
 from ember.cli import main
 from tests.fakes import insert_item, insert_link, insert_source
@@ -314,3 +315,21 @@ def test_backup_help_ends_with_restore_warning() -> None:
         "Restore: copy the file back, or point Ember at it with `--db`."
         " There is deliberately no restore command (GLOSSARY)."
     )
+
+
+# 7. Path identity: two spellings of one file are one file
+
+
+def test_same_path_treats_a_symlinked_spelling_as_one_file(tmp_path) -> None:
+    real_dir = tmp_path / "real"
+    real_dir.mkdir()
+    link_dir = tmp_path / "link"
+    link_dir.symlink_to(real_dir, target_is_directory=True)
+    # The compared file is named once through the symlink and once
+    # through the real path, and it does not exist on either side.
+    via_link = str(link_dir / "backup.db")
+    via_real = str(real_dir / "backup.db")
+    assert not os.path.exists(via_link)
+    assert not os.path.exists(via_real)
+
+    assert same_path(via_link, via_real) is True
