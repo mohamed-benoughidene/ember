@@ -18,8 +18,11 @@
  * @param {'darwin'|'other'} args.platform the template's platform knob
  * @param {() => {kbChosen: boolean, sidebarVisible: boolean,
  *   jobs: {order: string[], hidden: string[]},
- *   undo: object, redo: object}} args.context the knobs, read fresh on
- *   every rebuild (settings may have changed between rebuilds)
+ *   undo: object, redo: object, textFieldFocused?: boolean}} args.context
+ *   the knobs, read fresh on every rebuild (settings may have changed
+ *   between rebuilds; textFieldFocused — a text field holds focus,
+ *   story 13 — flips Edit's Undo/Redo to role items, which wire()
+ *   already leaves click-free)
  * @param {(actionId: string) => void} args.dispatch what an actionable
  *   item's click means (main.js maps the ids; the ONLY OS effects)
  */
