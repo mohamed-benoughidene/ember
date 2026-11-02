@@ -49,6 +49,37 @@ const navEl = document.getElementById('nav');
 const paneEl = document.getElementById('pane');
 const bannerEl = document.getElementById('top-banner');
 
+/* --- Batch 5 chunk 12 (F5; findings 4.9 #1, #2; closes 4.2 #7): the
+   shell's render token. `renderToken` changes on every navigation.
+   The screen created for a navigation receives a renderFrame bound to
+   the token it was created under; a stale screen's late refresh (an
+   async result landing after the user moved on) paints NOTHING. This
+   is settings.mjs:159's per-screen refresh-token idea, lifted to the
+   shell so every pane gets it over the one shared pane write. F5 was:
+   Keep safe's late health-check repaint overwrote Settings (and the
+   text being typed there) — the shared pane write at ctx.renderFrame
+   had no idea WHO was allowed to paint. --- */
+let renderToken = 0;
+
+function painterFor(token) {
+  return (html, wire) => {
+    if (token !== renderToken) return; // a stale token paints nothing
+    paneEl.innerHTML = html;
+    if (typeof wire === 'function' && paneEl.isConnected) wire(paneEl);
+    paneEl.focus({ preventScroll: true });
+  };
+}
+
+/** One screen instance per navigation: its render token is issued
+ * here, and the screen's own ctx carries exactly its paint right. The
+ * spread snapshot keeps the live settings object, the api object and
+ * the nav helpers (ctx.state.settings is read through the SAME
+ * reference, and navigation still goes through ctx.navigate). */
+function screenCtxWithPaintRight() {
+  renderToken += 1;
+  return { ...ctx, renderFrame: painterFor(renderToken) };
+}
+
 const ctx = {
   api: window.ember,
   state: null,
@@ -56,7 +87,7 @@ const ctx = {
   paneEl: () => paneEl,
   renderFrame(html, wire) {
     paneEl.innerHTML = html;
-    if (typeof wire === 'function') wire(paneEl);
+    if (typeof wire === 'function' && paneEl.isConnected) wire(paneEl);
     paneEl.focus({ preventScroll: true });
   },
   navigate(id, params = null) {
@@ -169,33 +200,37 @@ ctx.setCleanupBadge = (count) => {
    function so the router branch stays one line. The branch must sit
    BEFORE the placeholder router below, because the interim pane list
    still carries 'cleanup' (placeholder.mjs is untouched). --- */
-function renderCleanupPane() {
-  screens.cleanup = createCleanupScreen(ctx);
+function renderCleanupPane(screenCtx) {
+  screens.cleanup = createCleanupScreen(screenCtx);
   screens.cleanup.render();
 }
 // --- App 08 registration ends ---
 
 function renderPane(id) {
+  // Batch 5 chunk 12: this navigation's paint right — the screen (and
+  // only this screen instance) may paint; any LATER navigation makes
+  // it stale (screenCtxWithPaintRight, top of file).
+  const screenCtx = screenCtxWithPaintRight();
   // [app 10] Settings is a real screen now; the other interim panes
   // keep their honest placeholders until their build steps.
   if (id === 'settings') {
-    screens.settings = createSettingsScreen(ctx);
+    screens.settings = createSettingsScreen(screenCtx);
     screens.settings.refresh();
     return;
   }
   if (id === 'home') {
-    screens.home = createHomeScreen(ctx);
+    screens.home = createHomeScreen(screenCtx);
     screens.home.render();
     return;
   }
   if (id === 'lookup') {
-    screens.lookup = createLookupScreen(ctx);
+    screens.lookup = createLookupScreen(screenCtx);
     screens.lookup.render();
     return;
   }
   /* ==== App 05 (ticket A34): the real Add screen ================ */
   if (id === 'add') {
-    screens.add = createAddScreen(ctx);
+    screens.add = createAddScreen(screenCtx);
     screens.add.render();
     return;
   }
@@ -207,13 +242,13 @@ function renderPane(id) {
    * placed after it, the real screen would be unreachable.
    * ================================================================= */
   if (id === 'keepsafe') {
-    screens.keepsafe = createKeepSafeScreen(ctx);
+    screens.keepsafe = createKeepSafeScreen(screenCtx);
     screens.keepsafe.render();
     return;
   }
   // app step 07 (Fix and close): the real screen replaces the interim pane.
   if (id === 'fix') {
-    screens.fix = createFixCloseScreen(ctx);
+    screens.fix = createFixCloseScreen(screenCtx);
     screens.fix.render();
     return;
   }
@@ -221,7 +256,7 @@ function renderPane(id) {
   // (additive branch; ticket A37). This branch sits BEFORE the
   // placeholder router below.
   if (id === 'cleanup') {
-    renderCleanupPane();
+    renderCleanupPane(screenCtx);
     return;
   }
   // --- App 08 branch ends ---
@@ -231,16 +266,16 @@ function renderPane(id) {
    * (which would otherwise answer for `link` first).
    * ================================================================= */
   if (id === 'link') {
-    screens.link = createLinkScreen(ctx);
+    screens.link = createLinkScreen(screenCtx);
     screens.link.render();
     return;
   }
   // -------------------------------------------------------------------
   if (paneNames().includes(id)) {
-    createPlaceholderScreen(ctx, id).render();
+    createPlaceholderScreen(screenCtx, id).render();
     return;
   }
-  createPlaceholderScreen(ctx, 'add').render(); // an unknown id never blanks the pane
+  createPlaceholderScreen(screenCtx, 'add').render(); // an unknown id never blanks the pane
 }
 
 function buildNav() {
@@ -311,7 +346,12 @@ function showNotices() {
 
 /** First run opens when no knowledge-base path is chosen (story 1). */
 function firstRun() {
-  screens.firstRun = createFirstRunScreen(ctx);
+  // First run is its own pane: it gets its own paint right exactly
+  // like a navigate() would (Batch 5 chunk 12).
+  renderToken += 1;
+  const token = renderToken;
+  const firstRunCtx = { ...ctx, renderFrame: painterFor(token) };
+  screens.firstRun = createFirstRunScreen(firstRunCtx);
   firstRunActive = true;
   document.body.classList.add('first-run');
   navEl.hidden = true;
@@ -320,6 +360,9 @@ function firstRun() {
 
 async function boot() {
   bootState = await window.ember.getState();
+  // The screen-lifetime rule (spec "Screen lifetime"): every DOM
+  // lookup after an await checks the element still exists first.
+  if (!navEl.isConnected || !paneEl.isConnected || !bannerEl.isConnected) return;
   ctx.state = bootState;
   applySettings();
   showNotices();
