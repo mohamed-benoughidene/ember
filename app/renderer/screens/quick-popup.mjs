@@ -72,11 +72,34 @@ async function openMain(view) {
   if (res && res.ok) await window.ember.openQuickPopup({ action: 'hide' });
 }
 
-/** Esc closes the popup, EXCEPT mid-session where it stops the add (story 92). */
+/**
+ * Esc closes the popup, EXCEPT mid-session where it stops the add
+ * (story 92). The stop keys are the Add screen's own — but they sit on
+ * the pane, so a keydown whose focus rests on the page body (a click
+ * on the frameless window's blank space, or any focus change between
+ * renders) never passes through them. Yield only when the pane will
+ * really hear the key; own the Esc otherwise — it must always do its
+ * job. The end states are the subtlety: the summary event tells the
+ * session's story before the engine's exit event flips the phase to
+ * "done" (they can be seconds apart under load), and stopping then
+ * would answer APP-002 ("no add is running") and paint an error over
+ * a saved add — so an Esc in a finished end state closes, exactly
+ * like the done phase it is about to become.
+ */
 function installEscClose() {
   document.addEventListener('keydown', (ev) => {
     if (ev.key !== 'Escape') return;
-    if (screen && screen.state.phase === 'session') return; // the Add screen's Esc: stop
+    if (screen && screen.state.phase === 'session') {
+      if (paneEl.contains(document.activeElement)) return; // the Add screen's Esc: stop
+      ev.preventDefault();
+      const stage = stageNow();
+      if (stage === 'session' || stage === 'loading') {
+        void screen.stop(); // the same stop the pane handler would run
+        return;
+      }
+      void window.ember.openQuickPopup({ action: 'hide' }); // summary/stopped/empty: the story is told
+      return;
+    }
     ev.preventDefault();
     void window.ember.openQuickPopup({ action: 'hide' });
   });
