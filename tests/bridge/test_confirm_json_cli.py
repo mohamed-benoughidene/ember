@@ -150,7 +150,7 @@ def test_capture_json_no_key_exits_1_before_any_event(
 
     assert result.exit_code == 1
     assert result.stdout == ""
-    assert "CAPTURE-008" in result.stderr
+    assert "CAPTURE-022" in result.stderr
 
 
 def test_capture_json_bad_line_reasks_once_then_the_loop_continues(
@@ -318,7 +318,7 @@ def test_relate_json_no_key_exits_1_before_any_event(
     monkeypatch.delenv("EMBER_AI_API_KEY", raising=False)
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
     # The optional embedder packages may be absent in CI; stub the boot check
-    # so the FIRST error (before any event) is the missing key (RELATE-035).
+    # so the FIRST error (before any event) is the missing key (RELATE-038).
     monkeypatch.setattr("ember.cli.validate_embedder_config", lambda: 120.0)
     from click.testing import CliRunner
 
@@ -338,7 +338,7 @@ def test_relate_json_no_key_exits_1_before_any_event(
 
     assert result.exit_code == 1
     assert result.stdout == ""
-    assert "RELATE-035" in result.stderr
+    assert "RELATE-038" in result.stderr
 
 
 # --- maintain ----------------------------------------------------------------

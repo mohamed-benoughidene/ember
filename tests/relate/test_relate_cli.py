@@ -500,7 +500,7 @@ def test_relate_quit_exits_2_with_summary(db_path, monkeypatch) -> None:
     assert result.output.count("- link_id:") == 0
 
 
-def test_relate_missing_api_key_exits_1_with_relate_035(db_path, monkeypatch) -> None:
+def test_relate_missing_api_key_exits_1_with_relate_038(db_path, monkeypatch) -> None:
     _seed_six_items_two_links(db_path)
     _patch_phase2_ports(monkeypatch)
     monkeypatch.delenv("EMBER_AI_API_KEY", raising=False)
@@ -511,7 +511,7 @@ def test_relate_missing_api_key_exits_1_with_relate_035(db_path, monkeypatch) ->
     )
 
     assert result.exit_code == 1
-    assert "RELATE-035" in _error_text(result)
+    assert "RELATE-038" in _error_text(result)
 
 
 def test_relate_old_schema_exits_1_with_relate_014(db_path, monkeypatch) -> None:

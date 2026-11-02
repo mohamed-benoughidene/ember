@@ -13,7 +13,12 @@ from urllib.parse import urlparse
 
 from openai import OpenAI, OpenAIError
 
-from ember.capture.errors import AiCallError, AiSchemaError, BaseUrlInvalid
+from ember.capture.errors import (
+    AiCallError,
+    AiSchemaError,
+    ApiKeyMissing as CaptureApiKeyMissing,
+    BaseUrlInvalid,
+)
 from ember.capture.item_proposal import (
     SYSTEM_PROMPT,
     ContextItem,
@@ -32,7 +37,12 @@ from ember.maintain.errors import (
     CloseAiSchemaInvalid,
 )
 from ember.errors import scrub_secrets
-from ember.relate.errors import AiCallFailed, AiResponseSchemaInvalid, ConfigMissing
+from ember.relate.errors import (
+    AiCallFailed,
+    AiResponseSchemaInvalid,
+    ApiKeyMissing as RelateApiKeyMissing,
+    ConfigMissing,
+)
 from ember.relate.link_proposal import (
     SYSTEM_PROMPT as LINK_SYSTEM_PROMPT,
     LinkProposalResponse,
@@ -105,9 +115,10 @@ def build_item_proposer(
     Keys: `EMBER_AI_API_KEY` (or `OPENROUTER_API_KEY`), `EMBER_AI_MODEL`,
     `EMBER_AI_BASE_URL`.
 
-    Raise `AiCallError` (CAPTURE-008) when no API key is configured, and
-    `BaseUrlInvalid` (CAPTURE-019) when `EMBER_AI_BASE_URL` is not a usable
-    URL.
+    Raise `ApiKeyMissing` (CAPTURE-022) when no API key is configured — its
+    own dedicated code since Batch 6 (D-08), no longer the shared
+    `AiCallError` (CAPTURE-008) — and `BaseUrlInvalid` (CAPTURE-019) when
+    `EMBER_AI_BASE_URL` is not a usable URL.
 
     The client is built with an explicit timeout and `max_retries=0`, so the
     only retry is the one `propose_items` owns (plan section 5, rule I15).
@@ -116,7 +127,7 @@ def build_item_proposer(
     validate_base_url(values, BaseUrlInvalid)
     api_key = _first_present(values, _API_KEY_VARS)
     if not api_key:
-        raise AiCallError("ai api key missing")
+        raise CaptureApiKeyMissing("ai api key missing")
     client = OpenAI(
         api_key=api_key,
         base_url=values.get("EMBER_AI_BASE_URL", DEFAULT_BASE_URL),
@@ -166,9 +177,11 @@ def build_link_proposer(env: Mapping[str, str] | None = None) -> OpenAiLinkPropo
     """Build the relate link proposer from env config. Fail fast on a missing key.
 
     Keys: `EMBER_AI_API_KEY` (or `OPENROUTER_API_KEY`), `EMBER_AI_MODEL`,
-    `EMBER_AI_BASE_URL`. Raise `ConfigMissing` (RELATE-035) when no API key is
-    configured or when `EMBER_AI_BASE_URL` is not a usable URL. The client is
-    built with an explicit timeout and
+    `EMBER_AI_BASE_URL`. Raise `ApiKeyMissing` (RELATE-038) when no API key is
+    configured — its own dedicated code since Batch 6 (D-08), no longer the
+    shared `ConfigMissing` (RELATE-035) — and `ConfigMissing` (RELATE-035)
+    when `EMBER_AI_BASE_URL` is not a usable URL. The client is built with an
+    explicit timeout and
     `max_retries=0`, so the only retry is the one `propose_links_with_retry`
     owns.
     """
@@ -176,7 +189,7 @@ def build_link_proposer(env: Mapping[str, str] | None = None) -> OpenAiLinkPropo
     validate_base_url(values, ConfigMissing)
     api_key = _first_present(values, _API_KEY_VARS)
     if not api_key:
-        raise ConfigMissing("ai api key missing")
+        raise RelateApiKeyMissing("ai api key missing")
     client = OpenAI(
         api_key=api_key,
         base_url=values.get("EMBER_AI_BASE_URL", DEFAULT_BASE_URL),
