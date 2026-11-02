@@ -21,7 +21,9 @@
  * - session    -> `--confirm json` event lines on stdout, answers read
  *                 from stdin
  * - app        -> the step-04 read commands (list-items with its real
- *                 filter semantics, current-state, topic-search,
+ *                 filter semantics plus the `--counts` form (Batch 5
+ *                 chunk 11: one document, summary carries the four
+ *                 Home counts), current-state, topic-search,
  *                 show-item, history, maintain --dry-run) answered from
  *                 the JSON fixture file named by FAKE_FIXTURE, with the
  *                 same envelopes the contract table pins. Unknown item
@@ -516,6 +518,27 @@ function runAppMode(argv) {
   const typeFilter = flag('--type');
 
   if (name === 'list-items' || name === 'current-state') {
+    /* ==== Batch 5 chunk 11 (N11) ==================================
+       `list-items --counts` — the one call that answers the four Home
+       counts. The real command (pinned shape, chunk 10) prints ONE
+       document whose `summary` carries `active` / `challenged` /
+       `closed` / `total`, derived the same way the per-status
+       documents above are: from the fixture's items, filtering by
+       status. A status outside the three named ones counts only
+       toward `total` (the real counter's rule, ember/query/
+       list_items.py). Like the real command, --counts ignores the
+       filter and paging flags. ==================================== */
+    if (name === 'list-items' && argv.includes('--counts')) {
+      const summary = { active: 0, challenged: 0, closed: 0 };
+      for (const it of items) {
+        if (it.status === 'Active') summary.active += 1;
+        else if (it.status === 'Challenged') summary.challenged += 1;
+        else if (it.status === 'Closed') summary.closed += 1;
+      }
+      summary.total = items.length;
+      process.stdout.write(`${JSON.stringify({ summary })}\n`);
+      process.exit(0);
+    }
     let rows = items.filter(
       (it) => (statusFilter === null || it.status === statusFilter) && (typeFilter === null || it.type === typeFilter),
     );

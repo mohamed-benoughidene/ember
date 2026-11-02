@@ -6,9 +6,12 @@
  * must equal what the matching `ember` command prints — spec "counts
  * match exactly" and "one test seam".
  *
- * - Home's per-status counts and total come from FILTERED `list-items`
- *   calls; each total must equal the direct CLI run, and the
- *   Active+Challenged counts must equal `ember current-state`'s count.
+ * - Home's counts used to come from four FILTERED `list-items` calls;
+ *   since Batch 5 chunk 11 (N11) they come from ONE `--counts` call,
+ *   and that document's summary must equal the per-status CLI totals.
+ * - Any status count still must equal the matching filtered call's
+ *   total, and the Active+Challenged counts must equal `ember
+ *   current-state`'s count.
  * - The provenance view reads `show-item`: its envelope (item, source,
  *   links_out, links_in) and the per-link other-item fields are pinned.
  */
@@ -20,7 +23,8 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { createBridgeClient } = require('../main/bridge-client');
-const { PYTHON, REPO_ROOT, errorPatternFixture } = require('./util');
+const { listItemsArgs } = require('../main/command-args');
+const { PYTHON, REPO_ROOT, APP_ROOT, errorPatternFixture } = require('./util');
 
 const EMBER = path.join(REPO_ROOT, '.venv', 'bin', 'ember');
 
@@ -94,6 +98,70 @@ test('home counts equal list-items and current-state on a seeded KB', async () =
       state.data.items.filter((it) => it.challenged).length,
       directState.items.filter((it) => it.challenged).length,
     );
+  } finally {
+    removeSeededDirs();
+  }
+}, 60000);
+
+test('one list-items --counts call answers the Home counts (chunk 11, N11)', async () => {
+  assert.ok(fs.existsSync(EMBER), 'the venv ember is missing — the contract test cannot run');
+  try {
+    const dbPath = seed('seed_closed');
+    const client = clientFor(dbPath);
+
+    // The counts-builder's counts-ONLY form: one command, no filters,
+    // no paging flags beside it (the app adapts to the bridge).
+    const countsArgs = listItemsArgs({ counts: true });
+    assert.deepEqual(countsArgs, ['--counts']);
+
+    // The counts document equals the per-status CLI totals, and its
+    // total equals the sum (the same equality the old four-call shape
+    // carried, now verified in one document).
+    const directCounts = cliJson(['list-items', '--counts', '--db', dbPath]).summary;
+    const perStatus = {
+      active: cliJson(['list-items', '--status', 'Active', '--db', dbPath]).total,
+      challenged: cliJson(['list-items', '--status', 'Challenged', '--db', dbPath]).total,
+      closed: cliJson(['list-items', '--status', 'Closed', '--db', dbPath]).total,
+    };
+    assert.deepEqual(directCounts, {
+      active: perStatus.active,
+      challenged: perStatus.challenged,
+      closed: perStatus.closed,
+      total: perStatus.active + perStatus.challenged + perStatus.closed,
+    });
+
+    // Through the app's seam: the ONE call the screen now makes must
+    // bring the same document back.
+    const result = await client.runCommand('list-items', countsArgs);
+    assert.equal(result.ok, true, JSON.stringify(result.error ?? {}));
+    assert.deepEqual(result.data.summary, directCounts);
+
+    // The one-call pin: Home's counts block makes its ONE call and
+    // renders every number through esc() (4.9 #25's escaping half —
+    // the counts come from the engine document into HTML). The screen
+    // source is pinned here so the old four-call shape cannot drift
+    // back. loadAttention keeps its own listItems call (the challenged
+    // probe), so the whole screen may hold exactly two call sites.
+    const homeSource = fs.readFileSync(path.join(APP_ROOT, 'renderer', 'screens', 'home.mjs'), 'utf8');
+    const callSites = [...homeSource.matchAll(/ctx\.api\.listItems\(/g)].length;
+    assert.equal(callSites, 2, `Home must keep exactly two list-items call sites (attention + the one counts call), saw ${callSites}`);
+    const start = homeSource.indexOf('async function loadCounts');
+    const end = homeSource.indexOf('async function loadLedger');
+    assert.ok(start !== -1 && end !== -1 && start < end, 'loadCounts moved — re-pin the one-call pin');
+    const countsBlock = homeSource.slice(start, end);
+    assert.equal(
+      [...countsBlock.matchAll(/ctx\.api\.listItems\(/g)].length,
+      1,
+      'loadCounts must make its counts call ALONE (N11): one call on the wire, not four',
+    );
+    assert.match(countsBlock, /counts:\s*true/, 'the counts call must use the --counts form');
+    for (const figure of ['active', 'challenged', 'closed', 'total']) {
+      assert.match(
+        countsBlock,
+        new RegExp(`data-testid="count-${figure}">\\$\\{esc\\(`),
+        `the ${figure} figure must be rendered through esc() (4.9 #25)`,
+      );
+    }
   } finally {
     removeSeededDirs();
   }

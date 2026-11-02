@@ -7,6 +7,9 @@
  * contract table pins (`tests/bridge/test_contract_table.py` +
  * `docs/commands.md` "Machine use"):
  * - `list-items --status S --type T --limit N --offset N`
+ * - `list-items --counts` (Batch 5 chunk 11, N11: the counts-ONLY
+ *   form — the four Home counts in one call; no filter or page flag
+ *   beside it)
  * - `topic-search --query T --status S --type T --limit N --offset N`
  *   (Batch 6 added --offset; `total` in the envelope is the pre-page count)
  * - `show-item --item N`
@@ -39,7 +42,18 @@ function nonNegativeInt(value, what) {
 }
 
 /** The browse page: every item in any status, Closed included. */
-function listItemsArgs({ status = null, type = null, limit = null, offset = null } = {}) {
+function listItemsArgs({ status = null, type = null, limit = null, offset = null, counts = false } = {}) {
+  /* Batch 5 chunk 11 (N11): the counts-only form — ONE call answers
+     the four Home counts (active, challenged, closed, total) in its
+     summary document. The flags never combine with it: a mixed call
+     would read as if the filters shaped the counts, so it is refused
+     the same way a value the command would not accept is refused. */
+  if (counts) {
+    if (status !== null || type !== null || limit !== null || offset !== null) {
+      throw new TypeError('--counts is a counts-only call: no --status, --type, --limit or --offset beside it');
+    }
+    return ['--counts'];
+  }
   const argv = [];
   optionalFlag(argv, '--status', status, STATUSES);
   optionalFlag(argv, '--type', type, TYPES);
