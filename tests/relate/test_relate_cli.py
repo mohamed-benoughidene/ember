@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib.resources
 import json
 import re
 import sqlite3
@@ -461,7 +462,15 @@ def test_relate_corrupt_db_exits_1_with_relate_012(tmp_path) -> None:
     assert "RELATE-012" in result.output
 
 
-def test_relate_migration_failure_exits_1_with_relate_013(db_path, monkeypatch) -> None:
+def test_relate_never_consults_migration_scripts_on_an_empty_file(
+    db_path, monkeypatch
+) -> None:
+    """N9: relate opens read-only and never migrates.
+
+    Even with a sabotaged migration-script set, relate never consults it: an
+    empty file fails the version read and is refused with RELATE-012, and the
+    file stays byte-for-byte untouched (0 bytes, no backup, no migration).
+    """
     Path(db_path).touch()
     monkeypatch.setattr(
         sqlite_adapter,
@@ -472,7 +481,9 @@ def test_relate_migration_failure_exits_1_with_relate_013(db_path, monkeypatch) 
     result = CliRunner().invoke(main, ["relate", "--item", "1", "--db", db_path])
 
     assert result.exit_code == 1
-    assert "RELATE-013" in result.output
+    assert "RELATE-012" in result.output
+    assert Path(db_path).read_bytes() == b""
+    assert _no_bak_file(db_path)
 
 
 def test_relate_quit_exits_2_with_summary(db_path, monkeypatch) -> None:
@@ -515,3 +526,95 @@ def test_relate_old_schema_exits_1_with_relate_014(db_path, monkeypatch) -> None
 
     assert result.exit_code == 1
     assert "RELATE-014" in result.output
+
+
+# --- relate never migrates an older file (B4-04, decision N9) ---
+#
+# `relate` is mostly a read: opening a v12 file must not migrate it to 13
+# and must not write a `.bak-v12` pre-migration copy beside it. Only the
+# derived-data writes (embedding cache, raw AI reply, confirmed links) may
+# write, and they must land even on the un-migrated v12 file. The file is
+# built with the exact scripts-001-012 pattern of `_build_v12_db` in
+# tests/test_db_check.py.
+
+_MIGRATIONS_TO_12 = (
+    "001_create_sources.sql",
+    "002_create_items.sql",
+    "003_create_change_log.sql",
+    "004_add_item_detail_columns.sql",
+    "005_create_ai_responses.sql",
+    "006_create_links.sql",
+    "007_create_item_embeddings.sql",
+    "008_add_change_log_link_fk.sql",
+    "009_drop_source_id_not_null_and_add_item_id.sql",
+    "010_add_item_close_reason.sql",
+    "011_add_links_reversed_at_and_enforcement_triggers.sql",
+    "012_add_items_metadata.sql",
+)
+
+
+def _build_v12_relate_db(db_str: str) -> None:
+    """Build a real untouched v12 file (scripts 001-012, version stamped 12)."""
+    conn = sqlite3.connect(db_str)
+    conn.execute("CREATE TABLE schema_version (version INTEGER NOT NULL)")
+    conn.execute("INSERT INTO schema_version (version) VALUES (12)")
+    package = importlib.resources.files("ember.adapters.migrations")
+    for name in _MIGRATIONS_TO_12:
+        conn.executescript(package.joinpath(name).read_text(encoding="utf-8"))
+    conn.commit()
+    conn.close()
+
+
+def test_relate_never_migrates_and_still_saves_cache_reply_and_link(
+    db_path, monkeypatch
+) -> None:
+    _build_v12_relate_db(db_path)
+    conn = sqlite3.connect(db_path)
+    try:
+        source_id = insert_source(conn)
+        insert_item(conn, source_id=source_id, item_id=1, item_type="Decision")
+        insert_item(conn, source_id=source_id, item_id=2, item_type="Decision")
+        # Pre-seed the candidate's cache vector (the FakeEmbedder's model and
+        # fixed vector shape), so the run encodes only the new item: exactly
+        # one new `item_embeddings` row during the run.
+        SqliteEmbedderStore(conn).upsert(2, [1.0, 0.0, 0.0], "fake-model")
+        conn.commit()
+    finally:
+        conn.close()
+    _patch_phase2_ports(monkeypatch)
+    _patch_phase34_ports(monkeypatch)
+
+    result = CliRunner().invoke(
+        main, ["relate", "--item", "1", "--db", db_path], input="y\n"
+    )
+
+    assert result.exit_code == 0, _error_text(result)
+    assert "accepted: 1, rejected: 0, skipped: 0, aborted: false" in result.output
+    assert _no_bak_file(db_path)
+    # The schema_version table still says 12 — no migration, no backup.
+    conn = sqlite3.connect(db_path)
+    try:
+        version = int(conn.execute("SELECT version FROM schema_version").fetchone()[0])
+        embedding_ids = [
+            int(row[0])
+            for row in conn.execute(
+                "SELECT item_id FROM item_embeddings ORDER BY item_id"
+            )
+        ]
+        replies = int(conn.execute("SELECT COUNT(*) FROM ai_responses").fetchone()[0])
+        links = conn.execute(
+            "SELECT source_item_id, target_item_id, link_type, status FROM links"
+        ).fetchall()
+    finally:
+        conn.close()
+    assert version == 12
+    # One new vector row (item 1) next to the pre-seeded cache row (item 2).
+    assert embedding_ids == [1, 2]
+    # One raw AI reply for the new item.
+    assert replies == 1
+    # The accepted proposal was confirmed into one Confirmed link.
+    assert links == [(1, 2, "depends_on", "Confirmed")]
+
+
+def _no_bak_file(db_str: str) -> bool:
+    return not list(Path(db_str).parent.glob(Path(db_str).name + ".bak-v*"))

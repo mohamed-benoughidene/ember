@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import sqlite3
 import sys
 import traceback
 from datetime import datetime, timezone
@@ -52,7 +53,8 @@ from ember.adapters.sqlite import (
     open_maintain_database,
     open_maintain_database_readonly,
     open_query_database,
-    open_relate_database,
+    open_relate_database_readonly,
+    open_relate_database_write,
 )
 from ember.bridge.json_out import OutputDocument, render_document
 from ember.capture.confirm_write import run_confirm_loop
@@ -501,6 +503,72 @@ def clear_validated(item_id: int, db_path: str) -> None:
     _write_validated_flag(item_id, db_path, new_value=False)
 
 
+class _RelateWriteConnection:
+    """The ONE short-lived relate write connection (decision N9).
+
+    Opened lazily on the first write — after the read-only open and the
+    pool reads have done their part — never migrated, no backup, and closed
+    as soon as the command ends. Every relate write (embedding-cache upserts
+    and the model-change wipe, the raw AI reply save, and the confirmed-link
+    writes) goes through the connection this holder returns, so a relate run
+    opens at most one writing connection at a time.
+    """
+
+    def __init__(self, db_path: str) -> None:
+        self._db_path = db_path
+        self._conn: sqlite3.Connection | None = None
+        self._embedding_store: Any = None
+
+    def connection(self) -> sqlite3.Connection:
+        """Open the write connection on first use; return it afterwards."""
+        if self._conn is None:
+            self._conn = open_relate_database_write(self._db_path)
+        return self._conn
+
+    def embedding_store(self) -> Any:
+        """Build the embedding cache on the write connection (once)."""
+        if self._embedding_store is None:
+            self._embedding_store = build_embedding_store(self.connection())
+        return self._embedding_store
+
+    def close(self) -> None:
+        """Close the write connection if one was ever opened."""
+        if self._conn is not None:
+            self._conn.close()
+            self._conn = None
+            self._embedding_store = None
+
+
+class _RelateEmbeddingCache:
+    """Embedding-cache reads on the read-only connection, writes on the
+    ONE short-lived write connection (decision N9).
+
+    Wraps the `EmbeddingStorePort` built on the read-only connection for the
+    three reads (`get`, `model_name_of`, `first_model_name`) and routes the
+    two writes (`upsert`, `wipe`) to the same port type built on the
+    short-lived write connection.
+    """
+
+    def __init__(self, read_store: Any, writes: _RelateWriteConnection) -> None:
+        self._read_store = read_store
+        self._writes = writes
+
+    def get(self, item_id: int) -> Any:
+        return self._read_store.get(item_id)
+
+    def model_name_of(self, item_id: int) -> Any:
+        return self._read_store.model_name_of(item_id)
+
+    def first_model_name(self) -> Any:
+        return self._read_store.first_model_name()
+
+    def upsert(self, item_id: int, vector: list[float], model_name: str) -> None:
+        self._writes.embedding_store().upsert(item_id, vector, model_name)
+
+    def wipe(self) -> None:
+        self._writes.embedding_store().wipe()
+
+
 @main.command("relate")
 @click.option("--item", "item_id", type=int, default=None, help="Item id to relate.")
 @click.option(
@@ -518,6 +586,11 @@ def relate(item_id: int | None, latest: bool, output: OutputOptions) -> None:
     error, and 2 when the user quits mid-prompt. An empty candidate pool
     prints the Phase 2 JSON and exits 0 without an AI call. `--confirm json`
     (bridge step 03) turns every stdout line into one JSON event object.
+
+    N9: every read runs on a STRICTLY read-only connection that never
+    migrates and never backs up; the writes (embedding cache, raw AI reply,
+    confirmed links) share ONE short-lived write connection that never
+    migrates either.
     """
     if item_id is not None and latest:
         raise click.UsageError("use either --item or --latest, not both")
@@ -526,47 +599,54 @@ def relate(item_id: int | None, latest: bool, output: OutputOptions) -> None:
     sink, confirm = _confirm_io(output, JsonRelateConfirm, RelateTerminalConfirm)
     aborted = False
     validate_embedder_config()
-    conn = open_relate_database(output.db_path)
-    lookup = SqliteLinkContext(conn)
-    store = SqliteLinkStore(conn)
-    link_proposer = build_link_proposer(os.environ)
-    ai_response_store = build_ai_response_store(conn)
-    if latest:
-        result = load_latest_candidates(lookup)
-    else:
-        result = load_item_candidates(lookup, item_id=item_id, db_path=output.db_path)
-    if result is None:
-        sink.echo("no unrelated items")
-        return
-    if result.universe.items:
-        pool = build_candidate_pool(
-            result,
-            link_lookup=lookup,
-            embedding_store=build_embedding_store(conn),
-            embedder=build_embedder(),
-        )
-    else:
-        pool = Pool.empty()
-    if pool.warning:
-        click.echo(pool.warning, err=True)
-    if not pool.ranked:
-        sink.echo(
-            json.dumps(
-                {"phase": 2, "pool_size": 0, "signals": pool.counts}
+    conn = open_relate_database_readonly(output.db_path)
+    writes = _RelateWriteConnection(output.db_path)
+    try:
+        lookup = SqliteLinkContext(conn)
+        link_proposer = build_link_proposer(os.environ)
+        if latest:
+            result = load_latest_candidates(lookup)
+        else:
+            result = load_item_candidates(
+                lookup, item_id=item_id, db_path=output.db_path
             )
+        if result is None:
+            sink.echo("no unrelated items")
+            return
+        if result.universe.items:
+            pool = build_candidate_pool(
+                result,
+                link_lookup=lookup,
+                embedding_store=_RelateEmbeddingCache(
+                    build_embedding_store(conn), writes
+                ),
+                embedder=build_embedder(),
+            )
+        else:
+            pool = Pool.empty()
+        if pool.warning:
+            click.echo(pool.warning, err=True)
+        if not pool.ranked:
+            sink.echo(
+                json.dumps(
+                    {"phase": 2, "pool_size": 0, "signals": pool.counts}
+                )
+            )
+            return
+        ports = RelatePorts(
+            link_lookup=lookup,
+            link_store=SqliteLinkStore(writes.connection()),
+            link_proposer=link_proposer,
+            ai_response_store=build_ai_response_store(writes.connection()),
+            confirm=confirm,
         )
-        return
-    ports = RelatePorts(
-        link_lookup=lookup,
-        link_store=store,
-        link_proposer=link_proposer,
-        ai_response_store=ai_response_store,
-        confirm=confirm,
-    )
-    request = RelateRequest(
-        new_item=result.new_item, ranked=pool.ranked, env=os.environ
-    )
-    outcome = run_relate(ports, request)
+        request = RelateRequest(
+            new_item=result.new_item, ranked=pool.ranked, env=os.environ
+        )
+        outcome = run_relate(ports, request)
+    finally:
+        writes.close()
+        conn.close()
     for rejection in outcome.gatekeeper_rejections:
         if rejection.detail:
             sink.echo(
