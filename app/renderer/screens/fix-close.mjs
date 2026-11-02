@@ -457,10 +457,12 @@ export function createFixCloseScreen(ctx) {
       <p class="help">Preview first: Ember shows the old and the new text before anything is written.</p>`;
   }
 
-  /** Verbatim old/new text in quotes; an empty side reads "(empty)". */
+  /** Verbatim old/new text in quotes, HTML-escaped (4.9 #15: a
+    * knowledge-base value like <b>hi</b> shows as literal text, never
+    * rendered); an empty side reads "(empty)". */
   function sideText(value) {
     const text = value === null || value === undefined || String(value).trim() === '' ? '(empty)' : String(value);
-    return `"${text.length > 60 ? `${text.slice(0, 60)}…` : text}"`;
+    return esc(`"${text.length > 60 ? `${text.slice(0, 60)}…` : text}"`);
   }
 
   function wireDetail(region, item, linksOut, linksIn) {
