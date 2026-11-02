@@ -3,9 +3,11 @@
 /**
  * The step-07 pure words (T1): the Undo/Redo label derivation
  * (shared/undo-labels.mjs — the screen's buttons now, the Edit menu in
- * step 12) and the maintain plain sentences (shared/
- * maintain-sentences.mjs) with the same anti-drift walk the step-04
- * table uses: every code this table claims must exist in
+ * step 12). The maintain plain sentences NO LONGER have their own
+ * table: since Batch 6 they live in the ONE table
+ * (shared/plain-sentences.mjs) and shared/maintain-sentences.mjs is a
+ * shim delegating to sentenceFor. The anti-drift walk stays: every
+ * code the one table claims (APP- excepted) must exist in
  * `ember/**\/errors.py`, and the undo refusal extras must fire on the
  * real engine detail strings (stories 118, 123).
  */
@@ -71,8 +73,11 @@ test('undo labels', async (t) => {
 });
 
 test('maintain plain sentences', async (t) => {
-  const { MAINTAIN_SENTENCES, maintainSentenceFor, undoNoteFor } = await import('../shared/maintain-sentences.mjs');
-  const { sentenceFor } = await import('../shared/plain-sentences.mjs');
+  const { maintainSentenceFor, undoNoteFor } = await import('../shared/maintain-sentences.mjs');
+  const { ERROR_SENTENCES, sentenceFor } = await import('../shared/plain-sentences.mjs');
+  // The ONE table: the MAINTAIN- entries and CAPTURE-016 moved there
+  // in Batch 6 chunk 2; the shim only delegates.
+  const MAINTAIN_SENTENCES = ERROR_SENTENCES;
 
   await t.test('the step-07 code range has full entries (step file §4)', () => {
     for (const code of [
@@ -94,9 +99,11 @@ test('maintain plain sentences', async (t) => {
     for (const dir of ['ember', 'ember/capture', 'ember/maintain', 'ember/query', 'ember/relate', 'ember/adapters']) {
       const file = path.join(REPO_ROOT, dir, 'errors.py');
       if (!fs.existsSync(file)) continue;
-      for (const match of fs.readFileSync(file, 'utf8').matchAll(/code = "([A-Z]+-\d{3})"/g)) real.add(match[1]);
+      // Same lenient regex as the plain-sentences claim walk: the -000
+      // base in ember/errors.py is written `code: str = ...`.
+      for (const match of fs.readFileSync(file, 'utf8').matchAll(/code(?::\s*str)? = "([A-Z]+-\d{3})"/g)) real.add(match[1]);
     }
-    for (const code of Object.keys(MAINTAIN_SENTENCES)) {
+    for (const code of Object.keys(MAINTAIN_SENTENCES).filter((c) => !c.startsWith('APP-'))) {
       assert.ok(real.has(code), `${code} is claimed by the maintain sentence table but no errors.py class defines it`);
     }
     // The real engine detail strings the notes must recognise.
