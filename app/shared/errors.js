@@ -18,6 +18,10 @@ const APP_CODES = Object.freeze({
   APP_006: 'APP-006',
   APP_007: 'APP-007',
   APP_008: 'APP-008',
+  // Batch 5 chunk 7 (N3, decision I9 in archive/Plan.md): the ONE code
+  // for an engine that ends unexpectedly — a signal kill, or an exit
+  // with no result. The app's own stop() never uses it (story 22).
+  APP_009: 'APP-009',
 });
 
 /**
@@ -55,6 +59,7 @@ const NAMES = Object.freeze({
   'APP-006': 'KnowledgeBaseMissing',
   'APP-007': 'RuntimeMissing',
   'APP-008': 'BridgeTimeout',
+  'APP-009': 'EmberStoppedUnexpectedly',
 });
 
 /** Build the plain info shape without throwing (for fakes and notices). */

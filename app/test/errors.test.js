@@ -6,7 +6,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const { APP_CODES, NAMES, AppError, appErrorInfo, asAppError } = require('../shared/errors');
 
-test('the nine codes exist and their names match the plan table', () => {
+test('the ten codes exist and their names match the plan table', () => {
   assert.deepEqual(Object.values(APP_CODES), [
     'APP-000',
     'APP-001',
@@ -17,6 +17,9 @@ test('the nine codes exist and their names match the plan table', () => {
     'APP-006',
     'APP-007',
     'APP-008',
+    // Batch 5 chunk 7 (N3, decision I9): the one code for an engine
+    // that ends unexpectedly; the app's own stop() never uses it.
+    'APP-009',
   ]);
   assert.deepEqual(NAMES, {
     'APP-000': 'AppError',
@@ -28,6 +31,7 @@ test('the nine codes exist and their names match the plan table', () => {
     'APP-006': 'KnowledgeBaseMissing',
     'APP-007': 'RuntimeMissing',
     'APP-008': 'BridgeTimeout',
+    'APP-009': 'EmberStoppedUnexpectedly',
   });
 });
 
@@ -41,7 +45,7 @@ test('an AppError carries code, name, where, detail — nothing secret by constr
 });
 
 test('unknown codes are refused loudly (no spelling drift into the namespace)', () => {
-  assert.throws(() => appErrorInfo('APP-009', 'x', 'y'), /unknown APP code/);
+  assert.throws(() => appErrorInfo('APP-099', 'x', 'y'), /unknown APP code/);
   assert.throws(() => appErrorInfo('BRIDGE-001', 'x', 'y'), /unknown APP code/);
 });
 
