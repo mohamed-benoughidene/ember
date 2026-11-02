@@ -145,6 +145,64 @@ def open_existing_database(db_path: str) -> sqlite3.Connection:
     return open_database(db_path)
 
 
+# One transaction per user action (Batch 4 chunk 8, spec 4.3 #9). The
+# per-connection depth marks the write methods that sit inside a unit of
+# work: IN one, no store commits or rolls back on its own (the unit of work
+# owns the transaction); OUTSIDE one, every store keeps today's own
+# commit/rollback behaviour byte for byte.
+#
+# `sqlite3.Connection` cannot be weak-referenced, so the depth lives in a
+# plain `id()`-keyed map. Safe: an entry exists only while its connection is
+# alive inside the `unit_of_work` frame that put it there, and it is removed
+# again when the depth returns to 0.
+_UNIT_OF_WORK_DEPTH: dict[int, int] = {}
+
+
+def _uow_depth(conn: sqlite3.Connection) -> int:
+    return _UNIT_OF_WORK_DEPTH.get(id(conn), 0)
+
+
+def in_unit_of_work(conn: sqlite3.Connection) -> bool:
+    """Whether `conn` currently runs inside a `unit_of_work` block.
+
+    Store write methods consult this before their own commit/rollback: a
+    store never ends the transaction it only participates in.
+    """
+    return _uow_depth(conn) > 0
+
+
+@contextmanager
+def unit_of_work(conn: sqlite3.Connection) -> Iterator[None]:
+    """Run ONE user action's writes in ONE transaction.
+
+    `BEGIN IMMEDIATE` takes the connection's write lock before the first
+    statement (chunk 13's multi-writer paths build on this), a single
+    `COMMIT` ends the action when the block succeeds, and a single
+    `ROLLBACK` undoes EVERYTHING the action wrote when it fails — so a user
+    action is never half-written (4.3 #9). Nesting counts a depth, so an
+    inner unit of work neither commits nor rolls back; only the outermost
+    one owns the transaction.
+    """
+    depth = _uow_depth(conn)
+    if depth == 0:
+        conn.execute("BEGIN IMMEDIATE")
+    _UNIT_OF_WORK_DEPTH[id(conn)] = depth + 1
+    try:
+        yield
+    except BaseException:
+        if depth == 0:
+            conn.rollback()
+        raise
+    else:
+        if depth == 0:
+            conn.commit()
+    finally:
+        if depth == 0:
+            _UNIT_OF_WORK_DEPTH.pop(id(conn), None)
+        else:
+            _UNIT_OF_WORK_DEPTH[id(conn)] = depth
+
+
 _EXPECTED_TABLES_AT_LATEST = frozenset(
     {
         "schema_version",
@@ -1469,6 +1527,11 @@ class SqliteMaintainStore:
     transaction with a single `commit()` at the end, so the batch is
     all-or-nothing (Constitution D3). A failure on either half rolls the whole
     batch back, so a caller never sees a status written without its log row.
+
+    Inside a `unit_of_work` (Batch 4 chunk 8, 4.3 #9) the store skips its
+    own commit and rollback: the unit of work owns the transaction, so a
+    whole user action — e.g. a status batch plus its manual shield — is
+    one all-or-nothing write.
     """
 
     def __init__(
@@ -1526,7 +1589,8 @@ class SqliteMaintainStore:
                         (change.new_status, change.close_reason, change.item_id),
                     )
             except sqlite3.Error as exc:
-                self._conn.rollback()
+                if not in_unit_of_work(self._conn):
+                    self._conn.rollback()
                 raise MaintainStatusWriteFailed(
                     "status update fail", item_id=change.item_id
                 ) from exc
@@ -1564,11 +1628,13 @@ class SqliteMaintainStore:
                         ),
                     )
             except sqlite3.Error as exc:
-                self._conn.rollback()
+                if not in_unit_of_work(self._conn):
+                    self._conn.rollback()
                 raise MaintainChangeLogWriteFailed(
                     "change_log insert fail", item_id=change.item_id
                 ) from exc
-        self._conn.commit()
+        if not in_unit_of_work(self._conn):
+            self._conn.commit()
         return len(changes)
 
     def apply_status_origin(
@@ -1579,7 +1645,10 @@ class SqliteMaintainStore:
         `group_id` stamps the ledger row (undo step 01); `None` leaves it
         NULL. Raise `StatusWriteFailed` (MAINTAIN-011) when the `items` UPDATE
         fails, and `ChangeLogWriteFailed` (MAINTAIN-012) when the `change_log`
-        INSERT fails. Either failure rolls the whole write back.
+        INSERT fails. Either failure surfaces as those errors. Outside a
+        `unit_of_work` a failure also rolls the whole write back itself;
+        inside one, the unit of work owns commit and rollback (Batch 4,
+        4.3 #9).
         """
         try:
             row = self._conn.execute(
@@ -1591,7 +1660,8 @@ class SqliteMaintainStore:
                 (origin, item_id),
             )
         except sqlite3.Error as exc:
-            self._conn.rollback()
+            if not in_unit_of_work(self._conn):
+                self._conn.rollback()
             raise MaintainStatusWriteFailed(
                 "status_origin update fail", item_id=item_id
             ) from exc
@@ -1605,11 +1675,13 @@ class SqliteMaintainStore:
                 (item_id, old_origin, origin, self._clock(), group_id),
             )
         except sqlite3.Error as exc:
-            self._conn.rollback()
+            if not in_unit_of_work(self._conn):
+                self._conn.rollback()
             raise MaintainChangeLogWriteFailed(
                 "change_log insert fail", item_id=item_id
             ) from exc
-        self._conn.commit()
+        if not in_unit_of_work(self._conn):
+            self._conn.commit()
 
     def apply_reversal(
         self,
@@ -2139,7 +2211,9 @@ class SqliteItemGatekeeper:
     def insert_item(self, item: ValidatedItem, *, validated: bool | None) -> None:
         """Insert one accepted item, with `validated` set only for Assumptions.
 
-        Raise `ItemDbWriteError` (CAPTURE-013) on a write failure.
+        Raise `ItemDbWriteError` (CAPTURE-013) on a write failure. Inside a
+        `unit_of_work` the caller owns the commit (Batch 4, 4.3 #9): the
+        item row and its `created` row are one transaction.
         """
         try:
             self._conn.execute(
@@ -2158,14 +2232,17 @@ class SqliteItemGatekeeper:
                     item.metadata,
                 ),
             )
-            self._conn.commit()
+            if not in_unit_of_work(self._conn):
+                self._conn.commit()
         except sqlite3.Error as exc:
             raise ItemDbWriteError("db write fail", item_id=item.id) from exc
 
     def log_created(self, item: ValidatedItem) -> None:
         """Append the `created` change_log row for an accepted item.
 
-        Raise `ItemDbWriteError` (CAPTURE-013) on a write failure.
+        Raise `ItemDbWriteError` (CAPTURE-013) on a write failure. Inside a
+        `unit_of_work` the caller owns the commit (Batch 4, 4.3 #9): the
+        item row and this row are one transaction.
         """
         try:
             self._conn.execute(
@@ -2175,7 +2252,8 @@ class SqliteItemGatekeeper:
                 " VALUES (?, NULL, 'created', NULL, ?, ?, 'user_confirmed')",
                 (item.id, item.statement, self._clock()),
             )
-            self._conn.commit()
+            if not in_unit_of_work(self._conn):
+                self._conn.commit()
         except sqlite3.Error as exc:
             raise ItemDbWriteError("db write fail", item_id=item.id) from exc
 

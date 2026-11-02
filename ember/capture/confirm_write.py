@@ -7,9 +7,11 @@ loop with fakes and the engine core never touches a terminal or a database.
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
+from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from enum import Enum
-from typing import Callable, Protocol
+from typing import Protocol
 
 from ember.capture.errors import TextNotEncodable, UserAbort
 from ember.capture.item_gatekeeper import (
@@ -113,13 +115,18 @@ def run_confirm_loop(
     confirm: ConfirmPort,
     commit: ItemCommitPort,
     revalidate: Callable[[ProposalDraft], ValidatedItem | RejectedProposal],
+    unit_of_work: Callable[[], AbstractContextManager[None]] | None = None,
 ) -> ConfirmResult:
     """Prompt for every item until it is handled or the user quits.
 
     `revalidate` re-runs the Phase 3 gatekeeper for an edited draft, with a new
     id and timestamp (L3 step 3, section 4.2 `e`). On `q` or end of input the
     loop stops and the result carries `aborted=True`; leftover items are neither
-    written nor logged.
+    written nor logged. `unit_of_work` (Batch 4 chunk 8, an adapter factory
+    over the write connection) makes each accepted item ONE transaction —
+    the item row and its `created` ledger row all-or-nothing (4.3 #9);
+    `None` keeps the accept path's per-store-commit behaviour (unit tests
+    with fakes).
     """
     accepted: list[int] = []
     pending = list(items)
@@ -142,7 +149,12 @@ def run_confirm_loop(
                 if choice is not None:
                     break
             if choice is Choice.YES:
-                accept(item, commit=commit, accepted=accepted)
+                accept(
+                    item,
+                    commit=commit,
+                    accepted=accepted,
+                    unit_of_work=unit_of_work,
+                )
                 index += 1
             elif choice is Choice.NO:
                 commit.log_rejected(item)
@@ -161,15 +173,29 @@ def run_confirm_loop(
     return ConfirmResult(accepted, rejected_count, warning_count, False)
 
 
-def accept(item: ValidatedItem, *, commit: ItemCommitPort, accepted: list[int]) -> None:
-    """Write one accepted item and its `change_log` row.
+def accept(
+    item: ValidatedItem,
+    *,
+    commit: ItemCommitPort,
+    accepted: list[int],
+    unit_of_work: Callable[[], AbstractContextManager[None]] | None = None,
+) -> None:
+    """Write one accepted item and its `change_log` row as ONE write.
 
     `validated` is set only on Assumption rows (spec 3.5). A fresh assumption
     starts unvalidated, so its value is False; the other 3 types get null.
+    `unit_of_work` (Batch 4 chunk 8) wraps the pair in ONE transaction, so a
+    failed ledger row cannot leave the item row behind (4.3 #9); `None`
+    keeps the pre-chunk per-store-commit behaviour (unit tests with fakes).
     """
     validated = False if item.type == ASSUMPTION else None
-    commit.insert_item(item, validated=validated)
-    commit.log_created(item)
+    if unit_of_work is None:
+        commit.insert_item(item, validated=validated)
+        commit.log_created(item)
+    else:
+        with unit_of_work():
+            commit.insert_item(item, validated=validated)
+            commit.log_created(item)
     accepted.append(item.id)
 
 

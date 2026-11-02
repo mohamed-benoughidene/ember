@@ -9,7 +9,7 @@ import sys
 import traceback
 from datetime import datetime, timezone
 from dataclasses import dataclass
-from functools import wraps
+from functools import partial, wraps
 from typing import Any, Callable
 
 import click
@@ -57,6 +57,7 @@ from ember.adapters.sqlite import (
     open_query_database,
     open_relate_database_readonly,
     open_relate_database_write,
+    unit_of_work,
 )
 from ember.bridge.json_out import OutputDocument, render_document
 from ember.capture.confirm_write import run_confirm_loop
@@ -481,6 +482,8 @@ def capture(file_path: str | None, output: OutputOptions) -> None:
         confirm=confirm,
         commit=gatekeeper,
         revalidate=lambda draft: validate_add_item(draft, run),
+        # One accepted item = one transaction (Batch 4 chunk 8, 4.3 #9).
+        unit_of_work=partial(unit_of_work, conn),
     )
     sink.summary(
         f"accepted: {len(result.accepted_ids)}"
@@ -720,6 +723,9 @@ def maintain(output: OutputOptions) -> None:
     sweep_changes: list[StatusChange] = []
     total_items = 0
     stale_truncated = False
+    # The Phase 5 error to re-raise AFTER the document of what completed is
+    # printed (Batch 4 chunk 8, 4.6 #3 / 4.3 #22); None keeps today's flow.
+    proposal_error: EmberError | None = None
     # G2-B: a `--dry-run` is a read — it opens STRICTLY read-only and
     # never migrates an older file (plan §5.5, story 76).
     conn = (
@@ -731,6 +737,8 @@ def maintain(output: OutputOptions) -> None:
         lookup=SqliteMaintainContext(conn),
         store=SqliteMaintainStore(conn),
         group_ids=SqliteGroupIdPort(conn),
+        # One user action is one transaction (Batch 4 chunk 8, 4.3 #9).
+        unit_of_work=partial(unit_of_work, conn),
     )
     if output.dry_run:
         snapshot = _load(ports.lookup)
@@ -775,16 +783,33 @@ def maintain(output: OutputOptions) -> None:
         if shortlist.truncated and not json_mode:
             sink.echo("stale shortlist capped at 10 items (list truncated)")
         if shortlist.candidates:
-            outcome = run_close_proposals(
-                CloseProposalPorts(
-                    lookup=ports.lookup,
-                    store=ports.store,
-                    close_proposer=build_close_proposer(os.environ),
-                    ai_response_store=SqliteAiResponseStore(conn),
-                    confirm=confirm,
-                ),
-                now=datetime.now(timezone.utc),
-            )
+            try:
+                outcome = run_close_proposals(
+                    CloseProposalPorts(
+                        lookup=ports.lookup,
+                        store=ports.store,
+                        close_proposer=build_close_proposer(os.environ),
+                        ai_response_store=SqliteAiResponseStore(conn),
+                        confirm=confirm,
+                        unit_of_work=ports.unit_of_work,
+                    ),
+                    now=datetime.now(timezone.utc),
+                )
+            except EmberError as exc:
+                # 4.6 #3 / 4.3 #22 (Batch 4 chunk 8): the sweep completed and
+                # WROTE its changes before this later action failed. In JSON
+                # mode the document is the report, so it is printed first;
+                # the error is re-raised after it, and the edge handler names
+                # it and exits 1. Text mode keeps today's single error line.
+                if not json_mode:
+                    raise
+                outcome = ProposalOutcome(
+                    stale=len(shortlist.candidates),
+                    proposed=0,
+                    accepted=0,
+                    rejected=0,
+                )
+                proposal_error = exc
     if json_mode:
         summary = summary_counts(sweep_changes, total_items)
         summary.update(
@@ -822,6 +847,8 @@ def maintain(output: OutputOptions) -> None:
                 "aborted": outcome.aborted,
             },
         )
+    if proposal_error is not None:
+        raise proposal_error
     if outcome.aborted:
         sys.exit(2)
 
@@ -871,6 +898,8 @@ def close_item(item_id: int, reason: str, output: OutputOptions) -> None:
         lookup=SqliteMaintainContext(conn),
         store=SqliteMaintainStore(conn),
         group_ids=SqliteGroupIdPort(conn),
+        # One user action is one transaction (Batch 4 chunk 8, 4.3 #9).
+        unit_of_work=partial(unit_of_work, conn),
     )
     if output.dry_run:
         snapshot = _load(ports.lookup)
@@ -926,6 +955,8 @@ def set_status(item_id: int, to_status: str, output: OutputOptions) -> None:
         lookup=SqliteMaintainContext(conn),
         store=SqliteMaintainStore(conn),
         group_ids=SqliteGroupIdPort(conn),
+        # One user action is one transaction (Batch 4 chunk 8, 4.3 #9).
+        unit_of_work=partial(unit_of_work, conn),
     )
     result = run_set_status(
         ports, MaintainRequest(item_id=item_id, to_status=to_status)
