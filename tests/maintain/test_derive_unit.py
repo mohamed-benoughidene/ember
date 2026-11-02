@@ -597,3 +597,26 @@ def test_links_created_at_is_not_the_evidence_clock() -> None:
     )
 
     assert derive_status_changes(snapshot) == []
+
+
+def test_the_shield_boundary_parses_timestamps() -> None:
+    # Finding 4.6 #7 (story 38): the shield compares instants, not TEXT.
+    # The clear is textually LATER ("01:00+02:00" > "00:30+00:00") but its
+    # instant is 2027-05-31T23:00Z, BEFORE the evidence's 2027-06-01T00:30Z.
+    # An instant comparison lets the evidence through; a string compare
+    # would keep the item silent.
+    snapshot = _snap_shielded(
+        [_item(1, "Finding"), _item(2, "Decision", status_origin="manual")],
+        [_link(10, 1, 2, "contradicts", created_at=T2)],
+        [
+            _clear_row(2, "2027-06-01T01:00:00+02:00", 1),
+            _evidence_row(10, 1, "2027-06-01T00:30:00+00:00", 2),
+        ],
+    )
+
+    changes = derive_status_changes(snapshot)
+
+    assert len(changes) == 1
+    assert changes[0].item_id == 2
+    assert changes[0].new_status == "Challenged"
+    assert changes[0].trigger_cause == "contradicts_confirmed"
