@@ -506,8 +506,14 @@ async function emptyAndError() {
     // QUERY-005 (-> the ledger). Exactly two notices — one per code —
     // with the counts 2 and 1 as bare numbers (I7), and Details revealing
     // each notice's own code.
+    // Its OWN throwaway directory: the story-8 single-instance lock
+    // ties one lock to one profile, so a third shell launched into
+    // workDir2 while app2 still runs would exit at boot. launchShell
+    // seeds everything it needs inside the directory, so a fresh one
+    // is a fully independent shell (like every other scenario here).
+    const workDir3 = fs.mkdtempSync(path.join(os.tmpdir(), 'ember-e2e-error-b-'));
     const { app: app3 } = await launchShell({
-      workDir: workDir2,
+      workDir: workDir3,
       mode: 'app',
       withDb: true,
       extraEnv: { FAKE_APP_FAIL: 'list-items:QUERY-003,history:QUERY-005' },
@@ -563,6 +569,7 @@ async function emptyAndError() {
       process.stdout.write('Reduce Motion honoured on the step-04 screens\n');
     } finally {
       await app3.close().catch(() => {});
+      fs.rmSync(workDir3, { recursive: true, force: true });
     }
   } finally {
     await app2.close().catch(() => {});
