@@ -564,6 +564,15 @@ function wireIpc(services) {
     onSettingsSaved: () => {
       menuManager.refresh();
       scheduleUndoLabelRefresh();
+      // Batch 5 chunk 21 (story 9, 4.9 #8): a settings save that leaves
+      // a knowledge base set (first run's step-1 save included — it
+      // goes through the same handler) must leave the capture shortcut
+      // live WITHOUT a restart. The same bootShortcutFor choice the
+      // boot block below uses, through the same shortcutManager seam;
+      // an OS refusal lands in the shipped APP-005 tray fallback
+      // (onFailure above — built once per run), never in silence.
+      const accelerator = bootShortcutFor(services.settingsStore.load().settings);
+      if (accelerator !== null) shortcutManager.register(accelerator);
     },
     /* --- Batch 2 Chunk 13: the EMBER-000 crash report's OS adapters
        (D-16): the real clipboard and shell for Copy crash report /
