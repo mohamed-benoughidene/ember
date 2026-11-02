@@ -49,7 +49,9 @@ from ember.adapters.sqlite import (
     SqliteSourceStore,
     build_ai_response_store,
     build_embedding_store,
+    init_knowledge_base,
     open_database,
+    open_existing_database,
     open_maintain_database,
     open_maintain_database_readonly,
     open_query_database,
@@ -376,6 +378,30 @@ def main() -> None:
     """Ember: project context management system."""
 
 
+@main.command("init")
+@click.option(
+    "--db",
+    "db_path",
+    default=DEFAULT_DB_PATH,
+    help="SQLite database path to create or verify.",
+)
+def init_command(db_path: str) -> None:
+    """Create and migrate a new knowledge base file (N8, D-25).
+
+    The ONE command that creates the file, on purpose. On a missing file it
+    creates and migrates it; on an existing file it succeeds only when the
+    file is a healthy Ember database already at the latest schema version,
+    and then changes nothing (byte-identical, exit 0). Anything else — a
+    file that is not an Ember database, a version other than the latest,
+    missing tables — is refused with CAPTURE-021 and left untouched.
+    """
+    outcome = init_knowledge_base(db_path)
+    if outcome == "created":
+        click.echo(f"initialized {db_path}")
+    else:
+        click.echo(f"{db_path} is already up to date; no changes")
+
+
 @main.command("capture-source")
 @click.option(
     "--file",
@@ -394,7 +420,7 @@ def capture_source(file_path: str | None, db_path: str) -> None:
     """Phase 1: store raw input, dedup by content hash, print source reference."""
     mode = InputMode.FILE if file_path else InputMode.STDIN
     raw_text = read_raw_text(mode=mode, path=file_path)
-    conn = open_database(db_path)
+    conn = open_existing_database(db_path)
     store = SqliteSourceStore(conn)
     result = store_source(store, raw_text)
     if result.reused:
@@ -1482,7 +1508,7 @@ def db_check(output: OutputOptions) -> None:
 
 def _write_validated_flag(item_id: int, db_path: str, *, new_value: bool) -> None:
     """Write the flag on an Assumption. `new_value` is data, not a mode switch."""
-    conn = open_database(db_path)
+    conn = open_existing_database(db_path)
     ids = SqliteGroupIdPort(conn)
     gatekeeper = SqliteItemGatekeeper(conn, group_ids=ids)
     item = validate_set_validated(gatekeeper.find_item(item_id), item_id)
