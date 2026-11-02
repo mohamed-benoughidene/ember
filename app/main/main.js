@@ -98,7 +98,11 @@ function createWindow({ showOnReady = true } = {}) {
   // box. Any in-page navigation attempt is refused (the renderer is
   // the one local page; its own router never uses real navigation),
   // and no window.open / target=_blank ever opens a new window.
-  mainWindow.webContents.on('will-navigate', (event) => {
+  // A same-URL reload is NOT navigation away (Keep safe's "Show the
+  // new file" reloads the one local page after a kb change), so the
+  // deny guard must not swallow it.
+  mainWindow.webContents.on('will-navigate', (event, url) => {
+    if (url === mainWindow.webContents.getURL()) return;
     event.preventDefault();
   });
   mainWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
