@@ -644,5 +644,5 @@ export function createAddScreen(ctx) {
     renderGateAndForm();
   }
 
-  return { render, state, dispose };
+  return { render, state, dispose, stop: stopSession };
 }
