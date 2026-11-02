@@ -233,7 +233,7 @@ def test_migrating_a_brand_new_file_makes_no_backup(tmp_path: Path) -> None:
 
     assert result.returncode == 0, result.stderr.decode()
     assert db_path.exists()
-    assert _version(db_path) == 13
+    assert _version(db_path) == 14
     backups = sorted(tmp_path.glob("kb.db.bak*"))
     assert backups == []
 
@@ -327,7 +327,7 @@ def test_migration_011_backfill_accounts_for_reversed_links(tmp_path: Path) -> N
 
     conn = open_database(str(db_path))
     try:
-        assert _version(db_path) == 13
+        assert _version(db_path) == 14
         reversed_at = conn.execute(
             "SELECT reversed_at FROM links WHERE id = ?", (link_id,)
         ).fetchone()[0]
@@ -378,4 +378,4 @@ def test_four_parallel_openers_of_a_new_file_all_succeed(tmp_path: Path) -> None
     # The headline: no opener crashed, nobody got a half-migrated file.
     assert failures == [], f"{len(failures)} of {openers} openers failed"
 
-    assert _version(db_path) == 13
+    assert _version(db_path) == 14

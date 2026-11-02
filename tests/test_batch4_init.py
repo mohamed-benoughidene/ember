@@ -102,7 +102,7 @@ def test_init_creates_and_migrates_a_new_knowledge_base(tmp_path: Path) -> None:
 
     assert result.returncode == 0, _error_text(result)
     assert db_path.exists()
-    assert _version(db_path) == 13
+    assert _version(db_path) == 14
 
 
 def test_init_on_a_healthy_current_file_changes_nothing(tmp_path: Path) -> None:
@@ -116,7 +116,7 @@ def test_init_on_a_healthy_current_file_changes_nothing(tmp_path: Path) -> None:
 
     assert result.returncode == 0, _error_text(result)
     assert _sha256(db_path) == before
-    assert _version(db_path) == 13
+    assert _version(db_path) == 14
 
 
 def test_init_refuses_a_non_ember_file(tmp_path: Path) -> None:
@@ -211,7 +211,7 @@ def test_two_init_capture_pairs_racing_on_a_new_file_both_succeed(
         assert result.returncode == 0, f"thread 0 {step}: {_error_text(result)}"
     for step, result in zip(("init", "capture-source"), results[1]):
         assert result.returncode == 0, f"thread 1 {step}: {_error_text(result)}"
-    assert _version(db_path) == 13
+    assert _version(db_path) == 14
     conn = sqlite3.connect(db_path)
     try:
         sources = conn.execute("SELECT COUNT(*) FROM sources").fetchone()[0]
@@ -273,7 +273,7 @@ def test_four_parallel_capture_sources_on_a_new_file_all_succeed(
     for index in range(parallelism):
         for step, result in zip(("init", "capture-source"), results[index]):
             assert result.returncode == 0, f"thread {index} {step}: {_error_text(result)}"
-    assert _version(db_path) == 13
+    assert _version(db_path) == 14
     conn = sqlite3.connect(db_path)
     try:
         sources = conn.execute("SELECT COUNT(*) FROM sources").fetchone()[0]

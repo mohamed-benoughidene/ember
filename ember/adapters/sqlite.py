@@ -86,7 +86,7 @@ _MIGRATIONS_MODULE = "ember.adapters.migrations"
 # script set discovered on disk must be exactly 1.._LATEST_VERSION before
 # any open migrates anything; a dropped or renamed `.sql` refuses up front
 # with `ScriptSetInvalid` (MIGRATION-001) instead of building a half schema.
-_LATEST_VERSION = 13
+_LATEST_VERSION = 14
 
 _BACKUPS_TO_KEEP = 3
 

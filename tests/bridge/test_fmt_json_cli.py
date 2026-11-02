@@ -305,7 +305,7 @@ def test_backup_and_db_check_summaries_use_existing_report_fields(
     assert backup_doc["changes"] == []
     assert backup_doc["summary"] == {
         "path": db_path + ".bak",
-        "schema_version": 13,
+        "schema_version": 14,
         "item_count": 2,
         "rotated": None,
     }
