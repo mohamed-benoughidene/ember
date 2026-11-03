@@ -16,12 +16,22 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
 
 /** The .mjs pure modules, loaded once (node's module cache does the rest). */
 const loadView = () => import('../shared/relate-view.mjs');
 const loadWords = () => import('../shared/relate-words.mjs');
 const { wireRelateChannels } = require('../main/relate-session');
 const { relateArgs } = require('../main/relate-args');
+
+/** The Link screen module: its PURE end-of-run decision (Chunk 18). */
+const loadLinkScreen = () => import('../renderer/screens/link.mjs');
+
+/** The screen source, for the wire-contract guard pins (data only —
+ * never sentence wording, I10). */
+const linkScreenSource = () =>
+  fs.readFileSync(path.join(__dirname, '..', 'renderer', 'screens', 'link.mjs'), 'utf8');
 
 /* ---------- the pinned event shapes (contract, relate) ---------- */
 
@@ -346,4 +356,87 @@ test('stop closes stdin and a second run works after the exit', () => {
   const again = h.ipc.handlers['ember:relateStart']({ sender: fakeSender() }, { item: 1 });
   assert.deepEqual(again, { ok: true });
   assert.equal(h.sessions.length, 2);
+});
+
+/* ---------- Chunk 18 (4.8 #11/N16+D-18, 4.8 #4/#10, N3) ---------- */
+
+test('the no-more-suggestions button keeps the SAME `n` answer and key (N16/D-18)', () => {
+  // D-18/N16 relabels the button ("No, don't suggest again" — the
+  // engine reserves the pair for good, 4.8 #11). The label wording is
+  // NOT pinned here (I10 — it is checked visually), but the wire
+  // contract is: the button and its `n` keyboard key answer exactly
+  // `n`, the child is never stopped by them, and the run keeps serving
+  // proposals (only Stop ends it).
+  const h = harness();
+  const sender = fakeSender();
+  h.ipc.handlers['ember:relateStart']({ sender }, { item: 1 });
+  assert.deepEqual(h.ipc.handlers['ember:relateAnswer']({}, 'n'), { ok: true });
+  assert.deepEqual(h.sessions[0].answers, ['n']);
+  assert.equal(h.sessions[0].stopped, false, 'the `n` answer must never stop the child — only Stop (Esc/q) does');
+  assert.deepEqual(h.ipc.handlers['ember:relateAnswer']({}, 's'), { ok: true }, 'the run is still live after `n`');
+  assert.deepEqual(h.sessions[0].answers, ['n', 's']);
+  // The screen's control keeps the same key: the reject action and the
+  // `n` keyboard key both send `n` — a guard against the relabel
+  // drifting the key (the Proof step flips it and watches this go red).
+  const src = linkScreenSource();
+  assert.match(src, /'proposal-reject': \(\) => answerChoice\('n'\)/);
+  assert.match(src, /ev\.key === 'n'\) void answerChoice\('n'\)/);
+  assert.ok(!/answerChoice\('q'\)/.test(src), 'the no-more-suggestions key is n, never the stop key q');
+});
+
+test('a stop during preparation resolves as the stopped stage, never an error (4.8 #4, N3)', async () => {
+  // The real shape of the app's own stop mid-prepare: no engine error
+  // (Batch 5's stopRequested sentinel suppresses APP-009), the child
+  // killed by the backstop (no exit code), no events at all. The APP-002
+  // crash text must never be built for it.
+  const { relateEndOfRun } = await loadLinkScreen();
+  const view = { summary: null, emptySignal: false };
+  const decision = relateEndOfRun({ exitCode: null, error: null, view, stopRequested: true });
+  assert.equal(decision.phase, 'done');
+  assert.equal(decision.stage, 'stopped');
+  assert.equal(decision.error, null);
+});
+
+test('any other kill without a result stays a named error, never a fake Stopped (4.8 #4)', async () => {
+  const { relateEndOfRun } = await loadLinkScreen();
+  // The bridge names every other kill without a result (APP-009 "Ember
+  // stopped unexpectedly" and friends) and the error branch renders it
+  // from the one sentence table — the decision must pass it through
+  // untouched, never reinvent it.
+  const named = { code: 'APP-009', name: 'EmberStoppedUnexpectedly', where: 'link', detail: 'killed by a signal' };
+  const withError = relateEndOfRun({ exitCode: null, error: named, view: { summary: null, emptySignal: false }, stopRequested: false });
+  assert.equal(withError.phase, 'error');
+  assert.deepEqual(withError.error, named);
+  // And a quiet end nobody asked for (no error, no stop, no report)
+  // keeps the honest no-report fallback instead of a fake "Stopped".
+  const unexplained = relateEndOfRun({ exitCode: null, error: null, view: { summary: null, emptySignal: false }, stopRequested: false });
+  assert.equal(unexplained.phase, 'error');
+  assert.equal(unexplained.error.code, 'APP-002');
+});
+
+test('the end-of-run decision keeps the honest stages for the engine own ends', async () => {
+  const { relateEndOfRun } = await loadLinkScreen();
+  const view = { summary: null, emptySignal: false };
+  // The engine's own report decides (D3): a normal summary stays the
+  // summary stage; the aborted flag stays the stopped stage.
+  const summary = { accepted: 1, rejected: 0, skipped: 1, aborted: false };
+  assert.deepEqual(
+    relateEndOfRun({ exitCode: 0, error: null, view: { ...view, summary }, stopRequested: false }),
+    { phase: 'done', stage: 'summary', error: null },
+  );
+  const aborted = { ...summary, aborted: true };
+  assert.deepEqual(
+    relateEndOfRun({ exitCode: 0, error: null, view: { ...view, summary: aborted }, stopRequested: true }),
+    { phase: 'done', stage: 'stopped', error: null },
+  );
+  // The engine's documented empty-pool print (story 46) and the stdin
+  // close quit (exit 2, no summary — story 45's quiet stop) stay done.
+  assert.deepEqual(
+    relateEndOfRun({ exitCode: 0, error: null, view: { ...view, emptySignal: true }, stopRequested: false }),
+    { phase: 'done', stage: 'empty', error: null },
+  );
+  assert.deepEqual(
+    relateEndOfRun({ exitCode: 2, error: null, view, stopRequested: false }),
+    { phase: 'done', stage: 'stopped', error: null },
+  );
 });

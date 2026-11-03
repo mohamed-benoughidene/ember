@@ -39,6 +39,23 @@ test('a bad id refuses before any child can start (APP-002 at the edge)', () => 
   assert.throws(() => relateArgs({ item: 'abc' }), /whole number from 1 up/);
 });
 
+test('the bad-id refusal names the flag: --item, never "undefined" (4.8 #10)', () => {
+  // Batch 6: the refusal must read "--item must be a whole number
+  // from 1 up, got 0" — today requireId is called with no label, so
+  // the message says "undefined must be a whole number …".
+  for (const bad of [0, -2, 1.5, 'abc']) {
+    let message = '';
+    try {
+      relateArgs({ item: bad });
+      assert.fail(`a bad id (${String(bad)}) must refuse`);
+    } catch (err) {
+      message = err instanceof Error ? err.message : String(err);
+    }
+    assert.match(message, /--item must be a whole number from 1 up/);
+    assert.ok(!message.includes('undefined'), 'the refusal names --item, not "undefined"');
+  }
+});
+
 test('the builder never emits --confirm json or --db (the bridge client adds them)', () => {
   for (const built of [relateArgs({ item: 1 }), relateArgs({ latest: true })]) {
     assert.ok(!built.includes('--confirm'));
