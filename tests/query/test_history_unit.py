@@ -59,6 +59,28 @@ def test_the_edit_and_remove_link_pairs_have_kinds() -> None:
     )
 
 
+def test_a_source_edit_row_maps_to_the_same_item_edited_kind() -> None:
+    """Issue #44: `edit-item --field source` writes the OTHER pair the
+    real edit-item writer produces (`ember/maintain/human_actions.py`
+    writes `field='rationale'` or `field='source'` with cause
+    `user_edit_item`). It must map to the SAME kind as the rationale
+    pair, `item_edited`, not fall to the `unknown` fallback."""
+    assert (
+        classify_change_row(
+            make_change_row(
+                field_changed="source", trigger_cause="user_edit_item", item_id=1
+            )
+        )
+        == "item_edited"
+    )
+    assert (
+        classify_change_row(
+            make_change_row(field_changed="rationale", trigger_cause="user_edit_item")
+        )
+        == "item_edited"
+    )
+
+
 def test_history_read_newest_first() -> None:
     rows = [
         make_change_row(
