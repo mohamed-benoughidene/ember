@@ -191,3 +191,15 @@ class AiTimeoutError(AiCallError):
 
     code = "CAPTURE-025"
     name = "AiTimeoutError"
+
+
+class SourceEmpty(CaptureError):
+    """The captured text is empty (or whitespace only) (Batch 7 chunk 6).
+
+    Refused in `read_raw_text` right after the UTF-8 decode, BEFORE any AI
+    call and before the source is stored — there is nothing to propose
+    from, and no request should ever be sent (finding 4.5 #16).
+    """
+
+    code = "CAPTURE-026"
+    name = "SourceEmpty"

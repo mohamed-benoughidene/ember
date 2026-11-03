@@ -8,6 +8,7 @@ from pathlib import Path
 
 from ember.capture.errors import (
     InvalidUtf8Error,
+    SourceEmpty,
     SourceFileNotFound,
     SourceFileTooLarge,
     StdinReadError,
@@ -26,15 +27,22 @@ def read_raw_text(
     mode: InputMode,
     path: str | None = None,
 ) -> str:
-    """Read input, enforce the size limit for files, decode as UTF-8."""
+    """Read input, enforce the size limit for ALL inputs, decode as UTF-8.
+
+    Empty (whitespace-only) text is refused here, before the source is
+    stored and before any AI call is made (Batch 7 chunk 6).
+    """
     if mode is InputMode.FILE:
         raw_bytes = _read_file_bytes(path)
     else:
         raw_bytes = _read_stdin_bytes()
     try:
-        return raw_bytes.decode("utf-8")
+        text = raw_bytes.decode("utf-8")
     except UnicodeDecodeError as exc:
         raise InvalidUtf8Error("invalid utf-8") from exc
+    if not text.strip():
+        raise SourceEmpty("captured text is empty")
+    return text
 
 
 def _read_file_bytes(path: str | None) -> bytes:
@@ -53,6 +61,15 @@ def _read_file_bytes(path: str | None) -> bytes:
 
 def _read_stdin_bytes() -> bytes:
     try:
-        return sys.stdin.buffer.read()
+        raw_bytes = sys.stdin.buffer.read()
     except OSError as exc:
         raise StdinReadError("stdin read fail") from exc
+    # Same cap as files; a pasted note must never sneak past it (story 4).
+    if len(raw_bytes) > MAX_SOURCE_BYTES:
+        raise SourceFileTooLarge(
+            "stdin over the source size limit",
+            path="<stdin>",
+            size=len(raw_bytes),
+            max_bytes=MAX_SOURCE_BYTES,
+        )
+    return raw_bytes

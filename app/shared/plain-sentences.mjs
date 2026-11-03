@@ -633,6 +633,11 @@ Object.assign(ERROR_SENTENCES, {
     what: 'Adding text waited for the AI service, and no answer arrived in time.',
     next: 'Wait a moment, then try again. Your text is kept; nothing was created.',
   },
+  'CAPTURE-026': {
+    title: 'The note is empty.',
+    what: 'The text you gave Ember has no words in it, so there was nothing to add.',
+    next: 'Write your text first, then try again. Nothing was created.',
+  },
   'RELATE-000': {
     title: 'A problem in the relate engine was reported.',
     what: 'Ember reported a general problem in the part that links items.',
