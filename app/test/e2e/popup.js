@@ -406,7 +406,7 @@ async function popupStopCloses(ai) {
       status: 200,
       content: JSON.stringify([
         { type: 'Decision', statement: 'Use SQLite for local storage', source_quote: 'use SQLite for local storage', confidence: 0.9 },
-        { type: 'Assumption', statement: 'The team ships weekly', source_quote: 'ships weekly', confidence: 0.8 },
+        { type: 'Assumption', statement: 'The team ships weekly', source_quote: 'the team ships weekly', confidence: 0.8 },
       ]),
     }));
     await popup.fill('[data-testid="add-text-input"]', NOTE);
