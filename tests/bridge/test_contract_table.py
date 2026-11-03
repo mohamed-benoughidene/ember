@@ -90,6 +90,19 @@ def _seed_knowledge_base(db_path: str) -> None:
     open_database(db_path).close()
 
 
+def _seed_source_without_items(db_path: str) -> None:
+    """One raw note with no items — the shape `forget-source` accepts."""
+    from ember.adapters.sqlite import open_database
+    from tests.fakes import insert_source
+
+    conn = open_database(db_path)
+    try:
+        insert_source(conn)
+        conn.commit()
+    finally:
+        conn.close()
+
+
 @dataclass(frozen=True)
 class Row:
     """One command's contract (see the module docstring)."""
@@ -130,6 +143,11 @@ ROWS: tuple[Row, ...] = (
         command="clear-validated",
         sample_args=("clear-validated", "--item", "1", "--db", "{db}"),
         seed=_seed_assumption,
+    ),
+    Row(
+        command="forget-source",
+        sample_args=("forget-source", "--source", "1", "--db", "{db}"),
+        seed=_seed_source_without_items,
     ),
     # --- Engine B: Relate ---
     Row(
