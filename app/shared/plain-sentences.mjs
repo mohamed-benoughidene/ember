@@ -610,6 +610,11 @@ Object.assign(ERROR_SENTENCES, {
     what: 'Adding text asks the AI service for proposals, and no working API key was configured.',
     next: 'Add the AI key in the app settings (or the environment), then try again. Your text is kept; nothing was created.',
   },
+  'CAPTURE-023': {
+    title: 'A note with items cannot be forgotten.',
+    what: 'Forgetting works only on a note that produced no items. This note has items, so its knowledge is still in use.',
+    next: 'Nothing was deleted. Review or close the note’s items first, then forget the note.',
+  },
   'RELATE-000': {
     title: 'A problem in the relate engine was reported.',
     what: 'Ember reported a general problem in the part that links items.',

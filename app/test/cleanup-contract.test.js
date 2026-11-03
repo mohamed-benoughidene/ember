@@ -260,16 +260,18 @@ test('the apply session equals the terminal run on a byte-identical copy (parity
     assert.equal(ai.calls.length, 1, 'the session made exactly one AI call for one candidate');
     assert.ok(ai.calls[0].body.includes('should we cache tokens?'), 'the candidate’s own text rides the request');
 
-    // The terminal run on the copy, same flags the app is allowed to
-    // pin (`--format json`, human confirm with the same keys). Async —
-    // the fake AI server lives in this process and must keep serving.
+    // The terminal run on the copy, in the machine-confirm mode C8's
+    // D-20 ruling leaves open for real runs (terminal + json is
+    // refused: the prompts would mix into the document). Same wire the
+    // app itself speaks: one JSON answer line on stdin; the document
+    // arrives as the text of the last message event.
     const terminal = await runWithInput(
       EMBER,
-      ['maintain', '--format', 'json', '--confirm', 'terminal', '--db', dbB],
-      { input: 'y\n', env: withFakeAi() },
+      ['maintain', '--format', 'json', '--confirm', 'json', '--db', dbB],
+      { input: '{"answer": "y"}\n', env: withFakeAi() },
     );
     assert.equal(terminal.status, 0, `the terminal run must succeed: ${terminal.stderr}`);
-    const terminalDoc = maintainDocumentFromMessage(terminal.stdout.trim().split('\n').pop());
+    const terminalDoc = maintainDocumentFromMessage(JSON.parse(terminal.stdout.trim().split('\n').pop()).text);
     assert.ok(terminalDoc, 'the terminal run must end in the pinned document');
     assert.deepEqual(run.document, terminalDoc, 'the app’s apply document must equal the terminal run’s');
     assert.equal(dump(dbA), dump(dbB), 'the databases must be row-for-row equal after both runs');
@@ -312,11 +314,11 @@ harness.seed_contradicted_active(db)
 
     const terminal = await runWithInput(
       EMBER,
-      ['maintain', '--format', 'json', '--confirm', 'terminal', '--db', dbB],
+      ['maintain', '--format', 'json', '--confirm', 'json', '--db', dbB],
       { input: '', env },
     );
     assert.equal(terminal.status, 0, `the terminal run must succeed: ${terminal.stderr}`);
-    const terminalDoc = maintainDocumentFromMessage(terminal.stdout.trim().split('\n').pop());
+    const terminalDoc = maintainDocumentFromMessage(JSON.parse(terminal.stdout.trim().split('\n').pop()).text);
     assert.ok(terminalDoc);
     assert.deepEqual(run.document, terminalDoc);
     assert.equal(dump(dbA), dump(dbB), 'the databases are row-for-row equal after both runs');
