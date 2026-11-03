@@ -217,15 +217,15 @@ def test_migration_011_preserves_existing_schema(db_path) -> None:
     fks_after = _fk_lists(raw)
 
     # Every pre-011 object keeps its exact sqlite_master SQL, except `links`,
-    # `items` and `change_log`: ADD COLUMN rewrites the stored CREATE text,
-    # so their truth comes from the PRAGMA diffs below.
+    # `items`, `change_log` and `item_embeddings`: ADD COLUMN rewrites the
+    # stored CREATE text, so their truth comes from the PRAGMA diffs below.
     for name, sql in master_before.items():
-        if name not in {"links", "items", "change_log"}:
+        if name not in {"links", "items", "change_log", "item_embeddings"}:
             assert master_after[name] == sql
 
     # Every pre-011 table keeps its columns, indexes and foreign keys, except
-    # `links` (011), `items` (012) and `change_log` (013), each gaining one
-    # trailing nullable column.
+    # `links` (011), `items` (012), `change_log` (013) and `item_embeddings`
+    # (015), each gaining one trailing nullable column.
     for name, info in infos_before.items():
         if name == "links":
             assert [row[-1] for row in info] == [
@@ -259,6 +259,17 @@ def test_migration_011_preserves_existing_schema(db_path) -> None:
             assert added[3] == 0  # notnull
             assert added[4] is None  # no default
             assert added[5] == 0  # not pk
+            assert added[5] == 0  # not pk
+        elif name == "item_embeddings":
+            # 015 appends the cache's optional format tag.
+            assert [row[-1] for row in info] == [
+                row[-1] for row in infos_after[name][:-1]
+            ]
+            added = infos_after[name][-1]
+            assert added[1] == "vector_format"
+            assert added[2] == "TEXT"
+            assert added[3] == 0  # notnull
+            assert added[4] is None  # no default
             assert added[5] == 0  # not pk
         else:
             assert infos_after[name] == info

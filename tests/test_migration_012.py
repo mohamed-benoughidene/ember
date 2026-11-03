@@ -161,20 +161,26 @@ def test_migration_012_preserves_existing_schema(db_path) -> None:
     raw.close()
 
     # No object was renamed, rebuilt or dropped. ADD COLUMN rewrites the stored
-    # CREATE text of `items` and `change_log`, so their truth comes from the
-    # column diff below.
+    # CREATE text of `items`, `change_log` and `item_embeddings`, so their
+    # truth comes from the column diff below.
     for name, sql in objects_before.items():
-        if name not in {"items", "change_log"}:
+        if name not in {"items", "change_log", "item_embeddings"}:
             assert objects_after[name] == sql
     for table in tables:
         if table == "items":
             continue
         # 013 rides every open, and 014 appends its own nullable column
-        # (source_id) after 013's group_id.
+        # (source_id) after 013's group_id. 015 appends the cache's optional
+        # format tag to item_embeddings.
         if table == "change_log":
             assert columns_after[table] == columns_before[table] + [
                 (8, "group_id", "INTEGER", 0, None, 0),
                 (9, "source_id", "INTEGER", 0, None, 0),
+            ]
+            continue
+        if table == "item_embeddings":
+            assert columns_after[table] == columns_before[table] + [
+                (4, "vector_format", "TEXT", 0, None, 0)
             ]
             continue
         assert columns_after[table] == columns_before[table], table

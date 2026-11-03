@@ -406,16 +406,19 @@ def ensure_relate_schema(conn: sqlite3.Connection) -> None:
     """Check the applied schema version is new enough for the relate engine.
 
     Raise `DbOpenFailed` (RELATE-012) if the version cannot be read, and
-    `SchemaOutdated` (RELATE-014) if the version is below the required 12
-    (the relate engine reads `items.metadata` from migration 012 on).
+    `SchemaOutdated` (RELATE-014) if the version is below the required 15
+    (the cache writes tag `item_embeddings.vector_format`, migration 015,
+    and read `items.metadata` from migration 012 on).
     """
     try:
         row = conn.execute("SELECT version FROM schema_version").fetchone()
         version = 0 if row is None else int(row["version"])
     except (sqlite3.Error, ValueError, TypeError) as exc:
         raise DbOpenFailed("schema version read fail") from exc
-    if version < 12:
-        raise SchemaOutdated("schema version too old", version=version, required=12)
+    if version < 15:
+        raise SchemaOutdated(
+            "schema version too old", version=version, required=15
+        )
 
 
 def open_relate_database_readonly(db_path: str) -> sqlite3.Connection:
@@ -2938,8 +2941,13 @@ class SqliteEmbedderStore:
         try:
             self._conn.execute(
                 "INSERT OR REPLACE INTO item_embeddings"
-                " (item_id, vector, model_name, embedded_at) VALUES (?, ?, ?, ?)",
-                (item_id, blob, model_name, timestamp),
+                " (item_id, vector, model_name, embedded_at, vector_format)"
+                " VALUES (?, ?, ?, ?, ?)",
+                # The tag names the ONE format `ember.relate.vector_format`
+                # defines: little-endian float32. Pre-015 rows (and files not
+                # yet migrated, which lack the column) read the same float32,
+                # so NULL/missing/`float32` all mean one format.
+                (item_id, blob, model_name, timestamp, "float32"),
             )
             self._conn.commit()
         except sqlite3.Error as exc:
