@@ -530,12 +530,12 @@ def test_relate_old_schema_exits_1_with_relate_014(db_path, monkeypatch) -> None
 
 # --- relate never migrates an older file (B4-04, decision N9) ---
 #
-# `relate` is mostly a read: opening a v12 file must not migrate it to 13
-# and must not write a `.bak-v12` pre-migration copy beside it. Only the
-# derived-data writes (embedding cache, raw AI reply, confirmed links) may
-# write, and they must land even on the un-migrated v12 file. The file is
-# built with the exact scripts-001-012 pattern of `_build_v12_db` in
-# tests/test_db_check.py.
+# `relate` is mostly a read: opening a v12 file must not migrate it to the
+# latest version and must not write a `.bak-v12` pre-migration copy beside
+# it. Since migration 015 the relate write floor is 15 (the cache tags
+# `vector_format`), so an unmigrated file is refused with RELATE-014 before
+# any derived-data write can land: the file must migrate through the normal
+# write open first. The refusal provably migrates nothing.
 
 _MIGRATIONS_TO_12 = (
     "001_create_sources.sql",
@@ -565,7 +565,7 @@ def _build_v12_relate_db(db_str: str) -> None:
     conn.close()
 
 
-def test_relate_never_migrates_and_still_saves_cache_reply_and_link(
+def test_relate_refuses_an_unmigrated_v12_file_and_never_migrates_it(
     db_path, monkeypatch
 ) -> None:
     _build_v12_relate_db(db_path)
@@ -574,24 +574,24 @@ def test_relate_never_migrates_and_still_saves_cache_reply_and_link(
         source_id = insert_source(conn)
         insert_item(conn, source_id=source_id, item_id=1, item_type="Decision")
         insert_item(conn, source_id=source_id, item_id=2, item_type="Decision")
-        # Pre-seed the candidate's cache vector (the FakeEmbedder's model and
-        # fixed vector shape), so the run encodes only the new item: exactly
-        # one new `item_embeddings` row during the run.
-        SqliteEmbedderStore(conn).upsert(2, [1.0, 0.0, 0.0], "fake-model")
         conn.commit()
     finally:
         conn.close()
     _patch_phase2_ports(monkeypatch)
     _patch_phase34_ports(monkeypatch)
+    digest_before = Path(db_path).read_bytes()
 
     result = CliRunner().invoke(
         main, ["relate", "--item", "1", "--db", db_path], input="y\n"
     )
 
-    assert result.exit_code == 0, _error_text(result)
-    assert "accepted: 1, rejected: 0, skipped: 0, aborted: false" in result.output
+    assert result.exit_code == 1, _error_text(result)
+    # The write open refuses the unmigrated file (RELATE-014): the run made
+    # NO write at all — no cache row, no raw AI reply, no confirmed link.
+    assert "RELATE-014" in _error_text(result)
     assert _no_bak_file(db_path)
-    # The schema_version table still says 12 — no migration, no backup.
+    # The schema_version table still says 12 — no migration, no backup, a
+    # byte-identical file.
     conn = sqlite3.connect(db_path)
     try:
         version = int(conn.execute("SELECT version FROM schema_version").fetchone()[0])
@@ -608,12 +608,10 @@ def test_relate_never_migrates_and_still_saves_cache_reply_and_link(
     finally:
         conn.close()
     assert version == 12
-    # One new vector row (item 1) next to the pre-seeded cache row (item 2).
-    assert embedding_ids == [1, 2]
-    # One raw AI reply for the new item.
-    assert replies == 1
-    # The accepted proposal was confirmed into one Confirmed link.
-    assert links == [(1, 2, "depends_on", "Confirmed")]
+    assert embedding_ids == []
+    assert replies == 0
+    assert links == []
+    assert Path(db_path).read_bytes() == digest_before
 
 
 def _no_bak_file(db_str: str) -> bool:

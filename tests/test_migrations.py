@@ -63,7 +63,15 @@ def test_item_embeddings_table_has_expected_columns(db_path) -> None:
     conn = open_database(db_path)
 
     columns = _columns(conn, "item_embeddings")
-    assert list(columns) == ["item_id", "vector", "model_name", "embedded_at"]
+    # 015 appended the optional format tag; NULL and missing both mean the
+    # float32 format `ember.relate.vector_format` defines.
+    assert list(columns) == [
+        "item_id",
+        "vector",
+        "model_name",
+        "embedded_at",
+        "vector_format",
+    ]
 
 
 def test_change_log_table_has_expected_columns(db_path) -> None:

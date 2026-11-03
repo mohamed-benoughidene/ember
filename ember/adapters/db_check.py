@@ -48,7 +48,7 @@ _TRIGGER_DEFINITIONS_SCRIPT = (
 _EXPECTED_TRIGGER_SQL: dict[str, str] | None = None
 
 FLOORS: tuple[tuple[str, int], ...] = (
-    ("relate", 12),
+    ("relate", 15),
     ("maintain", 11),
     ("query", 10),
 )

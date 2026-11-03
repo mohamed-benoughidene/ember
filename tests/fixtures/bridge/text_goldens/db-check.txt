@@ -1,5 +1,5 @@
-version: 14
-floors: relate 12 ok, maintain 11 ok, query 10 ok, capture none
+version: 15
+floors: relate 15 ok, maintain 11 ok, query 10 ok, capture none
 tables: 8 expected - present
 triggers: links_compat_insert, links_compat_update, items_closed_reason_insert, items_closed_reason_update - present
 link_compat: 16 rows, matches TYPE_COMPAT

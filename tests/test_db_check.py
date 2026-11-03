@@ -122,7 +122,7 @@ def test_db_check_healthy(db_path) -> None:
     assert result.exit_code == 0
     lines = result.output.splitlines()
     assert f"version: {LATEST_VERSION}" in lines
-    assert "floors: relate 12 ok, maintain 11 ok, query 10 ok, capture none" in lines
+    assert "floors: relate 15 ok, maintain 11 ok, query 10 ok, capture none" in lines
     assert (
         "triggers: links_compat_insert, links_compat_update,"
         " items_closed_reason_insert, items_closed_reason_update - present"
@@ -171,7 +171,7 @@ def test_db_check_drift_stale_version(db_path) -> None:
     assert result.exit_code == 1
     lines = result.output.splitlines()
     assert "version: 10" in lines
-    assert "floors: unmet - relate needs 12, maintain needs 11" in lines
+    assert "floors: unmet - relate needs 15, maintain needs 11" in lines
     assert "result: DRIFT" == lines[-1]
 
 
@@ -228,8 +228,9 @@ def test_db_check_rejects_unknown_flag(db_path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Undo step 05: the undo-group pointer check (no new floor — a v12 file
-# stays healthy; the check runs only on schema 13 and newer).
+# Undo step 05: the undo-group pointer check (no extra floor of its own —
+# the check runs on schema 13 and newer; post-015 the relate floor of 15
+# stops the walk on older files before the group check is ever reached).
 # ---------------------------------------------------------------------------
 
 
@@ -273,16 +274,20 @@ def test_db_check_group_check_healthy_on_v13(db_path) -> None:
     assert "result: OK" == lines[-1]
 
 
-def test_db_check_group_check_not_applicable_on_v12(db_path) -> None:
+def test_db_check_v12_drifts_on_the_relate_floor_before_the_group_check(db_path):
+    """Post-015 the relate floor is 15: a v12 file is floor-drift, so the
+    walk stops at the floors line and the group check (which adds NO extra
+    floor of its own) is never reached. The check still never migrates."""
     _build_v12_db(db_path)
     before = _sha256(db_path)
 
     result = CliRunner().invoke(main, ["db-check", "--db", db_path])
 
-    assert result.exit_code == 0
+    assert result.exit_code == 1
     lines = result.output.splitlines()
-    assert "group_id: not applicable (schema v12)" in lines
-    assert "result: OK" == lines[-1]
+    assert "floors: unmet - relate needs 15" in lines
+    assert not any(line.startswith("group_id:") for line in lines)
+    assert "result: DRIFT" == lines[-1]
     assert _sha256(db_path) == before
 
 
