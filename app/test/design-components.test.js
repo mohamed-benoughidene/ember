@@ -15,6 +15,7 @@ const { heatMarkHtml, settleClass } = require('../renderer/components/heat-mark.
 const { statusPillHtml, HEAT_STATUSES: PILL_STATUSES } = require('../renderer/components/status-pill.mjs');
 const { stateBlockHtml, STATE_KINDS, loadingHtml, emptyHtml, errorHtml, noKeyHtml } = require('../renderer/components/state-block.mjs');
 const { buttonHtml, BUTTON_VARIANTS } = require('../renderer/components/button.mjs');
+const { keyFieldHtml, EYE_SHOW_LABEL, EYE_HIDE_LABEL } = require('../renderer/components/key-field.mjs');
 const { bannerHtml } = require('../renderer/components/banner.mjs');
 const { provenanceListHtml, PROVENANCE_LABELS } = require('../renderer/components/provenance-line.mjs');
 const { itemRowHtml, itemTableHtml } = require('../renderer/components/item-row.mjs');
@@ -140,6 +141,44 @@ test('proposal block: the four-button order Stop, Edit, Reject, Confirm', () => 
   assert.match(html, /class="quote">We decided to use SQLite/);
   assert.deepEqual(PROPOSAL_TYPES, ['Decision', 'Assumption', 'Finding', 'Question']);
   assert.throws(() => proposalBlockHtml({ type: 'Rumour', statement: 'x' }), /unknown proposal type/);
+});
+
+test('key field: one masked box, the eye toggle inside, no separate Show/Hide button', () => {
+  assert.equal(EYE_SHOW_LABEL, 'Show key');
+  assert.equal(EYE_HIDE_LABEL, 'Hide key');
+
+  const masked = keyFieldHtml({ id: 'setup-key', testid: 'setup-key-input', toggleAction: 'setup-show-key' });
+  // Exactly one input, masked by default, with a hidden eye button that
+  // lives INSIDE the .key-field wrapper (Batch 6, D-14/F7d).
+  assert.equal((masked.match(/<input\b/g) ?? []).length, 1);
+  assert.equal((masked.match(/<button\b/g) ?? []).length, 1);
+  assert.match(masked, /type="password"/);
+  assert.match(masked, /data-testid="setup-key-input"/);
+  assert.match(masked, /aria-label="Your AI key"/);
+  assert.match(masked, /class="key-field"/);
+  const inputAt = masked.indexOf('data-testid="setup-key-input"');
+  const eyeAt = masked.indexOf('aria-label="Show key"');
+  assert.ok(eyeAt > inputAt, 'the eye toggle must come after the input, inside the same wrapper');
+  assert.ok(masked.indexOf('</div>', eyeAt) !== -1 && masked.indexOf('<div', 1) === -1, 'input and eye share the one .key-field wrapper');
+  assert.match(masked, /aria-hidden="true"/, 'the eye icon is decorative; the aria-label names it');
+  assert.match(masked, /data-action="setup-show-key"/);
+
+  // The toggle flips BOTH the input type and the accessible name.
+  const shown = keyFieldHtml({ id: 'k', testid: 't', toggleAction: 'show', showKey: true });
+  assert.match(shown, /type="text"/);
+  assert.doesNotMatch(shown, /type="password"/);
+  assert.match(shown, /aria-label="Hide key"/);
+
+  // The visible-label wiring a caller adds around the box.
+  const described = keyFieldHtml({ id: 'k', testid: 't', toggleAction: 'show', describedBy: 'setup-key-help' });
+  assert.match(described, /aria-describedby="setup-key-help"/);
+
+  // Key text is escaped like everywhere else in the renderer.
+  assert.match(keyFieldHtml({ id: 'k', testid: 't', toggleAction: 'show', value: '<key&>' }), /value="&lt;key&amp;&gt;"/);
+
+  assert.throws(() => keyFieldHtml({ testid: 't', toggleAction: 'show' }), /id/);
+  assert.throws(() => keyFieldHtml({ id: 'k', toggleAction: 'show' }), /testid/);
+  assert.throws(() => keyFieldHtml({ id: 'k', testid: 't' }), /toggle action/);
 });
 
 test('components stay framework-free: no imports beyond the design layer', () => {

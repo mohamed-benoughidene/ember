@@ -15,6 +15,7 @@
 
 import { esc } from '../design/escape-html.mjs';
 import { buttonHtml } from '../components/button.mjs';
+import { keyFieldHtml } from '../components/key-field.mjs';
 import { checkKeyShape } from '../../shared/key-shape.mjs';
 
 const STEPS = ['Knowledge base file', 'AI connection'];
@@ -245,10 +246,9 @@ function stepKeyHtml(state) {
   return `<h2 style="margin-top:0">Connect an AI service</h2>
     <p class="help" style="margin:0 0 var(--s3)">Ember asks an AI service you choose to propose items and links. It only proposes; you confirm. When you use Add or Link items, your text is sent to that service. Nothing else about your work leaves this computer.</p>
     <label for="setup-key">Your AI key</label>
-    <input type="${state.showKey ? 'text' : 'password'}" id="setup-key" data-testid="setup-key-input" autocomplete="off" aria-label="Your AI key" aria-describedby="setup-key-help" value="${esc(state.key)}">
+    ${keyFieldHtml({ id: 'setup-key', testid: 'setup-key-input', toggleAction: 'setup-show-key', value: state.key, showKey: state.showKey, describedBy: 'setup-key-help' })}
     <p class="help" id="setup-key-help">A key is a long password that lets Ember use the AI service. Ember stores it on this computer only — in the operating system keyring, never in a plain file.</p>
     <div class="actions">
-      ${buttonHtml({ label: state.showKey ? 'Hide' : 'Show', action: 'setup-show-key', variant: 'secondary' })}
       ${state.keySaved ? continueButton : buttonHtml({ label: 'Save the key', action: 'setup-save-key', variant: 'primary' })}
       ${sessionButton}
       ${buttonHtml({ label: 'Skip for now', action: 'setup-skip-key', variant: 'text' })}

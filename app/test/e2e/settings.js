@@ -193,6 +193,33 @@ async function changeRestartIntact() {
     if (!/Not connected/.test(status)) fail(`a fresh install must start not connected, saw "${status}"`);
     await win.click('[data-testid="ai-set-up"]');
     await win.waitForSelector('[data-testid="settings-key-input"]');
+
+    // Batch 6 (D-14, F7d): exactly ONE key input per screen, the eye
+    // toggle INSIDE the field (aria-label "Show key"/"Hide key"), and
+    // NO separate Show/Hide button beside it.
+    const keyInputs = await win.locator('[data-testid="settings-key-input"]').count();
+    if (keyInputs !== 1) fail(`exactly one key input expected in Settings, saw ${keyInputs}`);
+    const eyeField = '.key-field:has([data-testid="settings-key-input"])';
+    const eyeShow = win.locator(`${eyeField} button[aria-label="Show key"]`);
+    if ((await eyeShow.count()) !== 1) {
+      fail(`the key field needs exactly one eye toggle inside it (aria-label "Show key"), saw ${await eyeShow.count()}`);
+    }
+    await eyeShow.click();
+    await win.waitForSelector(`${eyeField} button[aria-label="Hide key"]`);
+    if ((await win.getAttribute('[data-testid="settings-key-input"]', 'type')) !== 'text') {
+      fail('after the eye toggle the key input must be plain text');
+    }
+    await win.click(`${eyeField} button[aria-label="Hide key"]`);
+    await win.waitForSelector(`${eyeField} button[aria-label="Show key"]`);
+    if ((await win.getAttribute('[data-testid="settings-key-input"]', 'type')) !== 'password') {
+      fail('after hiding, the key input must be masked again');
+    }
+    const paneButtons = (await win.locator('#settings-panel button').allTextContents()).map((t) => t.trim());
+    if (paneButtons.includes('Show') || paneButtons.includes('Hide')) {
+      fail(`no separate Show/Hide button beside the Settings key field (F7d), saw: ${JSON.stringify(paneButtons)}`);
+    }
+    process.stdout.write('key field OK (settings): one box, the eye toggle inside with Show key/Hide key, no separate Show/Hide button\n');
+
     await win.fill('[data-testid="settings-key-input"]', KEY);
     await win.click('[data-testid="ai-save-key"]');
     // On a weak/no keyring the pane offers the session-only path
