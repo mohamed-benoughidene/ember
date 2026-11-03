@@ -61,7 +61,11 @@ _KIND_BY_PAIR: dict[tuple[str, str], str] = {
     # field row and `user_remove_link` writes the `link_removed` row.
     # Deviation U5-1 already mapped their inverse rows; the originals
     # belong here too, so a plain edit no longer reads `unknown`.
+    # The `source` pair is issue #44: `edit-item --field source` writes
+    # exactly this row, and it renders the same `item_edited` kind as the
+    # rationale edit — the app already has a sentence for that kind.
     ("rationale", "user_edit_item"): "item_edited",
+    ("source", "user_edit_item"): "item_edited",
     ("link_removed", "user_remove_link"): "link_removed",
     # The undo/redo pointers and the undo-of-reversal marker.
     ("undo_of", "user_undo"): "undone",
