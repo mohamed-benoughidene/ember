@@ -13,6 +13,7 @@ unchanged, and the generic-failure tests prove a code bug is never wrapped
 
 from __future__ import annotations
 
+import struct
 from datetime import datetime, timedelta
 
 import pytest
@@ -1225,3 +1226,45 @@ def test_signals_holds_exactly_three_fields() -> None:
     assert wrapper.content == {1: 0.5}
     assert wrapper.graph == {1, 2}
     assert wrapper.metadata == set()
+
+
+def test_fresh_query_vector_and_float32_cache_hit_score_same_score() -> None:
+    """A fresh float64 query vector and the identical vector returned from a
+    float32 cache hit produce the SAME cosine score (Batch 7 chunk 12, N20).
+
+    The embedder answers `statement 1` with a float64 vector whose values are
+    not float32-representable. One run encodes it fresh; the other starts from
+    the same vector as it comes back from the float32 cache (widened to
+    float64 exactly as `_unpack_vector` returns it, quantized here with
+    `struct` so the test needs no import from the code under test). The score
+    against the same cached candidate must be bit-identical, so the query is
+    scored at the cache's precision.
+    """
+
+    def as_float32(vector: list[float]) -> list[float]:
+        return list(
+            struct.unpack(f"<{len(vector)}f", struct.pack(f"<{len(vector)}f", *vector))
+        )
+
+    statement = "statement 1"
+    float64_vector = [0.1, 0.2, 0.3]
+    candidate_vector = [0.4, 0.5, 0.6]
+    embedder = FakeEmbedder(vectors={statement: float64_vector}, dim=3)
+
+    def _score(store: FakeEmbeddingStore) -> list[tuple[int, float | None]]:
+        loaded = _loaded(_item(1), [_item(2, days=FAR_DAYS)])
+        embedder.calls.clear()
+        return _scored(_build(loaded, embedder=embedder, store=store).ranked)
+
+    # Run A: the query vector is freshly encoded, full float64 precision.
+    fresh_run = _score(FakeEmbeddingStore(rows={2: candidate_vector}))
+    # Run B: the identical vector comes back from the float32 cache.
+    cached_run = _score(
+        FakeEmbeddingStore(
+            rows={1: as_float32(float64_vector), 2: candidate_vector}
+        )
+    )
+
+    a_float32_loss_is_real = as_float32(float64_vector) != float64_vector
+    assert a_float32_loss_is_real
+    assert fresh_run == cached_run
