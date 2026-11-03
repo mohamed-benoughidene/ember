@@ -173,7 +173,7 @@ async function checkAndBackup() {
         fail(`a report row leaked the raw machine line: "${row}"`);
       }
     }
-    if (!rows.some((r) => /File format version 13/.test(r))) fail(`the version must read in plain words: ${JSON.stringify(rows)}`);
+    if (!rows.some((r) => /File format version 14/.test(r))) fail(`the version must read in plain words: ${JSON.stringify(rows)}`);
     await assertCleanScan(win, 'Keep safe (check OK)');
 
     // Story 70-71: one button; the engine's report becomes the result
@@ -182,7 +182,7 @@ async function checkAndBackup() {
     await win.waitForSelector('[data-testid="ks-backup-result"]');
     let result = await win.textContent('[data-testid="ks-backup-result"]');
     if (!result.includes(target)) fail(`story 71: the result line must name the file location: ${result}`);
-    if (!/File format version 13/.test(result)) fail(`story 71: the format version must show: ${result}`);
+    if (!/File format version 14/.test(result)) fail(`story 71: the format version must show: ${result}`);
     if (!/\b2 items\b/.test(result)) fail(`story 71: the item count must show (seed_pair has 2 items): ${result}`);
     if (!/unchanged/.test(result)) fail(`story 77: the result must say the knowledge base is unchanged: ${result}`);
     if (/old-1/.test(result)) fail('a FIRST backup must not claim an older copy was kept');
