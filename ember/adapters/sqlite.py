@@ -80,6 +80,7 @@ from ember.relate.errors import (
     SchemaOutdated,
 )
 from ember.relate.rows import ChangeLogEntry, GroupIdPort, Link, NewItem
+from ember.relate.vector_format import pack_vector, unpack_vector
 
 _MIGRATIONS_MODULE = "ember.adapters.migrations"
 
@@ -3025,16 +3026,9 @@ def build_ai_response_store(conn: sqlite3.Connection) -> SqliteAiResponseStore:
 
 def _pack_vector(vector: list[float]) -> bytes:
     """Pack a float vector as little-endian float32, the on-disk format."""
-    values = array("f", vector)
-    if sys.byteorder != "little":
-        values.byteswap()
-    return values.tobytes()
+    return pack_vector(vector)
 
 
 def _unpack_vector(blob: bytes) -> list[float]:
     """Decode a little-endian float32 blob back into floats."""
-    values = array("f")
-    values.frombytes(blob)
-    if sys.byteorder != "little":
-        values.byteswap()
-    return values.tolist()
+    return unpack_vector(blob)

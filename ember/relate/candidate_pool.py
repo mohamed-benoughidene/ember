@@ -25,6 +25,7 @@ from ember.relate.errors import (
 from ember.relate.link_lookup import LinkLookupPort
 from ember.relate.load_filter import LoadedCandidates
 from ember.relate.rows import NewItem, Pool, RankedCandidate, SignalKind
+from ember.relate.vector_format import pack_vector, unpack_vector
 
 MODEL_CHANGED_LINE = (
     "embedding model changed: wiping cache (this is a one-time minutes-long cost on large DBs)"
@@ -174,6 +175,7 @@ def _resolve_vector(
             expected=dimension,
             got=len(vector),
         )
+    vector = unpack_vector(pack_vector(vector))
     store.upsert(item.id, vector, model)
     return vector
 
