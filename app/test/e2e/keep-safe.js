@@ -46,6 +46,18 @@ const { runAccessibilityScan } = require('../helpers/a11y-scan.mjs');
 if (!fs.existsSync(PYTHON)) throw new Error(`the project venv python is missing at ${PYTHON} — the e2e cannot run`);
 if (!process.cwd().startsWith(REPO_ROOT)) process.chdir(REPO_ROOT); // python -m ember must find the WORKTREE code
 
+// The file-format version the e2e asserts is DERIVED, not pinned here
+// (issue #45): ask the worktree's ember for the latest migration version —
+// the same single source the engine's own report prints. (Node cannot
+// import the Python constant; the same execFileSync-to-PYTHON seam the
+// seeders below use puts the number in one shell line.)
+const FORMAT_VERSION = execFileSync(
+  PYTHON,
+  ['-c', 'from ember.adapters.migrations import LATEST_VERSION; print(LATEST_VERSION)'],
+  { cwd: REPO_ROOT, encoding: 'utf8' },
+).trim();
+const formatVersionRe = new RegExp(`File format version ${FORMAT_VERSION}`);
+
 function sha256(file) {
   return crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
 }
@@ -173,7 +185,7 @@ async function checkAndBackup() {
         fail(`a report row leaked the raw machine line: "${row}"`);
       }
     }
-    if (!rows.some((r) => /File format version 14/.test(r))) fail(`the version must read in plain words: ${JSON.stringify(rows)}`);
+    if (!rows.some((r) => formatVersionRe.test(r))) fail(`the version must read in plain words: ${JSON.stringify(rows)}`);
     await assertCleanScan(win, 'Keep safe (check OK)');
 
     // Story 70-71: one button; the engine's report becomes the result
@@ -182,7 +194,7 @@ async function checkAndBackup() {
     await win.waitForSelector('[data-testid="ks-backup-result"]');
     let result = await win.textContent('[data-testid="ks-backup-result"]');
     if (!result.includes(target)) fail(`story 71: the result line must name the file location: ${result}`);
-    if (!/File format version 14/.test(result)) fail(`story 71: the format version must show: ${result}`);
+    if (!formatVersionRe.test(result)) fail(`story 71: the format version must show: ${result}`);
     if (!/\b2 items\b/.test(result)) fail(`story 71: the item count must show (seed_pair has 2 items): ${result}`);
     if (!/unchanged/.test(result)) fail(`story 77: the result must say the knowledge base is unchanged: ${result}`);
     if (/old-1/.test(result)) fail('a FIRST backup must not claim an older copy was kept');

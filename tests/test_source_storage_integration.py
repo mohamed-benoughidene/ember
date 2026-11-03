@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import sqlite3
 
+from ember.adapters.migrations import LATEST_VERSION
 from ember.adapters.sqlite import SqliteSourceStore, open_database
 from ember.capture.input_reader import InputMode, read_raw_text
 from ember.capture.source_storage import store_source
@@ -63,5 +64,5 @@ def test_migrations_are_idempotent(db_path) -> None:
     conn = open_database(db_path)
 
     version = conn.execute("SELECT version FROM schema_version").fetchone()[0]
-    assert version == 14
+    assert version == LATEST_VERSION
     assert conn.execute("PRAGMA foreign_keys").fetchone()[0] == 1

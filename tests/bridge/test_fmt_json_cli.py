@@ -16,12 +16,14 @@ and the test proves the step-file Done-when items:
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from typing import Any, Callable
 
 import pytest
 
 from ember.adapters import sqlite as sqlite_adapter
+from ember.adapters.migrations import LATEST_VERSION
 from tests.bridge import confirm_scenarios as cs
 from tests.bridge import harness
 
@@ -29,6 +31,20 @@ GOLDENS = (
     Path(__file__).resolve().parents[2] / "tests" / "fixtures" / "bridge" / "text_goldens"
 )
 TOP_LEVEL_KEYS = {"command", "changes", "dry_run", "summary"}
+
+# One-command golden regen (issue #45): the `backup` and `db-check` goldens
+# embed the CURRENT schema version (e.g. "version: 14"), so a NEW migration
+# changes those two files and nothing else. Regenerate with ONE command —
+# no by-hand edits:
+#
+#   env EMBER_REGEN_TEXT_GOLDENS=1 .venv/bin/pytest -q -o addopts= \
+#     tests/bridge/test_fmt_json_cli.py::test_text_golden_json_document_and_db_hash
+#
+# The flag rewrites the golden files from the real CLI output (the temp
+# work path maps back to the `<WORK>` placeholder); the usual byte-for-byte
+# assertions still run. Without the flag the files are only read, exactly
+# as before.
+_REGEN_TEXT_GOLDENS = os.environ.get("EMBER_REGEN_TEXT_GOLDENS") == "1"
 
 # One deterministic seed per command; the invocation is pinned below.
 CASES: dict[str, Callable[[str], None]] = {
@@ -182,6 +198,11 @@ def test_text_golden_json_document_and_db_hash(
 
     assert text_result.exit_code == 0, text_result.output
     assert json_result.exit_code == 0, json_result.output
+    if _REGEN_TEXT_GOLDENS:
+        (GOLDENS / f"{name}.txt").write_text(
+            text_result.stdout.replace(str(tmp_path / "text-run"), "<WORK>"),
+            encoding="utf-8",
+        )
     assert text_result.stdout == _golden(name, str(tmp_path / "text-run")), (
         f"{name}: text output drifted from the pre-change golden"
     )
@@ -321,7 +342,7 @@ def test_backup_and_db_check_summaries_use_existing_report_fields(
     assert backup_doc["changes"] == []
     assert backup_doc["summary"] == {
         "path": db_path + ".bak",
-        "schema_version": 14,
+        "schema_version": LATEST_VERSION,
         "item_count": 2,
         "rotated": None,
     }

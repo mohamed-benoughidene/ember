@@ -13,6 +13,7 @@ from pathlib import Path
 import pytest
 
 import ember.adapters.sqlite as sqlite_adapter
+from ember.adapters.migrations import LATEST_VERSION
 from ember.adapters.sqlite import open_database
 from ember.capture.errors import DbOpenFailed as CaptureDbOpenFailed
 from tests.fakes import FIXED_TIME, insert_item, insert_link, insert_source
@@ -131,7 +132,8 @@ def test_migration_013_preserves_all_rows_and_values(db_path) -> None:
     assert after == log_before
     # The new columns read as NULL on every pre-existing row. `SELECT *`
     # order is the real table order; a v12 open runs 013 (group_id) AND
-    # 014 (source_id) before it reaches the latest version.
+    # the migrations after 013 (source_id, then whatever ships next) before it
+    # reaches the latest version.
     star = _rows(raw, "SELECT * FROM change_log ORDER BY id")
     assert star == [row + (None, None) for row in star_before]
     raw.close()
@@ -193,7 +195,7 @@ def test_migration_013_preserves_existing_schema(db_path) -> None:
             ]
         else:
             assert columns_after[table] == columns_before[table], table
-    assert schema_version == 14
+    assert schema_version == LATEST_VERSION
     # The FK check is clean after the structural change.
     assert foreign_key_rows == []
 
@@ -274,7 +276,8 @@ def test_fresh_install_applies_all_migrations_through_013(db_path) -> None:
     conn = open_database(db_path)
 
     version = conn.execute("SELECT version FROM schema_version").fetchone()[0]
-    # Fresh installs go through 013 AND everything after it (014 today).
+    # Fresh installs go through 013 AND everything after it — the latest
+    # version is derived from the shipped scripts (issue #45).
     assert version >= 13
     columns = [
         row["name"] for row in conn.execute("PRAGMA table_info(change_log)")

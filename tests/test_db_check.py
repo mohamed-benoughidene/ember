@@ -19,6 +19,7 @@ from click.testing import CliRunner
 
 from ember.cli import main
 from ember.adapters.db_check import _ledger_rows
+from ember.adapters.migrations import LATEST_VERSION
 from ember.adapters.sqlite import (
     SqliteGroupIdPort,
     SqliteMaintainContext,
@@ -120,7 +121,7 @@ def test_db_check_healthy(db_path) -> None:
 
     assert result.exit_code == 0
     lines = result.output.splitlines()
-    assert "version: 14" in lines
+    assert f"version: {LATEST_VERSION}" in lines
     assert "floors: relate 12 ok, maintain 11 ok, query 10 ok, capture none" in lines
     assert (
         "triggers: links_compat_insert, links_compat_update,"
@@ -388,7 +389,7 @@ def test_db_check_flags_version_99(db_path) -> None:
     assert result.exit_code == 1
     lines = result.output.splitlines()
     assert "version: 99" in lines
-    assert "version 99 above latest 14" in " ".join(lines)
+    assert f"version 99 above latest {LATEST_VERSION}" in " ".join(lines)
     assert "result: DRIFT" == lines[-1]
     assert "Traceback" not in result.output
 

@@ -7,6 +7,7 @@ import sqlite3
 
 import pytest
 
+from ember.adapters.migrations import LATEST_VERSION
 from ember.adapters.sqlite import open_database
 from tests.fakes import FIXED_TIME, insert_item, insert_source
 
@@ -215,7 +216,7 @@ def test_migrations_008_009_preserve_existing_rows(db_path) -> None:
 
     conn = open_database(db_path)
 
-    assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == 14
+    assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == LATEST_VERSION
     assert conn.execute(
         "SELECT COUNT(*) FROM change_log WHERE id = 7"
     ).fetchone()[0] == 1

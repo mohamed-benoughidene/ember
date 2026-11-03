@@ -22,6 +22,7 @@ from ember.adapters.errors import (
     ScriptSetInvalid,
     VersionTableMissing,
 )
+from ember.adapters.migrations import LATEST_VERSION as _LATEST_VERSION
 from ember.capture.errors import (
     DbFileMissing as CaptureDbFileMissing,
     DbOpenFailed as CaptureDbOpenFailed,
@@ -82,11 +83,13 @@ from ember.relate.rows import ChangeLogEntry, GroupIdPort, Link, NewItem
 
 _MIGRATIONS_MODULE = "ember.adapters.migrations"
 
-# The pinned latest migration version (Batch 4 chunk 9, story 14). The
-# script set discovered on disk must be exactly 1.._LATEST_VERSION before
-# any open migrates anything; a dropped or renamed `.sql` refuses up front
-# with `ScriptSetInvalid` (MIGRATION-001) instead of building a half schema.
-_LATEST_VERSION = 14
+# The latest migration version is DERIVED from the scripts directory (issue
+# #45): `ember.adapters.migrations` computes it from the shipped `NN_*.sql`
+# listing at import time, so adding the next migration `.sql` file is the
+# whole bump — no by-hand pin. The script set discovered on disk must still
+# be exactly 1.._LATEST_VERSION before any open migrates anything; a
+# dropped or renamed `.sql` refuses up front with `ScriptSetInvalid`
+# (MIGRATION-001) instead of building a half schema.
 
 _BACKUPS_TO_KEEP = 3
 
@@ -884,11 +887,13 @@ def _migration_scripts() -> list[tuple[int, str]]:
 
 
 def _require_pinned_script_set(scripts: list[tuple[int, str]]) -> None:
-    """Refuse unless the discovered script numbers are exactly 1..13 (story 14).
+    """Refuse unless the discovered script numbers are exactly 1..latest.
 
-    The check lives on the discovery path (not in the injected or patched
-    script list), so it pins what the repository actually ships: a dropped
-    or renamed `.sql` is caught before ANY open migrates anything —
+    The latest version comes from `ember.adapters.migrations.LATEST_VERSION`
+    (issue #45), derived from the scripts the repository ships. The check
+    lives on the discovery path (not in the injected or patched script
+    list), so it pins what the repository actually ships: a dropped or
+    renamed `.sql` is caught before ANY open migrates anything —
     `ScriptSetInvalid` (MIGRATION-001), raised before even the version
     table is created.
     """
