@@ -36,6 +36,8 @@ export function createAddScreen(ctx) {
     kbInvalid: false,
     unsub: [],
     busy: false, // an answer is on its way to the engine; one at a time
+    forgetUi: null, // null | 'confirm' | 'busy' | 'done' | 'error' (the offer itself renders when the gate is on)
+    forgetError: null, // {code, name, where, detail} for the forget refusal
   };
 
   let rootEl = null;
@@ -43,6 +45,12 @@ export function createAddScreen(ctx) {
   let formEl = null;
   let keydownHandler = null;
   let renderedSavedCount = 0; // the Saved so far rows already rendered (motion pin)
+  /* Batch 6 Chunk 13: the forget affordance's own state. `forgetUi`
+     follows the offer (null = hidden or plain offer), and the note's
+     id is discovered in the background through the read command
+     (never carried by the session events). */
+  let forgetSourceId = null;
+  let forgetDiscovering = null;
 
   function unlisten() {
     for (const off of state.unsub) {
@@ -205,6 +213,97 @@ export function createAddScreen(ctx) {
 
   /* ---------------- the end states ---------------- */
 
+  /* Batch 6 Chunk 13 (D-07, D-09, D-10; stories 4, 5, 7, 8): the
+     "Forget this note" affordance after every proposal was rejected.
+     The note's own id is never in the session events, so the screen
+     names THIS run's note through the read command: among the sources
+     with no items, the row whose preview words open THIS run's pasted
+     text (the engine keeps the text word for word) — and when several
+     itemless notes share a preview, the NEWEST one (the highest id;
+     the note from this run). A note whose text was already stored and
+     produced items is not in the read's list at all, so the offer
+     cannot point at a forgettable-wrong note. */
+
+  /** The preview→text match: the row's preview words must open the text. */
+  function previewOpensText(preview, text) {
+    const previewWords = String(preview ?? '').split(/\s+/).filter(Boolean);
+    const textWords = String(text ?? '').split(/\s+/).filter(Boolean);
+    if (previewWords.length === 0 || previewWords.length > textWords.length) return false;
+    return previewWords.every((word, i) => word === textWords[i]);
+  }
+
+  /** One background read: THIS run's note id, or null (no guess). */
+  async function discoverForgettableSource() {
+    const res = await ctx.api.listSourcesWithoutItems();
+    forgetSourceId = null;
+    if (res && res.ok && res.data && Array.isArray(res.data.sources)) {
+      const matches = res.data.sources.filter((row) => previewOpensText(row && row.preview, state.text));
+      if (matches.length > 0) {
+        forgetSourceId = Math.max(...matches.map((row) => Number(row && row.id) || 0));
+      }
+    }
+    renderFlow();
+    return forgetSourceId;
+  }
+
+  function forgetAreaHtml() {
+    const phase = state.forgetUi ?? 'offer';
+    if (phase === 'confirm') {
+      return `<div class="errbox" role="group" aria-label="Forget this note for good? Older backup copies may still hold the text." data-testid="add-forget-confirm">
+        <strong>Forget this note for good?</strong>
+        <span class="detail">The note is deleted from Ember permanently and cannot be brought back. Older backup copies you made before now may still hold the text.</span>
+        <div class="actions">
+          ${buttonHtml({ label: 'Forget for good', action: 'add-forget-confirm-yes', variant: 'danger', testid: 'add-forget-confirm-yes' })}
+          ${buttonHtml({ label: 'Keep the note', action: 'add-forget-cancel', variant: 'secondary', testid: 'add-forget-cancel' })}
+        </div></div>`;
+    }
+    if (phase === 'busy') {
+      return `<p class="hint" role="status" data-testid="add-forget-busy">Forgetting the note…</p>`;
+    }
+    if (phase === 'done') {
+      return `<p class="ok" role="status" data-testid="add-forget-done">The note is forgotten. Its text is gone from Ember; older backup copies you made before now may still hold it.</p>`;
+    }
+    if (phase === 'error') {
+      // The refusal's plain words come from the ONE sentence table via
+      // the Add screen's own error sentence (CAPTURE-023 for a note
+      // that has items) — never a bare code, never Python's words.
+      const sentence = addErrorSentence(state.forgetError);
+      return `<div class="errbox" role="alert" data-testid="add-forget-error"><strong>${esc(sentence.title)}</strong>
+        <span class="detail">${esc(sentence.what)}</span>
+        <span class="hint">${esc(sentence.next)}</span>
+        <div class="actions">${buttonHtml({ label: 'Back', action: 'add-forget-cancel', variant: 'secondary', testid: 'add-forget-cancel' })}</div></div>`;
+    }
+    // 'offer': the affordance itself; the wording is not pinned in the
+    // tests (I10), the accessible structure is.
+    return `<div class="actions" data-testid="add-forget-area">${buttonHtml({
+      label: 'Forget this note',
+      action: 'add-forget',
+      variant: 'danger',
+      testid: 'add-forget',
+    })}</div>`;
+  }
+
+  /**
+   * The gate (story 11): the offer shows ONLY when the run ended
+   * normally with a summary whose every proposal was rejected. The
+   * zero-proposals case (a summary of 0/0, rendered as the empty
+   * state, story 28) and a stopped run never offer the forget.
+   */
+  function forgetOfferActive() {
+    const summary = state.view.summary;
+    return (
+      state.phase === 'done' &&
+      summary !== null &&
+      Number(summary.aborted ?? 0) !== 1 &&
+      Number(summary.accepted ?? 0) === 0 &&
+      Number(summary.rejected ?? 0) > 0
+    );
+  }
+
+  function forgetOfferHtml() {
+    return forgetOfferActive() ? forgetAreaHtml() : '';
+  }
+
   function endActionsHtml(stage) {
     const view = state.view;
     if (stage === 'summary') {
@@ -217,14 +316,16 @@ export function createAddScreen(ctx) {
         <div class="actions">
           ${accepted > 0 ? buttonHtml({ label: 'Link the new items', action: 'add-to-link', variant: 'primary', testid: 'add-to-link' }) : ''}
           ${buttonHtml({ label: 'Add more text', action: 'add-reset', variant: 'secondary', testid: 'add-reset' })}
-        </div></div></div>`;
+        </div>
+        ${forgetOfferHtml()}
+      </div></div>`;
     }
     if (stage === 'empty') {
-      return emptyHtml({
+      return `${emptyHtml({
         title: 'Ember found nothing to propose in this text. Your text is kept as a source.',
         next: 'Add other text',
         onNext: 'add-reset-empty',
-      });
+      })}${forgetOfferHtml()}`;
     }
     if (stage === 'stopped') {
       const accepted = Number(view.summary?.accepted ?? 0);
@@ -390,6 +491,28 @@ export function createAddScreen(ctx) {
         flowEl.querySelector('[data-action="add-to-link"]')?.addEventListener('click', () => ctx.navigate('link'));
         flowEl.querySelector('[data-action="add-reset"]')?.addEventListener('click', () => resetToForm());
         flowEl.querySelector('[data-action="add-reset-empty"]')?.addEventListener('click', () => resetToForm());
+        // Batch 6 Chunk 13: the forget affordance's three controls.
+        flowEl.querySelector('[data-action="add-forget"]')?.addEventListener('click', () => {
+          if (state.forgetUi === 'busy') return;
+          state.forgetUi = 'confirm';
+          renderFlow();
+        });
+        flowEl.querySelector('[data-action="add-forget-cancel"]')?.addEventListener('click', () => {
+          if (state.forgetUi === 'busy') return;
+          state.forgetUi = null;
+          state.forgetError = null;
+          renderFlow();
+        });
+        flowEl.querySelector('[data-action="add-forget-confirm-yes"]')?.addEventListener('click', () => {
+          void runForget();
+        });
+        // The background read that names THIS run's note (renderFlow
+        // re-renders with the id once the read answers).
+        if (forgetOfferActive() && !forgetDiscovering && forgetSourceId === null) {
+          forgetDiscovering = discoverForgettableSource().finally(() => {
+            forgetDiscovering = null;
+          });
+        }
       }
     } else if (state.phase === 'error') {
       // Batch 3 F2: the failed Add brings the draft form back next to
@@ -470,6 +593,9 @@ export function createAddScreen(ctx) {
     state.view = initialAddView();
     state.error = null;
     state.busy = false;
+    state.forgetUi = null;
+    state.forgetError = null;
+    forgetSourceId = null;
     renderedSavedCount = 0;
     formEl.innerHTML = '';
     renderFlow();
@@ -571,6 +697,32 @@ export function createAddScreen(ctx) {
     }
   }
 
+  /** The permanent write, after the inline confirm said so (D-07). */
+  async function runForget() {
+    if (state.phase !== 'done' || state.forgetUi === 'busy') return;
+    state.forgetUi = 'busy';
+    state.forgetError = null;
+    renderFlow();
+    // The discovery read usually answered long ago; a fast press waits
+    // for it — the note is never guessed.
+    if (forgetDiscovering) await forgetDiscovering.catch(() => {});
+    if (forgetSourceId === null) {
+      state.forgetUi = 'error';
+      state.forgetError = null; // no code: the note could not be named, nothing was deleted
+      renderFlow();
+      return;
+    }
+    const res = await ctx.api.forgetSource(forgetSourceId);
+    if (res && res.ok) {
+      state.forgetUi = 'done';
+      state.forgetError = null;
+    } else {
+      state.forgetUi = 'error';
+      state.forgetError = res ? res.error : null;
+    }
+    renderFlow();
+  }
+
   function resetToForm() {
     unlisten();
     // The engine already cleaned its own temp file on exit (the app
@@ -580,6 +732,9 @@ export function createAddScreen(ctx) {
     state.error = null;
     state.busy = false;
     state.text = '';
+    state.forgetUi = null;
+    state.forgetError = null;
+    forgetSourceId = null;
     renderGateAndForm();
     flowEl.innerHTML = '';
   }

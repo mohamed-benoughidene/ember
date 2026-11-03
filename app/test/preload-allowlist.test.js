@@ -8,7 +8,8 @@
  * Three pins:
  * 1. the preload file exposes EXACTLY the named list (15 after step
  *    04; 42 with the Batch 2 Chunk 13 crash channels; 43 with story
- *    13's `ember:textFocusChanged` push), over
+ *    13's `ember:textFocusChanged` push; 45 with Batch 6 Chunk 13's
+ *    two forget-note channels), over
  *    contextBridge, requiring only `electron`;
  * 2. every renderer file (any subfolder, .js and .mjs) contains no
  *    Node access at all (no require, no process, no Electron import);
@@ -96,6 +97,13 @@ const ADD_PUSH_CHANNELS = ['ember:addEvent', 'ember:addExit'];
    subscription: only main ever acts on it (the Edit menu's role
    flip); the renderer gets a plain {ok} back. */
 const TEXT_FOCUS_CHANNELS = ['ember:textFocusChanged'];
+/* Batch 6 Chunk 13 (D-07/D-09/D-10): the "Forget this note" channels,
+   merged after the text-focus entry (merged file order: base, Add,
+   Keep safe, Fix and close, Settings, Clean up, Link items, Quick
+   popup, Crash report, text focus, Forget note). Two plain invokes:
+   the PERMANENT write (forget-source) and the read
+   (list-sources-without-items). */
+const FORGET_CHANNELS = ['ember:forgetSource', 'ember:listSourcesWithoutItems'];
 /* App 06 (ticket A35): the Link items session channels, merged after
    the Fix and close block (the merged file's order: base, Add,
    Keep safe, Fix and close, Link items). */
@@ -138,8 +146,9 @@ test('the preload exposes exactly the pinned list over contextBridge', () => {
      the two Settings channels (app 10), the four Clean up channels
      (App 08), then the six Link items channels (App 06), then the two
      Quick popup channels (app 11), then the two Crash report channels
-     (Batch 2 Chunk 13), then the one text-focus channel (story 13). */
-  assert.deepEqual(names, [...EXPECTED_CHANNELS, ...ADD_SESSION_CHANNELS, ...KEEP_SAFE_CHANNELS, ...FIX_CLOSE_CHANNELS, ...SETTINGS_CHANNELS, ...MAINTAIN_CHANNELS, ...LINK_CHANNELS, ...QUICK_POPUP_CHANNELS, ...CRASH_CHANNELS, ...TEXT_FOCUS_CHANNELS]);
+     (Batch 2 Chunk 13), then the one text-focus channel (story 13),
+     then the two Forget-note channels (Batch 6 Chunk 13). */
+  assert.deepEqual(names, [...EXPECTED_CHANNELS, ...ADD_SESSION_CHANNELS, ...KEEP_SAFE_CHANNELS, ...FIX_CLOSE_CHANNELS, ...SETTINGS_CHANNELS, ...MAINTAIN_CHANNELS, ...LINK_CHANNELS, ...QUICK_POPUP_CHANNELS, ...CRASH_CHANNELS, ...TEXT_FOCUS_CHANNELS, ...FORGET_CHANNELS]);
   assert.equal((PRELOAD.match(/contextBridge\.exposeInMainWorld/g) ?? []).length, 1, 'exactly one expose');
 });
 
@@ -174,7 +183,7 @@ test('every preloaded call has a registered handler in main/ipc.js (no dead, no 
   for (const channel of EXPECTED_CHANNELS) {
     assert.ok(registered.includes(channel), `${channel} is preloaded but never handled`);
   }
-  assert.deepEqual(registered.sort(), [...EXPECTED_CHANNELS, ...KEEP_SAFE_CHANNELS, ...FIX_CLOSE_CHANNELS, ...SETTINGS_CHANNELS, ...MAINTAIN_CHANNELS, ...QUICK_POPUP_CHANNELS, ...CRASH_CHANNELS, ...TEXT_FOCUS_CHANNELS].sort(), 'ipc.js registered a channel outside the allowlist');
+  assert.deepEqual(registered.sort(), [...EXPECTED_CHANNELS, ...KEEP_SAFE_CHANNELS, ...FIX_CLOSE_CHANNELS, ...SETTINGS_CHANNELS, ...MAINTAIN_CHANNELS, ...QUICK_POPUP_CHANNELS, ...CRASH_CHANNELS, ...TEXT_FOCUS_CHANNELS, ...FORGET_CHANNELS].sort(), 'ipc.js registered a channel outside the allowlist');
 });
 
 /* ==== App 05 (ticket A34): the Add session channels are registered by

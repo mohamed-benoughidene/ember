@@ -630,6 +630,59 @@ function registerIpcHandlers(options) {
       shell.showItemInFolder(filePath);
       return { ok: true, path: filePath };
     },
+
+    /* =================================================================
+       Batch 6 Chunk 13 (D-07, D-09, D-10): the "Forget this note"
+       channels, added at the END of the registration list as this
+       chunk's own bracketed block. Both are gated like the existing
+       command channels (knowledge-base check BEFORE any child starts).
+
+       `ember forget-source --source N` is a PERMANENT write (one
+       transaction; the engine refuses a note that still has items with
+       CAPTURE-023 and answers a missing id with a quiet success, I8).
+       It runs under the write rule (one timeout, NEVER retried — the
+       bridge client's NO_DOC set), and its one sentence renders in the
+       renderer from the one sentence table (`CAPTURE-023`), never from
+       a bare code.
+       `ember list-sources-without-items` is the Cleanup list's read
+       (Chunk 12; the Add screen uses it to name THIS run's note; its
+       row shape {id, created_at, preview} is the engine's, D3).
+
+       Both go through runCommand: one child per call, the caller's
+       shape validated once here at the edge (I9).
+       ================================================================= */
+
+    /**
+     * Forget one raw note (source) permanently. `payload.source` must
+     * be a whole positive id — the renderer names the note by its id,
+     * never by text.
+     */
+    'ember:forgetSource': async (payload) => {
+      const kbCheck = guardKnowledgeBase();
+      if (!kbCheck.ok) return { ok: false, error: kbCheck.error };
+      const source = typeof payload === 'object' && payload !== null ? payload.source : null;
+      if (!Number.isInteger(source) || source <= 0) {
+        return {
+          ok: false,
+          error: appErrorInfo('APP-002', `${WHERE}.forgetSource`, 'the note to forget must be named by its whole id number'),
+        };
+      }
+      const args = ['--source', String(source)];
+      onCommand('forget-source', args);
+      return clientFor(dbPath()).runCommand('forget-source', args);
+    },
+
+    /**
+     * The sources with ZERO items (the engine's read-only JSON
+     * document: `{count, sources: [{id, created_at, preview}]}`, an
+     * empty list instead of null, I4).
+     */
+    'ember:listSourcesWithoutItems': async () => {
+      const kbCheck = guardKnowledgeBase();
+      if (!kbCheck.ok) return { ok: false, error: kbCheck.error };
+      onCommand('list-sources-without-items', []);
+      return clientFor(dbPath()).runCommand('list-sources-without-items', []);
+    },
   };
 
   /* --- App 08 (Clean up): the sweep preview and the confirm session

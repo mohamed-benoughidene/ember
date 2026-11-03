@@ -102,6 +102,8 @@ const READ_COMMANDS = new Set([
   'why',
   'history',
   'db-check',
+  // Batch 6 Chunk 12's Cleanup read (D-09), driven by the app in Chunk 13.
+  'list-sources-without-items',
 ]);
 
 /**
@@ -135,10 +137,11 @@ const ALWAYS_JSON_COMMANDS = new Set([
   'list-items',
   'show-item',
   'capture-source',
+  'list-sources-without-items',
 ]);
 
 /** One-shot commands with no app-facing JSON document (data comes back null). */
-const NO_DOC_COMMANDS = new Set(['export', 'set-validated', 'clear-validated']);
+const NO_DOC_COMMANDS = new Set(['export', 'set-validated', 'clear-validated', 'forget-source']);
 
 /** The interactive commands that must go through runConfirmSession. */
 const SESSION_COMMANDS = new Set(['capture', 'relate', 'maintain']);
