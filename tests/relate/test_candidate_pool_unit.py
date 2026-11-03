@@ -296,7 +296,14 @@ def test_empty_universe_returns_an_empty_pool_without_running_signals() -> None:
     assert store.model_names == {}
 
 
-def test_empty_universe_still_reports_a_model_change_warning() -> None:
+def test_empty_universe_with_a_different_cached_model_wipes_nothing_and_warns_nothing(
+) -> None:
+    """Batch 7: the model check moved AFTER the empty-universe return.
+
+    An empty universe never touches the cache: no wipe, no warning, even when
+    the cached model differs from the active one. The old-model row for a
+    dropped id survives, which proves the wipe never ran.
+    """
     store = _UntouchedStore({DROPPED_ID: [9.0, 9.0, 9.0]}, model_name="old-model")
 
     pool = _build(
@@ -308,10 +315,10 @@ def test_empty_universe_still_reports_a_model_change_warning() -> None:
 
     assert pool.ranked == []
     assert pool.counts == {"dense": 0, "graph": 0, "metadata": 0}
-    assert pool.warning == WARNING_LINE
-    # The dropped id's row is gone, so the pre-flight wipe really ran.
-    assert store.rows == {}
-    assert store.model_names == {}
+    assert pool.warning is None
+    # The dropped id's row is still there, so the pre-flight wipe never ran.
+    assert store.rows == {DROPPED_ID: [9.0, 9.0, 9.0]}
+    assert store.model_names == {DROPPED_ID: "old-model"}
 
 
 # --- content signal --------------------------------------------------------
@@ -710,6 +717,50 @@ def test_merge_prefers_dense_source_when_all_three_signals_match() -> None:
     # The 0.6 content cosine outranks the flat 0.5 bump from graph and metadata.
     assert shared[0].cosine == pytest.approx(0.6)
     assert shared[0].source is SignalKind.dense
+
+
+# --- candidate cap (spec line 63) ------------------------------------------
+
+
+def test_three_hundred_labeled_items_cap_the_pool_at_forty() -> None:
+    """300 labeled candidates merge into a pool capped at 40 (spec line 63).
+
+    The dense signal keeps its top 10 (ids 2-11, cosine 1.0), the graph signal
+    adds 10 neighbors (ids 292-301, flat 0.5), and the label signal matches all
+    300 candidates. The cap keeps dense candidates first, then graph, then the
+    remaining labels in merged order — a plain first-40 slice of the merged
+    ranking would take only labels (ids 12-41) and drop every graph neighbor.
+    The initial cap value 40 is tuned after the batch (decision I11).
+    """
+    new_item = _item(1, metadata="sqlite storage")
+    items = [
+        _item(item_id, days=FAR_DAYS, metadata="sqlite storage")
+        for item_id in range(2, 302)
+    ]
+    embedder = FakeEmbedder(model_name=MODEL)
+    store = FakeEmbeddingStore({1: [1.0, 0.0, 0.0]}, model_name=MODEL)
+    lookup = FakeLinkLookup(
+        [new_item, *items],
+        [_link(900 + offset, 1, 292 + offset) for offset in range(10)],
+    )
+
+    pool = _build(
+        _loaded(new_item, items),
+        embedder=embedder,
+        store=store,
+        lookup=lookup,
+    )
+
+    assert len(pool.ranked) == 40
+    assert _ids_with_source(pool.ranked, SignalKind.dense) == list(range(2, 12))
+    assert _ids_with_source(pool.ranked, SignalKind.graph) == list(range(292, 302))
+    assert _ids_with_source(pool.ranked, SignalKind.metadata) == list(range(12, 32))
+    # The pool keeps the standard merged order: cosine descending, then id.
+    assert [candidate.item.id for candidate in pool.ranked] == (
+        list(range(2, 12)) + list(range(12, 32)) + list(range(292, 302))
+    )
+    # counts stay the pre-merge signal sizes; the cap never touches them.
+    assert pool.counts == {"dense": 10, "graph": 10, "metadata": 300}
 
 
 # --- pre-flight model check and the cache contract -------------------------
