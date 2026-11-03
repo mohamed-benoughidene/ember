@@ -90,6 +90,12 @@ const EXPECTED_API = [
   // Batch 5 (story 13): the renderer's text-field focus reporter the
   // Edit menu's role-vs-Ember switching reads.
   'textFocusChanged',
+  /* Batch 6 Chunk 13 (D-07/D-09/D-10): "Forget this note" joins the
+     pinned surface — the permanent write and the itemless-sources
+     read (the Add screen's note-naming read; Cleanup rides it in
+     Chunk 14). */
+  'forgetSource',
+  'listSourcesWithoutItems',
 ];
 
 async function main() {
@@ -134,7 +140,7 @@ async function main() {
     const banner = await win.locator('#top-banner').innerHTML();
     if (banner.trim() !== '') throw new Error(`a notice banner appeared: ${banner.slice(0, 200)}`);
 
-    process.stdout.write('e2e smoke OK: real shell boots into Home, the counts from list-items reach the DOM (total 5), the seam answers exactly the pinned 41-name allowlist, no Node in the page world\n');
+    process.stdout.write('e2e smoke OK: real shell boots into Home, the counts from list-items reach the DOM (total 5), the seam answers exactly the pinned 47-name allowlist, no Node in the page world\n');
   } finally {
     // The step-11 portal-registered global shortcut can hold the app
     // past a plain close(): bound it, then SIGKILL the Electron process
