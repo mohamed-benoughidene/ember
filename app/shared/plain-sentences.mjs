@@ -179,6 +179,7 @@ export const HISTORY_KINDS = {
   undone: { label: 'Undone' },
   redone: { label: 'Redone' },
   link_unreversed: { label: 'Reversal undone' },
+  source_forgotten: { label: 'Note forgotten' },
   unknown: { label: 'Change without words' },
 };
 
@@ -251,6 +252,13 @@ export function historyEventSentence(event) {
     case 'link_unreversed':
       sentence = 'A reversal was undone, so the replacement is in force again.';
       break;
+    case 'source_forgotten': {
+      // The forget-source write (Batch 6, D-26): the event names the
+      // forgotten note by its `source_id` and says nothing of its text.
+      const note = event.source_id === null || event.source_id === undefined ? 'a note' : `note ${event.source_id}`;
+      sentence = `${capitalize(note)} was forgotten. Its text is gone from Ember for good.`;
+      break;
+    }
     default:
       sentence = 'A change Ember has no words for was recorded.';
       break;

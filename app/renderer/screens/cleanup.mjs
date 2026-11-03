@@ -20,6 +20,16 @@
  * - A sweep is not undoable (spec 12.2): the screen says so in one
  *   line.
  *
+ * Beside the sweep (Batch 6 chunk 14, stories 6/10, finding D-09): the
+ * sources with NO items (raw notes), read read-only from the engine's
+ * own `list-sources-without-items` through the `ember:listSourcesWithoutItems`
+ * ipc channel. Forgetting one is a PERMANENT write (the engine refuses
+ * a note that has items, CAPTURE-023; a missing id is a quiet success,
+ * I8) and is asked INLINE in a role="group" with a cancel + confirm
+ * pair (the chunk 13 Add-screen pattern; the sentence words for any
+ * refusal come from the one sentence table). After the write the list
+ * is re-read, so the forgotten note is out of it.
+ *
  * Five states everywhere: normal, loading, empty, error (inside the
  * block that failed, Retry + code on request), and a no-key state is
  * NOT this screen's — the sweep needs no key; the stale-question loop
@@ -54,6 +64,18 @@ const NOT_UNDOABLE =
 const APPLY_DISABLED_WHY =
   'Preview the sweep first. Apply stays off until you have seen what it would do.';
 
+/* The notes-with-no-items section's state (batch 6 chunk 14). */
+function initialItemless() {
+  return {
+    status: 'loading', // loading | ready | error
+    rows: [], // the engine's own {id, created_at, preview} rows
+    error: null, // the list read's error
+    confirmingId: null, // the row whose inline confirm is open
+    busyId: null, // the forget write in flight
+    forgetError: null, // the forgot write's refused error
+  };
+}
+
 export function createCleanupScreen(ctx) {
   const model = {
     phase: 'idle', // idle | previewing | previewed | applying | result
@@ -63,6 +85,7 @@ export function createCleanupScreen(ctx) {
     previewedOnce: false, // story 65: Apply unlocks on the first preview in this window session
     apply: null, // the live loop's collected state
     applyError: null, // the last failed session's error info
+    itemless: initialItemless(), // the notes-with-no-items section (chunk 14)
   };
   let rootEl = null;
   let handle = null; // the maintainApply session handle
@@ -88,11 +111,17 @@ export function createCleanupScreen(ctx) {
         <p class="help" data-testid="cleanup-not-undoable">${esc(NOT_UNDOABLE)}</p>
         <div class="actions" data-testid="cleanup-actions"></div>
         <div data-testid="cleanup-body" style="margin-top:var(--s5)"></div>
+        <section data-testid="cleanup-itemless" aria-labelledby="cleanup-itemless-heading" style="margin-top:var(--s6)">
+          <h2 id="cleanup-itemless-heading">Notes with no items</h2>
+          <p class="help">Notes that never became items. Forgetting one deletes it and its text from Ember permanently.</p>
+          <div data-testid="cleanup-itemless-body"></div>
+        </section>
       </div>`,
       (root) => {
         rootEl = root;
         renderActions();
         renderBody();
+        loadItemless();
       },
     );
   }
@@ -231,6 +260,148 @@ export function createCleanupScreen(ctx) {
   function namesNoteHtml() {
     if (!model.namesNote) return '';
     return `<div class="panel" data-testid="cleanup-names-note"><div class="pad"><p class="hint">Item names could not be read just now, so the table shows numbers only. ${esc(model.namesNote)}</p></div></div>`;
+  }
+
+  /* ---------- the notes-with-no-items section (chunk 14) ----------
+   * Read-only until Forget is pressed; the forget is the engine's
+   * PERMANENT write, asked inline in the chunk 13 pattern. */
+
+  function itemlessBody() {
+    return rootEl ? rootEl.querySelector('[data-testid="cleanup-itemless-body"]') : null;
+  }
+
+  /** One background read of the sources with zero items. */
+  async function loadItemless() {
+    const host = itemlessBody();
+    if (!host) return;
+    model.itemless.status = 'loading';
+    renderItemless();
+    const res = await ctx.api.listSourcesWithoutItems();
+    if (!rootEl || !itemlessBody()) return; // the screen went away mid-read
+    if (res && res.ok && res.data && Array.isArray(res.data.sources)) {
+      model.itemless.status = 'ready';
+      model.itemless.rows = res.data.sources;
+    } else {
+      model.itemless.status = 'error';
+      model.itemless.error = res && res.error ? res.error : null;
+    }
+    renderItemless();
+  }
+
+  /** The one refused-forget line: plain words from the ONE sentence
+   * table (CAPTURE-023 for a note that has items), never a bare code. */
+  function renderItemless() {
+    const host = itemlessBody();
+    if (!host) return;
+    const st = model.itemless;
+    if (st.status === 'loading') {
+      showLoadingBlock(host, 'Reading the notes with no items…');
+      return;
+    }
+    if (st.forgetError) {
+      const sentence = sentenceFor(st.forgetError.code);
+      host.innerHTML = `<div class="errbox" role="alert" data-testid="cleanup-itemless-forget-error"><strong>${esc(sentence.title)}</strong>
+        <span class="detail">${esc(sentence.what)}</span>
+        <span class="hint">${esc(sentence.next)}</span>
+        <div class="actions">${buttonHtml({ label: 'Back', action: 'cleanup-itemless-error-back', variant: 'secondary', testid: 'cleanup-itemless-error-back' })}</div></div>`;
+      host.querySelector('[data-action="cleanup-itemless-error-back"]')?.addEventListener('click', () => {
+        model.itemless.forgetError = null;
+        renderItemless();
+      });
+      return;
+    }
+    if (st.busyId !== null) {
+      host.innerHTML = `<p class="hint" role="status" data-testid="cleanup-itemless-busy">Forgetting the note…</p>`;
+      return;
+    }
+    if (st.status === 'error') {
+      showErrorBlock(host, st.error, {
+        what: 'the notes with no items',
+        onRetry: () => loadItemless(),
+      });
+      return;
+    }
+    if (st.rows.length === 0) {
+      host.innerHTML = `<div data-testid="cleanup-itemless-empty">${emptyHtml({
+        title: 'Every note became items, or the notes with no items were forgotten. Nothing to clean here.',
+      })}</div>`;
+      return;
+    }
+    const rows = st.rows
+      .map((row) => {
+        const id = Number(row && row.id);
+        if (!Number.isInteger(id) || id <= 0) return ''; // never guess a note to forget (D-10)
+        const dom = esc(String(id));
+        const actions =
+          st.confirmingId === id
+            ? `<div class="errbox" role="group" aria-label="Forget note ${dom} for good? Older backup copies may still hold the text." data-testid="cleanup-itemless-confirm-${dom}">
+                <strong>Forget this note for good?</strong>
+                <span class="detail">The note is deleted from Ember permanently and cannot be brought back. Older backup copies you made before now may still hold the text.</span>
+                <div class="actions">
+                  ${buttonHtml({ label: 'Forget for good', action: 'cleanup-itemless-yes', variant: 'danger', testid: `cleanup-itemless-confirm-yes-${dom}` })}
+                  ${buttonHtml({ label: 'Keep the note', action: 'cleanup-itemless-cancel', variant: 'secondary', testid: `cleanup-itemless-cancel-${dom}` })}
+                </div></div>`
+            : buttonHtml({
+                label: 'Forget',
+                action: 'cleanup-itemless-forget',
+                variant: 'danger',
+                testid: `cleanup-itemless-forget-${dom}`,
+                title: 'Deletes this note and its text from Ember permanently',
+              });
+        return `<tr data-testid="cleanup-itemless-row-${dom}" data-source-id="${dom}">
+          <td class="num dim">${dom}</td>
+          <td class="dim nowrap">${esc(String((row && row.created_at) ?? ''))}</td>
+          <td>${esc(String((row && row.preview) ?? ''))}</td>
+          <td>${actions}</td>
+        </tr>`;
+      })
+      .join('');
+    host.innerHTML = `<div class="panel"><table class="ember-table" data-testid="cleanup-itemless-table">
+      <thead><tr><th class="num">No.</th><th>Added</th><th>Note</th><th>Forget</th></tr></thead>
+      <tbody>${rows}</tbody></table></div>`;
+    host.querySelectorAll('[data-action="cleanup-itemless-forget"]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const tr = btn.closest('tr[data-source-id]');
+        const id = tr ? Number(tr.getAttribute('data-source-id')) : null;
+        if (id === null || !Number.isInteger(id) || id <= 0) return;
+        model.itemless.confirmingId = id;
+        renderItemless();
+      });
+    });
+    host.querySelector('[data-action="cleanup-itemless-cancel"]')?.addEventListener('click', () => {
+      model.itemless.confirmingId = null;
+      renderItemless();
+    });
+    host.querySelectorAll('[data-action="cleanup-itemless-yes"]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const tr = btn.closest('tr[data-source-id]');
+        const id = tr ? Number(tr.getAttribute('data-source-id')) : null;
+        if (id === null || !Number.isInteger(id) || id <= 0) return;
+        void runItemlessForget(id);
+      });
+    });
+  }
+
+  /** The permanent write, after the inline confirm said so (D-07).
+   * One shot per row: the busy state blocks a double press. */
+  async function runItemlessForget(id) {
+    const st = model.itemless;
+    if (st.busyId !== null) return;
+    st.confirmingId = null;
+    st.forgetError = null;
+    st.busyId = id;
+    renderItemless();
+    const res = await ctx.api.forgetSource(id);
+    if (!rootEl || !itemlessBody()) return; // the screen went away mid-write
+    st.busyId = null;
+    if (res && res.ok) {
+      // The engine already wrote; re-read so the forgotten note is OUT
+      // of the list (and its text out of the screen).
+      await loadItemless();
+      return;
+    }
+    st.forgetError = res && res.error ? res.error : null;
+    renderItemless();
   }
 
   /* ---------- the apply session (stories 63, 67 + the loop) ---------- */
