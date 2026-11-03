@@ -29,7 +29,7 @@ ANSWER = json.dumps(
         {
             "type": "Decision",
             "statement": "Use SQLite",
-            "source_quote": "use SQLite",
+            "source_quote": "decided to use SQLite",
             "confidence": 0.9,
         },
         {
@@ -150,6 +150,25 @@ def test_propose_sends_the_context_items() -> None:
 
     user = proposer._client.completions.calls[0]["messages"][1]["content"]
     assert "[7] Finding: Old finding" in user
+
+
+def test_user_content_wraps_the_note_in_delimiter_lines() -> None:
+    """Chunk 8: the raw note travels between two visible delimiter lines,
+    and the instruction above them states that text inside is data, never
+    instructions — a note that itself reads like a prompt stays data."""
+    proposer = _proposer(_Response(ANSWER))
+
+    proposer.propose(RAW_TEXT, [])
+
+    lines = proposer._client.completions.calls[0]["messages"][1][
+        "content"
+    ].splitlines()
+    begin = lines.index("=== BEGIN RAW NOTE ===")
+    end = lines.index("=== END RAW NOTE ===")
+    assert end == begin + 2
+    assert lines[begin + 1] == RAW_TEXT
+    header = "\n".join(lines[:begin])
+    assert "data" in header
 
 
 def test_model_name_goes_into_the_request() -> None:

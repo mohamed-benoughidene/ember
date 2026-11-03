@@ -34,7 +34,7 @@ def _entry(**overrides) -> dict:
     entry = {
         "type": "Decision",
         "statement": "Use SQLite",
-        "source_quote": "SQLite",
+        "source_quote": "decided to use SQLite",
         "confidence": 0.9,
     }
     entry.update(overrides)
@@ -175,7 +175,7 @@ def test_valid_entry_is_kept_with_typed_fields() -> None:
     assert isinstance(proposal.type, ItemType)
     assert proposal.type is ItemType.DECISION
     assert proposal.statement == "Use SQLite"
-    assert proposal.source_quote == "SQLite"
+    assert proposal.source_quote == "decided to use SQLite"
     assert proposal.confidence == 0.9
 
 
@@ -188,6 +188,14 @@ def test_bad_type_is_dropped() -> None:
 
 def test_non_substring_quote_is_dropped() -> None:
     batch = parse_proposals(_response(_entry(source_quote="Postgres")), RAW_TEXT)
+
+    assert batch.proposals == []
+    assert [drop.rule for drop in batch.dropped] == ["quote"]
+
+
+def test_quote_words_under_the_minimum_are_dropped() -> None:
+    quote = "SQLite"  # one short word: under MIN_QUOTE_WORDS (Chunk 8, I11)
+    batch = parse_proposals(_response(_entry(source_quote=quote)), RAW_TEXT)
 
     assert batch.proposals == []
     assert [drop.rule for drop in batch.dropped] == ["quote"]
@@ -281,7 +289,9 @@ def test_metadata_absent_or_null_is_none() -> None:
 
 
 def test_metadata_non_string_drops_the_entry() -> None:
-    good = _entry(statement="Team ships weekly", source_quote="team")
+    # "decided to use" is 3 words == the minimum, so `good` is kept and the
+    # only drop is the metadata one.
+    good = _entry(statement="Team ships weekly", source_quote="decided to use")
     batch = parse_proposals(_response(_entry(metadata=5), good), RAW_TEXT)
 
     assert [proposal.metadata for proposal in batch.proposals] == [None]
