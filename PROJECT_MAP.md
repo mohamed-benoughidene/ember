@@ -218,6 +218,7 @@ Earlier logo and character images, kept for history.
 - `app/renderer/design/color-contrast.mjs`: Pure WCAG contrast maths (hex -> luminance -> ratio) used by the design contrast test.
 - `app/renderer/components/heat-mark.mjs`: The heat mark (the signature move): full dot Active, half dot Challenged, ring Closed; accessible name; `settleClass` (the ONE motion classifier: animates only a real status change, never a first render) and the `renderHeatMark` DOM helper.
 - `app/renderer/components/status-pill.mjs`: The heat mark followed by its word (status never depends on colour alone); `renderStatusPill` re-renders with the settle motion on change.
+- `app/renderer/components/key-field.mjs`: Batch 6 — the ONE key box shared by first run and Settings: a password input with an eye toggle inside the field ("Show key"/"Hide key" aria-labels), styled from tokens variables; replaces the old separate Show/Hide buttons (D-14/F7d).
 - `app/renderer/components/state-block.mjs`: The five UI states helper every screen step (04+) consumes: loading (grey bars), empty (one sentence), error (with Retry and Details), no-key (points at Settings); normal renders content with no block; `bindStateBlock` wires data-action buttons.
 - `app/renderer/components/button.mjs`: The button: primary (one per screen), secondary, text, danger; the label is required, disabled keeps readable text saying why.
 - `app/renderer/components/banner.mjs`: The quiet notice bar with an optional one action.
