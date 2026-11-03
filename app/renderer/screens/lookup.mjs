@@ -10,9 +10,9 @@
  *
  * Commands, exactly as the contract table pins them: no query ->
  * `list-items --status --type --limit --offset`; a query ->
- * `topic-search --query --status --type --limit` (the command has no
- * --offset); a selection -> `show-item --item N`; the Ledger ->
- * `history --item --limit --offset --since`.
+ * `topic-search --query --status --type --limit --offset` (Batch 6 added
+ * the offset and the pre-page `total`); a selection -> `show-item --item
+ * N`; the Ledger -> `history --item --limit --offset --since`.
  */
 
 import { esc } from '../design/escape-html.mjs';
@@ -183,14 +183,15 @@ export function createLookupScreen(ctx) {  const view = {
     const filters = { status: view.status, type: view.type };
     const query = view.q.trim();
     const result = await (query !== ''
-      ? ctx.api.topicSearch({ query, ...filters, limit: PAGE_SIZE })
+      ? ctx.api.topicSearch({ query, ...filters, limit: PAGE_SIZE, offset: view.offset })
       : ctx.api.listItems({ ...filters, limit: PAGE_SIZE, offset: view.offset }));
     if (countLine) countLine.textContent = '';
     const data = dataOrNull(results, result, { what: 'the item list', onRetry: loadItems });
     if (data === null) return;
 
     // list-items carries `items` + `total` (the count AFTER the filters,
-    // BEFORE the page crop); topic-search carries `results` + `count`.
+    // BEFORE the page crop); topic-search carries `results` + `count` (the
+    // rows printed) + `total` (the matches before the crop, Batch 6).
     const rows = (data.items ?? data.results ?? []).map((r) => ({
       id: r.id ?? r.item_id,
       type: r.type,
@@ -198,11 +199,12 @@ export function createLookupScreen(ctx) {  const view = {
       status: r.status,
     }));
     const total = data.total ?? data.count ?? rows.length;
+    const shown = Math.min(view.offset + rows.length, total);
     if (countLine) {
       countLine.textContent =
         query !== ''
-          ? `${total} ${total === 1 ? 'match' : 'matches'} for "${query}"`
-          : `${Math.min(view.offset + rows.length, total)} of ${total} items`;
+          ? `${shown} of ${total} ${total === 1 ? 'match' : 'matches'} for "${query}"`
+          : `${shown} of ${total} items`;
     }
     if (rows.length === 0) {
       const nothingMatched = query !== '' || view.status !== null || view.type !== null;

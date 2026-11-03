@@ -32,16 +32,17 @@ def topic_search(
     items: list[QueryItem],
     query: str,
     topic_filter: TopicFilter = TopicFilter(),
-) -> list[SearchHit]:
-    """Return the items holding at least one query token, best score first.
+) -> tuple[int, list[SearchHit]]:
+    """Return `(total, hits)`: the match count before any crop, then the page.
 
     A non-`None` `topic_filter.status` or `topic_filter.type` narrows the items
     handed to the scorer, and the filtered subset IS the corpus: `N`, `df` and
     `avgdl` recompute over it, so the remaining scores differ from an
-    unfiltered run of the same query. `topic_filter.limit` crops the ranked
-    top N behind the final sort, `0` gives an explicit empty result. The
-    default filter restricts nothing, so a call without it behaves exactly as
-    before.
+    unfiltered run of the same query. Behind the final sort, `offset` skips
+    and `topic_filter.limit` crops the top N, `0` giving an explicit empty
+    result. `total` is the number of scoring hits BEFORE either crop, so a
+    paged run never hides that the other pages exist. The default filter
+    restricts nothing, so a call without it behaves exactly as before.
 
     An item scores only on the query terms it contains, so an item with no
     query token is never a result. Order is score descending, then `item_id`
@@ -56,10 +57,10 @@ def topic_search(
     query_terms = list(dict.fromkeys(tokenize(query)))
     tokens_per_item = [tokenize(item.statement) for item in selected]
     if not query_terms or not selected:
-        return []
+        return 0, []
     average_length = sum(len(tokens) for tokens in tokens_per_item) / len(selected)
     if average_length == 0:
-        return []
+        return 0, []
 
     hits: list[SearchHit] = []
     for item, tokens in zip(selected, tokens_per_item):
@@ -87,6 +88,9 @@ def topic_search(
                 )
             )
     ranked = sorted(hits, key=lambda hit: (-hit.score, hit.item_id))
+    total = len(ranked)
+    start = 0 if topic_filter.offset is None else topic_filter.offset
+    window = ranked[start:]
     if topic_filter.limit is not None:
-        ranked = ranked[: topic_filter.limit]
-    return ranked
+        window = window[: topic_filter.limit]
+    return total, window

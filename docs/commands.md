@@ -126,8 +126,8 @@ All six print exactly one JSON document on stdout and read only `items`, `links`
 ### `ember current-state [--db PATH]`
 Live statuses only: `Active` and `Challenged` items, `Closed` omitted, `Challenged` listed first. Envelope: `mode`, `count`, `items` (each row carries a `challenged` flag).
 
-### `ember topic-search --query TEXT [--status S] [--type T] [--limit N] [--db PATH]`
-BM25 keyword search over item statements (all statuses, `Closed` included). `--status` accepts `Active|Challenged|Closed`, `--type` accepts `Decision|Assumption|Finding|Question`; filters narrow the corpus before scoring. `--limit 0` is an explicit empty result; negative values exit 1 (`QUERY-006`). Envelope: `mode`, `query`, `count`, `results`.
+### `ember topic-search --query TEXT [--status S] [--type T] [--limit N] [--offset N] [--db PATH]`
+BM25 keyword search over item statements (all statuses, `Closed` included). `--status` accepts `Active|Challenged|Closed`, `--type` accepts `Decision|Assumption|Finding|Question`; filters narrow the corpus before scoring. `--limit 0` is an explicit empty result; negative values exit 1 (`QUERY-006`). Behind the scored order `--offset` skips and `--limit` crops the window; `total` is the count of matches BEFORE either crop, `count` the rows printed. Envelope: `mode`, `query`, `total`, `count`, `results`.
 
 ### `ember why --item N [--db PATH]`
 The reasons behind an item: follows `depends_on` (to its target) and `supports` (to its source), Confirmed links only, transitively, cycle-safe. Unknown ids exit 1 (`QUERY-001`); a link whose other end is gone from the file answers `QUERY-010` and exits 1, nothing changed. Envelope: `mode`, `item`, `count`, `reasons` (ordered by depth then id, carrying each reason's rationale text).

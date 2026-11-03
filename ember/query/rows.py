@@ -72,15 +72,18 @@ class ChangeRow(BaseModel):
 
 
 class TopicFilter(BaseModel):
-    """What `topic_search` may narrow before it scores (V1.x amendment D).
+    """What `topic_search` may narrow and page (V1.x amendment D, Batch 6).
 
-    `None` means no restriction on that axis. `limit` crops the ranked list
-    behind the sort, so `limit` 0 is an explicit empty result, never an error.
+    `None` means no restriction on that axis. `offset` skips behind the
+    final sort and `limit` crops the ranked list, so `limit` 0 is an
+    explicit empty result, never an error, and neither crop changes the
+    pre-page count the envelope reports as `total`.
     """
 
     status: str | None = None
     type: str | None = None
     limit: int | None = None
+    offset: int | None = None
 
 
 class HistoryPage(BaseModel):

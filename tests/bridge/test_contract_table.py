@@ -219,7 +219,7 @@ ROWS: tuple[Row, ...] = (
         command="topic-search",
         sample_args=("topic-search", "--query", "sqlite", "--db", "{db}"),
         seed=harness.seed_pair,
-        json_keys=("count", "mode", "query", "results"),
+        json_keys=("count", "mode", "query", "results", "total"),
     ),
     Row(
         command="why",

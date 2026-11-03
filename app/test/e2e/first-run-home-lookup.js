@@ -21,6 +21,9 @@
  *     Clear filters (39), "No items yet" (40), and the Ledger tab with
  *     filters, paging (37-38, newest first per Batch 6) and plain words
  *     on every page (122).
+ *  3b. SEARCH PAGING (Batch 6 chunk 7): a 60-match base at 50 a page
+ *     shows the page and total numbers in the search header and pages
+ *     through the matches with the pager buttons (4.7 #5).
  *  4. EMPTY + ERROR: a well-formed empty KB (story 40); Home's grouped
  *     failure notices (Batch 3 F4, decision B3-1): one notice per error
  *     code replaces the per-block cards, the count as a bare number and
@@ -338,7 +341,9 @@ async function lookup() {
     await win.press('[data-testid="lookup-q"]', 'Enter');
     await win.waitForFunction(() => /matches for/.test(document.querySelector('[data-testid="lookup-count"]').textContent));
     countLine = (await win.textContent('[data-testid="lookup-count"]')).trim();
-    if (!/2 matches for "backup"/.test(countLine)) fail(`the search count is wrong: ${countLine}`);
+    // Batch 6: the count line shows the page number beside the pre-page
+    // total; both are 2 here.
+    if (!/2 of 2 matches for "backup"/.test(countLine)) fail(`the search count is wrong: ${countLine}`);
     await win.selectOption('[data-testid="lookup-status"]', 'Challenged');
     await win.waitForSelector('[data-testid="state-empty"]');
     const emptyText = await win.textContent('[data-testid="state-empty"]');
@@ -395,6 +400,62 @@ async function lookup() {
     await assertCleanScan(win, 'Ledger tab (filtered)');
 
     process.stdout.write('look up OK: search, filters, count, table, provenance, ledger paging + words (stories 30-41, 122)\n');
+  } finally {
+    await app.close().catch(() => {});
+    fs.rmSync(workDir, { recursive: true, force: true });
+  }
+}
+
+/* ---------------- scenario 3b: search paging (Batch 6, 4.7 #5) ---------------- */
+
+async function searchPaging() {
+  process.stdout.write('--- search paging: a 60-match base at 50 a page ---\n');
+  const workDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ember-e2e-searchpage-'));
+  // 60 items whose statements share one word: the search total (60) is
+  // bigger than one page (50), so the header must show both numbers and
+  // the pager must reach the remaining 10.
+  const items = Array.from({ length: 60 }, (_, i) => ({
+    id: i + 1,
+    type: 'Decision',
+    statement: `Widget note ${i + 1} for the search page.`,
+    status: 'Active',
+    close_reason: null,
+    rationale: null,
+    source: null,
+    validated: null,
+    created_at: '2026-10-03T09:00:00+00:00',
+  }));
+  const fixture = path.join(workDir, 'sixty.json');
+  fs.writeFileSync(fixture, JSON.stringify({ items, show: {}, history: [], pending: 0 }));
+  const shell = await launchShell({ workDir, withDb: true, fixture });
+  const { app } = shell;
+  try {
+    const win = await app.firstWindow();
+    await win.waitForSelector('[data-testid="counts-panel"]');
+    await win.locator('#nav button[data-job="lookup"]').click();
+    await win.waitForSelector('[data-testid="lookup-q"]');
+    await win.fill('[data-testid="lookup-q"]', 'widget');
+    await win.press('[data-testid="lookup-q"]', 'Enter');
+    await win.waitForSelector('[data-testid="lookup-table"]');
+    // Numbers and elements only, never the header wording (I10).
+    const firstHeader = (await win.textContent('[data-testid="lookup-count"]')).trim();
+    if (!/\b50\b/.test(firstHeader) || !/\b60\b/.test(firstHeader)) {
+      fail(`the search header must show the page number 50 and the total 60, saw: ${firstHeader}`);
+    }
+    const firstRows = await win.locator('[data-testid^="lookup-row-"]').count();
+    if (firstRows !== 50) fail(`the first search page holds 50 rows, saw ${firstRows}`);
+    if (!(await win.locator('[data-testid="page-older"]').isVisible())) {
+      fail('60 matches at 50 a page must offer the next page');
+    }
+    await win.click('[data-testid="page-older"]');
+    await win.waitForFunction(() => {
+      const rows = document.querySelectorAll('[data-testid^="lookup-row-"]').length;
+      return rows === 10;
+    });
+    const secondHeader = (await win.textContent('[data-testid="lookup-count"]')).trim();
+    if (!/\b60\b/.test(secondHeader)) fail(`the last search page must still show the total 60, saw: ${secondHeader}`);
+    await assertCleanScan(win, 'Look up (search paging, 60 matches)');
+    process.stdout.write('search paging OK: 50 of 60 on page one, 10 more on page two (Batch 6 chunk 7)\n');
   } finally {
     await app.close().catch(() => {});
     fs.rmSync(workDir, { recursive: true, force: true });
@@ -595,8 +656,9 @@ async function main() {
   await firstRun();
   await home();
   await lookup();
+  await searchPaging();
   await emptyAndError();
-  process.stdout.write('e2e first-run home lookup OK: all four scenarios green (fake ember app mode, no AI service touched)\n');
+  process.stdout.write('e2e first-run home lookup OK: all five scenarios green (fake ember app mode, no AI service touched)\n');
 }
 
 main().catch((err) => {

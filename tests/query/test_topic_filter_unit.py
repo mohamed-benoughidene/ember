@@ -1,4 +1,4 @@
-"""Unit tests for topic-search filters: the corpus narrows, the limit crops."""
+"""Unit tests for topic-search filters: the corpus narrows, the page crops."""
 
 from __future__ import annotations
 
@@ -21,8 +21,8 @@ def _mixed_items():
 def test_default_topic_filter_scores_every_item() -> None:
     items = _mixed_items()
 
-    with_default = topic_search(items, "sqlite", TopicFilter())
-    without_arg = topic_search(items, "sqlite")
+    with_default = topic_search(items, "sqlite", TopicFilter())[1]
+    without_arg = topic_search(items, "sqlite")[1]
 
     assert [hit.item_id for hit in with_default] == [1, 2, 3]
     assert with_default == without_arg
@@ -30,14 +30,14 @@ def test_default_topic_filter_scores_every_item() -> None:
 
 def test_status_and_type_filter_the_items_handed_to_the_scorer() -> None:
     items = _mixed_items()
-    unfiltered = topic_search(items, "sqlite")
+    unfiltered = topic_search(items, "sqlite")[1]
 
-    active = topic_search(items, "sqlite", TopicFilter(status="Active"))
-    closed = topic_search(items, "sqlite", TopicFilter(status="Closed"))
-    findings = topic_search(items, "sqlite", TopicFilter(type="Finding"))
+    active = topic_search(items, "sqlite", TopicFilter(status="Active"))[1]
+    closed = topic_search(items, "sqlite", TopicFilter(status="Closed"))[1]
+    findings = topic_search(items, "sqlite", TopicFilter(type="Finding"))[1]
     both = topic_search(
         items, "sqlite", TopicFilter(status="Closed", type="Decision")
-    )
+    )[1]
 
     # The Active axis: the Closed hits drop out and the score recomputes over
     # the smaller corpus, so it differs from the same item in the full run.
@@ -58,9 +58,9 @@ def test_limit_windows_after_ranking() -> None:
         make_item(3, statement="SQLite plans"),
     ]
 
-    ranked = topic_search(items, "sqlite")
-    windowed = topic_search(items, "sqlite", TopicFilter(limit=2))
-    empty = topic_search(items, "sqlite", TopicFilter(limit=0))
+    ranked = topic_search(items, "sqlite")[1]
+    windowed = topic_search(items, "sqlite", TopicFilter(limit=2))[1]
+    empty = topic_search(items, "sqlite", TopicFilter(limit=0))[1]
 
     # Item 2 mentions the term twice, so it outranks the others by score.
     assert ranked[0].item_id == 2
@@ -69,3 +69,21 @@ def test_limit_windows_after_ranking() -> None:
     ]
     assert [hit.item_id for hit in windowed] != [1, 2]
     assert empty == []
+
+
+def test_offset_skips_behind_the_ranking_and_total_is_the_pre_page_count() -> None:
+    items = [
+        make_item(1, statement="Use SQLite"),
+        make_item(2, statement="Use SQLite again"),
+        make_item(3, statement="Use SQLite too"),
+    ]
+
+    total, hits = topic_search(items, "sqlite", TopicFilter(offset=1, limit=1))
+    past = topic_search(items, "sqlite", TopicFilter(offset=3))
+
+    # Offset 1 skips item 1 behind the (item_id-ascending) rank; total is
+    # still every match, never the window.
+    assert [hit.item_id for hit in hits] == [2]
+    assert total == 3
+    assert past[0] == 3
+    assert past[1] == []

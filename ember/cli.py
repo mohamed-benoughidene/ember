@@ -1329,6 +1329,13 @@ def current_state_command(db_path: str) -> None:
     help="Keep only the top N ranked results. 0 prints an empty result list.",
 )
 @click.option(
+    "--offset",
+    "offset",
+    type=int,
+    default=None,
+    help="Skip N ranked results. Omit it to skip none.",
+)
+@click.option(
     "--db",
     "db_path",
     default=DEFAULT_DB_PATH,
@@ -1339,16 +1346,20 @@ def topic_search_command(
     status: str | None,
     item_type: str | None,
     limit: int | None,
+    offset: int | None,
     db_path: str,
 ) -> None:
     """Rank items by BM25 over their statements, as JSON.
 
     Every item is searched, `Closed` ones included, and each result carries its
     status. `--status` and `--type` narrow what is scored (the filtered subset
-    is the corpus, so counts recompute) and `--limit` crops the ranked list.
-    Read-only, like every query command.
+    is the corpus, so counts recompute); behind the ranking, `--offset` skips
+    and `--limit` crops the list, while `total` in the envelope counts every
+    match before either crop. Read-only, like every query command.
     """
-    topic_filter = TopicFilter(status=status, type=item_type, limit=limit)
+    topic_filter = TopicFilter(
+        status=status, type=item_type, limit=limit, offset=offset
+    )
     conn = open_query_database(db_path)
     output = run_topic_search(SqliteQueryContext(conn), query, topic_filter)
     click.echo(output)
