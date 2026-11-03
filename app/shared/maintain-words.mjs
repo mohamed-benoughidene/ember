@@ -87,7 +87,10 @@ export function sweepCountsSentence(summary, tense = 'would') {
   if (n(summary.challenged) > 0) parts.push(`${tense === 'did' ? 'challenged' : 'challenge'} ${thing(n(summary.challenged), 'challenge', 'item')}`);
   if (n(summary.reopened) > 0) parts.push(`${tense === 'did' ? 'reopened' : 'reopen'} ${thing(n(summary.reopened), 'reopen', 'item')}`);
   const unchanged = `${tense === 'did' ? 'left' : 'leave'} ${n(summary.unchanged)} unchanged`;
-  if (parts.length === 0) return `Nothing changes. ${n(summary.unchanged)} item${n(summary.unchanged) === 1 ? ' is' : 's are'} already in line.`;
+  // 4.6 #10: after a finished run the sweep DID run — "Nothing changes"
+  // would be untrue. The honest zero line says the sweep found nothing
+  // to change and what stayed as it was.
+  if (parts.length === 0) return `The sweep ${tense === 'did' ? 'found' : 'would find'} nothing to change: ${n(summary.unchanged)} item${n(summary.unchanged) === 1 ? ' is' : 's are'} already in line.`;
   return `The sweep ${parts.join(', ')}, and ${unchanged}.`;;
 }
 
