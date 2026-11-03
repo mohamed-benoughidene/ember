@@ -215,9 +215,13 @@ def test_capture_relate_close_undo_redo_history_db_check(db_path) -> None:
     redo_pointer = next(e for e in events if e["field_changed"] == "redo_of")
     assert (undo_pointer["kind"], undo_pointer["cause"]) == ("undone", "user_undo")
     assert (redo_pointer["kind"], redo_pointer["cause"]) == ("redone", "user_redo")
+    # The status row, named precisely (Batch 6: newest first, so the
+    # redo_of pointer row — which also carries item_id 1 — renders before
+    # the redone status row and a bare cause+item match would grab it).
     redo_close = next(
         e for e in events
         if e["cause"] == "user_redo" and e["item_id"] == 1
+        and e["field_changed"] == "status"
     )
     assert redo_close["kind"] == "status_changed"
     assert redo_close["close_reason"] == "invalidated"

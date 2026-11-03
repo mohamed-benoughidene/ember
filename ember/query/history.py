@@ -1,7 +1,9 @@
 """The `change_log` classifier and the `history` derivation (pure Phase 2).
 
-The ledger is read, never rewritten: `old_value` / `new_value` render verbatim
-and the one derived field, `close_reason`, comes from the same public splitter
+The ledger is read, never rewritten: `old_value` renders verbatim, and a
+status row's new value renders its DECODED status beside the one derived
+field, `close_reason` — the raw `Closed:<reason>` writer encoding stays
+only in the ledger. Both derived fields come from the same public splitter
 that documents the writer's encoding (`split_status_value`, maintain rows),
 so the two cannot disagree.
 """
@@ -54,6 +56,13 @@ _KIND_BY_PAIR: dict[tuple[str, str], str] = {
     ("rationale", "user_redo"): "item_edited",
     ("source", "user_undo"): "item_edited",
     ("source", "user_redo"): "item_edited",
+    # The edit / remove-link causes the REAL writer uses (Batch 6,
+    # finding 4.7 #4): `user_edit_item` writes a `rationale` (or `source`)
+    # field row and `user_remove_link` writes the `link_removed` row.
+    # Deviation U5-1 already mapped their inverse rows; the originals
+    # belong here too, so a plain edit no longer reads `unknown`.
+    ("rationale", "user_edit_item"): "item_edited",
+    ("link_removed", "user_remove_link"): "link_removed",
     # The undo/redo pointers and the undo-of-reversal marker.
     ("undo_of", "user_undo"): "undone",
     ("redo_of", "user_redo"): "redone",
@@ -103,6 +112,13 @@ def _instant(stored: str) -> datetime | None:
 def _to_event(row: ChangeRow, link: Link | None) -> HistoryEvent:
     """Build the rendered event for one row, filling the link's fields."""
     kind = classify_change_row(row)
+    # The status VALUE renders decoded (Batch 6, finding 4.7 #14): what a
+    # status row shows is the status itself plus the derived close reason
+    # below — the raw `Closed:<reason>` writer encoding stays only in the
+    # ledger. A NULL value renders NULL, as before.
+    new_value = row.new_value
+    if kind == "status_changed" and new_value:
+        new_value = split_status_value(new_value).status
     return HistoryEvent(
         timestamp=row.timestamp,
         kind=kind,
@@ -114,8 +130,8 @@ def _to_event(row: ChangeRow, link: Link | None) -> HistoryEvent:
         link_target_item_id=link.target_item_id if link else None,
         link_type=link.link_type if link else None,
         old_value=row.old_value,
-        new_value=row.new_value,
-        # The one derived field comes from the PUBLIC splitter that documents
+        new_value=new_value,
+        # The close reason comes from the PUBLIC splitter that documents
         # the writer's encoding (D3), never a private re-implementation.
         close_reason=split_status_value(row.new_value or "").close_reason
         if kind == "status_changed"
@@ -134,7 +150,9 @@ def history(
     A row belongs to an item when its `item_id` is that item **or** its
     `link_id` names a link touching that item. A row matching both appears
     once. A row with no subject and no link belongs to no item and appears in
-    the global view only. Order is `(timestamp, id)`, unchanged.
+    the global view only. Order is `(timestamp, id)` DESCENDING (Batch 6,
+    finding 4.7 #13): the newest write first, and `--offset` pages BACK in
+    time.
 
     The window composes strictly after that union and sort: `page.since`
     keeps rows whose parsed INSTANT is `>=` the `--since` instant (the
@@ -152,7 +170,10 @@ def history(
         if item_id is not None and not _belongs_to(row, item_id, links_by_id):
             continue
         selected.append((row, _to_event(row, links_by_id.get(row.link_id))))
-    selected.sort(key=lambda pair: (pair[0].timestamp, pair[0].id))
+    # Newest first (Batch 6, finding 4.7 #13): `(timestamp, id)`
+    # descending, so the default page starts at the most recent write and
+    # a growing `--offset` walks back in time.
+    selected.sort(key=lambda pair: (pair[0].timestamp, pair[0].id), reverse=True)
     events = [event for _, event in selected]
     if page.since is not None:
         since_instant = datetime.fromisoformat(page.since)

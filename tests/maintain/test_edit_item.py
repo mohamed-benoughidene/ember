@@ -118,7 +118,9 @@ def test_validate_edit_item_old_value_is_observed() -> None:
     assert changes[0].new_value == "new text"
 
 
-def test_e2e_edit_item_then_history_renders_unknown_kind(db_path) -> None:
+def test_e2e_edit_item_then_history_renders_item_edited(db_path) -> None:
+    """Batch 6, finding 4.7 #4: the real writer cause `user_edit_item`
+    classifies as `item_edited`, never `unknown`."""
     Path(db_path).touch()
     conn = _open_seeded(db_path)
     conn.close()
@@ -143,7 +145,7 @@ def test_e2e_edit_item_then_history_renders_unknown_kind(db_path) -> None:
     assert shown.exit_code == 0
     events = json.loads(shown.output)["events"]
     assert len(events) == 1
-    assert events[0]["kind"] == "unknown"
+    assert events[0]["kind"] == "item_edited"
     assert events[0]["field_changed"] == "rationale"
     assert events[0]["new_value"] == "chosen for the ceiling"
 

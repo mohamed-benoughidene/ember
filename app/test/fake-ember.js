@@ -564,7 +564,13 @@ function runAppMode(argv) {
   }
 
   if (name === 'history') {
+    // The real engine renders the ledger NEWEST first (`(timestamp, id)`
+    // descending, Batch 6 finding 4.7 #13) and decodes a status row's
+    // new value to its plain status (the `Closed:<reason>` encoding stays
+    // only in the ledger). The fixture already mirrors that shape; the
+    // sort here keeps the answer engine-true regardless of fixture order.
     let events = (fx.history ?? []).slice();
+    events.sort((a, b) => (a.timestamp < b.timestamp ? 1 : a.timestamp > b.timestamp ? -1 : 0));
     const itemFilter = flag('--item') === null ? null : Number(flag('--item'));
     if (itemFilter !== null) {
       events = events.filter((e) => e.item_id === itemFilter);

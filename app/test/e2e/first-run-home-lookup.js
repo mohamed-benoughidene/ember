@@ -19,7 +19,8 @@
  *  3. LOOK UP: search (30), filters (31), the count line (32), the
  *     table (33), the provenance view (34-36), nothing-matches +
  *     Clear filters (39), "No items yet" (40), and the Ledger tab with
- *     filters, paging (37-38) and the plain words Undone/Redone (122).
+ *     filters, paging (37-38, newest first per Batch 6) and plain words
+ *     on every page (122).
  *  4. EMPTY + ERROR: a well-formed empty KB (story 40); Home's grouped
  *     failure notices (Batch 3 F4, decision B3-1): one notice per error
  *     code replaces the per-block cards, the count as a bare number and
@@ -225,10 +226,14 @@ async function home() {
     await win.locator('#nav button[data-job="home"]').click();
     await win.waitForSelector('[data-testid="counts-panel"]');
 
-    // Story 13: the latest ledger lines, plain words
+    // Story 13: the latest ledger lines, plain words. The engine renders
+    // the ledger NEWEST first (Batch 6), so the latest 5 lines are the
+    // most recent writes: the newest fixture line (the 10-30T08:40 event)
+    // is on top and the OLDEST line (item 5's 10-01 creation) is NOT here.
     await win.waitForSelector('[data-testid="home-ledger-table"]');
     const ledger = await win.textContent('[data-testid="home-ledger-table"]');
-    if (!/Item 5 was added/.test(ledger)) fail(`the latest ledger lines must show: ${ledger.slice(0, 200)}`);
+    if (!/2026-10-30T08:40/.test(ledger)) fail(`the latest ledger lines must start at the newest write, saw: ${ledger.slice(0, 200)}`);
+    if (/2026-10-01T10:02/.test(ledger)) fail(`the latest 5 lines must not reach back to the oldest write, saw: ${ledger.slice(0, 200)}`);
     const ledgerRows = await win.locator('[data-testid="home-ledger-table"] tr').count();
     if (ledgerRows !== 5) fail(`home shows the latest 5 ledger lines, saw ${ledgerRows}`);
 
@@ -349,15 +354,24 @@ async function lookup() {
     if (!(await win.locator('[data-testid="ledger-older"]').isVisible())) fail('16 fixture events must offer an Older page');
     const kinds1 = (await win.locator('[data-testid="ledger-kind"]').allTextContents()).map((s) => s.trim());
     if (kinds1.some((k) => k === '')) fail('story 122: no ledger kind may be blank');
-    if (!kinds1.includes('Item edited')) fail('the item_edited kind must read in plain words');
+    // The ledger renders NEWEST first (Batch 6): the first page holds the
+    // most recent lines (the 10-30T08:40 "no words" event is page 1) and
+    // the OLDEST lines (the two 10-01/10-03 "Added" events) are NOT here.
+    if (!kinds1.includes('Change without words')) fail('the newest event (no-words edit) must be on the first page');
+    if (kinds1.includes('Added')) fail('the oldest events must not be on the newest-first first page');
     await win.click('[data-testid="ledger-older"]');
     await win.waitForFunction(() => {
       const kinds = [...document.querySelectorAll('[data-testid="ledger-kind"]')].map((n) => n.textContent.trim());
-      return kinds.includes('Undone') && kinds.includes('Redone');
+      // Walking the offset forward walks BACK in time: the older page
+      // carries the earliest lines, among them the two Added events and
+      // the 10-20 item edit (story 122: plain words on every page).
+      return kinds.includes('Added') && kinds.includes('Item edited');
     });
-    process.stdout.write('ledger paging OK: the older page carries the plain words Undone and Redone (story 122)\n');
+    process.stdout.write('ledger paging OK: the older page walks back in time (Added, Item edited) — story 122\n');
     const allKinds = (await win.locator('[data-testid="ledger-kind"]').allTextContents()).map((s) => s.trim());
-    for (const expected of ['Status source changed', 'Undone', 'Redone', 'Reversal undone', 'Change without words']) {
+    // The older page holds the OLDEST fixture lines: the two status moves,
+    // the 10-20 item edit, the 10-14 link confirm and the two creations.
+    for (const expected of ['Status changed', 'Item edited', 'Link confirmed', 'Added']) {
       if (!allKinds.includes(expected)) fail(`the older ledger page must label ${expected}; saw ${JSON.stringify(allKinds)}`);
     }
 
