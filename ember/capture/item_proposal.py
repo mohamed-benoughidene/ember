@@ -21,6 +21,10 @@ from ember.capture.errors import AiSchemaError, ContextModeInvalid
 
 CONTEXT_WINDOW = 50
 
+# A grounded quote must be a meaningful span, not one word (Chunk 8; spec
+# line 59). Planned initial value, tuned after the batch (decision I11).
+MIN_QUOTE_WORDS = 3
+
 SYSTEM_PROMPT = (
     "You turn one raw project note into typed items. "
     "Pick each item's type from exactly these four: "
@@ -29,7 +33,8 @@ SYSTEM_PROMPT = (
     "Each item has these keys: "
     "type (one of the four), "
     "statement (the item in your own words), "
-    "source_quote (an exact substring copied from the raw note), "
+    "source_quote (an exact substring copied from the raw note, "
+    "at least three words long), "
     "confidence (your own score from 0.0 to 1.0). "
     "An item may also carry an optional fifth key, metadata: "
     "one short project-area label. Omit the key when unsure. "
@@ -213,6 +218,8 @@ def _check_entry(entry: object, raw_text: str) -> tuple[ItemProposal | None, str
     except ValidationError as exc:
         return None, _rule_for(exc)
     if proposal.source_quote not in raw_text:
+        return None, "quote"
+    if len(proposal.source_quote.split()) < MIN_QUOTE_WORDS:
         return None, "quote"
     return proposal, ""
 
