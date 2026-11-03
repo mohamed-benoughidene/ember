@@ -246,6 +246,7 @@ function registerIpcHandlers(options) {
         status: page.status ?? null,
         type: page.type ?? null,
         limit: page.limit ?? null,
+        offset: page.offset ?? null,
       });
       onCommand('topic-search', args);
       return clientFor(dbPath()).runCommand('topic-search', args);

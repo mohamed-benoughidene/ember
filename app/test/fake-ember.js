@@ -540,6 +540,7 @@ function runAppMode(argv) {
   if (name === 'topic-search') {
     const query = String(flag('--query') ?? '').toLowerCase();
     const limit = flag('--limit') === null ? null : Number(flag('--limit'));
+    const offset = Number(flag('--offset') ?? '0');
     let rows = items.filter(
       (it) =>
         it.statement.toLowerCase().includes(query) &&
@@ -547,8 +548,11 @@ function runAppMode(argv) {
         (typeFilter === null || it.type === typeFilter),
     );
     const hits = rows.map((it, i) => ({ item_id: it.id, score: 1 - i * 0.01, type: it.type, statement: it.statement, status: it.status }));
-    const page = limit === null ? hits : hits.slice(0, limit);
-    process.stdout.write(`${JSON.stringify({ mode: 'topic_search', query: flag('--query') ?? '', count: page.length, results: page })}\n`);
+    // `total` is the pre-page count (Batch 6): every match before the
+    // offset skip and the limit cap, like the real engine's envelope.
+    const total = hits.length;
+    const page = limit === null ? hits.slice(offset) : hits.slice(offset, offset + limit);
+    process.stdout.write(`${JSON.stringify({ mode: 'topic_search', query: flag('--query') ?? '', total, count: page.length, results: page })}\n`);
     process.exit(0);
   }
 

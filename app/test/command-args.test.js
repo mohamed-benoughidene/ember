@@ -4,7 +4,8 @@
  * The argv builders (app/main/command-args.js): every flag list must be
  * exactly what the bridge contract table pins (`docs/commands.md`
  * "Machine use" + tests/bridge/test_contract_table.py). The app adapts
- * to the bridge, never the reverse — so topic-search gets NO --offset,
+ * to the bridge, never the reverse — so topic-search pages with the same
+ * --limit/--offset shape the engine command takes (Batch 6 chunk 7),
  * history's --since is ISO-8601 WITH an offset, and filters use the
  * engine's exact values.
  */
@@ -36,15 +37,22 @@ test('list-items argv: the pinned flags, in a sane order', () => {
   assert.throws(() => listItemsArgs({ offset: 'x' }), TypeError);
 });
 
-test('topic-search argv: --query always, --limit only (the command has no --offset)', () => {
+test('topic-search argv: --query always, --limit and --offset page (Batch 6)', () => {
   assert.deepEqual(topicSearchArgs({ query: 'sqlite' }), ['--query', 'sqlite']);
   assert.deepEqual(
     topicSearchArgs({ query: 'sqlite', status: 'Active', type: 'Decision', limit: 20 }),
     ['--query', 'sqlite', '--status', 'Active', '--type', 'Decision', '--limit', '20'],
   );
+  assert.deepEqual(
+    topicSearchArgs({ query: 'sqlite', offset: 50 }),
+    ['--query', 'sqlite', '--offset', '50'],
+    'the pager walks the matches with --offset (total in the envelope is the pre-page count)',
+  );
   assert.throws(() => topicSearchArgs({ query: '   ' }), TypeError, 'an empty query must be the list, never a bare search');
   assert.throws(() => topicSearchArgs({ query: 42 }), TypeError);
   assert.throws(() => topicSearchArgs({ query: 'sqlite', limit: -3 }), TypeError);
+  assert.throws(() => topicSearchArgs({ query: 'sqlite', offset: -1 }), TypeError);
+  assert.throws(() => topicSearchArgs({ query: 'sqlite', offset: 1.5 }), TypeError);
 });
 
 test('show-item argv', () => {

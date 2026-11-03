@@ -7,9 +7,8 @@
  * contract table pins (`tests/bridge/test_contract_table.py` +
  * `docs/commands.md` "Machine use"):
  * - `list-items --status S --type T --limit N --offset N`
- * - `topic-search --query T --status S --type T --limit N` (NO --offset:
- *   the command has no such flag — the app adapts to the bridge, never
- *   the reverse)
+ * - `topic-search --query T --status S --type T --limit N --offset N`
+ *   (Batch 6 added --offset; `total` in the envelope is the pre-page count)
  * - `show-item --item N`
  * - `history --item N --limit N --offset N --since TS` (TS is ISO-8601
  *   WITH an offset; QUERY-007 otherwise)
@@ -52,7 +51,7 @@ function listItemsArgs({ status = null, type = null, limit = null, offset = null
 }
 
 /** The keyword search. `query` is required and always sent. */
-function topicSearchArgs({ query, status = null, type = null, limit = null } = {}) {
+function topicSearchArgs({ query, status = null, type = null, limit = null, offset = null } = {}) {
   if (typeof query !== 'string' || query.trim() === '') {
     throw new TypeError('topic-search needs --query text (the screen only calls it with a query)');
   }
@@ -60,7 +59,9 @@ function topicSearchArgs({ query, status = null, type = null, limit = null } = {
   optionalFlag(argv, '--status', status, STATUSES);
   optionalFlag(argv, '--type', type, TYPES);
   const lim = nonNegativeInt(limit, '--limit');
+  const off = nonNegativeInt(offset, '--offset');
   if (lim !== null) argv.push('--limit', String(lim));
+  if (off !== null) argv.push('--offset', String(off));
   return argv;
 }
 

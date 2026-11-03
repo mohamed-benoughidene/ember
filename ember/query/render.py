@@ -37,12 +37,18 @@ def render_current_state(rows: list[CurrentStateRow]) -> str:
     )
 
 
-def render_topic_search(hits: list[SearchHit], query: str) -> str:
-    """Return the `topic_search` envelope in the score order the core gave."""
+def render_topic_search(hits: list[SearchHit], query: str, total: int) -> str:
+    """Return the `topic_search` envelope in the score order the core gave.
+
+    `total` is the additive pre-page count (Batch 6, D5): every match the
+    `--offset` / `--limit` window was cut from, so a paged run never hides
+    the other pages. `count` stays the rows printed.
+    """
     return json.dumps(
         {
             "mode": "topic_search",
             "query": query,
+            "total": total,
             "count": len(hits),
             "results": [hit.model_dump() for hit in hits],
         },
