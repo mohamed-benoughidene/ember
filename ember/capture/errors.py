@@ -152,3 +152,18 @@ class ApiKeyMissing(CaptureError):
 
     code = "CAPTURE-022"
     name = "ApiKeyMissing"
+
+
+class SourceHasItems(CaptureError):
+    """`ember forget-source` on a raw note that still has items (D-07).
+
+    A note whose capture produced items carries real knowledge; forgetting
+    it would delete what the ledger and the items still stand on. Only a
+    note that produced NOTHING (zero items, any status) may be forgotten.
+    Lives HERE with the CAPTURE- family (one home per code — the
+    claim-side walk contract of the app's sentence table); the pure
+    forget rule imports it.
+    """
+
+    code = "CAPTURE-023"
+    name = "SourceHasItems"

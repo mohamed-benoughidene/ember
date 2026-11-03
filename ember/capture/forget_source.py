@@ -15,25 +15,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from ember.capture.errors import CaptureError
+from ember.capture.errors import CaptureError, SourceHasItems
 
 # The writer's encoding of the forget on the ledger (D-26): ONE row,
 # `item_id` and `link_id` NULL, no old/new text, `source_id` naming the
 # forgotten note (migration 014), `group_id` NULL so undo never sees it.
 FORGOTTEN_FIELD = "source_forgotten"
 FORGOTTEN_CAUSE = "user_forget_source"
-
-
-class SourceHasItems(CaptureError):
-    """`ember forget-source` on a raw note that still has items (D-07).
-
-    A note whose capture produced items carries real knowledge; forgetting
-    it would delete what the ledger and the items still stand on. Only a
-    note that produced NOTHING (zero items, any status) may be forgotten.
-    """
-
-    code = "CAPTURE-023"
-    name = "SourceHasItems"
 
 
 @dataclass(frozen=True)
