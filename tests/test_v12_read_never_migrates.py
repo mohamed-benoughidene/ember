@@ -2,8 +2,9 @@
 
 Undo step 01 §2: an untouched v12 file (scripts 001-012 applied, version
 stamped 12, no group_id column) must stay at v12 — the query boot is
-read-only and db-check never migrates. `history` and `export` succeed on
-it; since migration 015 the relate floor is 15, so `db-check` reports the
+read-only and db-check never migrates. `history`, `export` and `db-check` succeed on
+it (the db-check floors name what the walk reads; migration 015's tag column
+is not among them, so a v12 file passes the check)
 floor gap as drift on the untouched file — reading it, never migrating it.
 """
 
@@ -101,21 +102,15 @@ def test_export_on_a_v12_file_succeeds_and_never_migrates(db_path, tmp_path) -> 
     assert not Path(f"{db_path}.bak-v12").exists()
 
 
-def test_db_check_on_a_v12_file_reports_the_floor_gap_and_never_migrates(
-    db_path,
-) -> None:
-    """Post-015 the relate floor is 15: db-check drifts on the untouched
-    v12 file — honestly, and without ever writing to it (no migration, no
-    backup, byte-identical)."""
+def test_db_check_on_a_v12_file_succeeds_and_never_migrates(db_path) -> None:
     _build_v12_db(db_path)
     version_before, digest_before = _version_and_hash(db_path)
 
     result = CliRunner().invoke(main, ["db-check", "--db", db_path])
 
-    assert result.exit_code == 1, result.output
+    assert result.exit_code == 0, result.output
     assert "version: 12" in result.output
-    assert "floors: unmet - relate needs 15" in result.output
-    assert "result: DRIFT" in result.output
+    assert "result: OK" in result.output
     version_after, digest_after = _version_and_hash(db_path)
     assert version_before == 12
     assert version_after == 12
