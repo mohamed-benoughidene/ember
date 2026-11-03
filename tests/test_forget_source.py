@@ -8,18 +8,26 @@ refused with a dedicated new code (next free CAPTURE number, CAPTURE-023).
 A missing id is delete-nothing = success (I8). `ember history` classifies
 the new `(field, cause)` pair as a NEW kind, carrying `source_id` and no
 note text.
+
+Chunk 12 adds the Cleanup list's READ (D-09): `ember
+list-sources-without-items` prints one JSON document (reads always do)
+listing every source with ZERO items — `id`, `created_at`, the first
+words of its text — an empty list instead of null (I4), and a read-only
+run (byte-identical file).
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
 import sqlite3
+from pathlib import Path
 
 from click.testing import CliRunner
 
 from ember.adapters.sqlite import SqliteAiResponseStore, open_database
 from ember.cli import main
-from tests.fakes import insert_item, insert_source
+from tests.fakes import FIXED_TIME, insert_item, insert_source
 
 NOTE_TEXT = "We decided to use SQLite and only SQLite."
 
@@ -162,3 +170,68 @@ def test_history_classifies_the_forgotten_line(db_path) -> None:
     assert event["old_value"] is None and event["new_value"] is None
     # No note text anywhere in the rendered event.
     assert NOTE_TEXT not in json.dumps(event)
+
+
+def _seed_two_notes_only_one_has_items(db_path: str) -> tuple[int, int]:
+    """Source 1 keeps one confirmed item; source 2 has no items at all.
+
+    The two texts differ because a source's `content_hash` is UNIQUE.
+    Returns (with_items_id, without_items_id).
+    """
+    conn = open_database(db_path)
+    try:
+        with_items = insert_source(conn, NOTE_TEXT)
+        without_items = insert_source(
+            conn,
+            "We decided to use Postgres instead of SQLite for the second note body.",
+        )
+        insert_item(conn, source_id=with_items, item_id=1)
+        conn.commit()
+    finally:
+        conn.close()
+    return with_items, without_items
+
+
+def test_list_sources_without_items_lists_only_itemless_notes(db_path) -> None:
+    """(e) The Cleanup list's read (Chunk 12, D-09): `ember
+    list-sources-without-items` prints ONE JSON document (reads always do)
+    whose `sources` rows carry `id`, `created_at` and the FIRST WORDS of
+    the note text; the note that still has an item is NOT listed — listing
+    it would only invite the CAPTURE-023 refusal; and the run is read-only,
+    the file byte-identical after it."""
+    with_items, without_items = _seed_two_notes_only_one_has_items(db_path)
+    before = hashlib.sha256(Path(db_path).read_bytes()).hexdigest()
+
+    result = CliRunner().invoke(
+        main, ["list-sources-without-items", "--db", db_path]
+    )
+
+    assert result.exit_code == 0
+    document = json.loads(result.output)
+    assert set(document) == {"count", "sources"}
+    rows = document["sources"]
+    assert [row["id"] for row in rows] == [without_items]
+    listed = rows[0]
+    assert listed["created_at"] == FIXED_TIME
+    assert listed["preview"] == "We decided to use Postgres instead of SQLite"
+    # The tail words and the item-bearing note's text stay unread.
+    assert "second note body" not in result.output
+    assert NOTE_TEXT not in result.output
+    assert document["count"] == 1
+    # Read-only proof: the database file is byte-identical after the run.
+    after = hashlib.sha256(Path(db_path).read_bytes()).hexdigest()
+    assert after == before
+
+
+def test_list_sources_without_items_on_an_empty_base_is_an_empty_list(
+    db_path,
+) -> None:
+    """(f) I4: an empty base prints an empty list, never null."""
+    open_database(db_path).close()
+
+    result = CliRunner().invoke(
+        main, ["list-sources-without-items", "--db", db_path]
+    )
+
+    assert result.exit_code == 0
+    assert json.loads(result.output) == {"count": 0, "sources": []}

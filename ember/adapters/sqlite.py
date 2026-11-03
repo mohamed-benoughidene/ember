@@ -2475,6 +2475,61 @@ class SqliteForgetSourceStore:
             self._conn.commit()
 
 
+class SqliteSourcesWithoutItemsRead:
+    """The Cleanup list's ONE read (Batch 6 Chunk 12, D-09).
+
+    Notes whose every proposal was rejected (or never confirmed) have zero
+    `items` rows — exactly the notes `ember forget-source` may remove, so
+    the Cleanup screen lists them by id. A note that still has items never
+    appears: the forget would refuse it (`CAPTURE-023`), and listing it
+    would only invite that refusal. The preview carries the note's first
+    words, enough to recognise it without putting its whole text on screen
+    (raw notes are the sensitive bytes — the same spirit as D-26). Opened
+    on the read-only query boot; an empty base is an empty list, never
+    None (I4).
+    """
+
+    _PREVIEW_WORDS = 8
+
+    def __init__(self, conn: sqlite3.Connection) -> None:
+        self._conn = conn
+
+    def sources_without_items(self) -> list[dict[str, object]]:
+        """Return every itemless source as `id` / `created_at` / `preview`.
+
+        `created_at` is the note's `sources.timestamp` (the column that
+        holds its creation time). Raise `SourceDbReadError` (CAPTURE-005)
+        on a read failure.
+        """
+        try:
+            rows = self._conn.execute(
+                "SELECT s.id, s.timestamp, s.full_text"
+                " FROM sources AS s"
+                " LEFT JOIN items AS i ON i.source_id = s.id"
+                " WHERE i.id IS NULL"
+                " ORDER BY s.id"
+            ).fetchall()
+        except sqlite3.Error as exc:
+            raise SourceDbReadError(
+                "sources-without-items read fail"
+            ) from exc
+        return [
+            {
+                "id": int(row["id"]),
+                "created_at": str(row["timestamp"]),
+                "preview": _first_words(
+                    str(row["full_text"]), self._PREVIEW_WORDS
+                ),
+            }
+            for row in rows
+        ]
+
+
+def _first_words(text: str, count: int) -> str:
+    """The first `count` whitespace-separated words of `text`."""
+    return " ".join(text.split()[:count])
+
+
 class SqliteItemGatekeeper:
     """Gatekeeper boundary for `items` and `change_log`, plus item reads.
 

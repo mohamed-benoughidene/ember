@@ -17,7 +17,7 @@ Facts in this file come from the code (`ember/cli.py` and the engine modules), n
 
 A program (the desktop app, a script) can read Ember's output as data instead of parsing sentences. Three tools, described once here:
 
-**`--format text|json`** (default `text`) is offered by the ten write and utility commands `maintain`, `close-item`, `set-status`, `reverse-supersedes`, `edit-item`, `remove-link`, `undo`, `redo`, `backup`, `db-check`. With `json`, the command prints ONE JSON document on stdout (sorted keys), with top-level keys `command`, `changes` (the run's change records), `summary` (the counts), and `dry_run` (true on a `--dry-run` run). The terminal `text` default prints, byte for byte, what it always printed. The six Query commands and `capture-source` always print their one JSON document; their shapes are the "Envelope" lines in their own sections. On `capture` and `relate` the flag is refused (a usage error, exit 2) — their program-facing mode is the event stream below.
+**`--format text|json`** (default `text`) is offered by the ten write and utility commands `maintain`, `close-item`, `set-status`, `reverse-supersedes`, `edit-item`, `remove-link`, `undo`, `redo`, `backup`, `db-check`. With `json`, the command prints ONE JSON document on stdout (sorted keys), with top-level keys `command`, `changes` (the run's change records), `summary` (the counts), and `dry_run` (true on a `--dry-run` run). The terminal `text` default prints, byte for byte, what it always printed. The six Query commands, `capture-source` and `list-sources-without-items` always print their one JSON document; their shapes are the "Envelope" lines in their own sections. On `capture` and `relate` the flag is refused (a usage error, exit 2) — their program-facing mode is the event stream below.
 
 **`--confirm terminal|json`** (default `terminal`) is offered by the three interactive commands `capture`, `relate`, `maintain`. With `json`, every stdout line is one flushed JSON event object, and the answers arrive as stdin lines instead of keystrokes:
 
@@ -62,6 +62,10 @@ Set or clear the `validated` flag on an item. Only an `Assumption` may carry the
 ### `ember forget-source --source N [--db PATH]` - no key
 
 Permanently forget a raw note that produced no items (D-07). One transaction deletes the `sources` row and its `ai_responses` rows and appends exactly ONE textless ledger line (`source_forgotten` / `user_forget_source`) that names the note by its `source_id` (migration 014) and carries no note text; the line's `group_id` is NULL, so `undo` never sees it — the forget cannot be undone. A note that still has items is refused with `CAPTURE-023 SourceHasItems` (exit 1) and nothing is written. A missing id exits 0 with nothing written (delete-missing is success, I8). Text output only: like `set-validated`/`clear-validated` this human write offers no `--format json` document.
+
+### `ember list-sources-without-items [--db PATH]` - no key
+
+The Cleanup list's read (D-09): every raw note that produced ZERO items, ordered by id — the notes whose every proposal was rejected (or never confirmed), exactly the notes `forget-source` may remove. Each row carries `id`, `created_at` (the note's `sources.timestamp` — the column holding its creation time) and `preview` (its first 8 words, so the list identifies a note without carrying its whole text). A note that still has items never appears (the forget would refuse it, `CAPTURE-023`). Read-only: the file is opened read-only and never migrated, like the query boot (`QUERY-003` missing file, `QUERY-004` under the floor, `QUERY-008` busy, `QUERY-009` needs recovery); a failed read answers `CAPTURE-005`. Always prints ONE JSON document (a read — the D-20 refusal stays with the write commands). An empty base prints an empty list, never null (I4). Envelope: `count`, `sources`.
 
 ---
 
