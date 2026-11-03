@@ -717,7 +717,7 @@ async function noKeyPath(ai) {
     await win.locator('[data-testid="state-no-key"] [data-action="add-open-setup"]').click();
     await win.waitForSelector('[data-testid="setup-key-input"]');
     const step = await win.textContent('.setup .sub');
-    if (!/Step 2 of 3/.test(step)) fail(`the button must open the AI-connection setup step, saw: ${step}`);
+    if (!/Step 2 of 2/.test(step)) fail(`the button must open the AI-connection setup step, saw: ${step}`);
     process.stdout.write('no-key OK: Add waits and points at the AI connection (story 29)\n');
   } finally {
     await app.close().catch(() => {});

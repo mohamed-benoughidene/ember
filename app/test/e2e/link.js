@@ -467,7 +467,7 @@ async function noKeyFlow() {
     await win.locator('[data-testid="state-no-key"] [data-action="link-open-setup"]').click();
     await win.waitForSelector('[data-testid="setup-key-input"]');
     const step = await win.textContent('.setup .sub');
-    if (!/Step 2 of 3/.test(step)) fail(`the button must open the AI-connection setup step, saw: ${step}`);
+    if (!/Step 2 of 2/.test(step)) fail(`the button must open the AI-connection setup step, saw: ${step}`);
     process.stdout.write('no-key OK (story 48, the Add path)\n');
   } finally {
     await app.close().catch(() => {});
