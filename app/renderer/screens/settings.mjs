@@ -28,6 +28,7 @@
 
 import { esc } from '../design/escape-html.mjs';
 import { buttonHtml } from '../components/button.mjs';
+import { keyFieldHtml } from '../components/key-field.mjs';
 import { loadingHtml } from '../components/state-block.mjs';
 import { checkKeyShape, keyShapeWords } from '../../shared/key-shape.mjs';
 
@@ -689,10 +690,7 @@ function aiHtml(state) {
   const replaceForm = state.replaceOpen
     ? `<div class="panel tone" style="margin-top:var(--s4)"><div class="pad">
         <label for="settings-key">Your AI key</label>
-        <div class="filters">
-          <input type="${state.showKey ? 'text' : 'password'}" id="settings-key" data-testid="settings-key-input" autocomplete="off" aria-label="Your AI key">
-          ${buttonHtml({ label: state.showKey ? 'Hide' : 'Show', action: 'ai-show-key', variant: 'secondary' })}
-        </div>
+        ${keyFieldHtml({ id: 'settings-key', testid: 'settings-key-input', toggleAction: 'ai-show-key', value: state.key, showKey: state.showKey })}
         <p class="help">A key is a long password that lets Ember use the AI service. Ember stores it on this computer only — in the operating system keyring, never in a plain file. Your text goes to that service when you use Add or Link items.</p>
         <p class="help">Ember checks the key's shape now. The real test happens at your first Add: if the service refuses the key, you will see a clear message there.</p>
         <div class="actions">

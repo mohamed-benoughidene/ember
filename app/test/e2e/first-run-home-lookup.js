@@ -136,6 +136,32 @@ async function firstRun() {
     }
     await assertCleanScan(win, 'first run step 2 (key, no message)');
 
+    // Batch 6 (D-14, F7d): exactly ONE key input per screen, the eye
+    // toggle INSIDE the field (aria-label "Show key"/"Hide key"), and
+    // NO separate Show/Hide button beside it.
+    const keyInputs = await win.locator('[data-testid="setup-key-input"]').count();
+    if (keyInputs !== 1) fail(`exactly one key input expected on first run, saw ${keyInputs}`);
+    const eyeField = '.key-field:has([data-testid="setup-key-input"])';
+    const eyeShow = win.locator(`${eyeField} button[aria-label="Show key"]`);
+    if ((await eyeShow.count()) !== 1) {
+      fail(`the key field needs exactly one eye toggle inside it (aria-label "Show key"), saw ${await eyeShow.count()}`);
+    }
+    await eyeShow.click();
+    await win.waitForSelector(`${eyeField} button[aria-label="Hide key"]`);
+    if ((await win.getAttribute('[data-testid="setup-key-input"]', 'type')) !== 'text') {
+      fail('after the eye toggle the key input must be plain text');
+    }
+    await win.click(`${eyeField} button[aria-label="Hide key"]`);
+    await win.waitForSelector(`${eyeField} button[aria-label="Show key"]`);
+    if ((await win.getAttribute('[data-testid="setup-key-input"]', 'type')) !== 'password') {
+      fail('after hiding, the key input must be masked again');
+    }
+    const setupButtons = (await win.locator('.setup button').allTextContents()).map((t) => t.trim());
+    if (setupButtons.includes('Show') || setupButtons.includes('Hide')) {
+      fail(`no separate Show/Hide button may sit beside the key field (F7d), saw: ${JSON.stringify(setupButtons)}`);
+    }
+    process.stdout.write('key field OK (first run): one box, the eye toggle inside with Show key/Hide key, no separate Show/Hide button\n');
+
     // Story 8: clear messages for empty and too short
     await win.click('[data-action="setup-save-key"]');
     await win.waitForSelector('[data-testid="setup-message"]');
