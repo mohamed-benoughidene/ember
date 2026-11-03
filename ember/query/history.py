@@ -67,6 +67,9 @@ _KIND_BY_PAIR: dict[tuple[str, str], str] = {
     ("undo_of", "user_undo"): "undone",
     ("redo_of", "user_redo"): "redone",
     ("link_unreversed", "user_undo"): "link_unreversed",
+    # The forget-source write (Batch 6, D-07/D-26): one textless row that
+    # names the forgotten note by its migration-014 `source_id`.
+    ("source_forgotten", "user_forget_source"): "source_forgotten",
 }
 
 
@@ -136,6 +139,9 @@ def _to_event(row: ChangeRow, link: Link | None) -> HistoryEvent:
         close_reason=split_status_value(row.new_value or "").close_reason
         if kind == "status_changed"
         else None,
+        # The forgotten note is named by its id, never by text (Batch 6,
+        # D-26): NULL on every other kind of event.
+        source_id=row.source_id,
     )
 
 

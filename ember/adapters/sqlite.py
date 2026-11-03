@@ -1679,6 +1679,9 @@ class SqliteQueryContext:
             has_groups = column_exists(self._conn, "change_log", "group_id")
             if has_groups:
                 columns += ", group_id"
+            has_source_id = column_exists(self._conn, "change_log", "source_id")
+            if has_source_id:
+                columns += ", source_id"
             rows = self._conn.execute(
                 f"SELECT {columns} FROM change_log ORDER BY id"
             ).fetchall()
@@ -1698,6 +1701,11 @@ class SqliteQueryContext:
                 trigger_cause=row["trigger_cause"],
                 group_id=(
                     int(row["group_id"]) if has_groups and row["group_id"] is not None else None
+                ),
+                source_id=(
+                    int(row["source_id"])
+                    if has_source_id and row["source_id"] is not None
+                    else None
                 ),
             )
             for row in rows
@@ -2373,6 +2381,98 @@ def _status_new_value(change: StatusChange) -> str:
 # N10: the id-conflict retry is bounded — after 5 conflicting insert
 # attempts the stored error surfaces instead of a live-lock.
 _MAX_ITEM_ID_ATTEMPTS = 5
+
+
+class SqliteForgetSourceStore:
+    """The `ember forget-source` write boundary (Batch 6, D-07 / D-26).
+
+    The pure rule (`ember/capture/forget_source.py`) decides; this store
+    only performs the ONE transaction it names. One user action, one
+    transaction (Batch 4 chunk 8, 4.3 #9): the command wraps the reads and
+    this write in `unit_of_work`, so the source row, its raw AI answers
+    (`ai_responses.source_id`, migrations 005/009) and the one textless
+    ledger line are all-or-nothing — a failed ledger insert rolls the
+    deletions back too and the note stays untouched.
+    """
+
+    def __init__(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        clock: Callable[[], str] | None = None,
+    ) -> None:
+        self._conn = conn
+        self._clock = clock or _utc_now
+
+    def source_exists(self, source_id: int) -> bool:
+        """Return whether a `sources` row with this id exists.
+
+        Raise `SourceDbReadError` (CAPTURE-005) on a read failure.
+        """
+        try:
+            row = self._conn.execute(
+                "SELECT 1 FROM sources WHERE id = ?", (source_id,)
+            ).fetchone()
+        except sqlite3.Error as exc:
+            raise SourceDbReadError("db read fail", source_id=source_id) from exc
+        return row is not None
+
+    def item_count_for_source(self, source_id: int) -> int:
+        """Return how many `items` rows cite this source (any status).
+
+        The forget refusal counts EVERY item the capture produced, Closed
+        ones included. Raise `ItemDbReadError` (CAPTURE-011) on a read
+        failure.
+        """
+        try:
+            row = self._conn.execute(
+                "SELECT COUNT(*) FROM items WHERE source_id = ?", (source_id,)
+            ).fetchone()
+        except sqlite3.Error as exc:
+            raise ItemDbReadError(
+                "item read fail", source_id=source_id
+            ) from exc
+        return int(row[0])
+
+    def forget_source(
+        self, source_id: int, *, field: str, cause: str
+    ) -> None:
+        """Delete the note and its raw AI answers; append the ONE ledger line.
+
+        Exact write order inside the caller's transaction: the
+        `ai_responses` rows first (children of `sources`), then the
+        `sources` row, then the ONE `change_log` INSERT — `item_id` and
+        `link_id` NULL, `old_value` and `new_value` NULL (NO text, D-26),
+        `timestamp` from ONE clock read, `field_changed=field` /
+        `trigger_cause=cause` (the writer encoding lives in the pure rule),
+        `group_id` NULL (invisible to undo, migration 013's own rule) and
+        `source_id` naming the forgotten note (migration 014, D-07).
+
+        Raise `SourceDbWriteError` (CAPTURE-006) on any write failure; the
+        caller's `unit_of_work` (or, outside one, this method's own
+        rollback) undoes the whole action.
+        """
+        timestamp = self._clock()
+        try:
+            self._conn.execute(
+                "DELETE FROM ai_responses WHERE source_id = ?", (source_id,)
+            )
+            self._conn.execute("DELETE FROM sources WHERE id = ?", (source_id,))
+            self._conn.execute(
+                "INSERT INTO change_log"
+                " (item_id, link_id, field_changed, old_value, new_value,"
+                " timestamp, trigger_cause, source_id)"
+                " VALUES (NULL, NULL, ?, NULL, NULL, ?, ?, ?)",
+                (field, timestamp, cause, source_id),
+            )
+        except sqlite3.Error as exc:
+            if not in_unit_of_work(self._conn):
+                self._conn.rollback()
+            raise SourceDbWriteError(
+                "forget-source write fail", source_id=source_id
+            ) from exc
+        if not in_unit_of_work(self._conn):
+            self._conn.commit()
 
 
 class SqliteItemGatekeeper:

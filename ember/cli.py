@@ -41,6 +41,7 @@ from ember.adapters.sqlite import (
     SqliteItemContext,
     SqliteGroupIdPort,
     SqliteItemGatekeeper,
+    SqliteForgetSourceStore,
     SqliteLinkContext,
     SqliteLinkStore,
     SqliteMaintainContext,
@@ -62,6 +63,11 @@ from ember.adapters.sqlite import (
 from ember.bridge.json_out import OutputDocument, render_document
 from ember.capture.confirm_write import run_confirm_loop
 from ember.capture.errors import UserAbort
+from ember.capture.forget_source import (
+    FORGOTTEN_CAUSE,
+    FORGOTTEN_FIELD,
+    plan_forget_source,
+)
 from ember.capture.input_reader import InputMode, read_raw_text
 from ember.capture.item_gatekeeper import (
     GatekeeperRun,
@@ -544,6 +550,57 @@ def set_validated(item_id: int, db_path: str) -> None:
 def clear_validated(item_id: int, db_path: str) -> None:
     """Clear the validated flag on an Assumption (human-only, spec 3.5)."""
     _write_validated_flag(item_id, db_path, new_value=False)
+
+
+@main.command("forget-source")
+@click.option(
+    "--source",
+    "source_id",
+    type=int,
+    required=True,
+    help="Raw note (source) id to forget.",
+)
+@click.option(
+    "--db",
+    "db_path",
+    default=DEFAULT_DB_PATH,
+    help="SQLite database path.",
+)
+def forget_source_command(source_id: int, db_path: str) -> None:
+    """Forget a raw note that produced no items, permanently (D-07).
+
+    ONE transaction deletes the note's `sources` row and its raw AI
+    answers (`ai_responses.source_id`) and appends exactly ONE textless
+    ledger line naming the source id by `source_id` (migration 014) with
+    no note text (D-26); its `group_id` stays NULL, so undo never sees it
+    and the forget cannot be undone. A note that still has items is
+    refused with `CAPTURE-023` and nothing is written; a missing id
+    succeeds with nothing written (I8). Text output only: like
+    `set-validated`/`clear-validated` this is a capture-family human
+    write, so no document format is offered on it (the D-20 house rule
+    keeps JSON document mode off the write commands that never had it).
+    """
+    conn = open_existing_database(db_path)
+    try:
+        forget_store = SqliteForgetSourceStore(conn)
+        with unit_of_work(conn):
+            plan = plan_forget_source(
+                source_id=source_id,
+                source_exists=forget_store.source_exists(source_id),
+                item_count=forget_store.item_count_for_source(source_id),
+            )
+            if plan.existed:
+                forget_store.forget_source(
+                    source_id,
+                    field=FORGOTTEN_FIELD,
+                    cause=FORGOTTEN_CAUSE,
+                )
+    finally:
+        conn.close()
+    if plan.existed:
+        click.echo(f"source {source_id} forgotten")
+    else:
+        click.echo(f"source {source_id} already forgotten (nothing written)")
 
 
 class _RelateWriteConnection:

@@ -59,6 +59,10 @@ Phase 1 alone: store or reuse the raw source, nothing else. Prints one JSON docu
 
 Set or clear the `validated` flag on an item. Only an `Assumption` may carry the flag; anything else exits 1. Both write a `change_log` row (`validated`).
 
+### `ember forget-source --source N [--db PATH]` - no key
+
+Permanently forget a raw note that produced no items (D-07). One transaction deletes the `sources` row and its `ai_responses` rows and appends exactly ONE textless ledger line (`source_forgotten` / `user_forget_source`) that names the note by its `source_id` (migration 014) and carries no note text; the line's `group_id` is NULL, so `undo` never sees it — the forget cannot be undone. A note that still has items is refused with `CAPTURE-023 SourceHasItems` (exit 1) and nothing is written. A missing id exits 0 with nothing written (delete-missing is success, I8). Text output only: like `set-validated`/`clear-validated` this human write offers no `--format json` document.
+
 ---
 
 ## Engine B: Relate (writes links between items)
