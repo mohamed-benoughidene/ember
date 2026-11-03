@@ -11,11 +11,13 @@ import os
 from typing import Any, Mapping, Sequence
 from urllib.parse import urlparse
 
-from openai import OpenAI, OpenAIError
+from openai import APITimeoutError, OpenAI, OpenAIError
 
 from ember.capture.errors import (
     AiCallError,
+    AiRateLimitError,
     AiSchemaError,
+    AiTimeoutError,
     ApiKeyMissing as CaptureApiKeyMissing,
     BaseUrlInvalid,
 )
@@ -67,8 +69,10 @@ class OpenAiItemProposer:
         """Return the raw provider answer and the proposals checked from it.
 
         Raise `AiCallError` (CAPTURE-008) with the provider's own status and
-        message when the call fails, and `AiSchemaError` (CAPTURE-009) when the
-        answer cannot be read. Side effect: one HTTP request to the provider.
+        message when the call fails — a 429 reply is `AiRateLimitError`
+        (CAPTURE-024) and a request timeout is `AiTimeoutError` (CAPTURE-025) —
+        and `AiSchemaError` (CAPTURE-009) when the answer cannot be read.
+        Side effect: one HTTP request to the provider.
         """
         try:
             response = self._client.chat.completions.create(
@@ -76,7 +80,7 @@ class OpenAiItemProposer:
                 messages=_messages(raw_text, context),
             )
         except OpenAIError as exc:
-            raise AiCallError(
+            raise _capture_ai_call_error_class(exc)(
                 "ai call fail",
                 reason=type(exc).__name__,
                 status=getattr(exc, "status_code", "?"),
@@ -302,6 +306,22 @@ def _first_present(values: Mapping[str, str], keys: Sequence[str]) -> str | None
         if found:
             return found
     return None
+
+
+def _capture_ai_call_error_class(exc: OpenAIError) -> type[AiCallError]:
+    """Pick the capture code class for a failed AI call (Batch 7, Chunk 1).
+
+    A 429 reply is rate-limited (`AiRateLimitError`, CAPTURE-024) and a
+    request timeout is give-up-waiting (`AiTimeoutError`, CAPTURE-025);
+    everything else keeps the shared call-failure code CAPTURE-008. Both
+    new classes are `AiCallError` subclasses, so only one base ever needs
+    catching.
+    """
+    if getattr(exc, "status_code", None) == 429:
+        return AiRateLimitError
+    if isinstance(exc, APITimeoutError):
+        return AiTimeoutError
+    return AiCallError
 
 
 def _without_secret(detail: str, secret: str | None) -> str:
