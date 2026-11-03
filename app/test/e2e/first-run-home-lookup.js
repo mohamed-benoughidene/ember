@@ -7,19 +7,26 @@
  * the AI service, so no fake AI server is needed).
  *
  * Flows, one per scenario:
- *  1. FIRST RUN: three steps and "about two minutes" (2), the file
- *     default (3), what the file holds (4), the key step with clear
- *     empty/short messages (8) and the plain explanation (6), the key
- *     save (5 PARTIAL: shape check only, decision 5-A; on a basic_text
- *     keyring the APP-003 session-only offer is taken), skip (7) in a
- *     separate fresh launch, and "Add your first text" (9).
+ *  1. FIRST RUN: two steps and "about two minutes" (2, Batch 6: the
+ *     "Ready" step is gone — Skip and Continue go straight to finish),
+ *     the file default (3), what the file holds (4), a refused file
+ *     leaving the PREVIOUS path in the input (F7c: checked before it
+ *     is saved), the key step with clear empty/short messages (8) and
+ *     the plain explanation (6), the key save (5 PARTIAL: shape check
+ *     only, decision 5-A; on a basic_text keyring the APP-003
+ *     session-only offer is taken), skip (7) in a separate fresh
+ *     launch, and the first action is the real Add pane (9).
  *  2. HOME: the no-key banner (never blank), attention first (10) with
  *     the sweep button (15), counts (11-12), latest ledger lines (13),
  *     the main Add text button (14), and the pre-Add empty state.
  *  3. LOOK UP: search (30), filters (31), the count line (32), the
  *     table (33), the provenance view (34-36), nothing-matches +
  *     Clear filters (39), "No items yet" (40), and the Ledger tab with
- *     filters, paging (37-38) and the plain words Undone/Redone (122).
+ *     filters, paging (37-38, newest first per Batch 6) and plain words
+ *     on every page (122).
+ *  3b. SEARCH PAGING (Batch 6 chunk 7): a 60-match base at 50 a page
+ *     shows the page and total numbers in the search header and pages
+ *     through the matches with the pager buttons (4.7 #5).
  *  4. EMPTY + ERROR: a well-formed empty KB (story 40); Home's grouped
  *     failure notices (Batch 3 F4, decision B3-1): one notice per error
  *     code replaces the per-block cards, the count as a bare number and
@@ -78,8 +85,8 @@ async function finishFirstRunKeyStep(win) {
   if (!/real test happens at your first Add/.test(help)) {
     fail(`decision 5-A honesty line missing: ${help.slice(0, 300)}`);
   }
+  // Batch 6: two steps — "Continue" goes straight to finish (the app).
   await win.click('[data-testid="setup-continue"]');
-  await win.waitForSelector('[data-testid="setup-finish"]');
 }
 
 /* ---------------- scenario 1: first run ---------------- */
@@ -92,18 +99,32 @@ async function firstRun() {
   try {
     const win = await app.firstWindow();
 
-    // Step 1: three steps, "about two minutes", the default location
+    // Step 1: two steps, "about two minutes", the default location
     await win.waitForSelector('[data-testid="setup-db-input"]');
     const sub = await win.textContent('.setup .sub');
-    if (!/Step 1 of 3/.test(sub) || !/About two minutes/.test(sub)) fail(`the setup header is wrong: ${sub}`);
+    if (!/Step 1 of 2/.test(sub) || !/About two minutes/.test(sub)) fail(`the setup header is wrong: ${sub}`);
     const stepNames = await win.locator('.steps li').count();
-    if (stepNames !== 3) fail(`expected the three setup steps, saw ${stepNames}`);
+    if (stepNames !== 2) fail(`expected the two setup steps, saw ${stepNames}`);
     const defaultPath = await win.evaluate(() => window.ember.getState().then((s) => s.defaultKbPath));
     const shown = await win.inputValue('[data-testid="setup-db-input"]');
     if (shown !== defaultPath) fail(`the default file location should be ${defaultPath}, saw ${shown}`);
     const holds = await win.textContent('.setup .form');
     if (!/items, their links and the ledger/.test(holds)) fail('the one sentence on what the file holds is missing');
     await assertCleanScan(win, 'first run step 1 (file location)');
+
+    // F7c: a refused file (an existing non-Ember file picked) shows the
+    // refusal and leaves the PREVIOUS path in the input — and never
+    // reaches the settings.
+    const notEmber = path.join(workDir, 'not-ember.txt');
+    fs.writeFileSync(notEmber, 'a plain text file that is no knowledge base', 'utf8');
+    await win.fill('[data-testid="setup-db-input"]', notEmber);
+    await win.click('[data-action="setup-file-continue"]');
+    await win.waitForSelector('[data-testid="setup-message"]');
+    const refused = await win.textContent('[data-testid="setup-message"]');
+    if (!/not an Ember knowledge base/.test(refused)) fail(`a non-Ember file must be refused: ${refused}`);
+    const kept = await win.inputValue('[data-testid="setup-db-input"]');
+    if (kept !== defaultPath) fail(`a refused file must leave the previous path in the input, saw ${kept}`);
+    await assertCleanScan(win, 'first run step 1 (refused file)');
 
     await win.click('[data-action="setup-file-continue"]');
 
@@ -114,6 +135,32 @@ async function firstRun() {
       fail(`the plain key explanation is missing: ${help.slice(0, 300)}`);
     }
     await assertCleanScan(win, 'first run step 2 (key, no message)');
+
+    // Batch 6 (D-14, F7d): exactly ONE key input per screen, the eye
+    // toggle INSIDE the field (aria-label "Show key"/"Hide key"), and
+    // NO separate Show/Hide button beside it.
+    const keyInputs = await win.locator('[data-testid="setup-key-input"]').count();
+    if (keyInputs !== 1) fail(`exactly one key input expected on first run, saw ${keyInputs}`);
+    const eyeField = '.key-field:has([data-testid="setup-key-input"])';
+    const eyeShow = win.locator(`${eyeField} button[aria-label="Show key"]`);
+    if ((await eyeShow.count()) !== 1) {
+      fail(`the key field needs exactly one eye toggle inside it (aria-label "Show key"), saw ${await eyeShow.count()}`);
+    }
+    await eyeShow.click();
+    await win.waitForSelector(`${eyeField} button[aria-label="Hide key"]`);
+    if ((await win.getAttribute('[data-testid="setup-key-input"]', 'type')) !== 'text') {
+      fail('after the eye toggle the key input must be plain text');
+    }
+    await win.click(`${eyeField} button[aria-label="Hide key"]`);
+    await win.waitForSelector(`${eyeField} button[aria-label="Show key"]`);
+    if ((await win.getAttribute('[data-testid="setup-key-input"]', 'type')) !== 'password') {
+      fail('after hiding, the key input must be masked again');
+    }
+    const setupButtons = (await win.locator('.setup button').allTextContents()).map((t) => t.trim());
+    if (setupButtons.includes('Show') || setupButtons.includes('Hide')) {
+      fail(`no separate Show/Hide button may sit beside the key field (F7d), saw: ${JSON.stringify(setupButtons)}`);
+    }
+    process.stdout.write('key field OK (first run): one box, the eye toggle inside with Show key/Hide key, no separate Show/Hide button\n');
 
     // Story 8: clear messages for empty and too short
     await win.click('[data-action="setup-save-key"]');
@@ -127,17 +174,8 @@ async function firstRun() {
 
     await finishFirstRunKeyStep(win);
 
-    // Step 3: ready, and the first action is Add your first text (9)
-    const ready = await win.textContent('.setup .form');
-    if (!/Ember is ready/.test(ready)) fail(`step 3 should say Ember is ready: ${ready}`);
-    if (!/connected|kept for this session/.test(ready)) fail(`step 3 should name the connection state: ${ready}`);
-    const finishLabel = (await win.textContent('[data-testid="setup-finish"]')).trim();
-    if (finishLabel !== 'Add your first text') fail(`the first action must be "Add your first text", saw ${finishLabel}`);
-    await assertCleanScan(win, 'first run step 3 (ready)');
-
-    await win.click('[data-testid="setup-finish"]');
-    /* App 05 (ticket A34): the Add pane is the real screen now —
-       the draft form replaces the step-04 interim placeholder. */
+    // Continue (or Skip) lands STRAIGHT in the app (Batch 6: no "Ready"
+    // step). Story 9: the first action is the real Add pane.
     await win.waitForSelector('[data-testid="add-pane"]');
     await win.waitForSelector('[data-testid="add-text-input"]');
     const notice = await win.textContent('[data-testid="add-notice"]');
@@ -157,12 +195,13 @@ async function firstRun() {
       await win2.waitForSelector('[data-testid="setup-db-input"]');
       await win2.click('[data-action="setup-file-continue"]');
       await win2.waitForSelector('[data-testid="setup-key-input"]');
+      // Batch 6: two steps — "Skip for now" goes straight to finish:
+      // the app lands on the Add pane with its honest no-key state.
       await win2.click('[data-action="setup-skip-key"]');
-      await win2.waitForSelector('[data-testid="setup-finish"]');
-      const ready2 = await win2.textContent('.setup .form');
-      if (!/not connected yet/.test(ready2)) fail(`skipping must keep the app usable without a key: ${ready2}`);
-      await win2.click('[data-testid="setup-finish"]');
       await win2.waitForSelector('[data-testid="add-pane"]'); /* App 05: real Add pane */
+      await win2.waitForSelector('[data-testid="state-no-key"]');
+      const noKey = await win2.textContent('[data-testid="state-no-key"]');
+      if (!/needs the AI connection/.test(noKey)) fail(`skipping must keep the app usable without a key: ${noKey}`);
       process.stdout.write('first run OK: the key path and the skip path both land in the app (stories 1-9)\n');
     } finally {
       await app2.close();
@@ -225,10 +264,14 @@ async function home() {
     await win.locator('#nav button[data-job="home"]').click();
     await win.waitForSelector('[data-testid="counts-panel"]');
 
-    // Story 13: the latest ledger lines, plain words
+    // Story 13: the latest ledger lines, plain words. The engine renders
+    // the ledger NEWEST first (Batch 6), so the latest 5 lines are the
+    // most recent writes: the newest fixture line (the 10-30T08:40 event)
+    // is on top and the OLDEST line (item 5's 10-01 creation) is NOT here.
     await win.waitForSelector('[data-testid="home-ledger-table"]');
     const ledger = await win.textContent('[data-testid="home-ledger-table"]');
-    if (!/Item 5 was added/.test(ledger)) fail(`the latest ledger lines must show: ${ledger.slice(0, 200)}`);
+    if (!/2026-10-30T08:40/.test(ledger)) fail(`the latest ledger lines must start at the newest write, saw: ${ledger.slice(0, 200)}`);
+    if (/2026-10-01T10:02/.test(ledger)) fail(`the latest 5 lines must not reach back to the oldest write, saw: ${ledger.slice(0, 200)}`);
     const ledgerRows = await win.locator('[data-testid="home-ledger-table"] tr').count();
     if (ledgerRows !== 5) fail(`home shows the latest 5 ledger lines, saw ${ledgerRows}`);
 
@@ -238,11 +281,10 @@ async function home() {
     await win.click('[data-action="home-setup-key"]');
     await win.waitForSelector('[data-testid="setup-key-input"]');
     const step2 = await win.textContent('.setup .sub');
-    if (!/Step 2 of 3/.test(step2)) fail(`the banner must re-open the setup AT the key step, saw: ${step2}`);
+    if (!/Step 2 of 2/.test(step2)) fail(`the banner must re-open the setup AT the key step, saw: ${step2}`);
     await assertCleanScan(win, 'first run re-opened from the no-key banner (key step)');
+    // Batch 6: two steps — "Skip for now" goes straight to finish.
     await win.click('[data-action="setup-skip-key"]');
-    await win.waitForSelector('[data-testid="setup-finish"]');
-    await win.click('[data-testid="setup-finish"]');
     await win.waitForSelector('[data-testid="add-pane"]'); /* App 05: real Add pane */
     await win.locator('#nav button[data-job="home"]').click();
     await win.waitForSelector('[data-testid="counts-panel"]');
@@ -333,7 +375,9 @@ async function lookup() {
     await win.press('[data-testid="lookup-q"]', 'Enter');
     await win.waitForFunction(() => /matches for/.test(document.querySelector('[data-testid="lookup-count"]').textContent));
     countLine = (await win.textContent('[data-testid="lookup-count"]')).trim();
-    if (!/2 matches for "backup"/.test(countLine)) fail(`the search count is wrong: ${countLine}`);
+    // Batch 6: the count line shows the page number beside the pre-page
+    // total; both are 2 here.
+    if (!/2 of 2 matches for "backup"/.test(countLine)) fail(`the search count is wrong: ${countLine}`);
     await win.selectOption('[data-testid="lookup-status"]', 'Challenged');
     await win.waitForSelector('[data-testid="state-empty"]');
     const emptyText = await win.textContent('[data-testid="state-empty"]');
@@ -349,15 +393,24 @@ async function lookup() {
     if (!(await win.locator('[data-testid="ledger-older"]').isVisible())) fail('16 fixture events must offer an Older page');
     const kinds1 = (await win.locator('[data-testid="ledger-kind"]').allTextContents()).map((s) => s.trim());
     if (kinds1.some((k) => k === '')) fail('story 122: no ledger kind may be blank');
-    if (!kinds1.includes('Item edited')) fail('the item_edited kind must read in plain words');
+    // The ledger renders NEWEST first (Batch 6): the first page holds the
+    // most recent lines (the 10-30T08:40 "no words" event is page 1) and
+    // the OLDEST lines (the two 10-01/10-03 "Added" events) are NOT here.
+    if (!kinds1.includes('Change without words')) fail('the newest event (no-words edit) must be on the first page');
+    if (kinds1.includes('Added')) fail('the oldest events must not be on the newest-first first page');
     await win.click('[data-testid="ledger-older"]');
     await win.waitForFunction(() => {
       const kinds = [...document.querySelectorAll('[data-testid="ledger-kind"]')].map((n) => n.textContent.trim());
-      return kinds.includes('Undone') && kinds.includes('Redone');
+      // Walking the offset forward walks BACK in time: the older page
+      // carries the earliest lines, among them the two Added events and
+      // the 10-20 item edit (story 122: plain words on every page).
+      return kinds.includes('Added') && kinds.includes('Item edited');
     });
-    process.stdout.write('ledger paging OK: the older page carries the plain words Undone and Redone (story 122)\n');
+    process.stdout.write('ledger paging OK: the older page walks back in time (Added, Item edited) — story 122\n');
     const allKinds = (await win.locator('[data-testid="ledger-kind"]').allTextContents()).map((s) => s.trim());
-    for (const expected of ['Status source changed', 'Undone', 'Redone', 'Reversal undone', 'Change without words']) {
+    // The older page holds the OLDEST fixture lines: the two status moves,
+    // the 10-20 item edit, the 10-14 link confirm and the two creations.
+    for (const expected of ['Status changed', 'Item edited', 'Link confirmed', 'Added']) {
       if (!allKinds.includes(expected)) fail(`the older ledger page must label ${expected}; saw ${JSON.stringify(allKinds)}`);
     }
 
@@ -381,6 +434,62 @@ async function lookup() {
     await assertCleanScan(win, 'Ledger tab (filtered)');
 
     process.stdout.write('look up OK: search, filters, count, table, provenance, ledger paging + words (stories 30-41, 122)\n');
+  } finally {
+    await app.close().catch(() => {});
+    fs.rmSync(workDir, { recursive: true, force: true });
+  }
+}
+
+/* ---------------- scenario 3b: search paging (Batch 6, 4.7 #5) ---------------- */
+
+async function searchPaging() {
+  process.stdout.write('--- search paging: a 60-match base at 50 a page ---\n');
+  const workDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ember-e2e-searchpage-'));
+  // 60 items whose statements share one word: the search total (60) is
+  // bigger than one page (50), so the header must show both numbers and
+  // the pager must reach the remaining 10.
+  const items = Array.from({ length: 60 }, (_, i) => ({
+    id: i + 1,
+    type: 'Decision',
+    statement: `Widget note ${i + 1} for the search page.`,
+    status: 'Active',
+    close_reason: null,
+    rationale: null,
+    source: null,
+    validated: null,
+    created_at: '2026-10-03T09:00:00+00:00',
+  }));
+  const fixture = path.join(workDir, 'sixty.json');
+  fs.writeFileSync(fixture, JSON.stringify({ items, show: {}, history: [], pending: 0 }));
+  const shell = await launchShell({ workDir, withDb: true, fixture });
+  const { app } = shell;
+  try {
+    const win = await app.firstWindow();
+    await win.waitForSelector('[data-testid="counts-panel"]');
+    await win.locator('#nav button[data-job="lookup"]').click();
+    await win.waitForSelector('[data-testid="lookup-q"]');
+    await win.fill('[data-testid="lookup-q"]', 'widget');
+    await win.press('[data-testid="lookup-q"]', 'Enter');
+    await win.waitForSelector('[data-testid="lookup-table"]');
+    // Numbers and elements only, never the header wording (I10).
+    const firstHeader = (await win.textContent('[data-testid="lookup-count"]')).trim();
+    if (!/\b50\b/.test(firstHeader) || !/\b60\b/.test(firstHeader)) {
+      fail(`the search header must show the page number 50 and the total 60, saw: ${firstHeader}`);
+    }
+    const firstRows = await win.locator('[data-testid^="lookup-row-"]').count();
+    if (firstRows !== 50) fail(`the first search page holds 50 rows, saw ${firstRows}`);
+    if (!(await win.locator('[data-testid="page-older"]').isVisible())) {
+      fail('60 matches at 50 a page must offer the next page');
+    }
+    await win.click('[data-testid="page-older"]');
+    await win.waitForFunction(() => {
+      const rows = document.querySelectorAll('[data-testid^="lookup-row-"]').length;
+      return rows === 10;
+    });
+    const secondHeader = (await win.textContent('[data-testid="lookup-count"]')).trim();
+    if (!/\b60\b/.test(secondHeader)) fail(`the last search page must still show the total 60, saw: ${secondHeader}`);
+    await assertCleanScan(win, 'Look up (search paging, 60 matches)');
+    process.stdout.write('search paging OK: 50 of 60 on page one, 10 more on page two (Batch 6 chunk 7)\n');
   } finally {
     await app.close().catch(() => {});
     fs.rmSync(workDir, { recursive: true, force: true });
@@ -581,8 +690,9 @@ async function main() {
   await firstRun();
   await home();
   await lookup();
+  await searchPaging();
   await emptyAndError();
-  process.stdout.write('e2e first-run home lookup OK: all four scenarios green (fake ember app mode, no AI service touched)\n');
+  process.stdout.write('e2e first-run home lookup OK: all five scenarios green (fake ember app mode, no AI service touched)\n');
 }
 
 main().catch((err) => {

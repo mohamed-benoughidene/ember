@@ -28,6 +28,7 @@
 
 import { esc } from '../design/escape-html.mjs';
 import { buttonHtml } from '../components/button.mjs';
+import { keyFieldHtml } from '../components/key-field.mjs';
 import { loadingHtml } from '../components/state-block.mjs';
 import { checkKeyShape, keyShapeWords } from '../../shared/key-shape.mjs';
 
@@ -175,9 +176,11 @@ export function createSettingsScreen(ctx) {
     state.error = null;
   }
 
-  function showError(title, detail) {
+  function showError(title, detail, code = null) {
+    // The code is never in the visible words; it sits behind the Details
+    // reveal (blocks.mjs's affordance), reported only on demand.
     state.saved = false;
-    state.error = { title, detail };
+    state.error = { title, detail, code };
   }
 
   /** Save through the store; returns the new settings or null (shown inline). */
@@ -256,6 +259,17 @@ export function createSettingsScreen(ctx) {
     const on = (action, fn) => {
       root.querySelector(`[data-action="${action}"]`)?.addEventListener('click', fn);
     };
+
+    // The Details reveals for the error codes (same affordance as the
+    // state-block error: hidden line, one click shows it).
+    on('settings-error-details', () => {
+      const code = root.querySelector('[data-testid="error-code"]');
+      if (code) code.hidden = !code.hidden;
+    });
+    on('kb-state-details', () => {
+      const code = root.querySelector('[data-testid="error-code"]');
+      if (code) code.hidden = !code.hidden;
+    });
 
     // Tab switching: click, or ArrowLeft/ArrowRight walked by keyboard.
     root.querySelectorAll('[role="tab"]').forEach((tab) => {
@@ -426,7 +440,7 @@ export function createSettingsScreen(ctx) {
         state.kbPath = chosen.path;
         await saveKnowledgeBasePath(await ctx.api.kbStatus(chosen.path));
       } else if (chosen && chosen.error) {
-        showError('That file is not a knowledge base.', `${chosen.error.detail} (code ${chosen.error.code})`);
+        showError('That file is not a knowledge base.', `${chosen.error.detail}`, chosen.error.code);
         refresh();
       }
     });
@@ -449,7 +463,7 @@ export function createSettingsScreen(ctx) {
       // is allowed — it is created at the first Add.
       const status = await ctx.api.kbStatus(path);
       if (status.exists && !status.looksValid) {
-        showError('That file is not an Ember knowledge base.', 'The file exists but does not read as one. Choose a different file; your settings were left unchanged. (code APP-006)');
+        showError('That file is not an Ember knowledge base.', 'The file exists but does not read as one. Choose a different file; your settings were left unchanged.', 'APP-006');
         refresh();
         return;
       }
@@ -545,7 +559,11 @@ function settingsHtml(state) {
   ).join('');
   const savedHtml = `<p class="saved" role="status" data-testid="settings-saved">${state.saved ? 'Saved.' : ''}</p>`;
   const errorHtmlBlock = state.error
-    ? `<div class="errbox" role="alert" data-testid="settings-error"><strong>${esc(state.error.title)}</strong><span class="detail">${esc(state.error.detail)}</span></div>`
+    ? `<div class="errbox" role="alert" data-testid="settings-error"><strong>${esc(state.error.title)}</strong><span class="detail">${esc(state.error.detail)}</span>${
+        state.error.code
+          ? `<div class="actions">${buttonHtml({ label: 'Details', action: 'settings-error-details', variant: 'text' })}</div><p class="help" data-testid="error-code" hidden>Reported as ${esc(state.error.code)}.</p>`
+          : ''
+      }</div>`
     : '';
   let body = '';
   if (state.pane === 'appearance') body = appearanceHtml(state);
@@ -672,10 +690,7 @@ function aiHtml(state) {
   const replaceForm = state.replaceOpen
     ? `<div class="panel tone" style="margin-top:var(--s4)"><div class="pad">
         <label for="settings-key">Your AI key</label>
-        <div class="filters">
-          <input type="${state.showKey ? 'text' : 'password'}" id="settings-key" data-testid="settings-key-input" autocomplete="off" aria-label="Your AI key">
-          ${buttonHtml({ label: state.showKey ? 'Hide' : 'Show', action: 'ai-show-key', variant: 'secondary' })}
-        </div>
+        ${keyFieldHtml({ id: 'settings-key', testid: 'settings-key-input', toggleAction: 'ai-show-key', value: state.key, showKey: state.showKey })}
         <p class="help">A key is a long password that lets Ember use the AI service. Ember stores it on this computer only — in the operating system keyring, never in a plain file. Your text goes to that service when you use Add or Link items.</p>
         <p class="help">Ember checks the key's shape now. The real test happens at your first Add: if the service refuses the key, you will see a clear message there.</p>
         <div class="actions">
@@ -716,7 +731,7 @@ function kbfileHtml(state) {
   if (status && status.exists && status.looksValid) {
     statusHtml = `<p class="help" data-testid="kb-state" style="margin-top:var(--s2)">The file is there and reads as an Ember knowledge base.</p>`;
   } else if (status && status.exists) {
-    statusHtml = `<div class="errbox" role="alert" data-testid="kb-state" style="margin-top:var(--s2)"><strong>That file is not a knowledge base.</strong><span class="detail">The chosen file exists but does not read as an Ember file. It is not used. (code APP-006)</span></div>`;
+    statusHtml = `<div class="errbox" role="alert" data-testid="kb-state" style="margin-top:var(--s2)"><strong>That file is not a knowledge base.</strong><span class="detail">The chosen file exists but does not read as an Ember file. It is not used.</span><div class="actions">${buttonHtml({ label: 'Details', action: 'kb-state-details', variant: 'text' })}</div><p class="help" data-testid="error-code" hidden>Reported as APP-006.</p></div>`;
   } else {
     statusHtml = `<p class="help" data-testid="kb-state" style="margin-top:var(--s2)">The file does not exist yet. It is created the first time you add text.</p>`;
   }

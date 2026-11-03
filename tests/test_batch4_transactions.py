@@ -157,9 +157,10 @@ def test_maintain_format_json_still_prints_the_document_when_a_later_action_fail
 ) -> None:
     """The sweep completed and wrote; the close-proposal phase then fails.
 
-    With no API key (MAINTAIN-020), `maintain --format json` still prints
-    the document of what completed — the sweep's change must be in it AND
-    in the database — and exits 1. Today only the error line prints.
+    With no API key (MAINTAIN-020), a real `maintain --format json --confirm
+    json` run still prints the document of what completed — the sweep's
+    change must be in it AND in the database — and exits 1. Today only the
+    error line prints.
     """
     db_path = tmp_path / "kb.db"
     conn = open_database(db_path)
@@ -189,16 +190,24 @@ def test_maintain_format_json_still_prints_the_document_when_a_later_action_fail
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
 
     result = CliRunner().invoke(
-        main, ["maintain", "--db", db_path, "--format", "json"]
+        main,
+        ["maintain", "--db", db_path, "--format", "json", "--confirm", "json"],
     )
 
     assert result.exit_code == 1
     # The error is still named on stderr ...
     assert "MAINTAIN-020" in result.stderr
-    # ... AND the document of what completed is on stdout (4.6 #3). The
-    # document is the output's first line; the error line follows it (the
-    # runner merges the two streams).
-    document = json.loads(result.output.splitlines()[0])
+    # ... AND the document of what completed is on stdout (4.6 #3). D-20
+    # (lead ruling B): a real `--format json` run goes through the `--confirm
+    # json` event stream, so the document is the final `message` event's
+    # `text`, printed BEFORE the error re-raises (exit 1).
+    events = [
+        json.loads(line)
+        for line in result.output.splitlines()
+        if line.startswith("{")
+    ]
+    assert events[-1]["event"] == "message"
+    document = json.loads(events[-1]["text"])
     assert document["command"] == "maintain"
     changes = document["changes"]
     assert [change["new_status"] for change in changes] == ["Closed"]

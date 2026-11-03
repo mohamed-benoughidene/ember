@@ -595,7 +595,10 @@ async function aiUnreachable(unreachableUrl) {
     await win.waitForSelector('[data-testid="add-error"] [data-testid="state-error"]');
     const error = await win.textContent('[data-testid="add-error"]');
     if (!/could not answer/i.test(error)) fail(`story 27: the unreachable words: ${error}`);
-    if (!/kept word for word/.test(error) || !/nothing was created/.test(error)) {
+    // Batch 6 (chunk 5): the two facts are the text kept as a source
+    // and NO ITEMS made — the untrue "nothing was created" wording was
+    // corrected (the note WAS created; only its items were not).
+    if (!/kept word for word/.test(error) || !/no items were made/.test(error)) {
       fail(`the two facts must be on the error: ${error}`);
     }
     if (!(await win.locator('[data-testid="state-error"] [data-action="add-retry"]').isVisible())) {
@@ -684,7 +687,8 @@ async function keyRefused(ai) {
       () => /refused the key/.test((document.querySelector('[data-testid="add-error"]') ?? { textContent: '' }).textContent),
     );
     const error = await win.textContent('[data-testid="add-error"]');
-    if (!/kept word for word/.test(error) || !/nothing was created/.test(error)) fail(`the refusal facts: ${error}`);
+    // Batch 6 (chunk 5): the true facts — text kept as a source, no items made.
+    if (!/kept word for word/.test(error) || !/no items were made/.test(error)) fail(`the refusal facts: ${error}`);
     await assertNoBareCode(win);
     await win.locator('[data-testid="state-error"] [data-action="show-details"]').click();
     await win.waitForSelector('[data-testid="add-error"] [data-testid="error-code"]:not([hidden])');
@@ -717,7 +721,7 @@ async function noKeyPath(ai) {
     await win.locator('[data-testid="state-no-key"] [data-action="add-open-setup"]').click();
     await win.waitForSelector('[data-testid="setup-key-input"]');
     const step = await win.textContent('.setup .sub');
-    if (!/Step 2 of 3/.test(step)) fail(`the button must open the AI-connection setup step, saw: ${step}`);
+    if (!/Step 2 of 2/.test(step)) fail(`the button must open the AI-connection setup step, saw: ${step}`);
     process.stdout.write('no-key OK: Add waits and points at the AI connection (story 29)\n');
   } finally {
     await app.close().catch(() => {});

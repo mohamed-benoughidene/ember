@@ -144,7 +144,7 @@ export function createKeepSafeScreen(ctx) {
     const s = state.open;
     let body = '';
     if (s.phase === 'confirm') {
-      body = `<div class="errbox" data-testid="ks-open-confirm" role="alertdialog" aria-label="Confirm switching knowledge base file">
+      body = `<div class="errbox" data-testid="ks-open-confirm" role="group" aria-label="Confirm switching knowledge base file">
         <strong>Open <span class="mono">${esc(s.chosen ?? '')}</span> as your knowledge base?</strong>
         <span class="detail">Your current file <span class="mono">${esc(s.current)}</span> stays exactly as it is. Ember will only look at a different file from now on.</span>
         <div class="actions">

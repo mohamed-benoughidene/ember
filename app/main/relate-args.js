@@ -33,7 +33,7 @@ function relateArgs({ item = null, latest = false } = {}) {
   if (item === null || item === undefined) {
     throw new TypeError('relate needs one of --item or --latest');
   }
-  return ['--item', String(requireId(item))];
+  return ['--item', String(requireId(item, '--item'))];
 }
 
 module.exports = { relateArgs };

@@ -173,7 +173,7 @@ async function checkAndBackup() {
         fail(`a report row leaked the raw machine line: "${row}"`);
       }
     }
-    if (!rows.some((r) => /File format version 13/.test(r))) fail(`the version must read in plain words: ${JSON.stringify(rows)}`);
+    if (!rows.some((r) => /File format version 14/.test(r))) fail(`the version must read in plain words: ${JSON.stringify(rows)}`);
     await assertCleanScan(win, 'Keep safe (check OK)');
 
     // Story 70-71: one button; the engine's report becomes the result
@@ -182,7 +182,7 @@ async function checkAndBackup() {
     await win.waitForSelector('[data-testid="ks-backup-result"]');
     let result = await win.textContent('[data-testid="ks-backup-result"]');
     if (!result.includes(target)) fail(`story 71: the result line must name the file location: ${result}`);
-    if (!/File format version 13/.test(result)) fail(`story 71: the format version must show: ${result}`);
+    if (!/File format version 14/.test(result)) fail(`story 71: the format version must show: ${result}`);
     if (!/\b2 items\b/.test(result)) fail(`story 71: the item count must show (seed_pair has 2 items): ${result}`);
     if (!/unchanged/.test(result)) fail(`story 77: the result must say the knowledge base is unchanged: ${result}`);
     if (/old-1/.test(result)) fail('a FIRST backup must not claim an older copy was kept');
@@ -345,6 +345,16 @@ async function openDifferentFile() {
     // file is unchanged (step file §1).
     await win.click('[data-testid="ks-open-pick"]');
     await win.waitForSelector('[data-testid="ks-open-confirm"]');
+    // The confirm is an INLINE group on the screen (Batch 6 design
+    // audit, finding 11 #2): a named group, never a dialog role — it
+    // does not take over the window and traps no focus.
+    const confirmRole = await win.getAttribute('[data-testid="ks-open-confirm"]', 'role');
+    if (confirmRole !== 'group') {
+      fail(`the open-file confirm must be role="group" (an inline group), saw role="${confirmRole}"`);
+    }
+    const confirmLabel = await win.getAttribute('[data-testid="ks-open-confirm"]', 'aria-label');
+    if (!confirmLabel) fail('the open-file confirm group must carry an aria-label naming it');
+    process.stdout.write(`open confirm is a named inline group (role=group, aria-label="${confirmLabel}")\n`);
     const confirm = await win.textContent('[data-testid="ks-open-confirm"]');
     if (!confirm.includes(v12File)) fail(`the confirmation must name the chosen file: ${confirm.slice(0, 300)}`);
     if (!/stays exactly as it is/.test(confirm)) fail(`the confirmation must say the current file is unchanged: ${confirm.slice(0, 300)}`);

@@ -62,13 +62,16 @@ def run_topic_search(
     """Gate the text and the filter, load every item, rank, render.
 
     The pipeline order is validate text (QUERY-002) then validate the filter
-    (QUERY-006), both before any load, then load, derive, render.
+    (QUERY-006), both before any load, then load, derive, render. The core
+    returns the pre-page match count beside the window, so the envelope's
+    `total` names every match the page was cut from.
     """
     normalised = validate_query_text(query)
     validate_topic_filter(topic_filter)
-    return render_topic_search(
-        topic_search(lookup.list_items(), normalised, topic_filter), normalised
+    total, hits = topic_search(
+        lookup.list_items(), normalised, topic_filter
     )
+    return render_topic_search(hits, normalised, total)
 
 
 def run_why(lookup: QueryLookupPort, item_id: int) -> str:

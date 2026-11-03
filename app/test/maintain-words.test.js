@@ -77,8 +77,13 @@ test('maintain words', async (t) => {
       sweepCountsSentence({ closed: 1, challenged: 2, reopened: 1, unchanged: 3 }, 'did'),
       'The sweep closed 1 item, challenged 2 items, reopened 1 item, and left 3 unchanged.',
     );
-    assert.equal(sweepCountsSentence({ closed: 0, challenged: 0, reopened: 0, unchanged: 4 }, 'would'), 'Nothing changes. 4 items are already in line.');
-    assert.equal(sweepCountsSentence({ closed: 0, challenged: 0, reopened: 0, unchanged: 1 }, 'did'), 'Nothing changes. 1 item is already in line.');
+    // 4.6 #10: after a finished run the sweep DID run — "Nothing
+    // changes" is untrue. The honest line says it found nothing to
+    // change and what stayed.
+    assert.doesNotMatch(sweepCountsSentence({ closed: 0, challenged: 0, reopened: 0, unchanged: 4 }, 'would'), /Nothing changes/);
+    assert.equal(sweepCountsSentence({ closed: 0, challenged: 0, reopened: 0, unchanged: 4 }, 'would'), 'The sweep would find nothing to change: 4 items are already in line.');
+    assert.equal(sweepCountsSentence({ closed: 0, challenged: 0, reopened: 0, unchanged: 1 }, 'did'), 'The sweep found nothing to change: 1 item is already in line.');
+    assert.match(sweepCountsSentence({ closed: 0, challenged: 0, reopened: 0, unchanged: 7 }, 'did'), /The sweep found nothing to change: 7 items are already in line\./);
     assert.equal(sweepCountsSentence(null), '');
   });
 
@@ -109,5 +114,19 @@ test('maintain words', async (t) => {
     assert.equal(applyLabel(0), 'Apply (no status changes)');
     assert.equal(applyLabel(1), 'Apply 1 change');
     assert.equal(applyLabel(4), 'Apply 4 changes');
+  });
+
+  await t.test('MAINTAIN-003 speaks of the reason not being human-settable (4.6 #9)', async () => {
+    // The engine raises CloseReasonMismatch (`ember/maintain/errors.py:24`)
+    // in validate_close_item when the reason IS one of the 5 close
+    // reasons but is NOT in HUMAN_SETTABLE_REASONS (`human_actions.py:52`:
+    // only invalidated / expired may be set by a person) — nothing to do
+    // with "the reason this item was closed with".
+    const { ERROR_SENTENCES } = await import('../shared/plain-sentences.mjs');
+    const entry = ERROR_SENTENCES['MAINTAIN-003'];
+    const text = `${entry.title} ${entry.what} ${entry.next}`;
+    assert.match(text, /set by hand|human-settable|by a person/);
+    for (const reason of ['superseded', 'answered', 'reversed']) assert.match(text, new RegExp(reason, 'i'));
+    assert.doesNotMatch(text, /did not match|not the reason this item was closed with/, 'the old untrue "reason did not match" words are gone');
   });
 });

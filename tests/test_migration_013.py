@@ -121,6 +121,7 @@ def test_migration_013_preserves_all_rows_and_values(db_path) -> None:
     _build_v12_db(db_path)
     raw = sqlite3.connect(db_path)
     log_before = _rows(raw, f"SELECT {_LOG_COLUMNS} FROM change_log ORDER BY id")
+    star_before = _rows(raw, "SELECT * FROM change_log ORDER BY id")
     raw.close()
 
     open_database(db_path).close()
@@ -128,9 +129,11 @@ def test_migration_013_preserves_all_rows_and_values(db_path) -> None:
     raw = sqlite3.connect(db_path)
     after = _rows(raw, f"SELECT {_LOG_COLUMNS} FROM change_log ORDER BY id")
     assert after == log_before
-    # The new column reads as NULL on every pre-existing row.
+    # The new columns read as NULL on every pre-existing row. `SELECT *`
+    # order is the real table order; a v12 open runs 013 (group_id) AND
+    # 014 (source_id) before it reaches the latest version.
     star = _rows(raw, "SELECT * FROM change_log ORDER BY id")
-    assert star == [row + (None,) for row in log_before]
+    assert star == [row + (None, None) for row in star_before]
     raw.close()
 
 
@@ -184,11 +187,13 @@ def test_migration_013_preserves_existing_schema(db_path) -> None:
     for table in tables:
         if table == "change_log":
             assert columns_after[table] == columns_before[table] + [
-                (8, "group_id", "INTEGER", 0, None, 0)
+                (8, "group_id", "INTEGER", 0, None, 0),
+                # 014 appends its own nullable column after 013's.
+                (9, "source_id", "INTEGER", 0, None, 0),
             ]
         else:
             assert columns_after[table] == columns_before[table], table
-    assert schema_version == 13
+    assert schema_version == 14
     # The FK check is clean after the structural change.
     assert foreign_key_rows == []
 
@@ -269,9 +274,10 @@ def test_fresh_install_applies_all_migrations_through_013(db_path) -> None:
     conn = open_database(db_path)
 
     version = conn.execute("SELECT version FROM schema_version").fetchone()[0]
-    assert version == 13
+    # Fresh installs go through 013 AND everything after it (014 today).
+    assert version >= 13
     columns = [
         row["name"] for row in conn.execute("PRAGMA table_info(change_log)")
     ]
-    assert columns[-1] == "group_id"
+    assert "group_id" in columns
     conn.close()

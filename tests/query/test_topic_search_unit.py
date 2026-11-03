@@ -24,7 +24,7 @@ def _items_from(rows: list[dict]) -> list:
 def test_scores_match_the_hand_computed_golden_fixture() -> None:
     items = _items_from(GOLDEN["corpus"])
 
-    hits = topic_search(items, GOLDEN["query"])
+    hits = topic_search(items, GOLDEN["query"])[1]
 
     expected = GOLDEN["expected"]
     assert [hit.item_id for hit in hits] == [row["item_id"] for row in expected]
@@ -44,7 +44,7 @@ def test_golden_fixture_ties_are_broken_by_item_id() -> None:
 def test_term_present_in_every_document_still_scores_above_zero() -> None:
     items = [make_item(i, statement="alpha") for i in (1, 2, 3)]
 
-    hits = topic_search(items, "alpha")
+    hits = topic_search(items, "alpha")[1]
 
     assert len(hits) == 3
     assert all(hit.score > 0 for hit in hits)
@@ -53,11 +53,11 @@ def test_term_present_in_every_document_still_scores_above_zero() -> None:
 def test_every_statement_tokenizing_to_nothing_returns_empty() -> None:
     items = [make_item(1, statement="!!!"), make_item(2, statement="???")]
 
-    assert topic_search(items, "alpha") == []
+    assert topic_search(items, "alpha") == (0, [])
 
 
 def test_empty_corpus_returns_an_empty_list() -> None:
-    assert topic_search([], "alpha") == []
+    assert topic_search([], "alpha") == (0, [])
 
 
 def test_item_without_a_query_token_is_not_a_result() -> None:
@@ -66,7 +66,7 @@ def test_item_without_a_query_token_is_not_a_result() -> None:
         make_item(2, statement="alpha delta"),
     ]
 
-    hits = topic_search(items, "alpha")
+    hits = topic_search(items, "alpha")[1]
 
     assert [hit.item_id for hit in hits] == [2]
 
@@ -74,8 +74,8 @@ def test_item_without_a_query_token_is_not_a_result() -> None:
 def test_repeated_query_terms_are_counted_once() -> None:
     items = [make_item(1, statement="alpha beta")]
 
-    once = topic_search(items, "alpha")
-    twice = topic_search(items, "alpha alpha")
+    once = topic_search(items, "alpha")[1]
+    twice = topic_search(items, "alpha alpha")[1]
 
     assert once[0].score == pytest.approx(twice[0].score)
 
@@ -83,7 +83,7 @@ def test_repeated_query_terms_are_counted_once() -> None:
 def test_hit_carries_the_item_fields() -> None:
     items = [make_item(7, statement="alpha", status="Closed", item_type="Question")]
 
-    hit = topic_search(items, "alpha")[0]
+    hit = topic_search(items, "alpha")[1][0]
 
     assert hit.item_id == 7
     assert hit.status == "Closed"

@@ -141,7 +141,7 @@ button, input, select, textarea { font: inherit; color: inherit; }
   cursor: not-allowed;
 }
 .btn .kbd {
-  font-size: 0.8rem;
+  font-size: var(--type-label-size); /* Label: the shortcut hint (DESIGN.md) */
   font-weight: 400;
   margin-left: var(--s2);
   opacity: 0.85;

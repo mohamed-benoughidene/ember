@@ -120,7 +120,7 @@ def test_db_check_healthy(db_path) -> None:
 
     assert result.exit_code == 0
     lines = result.output.splitlines()
-    assert "version: 13" in lines
+    assert "version: 14" in lines
     assert "floors: relate 12 ok, maintain 11 ok, query 10 ok, capture none" in lines
     assert (
         "triggers: links_compat_insert, links_compat_update,"
@@ -388,7 +388,7 @@ def test_db_check_flags_version_99(db_path) -> None:
     assert result.exit_code == 1
     lines = result.output.splitlines()
     assert "version: 99" in lines
-    assert "version 99 above latest 13" in " ".join(lines)
+    assert "version 99 above latest 14" in " ".join(lines)
     assert "result: DRIFT" == lines[-1]
     assert "Traceback" not in result.output
 

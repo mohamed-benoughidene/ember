@@ -159,6 +159,8 @@ All other commands run only on your computer. After its first download, the `rel
 | `capture-source` | Stores a raw note only, with no AI | No |
 | `set-validated` | Marks an Assumption as verified | No |
 | `clear-validated` | Clears that flag | No |
+| `forget-source` | Permanently forgets a raw note that produced no items | No |
+| `list-sources-without-items` | Lists the notes with no items yet (the Cleanup list) | No |
 | `relate` | Proposes typed links for one item, saves the ones you confirm | Yes, plus the `relate` extra |
 | `maintain` | Updates item statuses from confirmed links, with no AI | Only for the AI close proposals |
 | `close-item` | Closes an item by hand | No |

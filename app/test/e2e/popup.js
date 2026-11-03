@@ -334,7 +334,7 @@ async function popupNoKey() {
     await waitMainShown(app);
     await mainWin.waitForSelector('[data-testid="setup-key-input"]');
     const step = await mainWin.textContent('.setup .sub');
-    if (!/Step 2 of 3/.test(step)) fail(`the path to fix it must land on the AI connection step, saw: ${step}`);
+    if (!/Step 2 of 2/.test(step)) fail(`the path to fix it must land on the AI connection step, saw: ${step}`);
     await waitPopup(app, false);
     process.stdout.write('popup no-key OK: the message with the path to fix it, popup closed\n');
   } finally {
@@ -443,9 +443,10 @@ async function popupShortcutAfterFirstRun() {
     await mainWin.click('[data-action="setup-file-continue"]');
     await mainWin.waitForSelector('[data-testid="setup-key-input"]');
     await mainWin.click('[data-action="setup-skip-key"]');
-    await mainWin.waitForSelector('[data-testid="setup-finish"]');
-    await mainWin.click('[data-testid="setup-finish"]');
-    await mainWin.waitForSelector('[data-testid="state-no-key"]'); // first run skipped the key: Add's honest state
+    // Batch 6 (4.9 #9): "Skip for now" goes straight to finish — no
+    // "Ready" step. The setup completes and the app lands on the real
+    // Add screen; first run skipped the key: Add's honest state.
+    await mainWin.waitForSelector('[data-testid="state-no-key"]');
     // Story 9: WITHOUT a restart, the default accelerator is registered
     // now — first run's knowledge-base save re-registered it in this
     // same session (the observable half of "press the shortcut"; a real

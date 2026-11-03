@@ -102,11 +102,13 @@ def test_item_history_shows_the_link_and_status_events(db_path) -> None:
     assert document["mode"] == "history"
     assert document["item_id"] == 1
     assert [event["kind"] for event in document["events"]] == [
-        "link_confirmed",
+        # Newest first (Batch 6): both rows share FIXED_TIME, so the
+        # status row (the higher ledger id) renders first.
         "status_changed",
+        "link_confirmed",
     ]
     assert document["events"][0]["link_id"] == link_id
-    assert document["events"][1]["close_reason"] == "superseded"
+    assert document["events"][0]["close_reason"] == "superseded"
 
 
 def test_global_history_returns_every_row(db_path) -> None:

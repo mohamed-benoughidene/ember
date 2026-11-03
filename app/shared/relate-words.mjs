@@ -3,16 +3,22 @@
  * (app step 06). The plain-sentence table (plain-sentences.mjs) stays
  * the ONE code -> words mapping; its App 06 block carries the RELATE-
  * entries this screen can surface. Two codes need a refinement the
- * table alone cannot carry, because the engine raises them for
- * different causes under the same code:
+ * table alone cannot carry, because the blocks pick the ADVICE (the
+ * setup path, the install hint):
  *
- * - `RELATE-017` (EmbedderLoadFailed): the optional `sentence-transformers`
- *   package is missing (the step file's "missing optional package ...
- *   with what to do") — the app says plainly what to install.
- * - `RELATE-035` (ConfigMissing): `ai api key missing` is the exact
- *   detail `ember/adapters/llm.py` raises at the first relate without a
- *   key (story 48's refusal twin of Add's CAPTURE-008 path) — the app
- *   says so and opens the AI-connection setup.
+ * - `RELATE-038` (ApiKeyMissing, Batch 6 D-08/I17): no key was given
+ *   at the first relate (story 48's refusal twin of Add's CAPTURE-022
+ *   path) — the app says so and opens the AI-connection setup.
+ * - `RELATE-039` (EmbedderPackageMissing, Batch 6 D-08/I17): the
+ *   optional `sentence-transformers` package is missing (the step
+ *   file's "missing optional package ... with what to do") — the app
+ *   says plainly what to install, with no retry.
+ *
+ * Every branch is decided by the CODE alone: no detail text from the
+ * engine is ever matched (D-08 — the app no longer reads Python's
+ * words like "ai api key missing"). RELATE-017 (a failed model load)
+ * and RELATE-040 (a load that timed out) ride their own table entries
+ * through the shared fallback, which retries rather than installs.
  *
  * Every branch keeps the two true facts of a link-run failure: nothing
  * was linked beyond the links already shown, and the knowledge base is
@@ -50,23 +56,22 @@ export function relateRejectionLine(line) {
  * @returns {{title: string, what: string, next: string, openSetup: boolean, retry: boolean}}
  */
 export function relateErrorSentence(error) {
-  const detail = error && typeof error.detail === 'string' ? error.detail : '';
-  if (error && error.code === 'RELATE-017') {
-    return {
-      title: 'The linking brain is not installed on this computer.',
-      what: `Linking needs an optional language package that is missing here. ${NOTHING_CHANGED}`,
-      next: INSTALL_HINT,
-      openSetup: false,
-      retry: false,
-    };
-  }
-  if (error && error.code === 'RELATE-035' && detail.includes('ai api key missing')) {
+  if (error && error.code === 'RELATE-038') {
     return {
       title: 'Ember needs the AI connection.',
       what: `Linking asks the AI service for proposals, and no working key was given. ${NOTHING_CHANGED}`,
       next: 'Check the AI connection, then try again.',
       openSetup: true,
       retry: true,
+    };
+  }
+  if (error && error.code === 'RELATE-039') {
+    return {
+      title: 'The linking brain is not installed on this computer.',
+      what: `Linking needs an optional language package that is missing here. ${NOTHING_CHANGED}`,
+      next: INSTALL_HINT,
+      openSetup: false,
+      retry: false,
     };
   }
   const base = sentenceFor(error && error.code ? error.code : null);

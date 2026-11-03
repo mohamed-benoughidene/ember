@@ -70,7 +70,12 @@ const EMBER_PRELOAD_API = Object.freeze([
   'ember:crashReport',
   'ember:crashReportFolder',
   'ember:textFocusChanged',
+  'ember:forgetSource',
+  'ember:listSourcesWithoutItems',
 ]);
+// Batch 6 Chunk 13 (D-07/D-09/D-10): the "Forget this note" channels,
+// appended at the END of the allowlist as this chunk's own bracketed
+// block: the permanent write and the itemless-sources read.
 // The names after the base 15: Add (App 05), Keep safe (step 09),
 // Fix and close (step 07), Settings (app 10), Clean up (App 08),
 // Quick popup (app 11), Crash report (Batch 2 Chunk 13) — each
@@ -323,4 +328,16 @@ contextBridge.exposeInMainWorld('ember', {
 
   /** Push the text-field focus state (a single boolean) to main. */
   textFocusChanged: (focused) => ipcRenderer.invoke('ember:textFocusChanged', focused),
+
+  /* ==== Batch 6 Chunk 13 (D-07/D-09/D-10): the "Forget this note"
+     channels, appended at the END of the exposure object as this
+     chunk's own bracketed block. forgetSource is PERMANENT (the
+     renderer's inline confirm is the confirmation); the read returns
+     the engine's {count, sources: [{id, created_at, preview}]}. ==== */
+
+  /** Forget one raw note permanently: `ember forget-source --source N`. */
+  forgetSource: (source) => ipcRenderer.invoke('ember:forgetSource', { source }),
+
+  /** The itemless-sources read: `ember list-sources-without-items`. */
+  listSourcesWithoutItems: () => ipcRenderer.invoke('ember:listSourcesWithoutItems'),
 });

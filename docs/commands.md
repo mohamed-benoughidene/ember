@@ -17,7 +17,7 @@ Facts in this file come from the code (`ember/cli.py` and the engine modules), n
 
 A program (the desktop app, a script) can read Ember's output as data instead of parsing sentences. Three tools, described once here:
 
-**`--format text|json`** (default `text`) is offered by the ten write and utility commands `maintain`, `close-item`, `set-status`, `reverse-supersedes`, `edit-item`, `remove-link`, `undo`, `redo`, `backup`, `db-check`. With `json`, the command prints ONE JSON document on stdout (sorted keys), with top-level keys `command`, `changes` (the run's change records), `summary` (the counts), and `dry_run` (true on a `--dry-run` run). The terminal `text` default prints, byte for byte, what it always printed. The six Query commands and `capture-source` always print their one JSON document; their shapes are the "Envelope" lines in their own sections. On `capture` and `relate` the flag is accepted but changes nothing — their program-facing mode is the event stream below.
+**`--format text|json`** (default `text`) is offered by the ten write and utility commands `maintain`, `close-item`, `set-status`, `reverse-supersedes`, `edit-item`, `remove-link`, `undo`, `redo`, `backup`, `db-check`. With `json`, the command prints ONE JSON document on stdout (sorted keys), with top-level keys `command`, `changes` (the run's change records), `summary` (the counts), and `dry_run` (true on a `--dry-run` run). The terminal `text` default prints, byte for byte, what it always printed. The six Query commands, `capture-source` and `list-sources-without-items` always print their one JSON document; their shapes are the "Envelope" lines in their own sections. On `capture` and `relate` the flag is refused (a usage error, exit 2) — their program-facing mode is the event stream below.
 
 **`--confirm terminal|json`** (default `terminal`) is offered by the three interactive commands `capture`, `relate`, `maintain`. With `json`, every stdout line is one flushed JSON event object, and the answers arrive as stdin lines instead of keystrokes:
 
@@ -45,6 +45,7 @@ On a path with no file, it creates the file and runs every migration, then print
 The full Phase 1-4 pipeline. Reads raw text from a file or STDIN (file input capped at 5 MiB, UTF-8), dedupes by SHA-256 content hash, asks the AI for typed proposals, validates each (type, non-empty statement, the quote must appear in the stored source, near-duplicate warning), then opens the confirm loop.
 
 - Confirm keys: `y` accept, `n` reject, `e` edit, `q` quit (exit 2).
+- `--format json` is refused (a usage error, exit 2): the program mode for this command is the `--confirm json` event stream above. `--file ""` is refused too (an empty file name would fall back to reading STDIN).
 - `e` re-asks the type (one of `Decision`, `Assumption`, `Finding`, `Question`), the statement, and the optional project label; a failed edit drops that proposal, nothing is written.
 - Writes: `sources`, `ai_responses`, `items` (only confirmed ones), `change_log` rows for proposals you rejected.
 - The AI sees the newest 50 items as context (mode `B`, default); set `EMBER_CAPTURE_CONTEXT_MODE=A` for no context.
@@ -58,6 +59,14 @@ Phase 1 alone: store or reuse the raw source, nothing else. Prints one JSON docu
 
 Set or clear the `validated` flag on an item. Only an `Assumption` may carry the flag; anything else exits 1. Both write a `change_log` row (`validated`).
 
+### `ember forget-source --source N [--db PATH]` - no key
+
+Permanently forget a raw note that produced no items (D-07). One transaction deletes the `sources` row and its `ai_responses` rows and appends exactly ONE textless ledger line (`source_forgotten` / `user_forget_source`) that names the note by its `source_id` (migration 014) and carries no note text; the line's `group_id` is NULL, so `undo` never sees it — the forget cannot be undone. A note that still has items is refused with `CAPTURE-023 SourceHasItems` (exit 1) and nothing is written. A missing id exits 0 with nothing written (delete-missing is success, I8). Text output only: like `set-validated`/`clear-validated` this human write offers no `--format json` document.
+
+### `ember list-sources-without-items [--db PATH]` - no key
+
+The Cleanup list's read (D-09): every raw note that produced ZERO items, ordered by id — the notes whose every proposal was rejected (or never confirmed), exactly the notes `forget-source` may remove. Each row carries `id`, `created_at` (the note's `sources.timestamp` — the column holding its creation time) and `preview` (its first 8 words, so the list identifies a note without carrying its whole text). A note that still has items never appears (the forget would refuse it, `CAPTURE-023`). Read-only: the file is opened read-only and never migrated, like the query boot (`QUERY-003` missing file, `QUERY-004` under the floor, `QUERY-008` busy, `QUERY-009` needs recovery); a failed read answers `CAPTURE-005`. Always prints ONE JSON document (a read — the D-20 refusal stays with the write commands). An empty base prints an empty list, never null (I4). Envelope: `count`, `sources`.
+
 ---
 
 ## Engine B: Relate (writes links between items)
@@ -70,6 +79,7 @@ Links one item to the rest of the graph in four phases: load and filter, rank a 
 - The content signal needs `pip install -e ".[relate]"` (sentence-transformers); without the extra the command refuses at boot with the install hint.
 - Embeddings are cached in `item_embeddings` per model; a model change wipes the cache and prints a warning (one-time minutes-long rebuild).
 - Confirm keys: `y` accept, `n` reject, `s` skip (nothing written, the candidate may resurface for a later item), `q` quit (exit 2).
+- `--format json` is refused (a usage error, exit 2): the program mode for this command is the `--confirm json` event stream above.
 - The link types are `supports`, `contradicts`, `depends_on`, `supersedes`, `answers`, restricted by a per-type compatibility table (11 allowed pairs).
 - The gatekeeper runs 9 ordered rules per proposal; refusals print `relate rejected: CODE | detail` (duplicates, `supersedes` cycles, Closed targets). All rejected-row checks also see reversed links.
 - An empty candidate pool exits 0 without ever calling the AI. Summary line at the end: `accepted: N, rejected: N, skipped: N, aborted: true|false`.
@@ -87,6 +97,7 @@ The status sweep: load items and confirmed links, derive the correct status per 
 - The four rules: a confirmed `supersedes` closes its target (reason `superseded`); a confirmed `answers` closes an answered `Question` (reason `answered`); a confirmed `contradicts` challenges its target; a confirmed `depends_on` onto an invalidated/superseded target challenges the dependent.
 - Escalation only: the sweep never moves an item to a safer status. A human-set status is shielded until newer link evidence arrives, then re-armed (`sweep_rearm` in the ledger).
 - `--dry-run` writes nothing and needs no key.
+- `--format json` on a **real run** requires `--confirm json`: a real run with the terminal `--confirm` would print the proposal prompts into the JSON, and is refused (a usage error, exit 2). `--dry-run --format json` keeps the one-document mode (nothing is confirmed there, so prompts cannot mix in).
 - **Phase 5, real runs only:** after applying, an AI close-proposal loop runs for `Question` items whose newest confirmed `answers` link is at least 30 days old, capped at 10 per run. Raw answers are saved verbatim before judging; each proposal is confirmed with `[y]es / [n]o / [q]uit`; an accepted close goes through the human `close-item` path. An empty shortlist builds no AI adapter and reads no key.
 
 ### `ember close-item --item N --reason invalidated|expired [--dry-run] [--db PATH]` - no key
@@ -126,8 +137,8 @@ All six print exactly one JSON document on stdout and read only `items`, `links`
 ### `ember current-state [--db PATH]`
 Live statuses only: `Active` and `Challenged` items, `Closed` omitted, `Challenged` listed first. Envelope: `mode`, `count`, `items` (each row carries a `challenged` flag).
 
-### `ember topic-search --query TEXT [--status S] [--type T] [--limit N] [--db PATH]`
-BM25 keyword search over item statements (all statuses, `Closed` included). `--status` accepts `Active|Challenged|Closed`, `--type` accepts `Decision|Assumption|Finding|Question`; filters narrow the corpus before scoring. `--limit 0` is an explicit empty result; negative values exit 1 (`QUERY-006`). Envelope: `mode`, `query`, `count`, `results`.
+### `ember topic-search --query TEXT [--status S] [--type T] [--limit N] [--offset N] [--db PATH]`
+BM25 keyword search over item statements (all statuses, `Closed` included). `--status` accepts `Active|Challenged|Closed`, `--type` accepts `Decision|Assumption|Finding|Question`; filters narrow the corpus before scoring. `--limit 0` is an explicit empty result; negative values exit 1 (`QUERY-006`). Behind the scored order `--offset` skips and `--limit` crops the window; `total` is the count of matches BEFORE either crop, `count` the rows printed. Envelope: `mode`, `query`, `total`, `count`, `results`.
 
 ### `ember why --item N [--db PATH]`
 The reasons behind an item: follows `depends_on` (to its target) and `supports` (to its source), Confirmed links only, transitively, cycle-safe. Unknown ids exit 1 (`QUERY-001`); a link whose other end is gone from the file answers `QUERY-010` and exits 1, nothing changed. Envelope: `mode`, `item`, `count`, `reasons` (ordered by depth then id, carrying each reason's rationale text).

@@ -255,7 +255,7 @@ export function createHomeScreen(ctx) {
     const rows = events
       .map(
         (e) =>
-          `<tr><td class="dim" class="nowrap">${esc(e.timestamp ?? '')}</td><td>${esc(historyEventSentence(e))}</td></tr>`,
+          `<tr><td class="dim nowrap">${esc(e.timestamp ?? '')}</td><td>${esc(historyEventSentence(e))}</td></tr>`,
       )
       .join('');
     host.innerHTML = `<div class="panel"><table data-testid="home-ledger-table"><tbody>${rows}</tbody></table></div>

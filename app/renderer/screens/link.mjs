@@ -17,7 +17,10 @@
  * Every state is a step-03 five-state state (loading, empty, error,
  * no-key, normal). The screen talks ONLY through the window.ember
  * preload list (B5). Buttons in the pinned order for link proposals:
- * Stop (Esc), Skip (s), Reject (n), Confirm (Return) — DESIGN.md.
+ * Stop (Esc), Skip (s), "No, don't suggest again" (n) — the engine
+ * reserves the pair for good, so the label names the consequence
+ * (Batch 6 D-18/N16, finding 4.8 #11) — and Confirm (Return) —
+ * DESIGN.md.
  */
 
 import { esc } from '../design/escape-html.mjs';
@@ -48,6 +51,7 @@ export function createLinkScreen(ctx) {
     exitCode: null,
     busy: false, // one answer in flight
     preparing: false, // no event yet after the first second (story 45)
+    stopRequested: false, // Batch 5's stop sentinel, screen side (N3)
     unsub: [],
     prepareTimer: null,
     keydownHandler: null,
@@ -159,11 +163,14 @@ export function createLinkScreen(ctx) {
 
   function choiceButtonsHtml() {
     // The pinned link order (DESIGN.md): Stop (Esc), Skip (s),
-    // Reject (n), Confirm (Return).
+    // "No, don't suggest again" (n), Confirm (Return). The third
+    // button answers the SAME `n` the engine has always read — the
+    // relabel only names what `n` does (D-18/N16: the pair is
+    // reserved, so this suggestion never comes back).
     const buttons = [
       buttonHtml({ label: 'Stop', kbd: 'Esc', action: 'proposal-stop', variant: 'text' }),
       buttonHtml({ label: 'Skip', kbd: 's', action: 'proposal-skip', variant: 'secondary' }),
-      buttonHtml({ label: 'Reject', kbd: 'n', action: 'proposal-reject', variant: 'secondary' }),
+      buttonHtml({ label: "No, don't suggest again", kbd: 'n', action: 'proposal-reject', variant: 'secondary' }),
       buttonHtml({ label: 'Confirm', kbd: 'Return', action: 'proposal-confirm', variant: 'primary' }),
     ].join('');
     return `<div class="actions" data-testid="link-choice">${buttons}</div>`;
@@ -412,6 +419,7 @@ export function createLinkScreen(ctx) {
     state.view = initialRelateView();
     state.busy = false;
     state.preparing = false;
+    state.stopRequested = false;
     state.error = null;
     state.exitCode = null;
     state.renderedLinkCount = 0;
@@ -443,35 +451,16 @@ export function createLinkScreen(ctx) {
 
   function finishSession({ exitCode, error }) {
     state.exitCode = exitCode;
-    if (error) {
-      state.phase = 'error';
-      state.stage = null;
-      state.error = error;
-      renderPane();
-      return;
-    }
-    const view = state.view;
-    if (view.summary) {
-      // The engine's own summary event is THE final state (D3, 47);
-      // its aborted flag says the user stopped (22's link twin).
-      state.phase = 'done';
-      state.stage = view.summary.aborted ? 'stopped' : 'summary';
-    } else if (view.emptySignal) {
-      state.phase = 'done';
-      state.stage = 'empty';
-    } else if (exitCode === 2) {
-      state.phase = 'done';
-      state.stage = 'stopped';
-    } else {
-      state.phase = 'error';
-      state.stage = null;
-      state.error = {
-        code: 'APP-002',
-        name: 'BridgeOutputInvalid',
-        where: 'link',
-        detail: `the link run ended without its report (exit ${exitCode ?? 'unknown'}); links already confirmed are kept, and you can check them in Look up`,
-      };
-    }
+    // The ONE end-of-run rule (pure, unit-tested in relate-flow.test.js).
+    const decision = relateEndOfRun({
+      exitCode,
+      error,
+      view: state.view,
+      stopRequested: state.stopRequested,
+    });
+    state.phase = decision.phase;
+    state.stage = decision.stage;
+    state.error = decision.error;
     renderPane();
   }
 
@@ -510,7 +499,12 @@ export function createLinkScreen(ctx) {
       state.phase = 'error';
       state.error = stopped ? stopped.error : null;
       renderPane();
+      return;
     }
+    // Batch 5's N3 sentinel, screen side: the app's OWN stop is a quiet
+    // end. Mark it only after the send succeeded, so a failed send can
+    // never turn an unexplained kill into a fake "Stopped".
+    state.stopRequested = true;
   }
 
   function backToPick() {
@@ -522,6 +516,7 @@ export function createLinkScreen(ctx) {
     state.error = null;
     state.busy = false;
     state.preparing = false;
+    state.stopRequested = false;
     state.pickedItem = null;
     state.exitCode = null;
     state.renderedLinkCount = 0;
@@ -604,6 +599,51 @@ export function createLinkScreen(ctx) {
   }
 
   return { render, state, dispose };
+}
+
+/* ---------- pure end-of-run decision (unit-testable; node suite) ---------- */
+
+/**
+ * The ONE end-of-run rule for a relate exit payload — pure, no DOM,
+ * unit-tested in relate-flow.test.js (Chunk 18, finding 4.8 #4).
+ *
+ * - A named engine/app error is THE result: the error state renders it
+ *   from the one sentence table (APP-009 "Ember stopped unexpectedly"
+ *   among the shapes; no decision here reinvents a code).
+ * - Otherwise the engine's own events decide (D3): the summary event
+ *   (its `aborted` flag says the user stopped), story 46's empty-pool
+ *   print, or the exit-2 stdin-close quit (story 45's quiet stop).
+ * - Batch 5's stop sentinel (N3), screen side: the app's OWN stop —
+ *   marked only after stopRelate succeeded — is a quiet end even when
+ *   the child was killed mid-preparation (no exit code, no report):
+ *   the honest "Stopped" stage, NEVER the APP-002 crash words.
+ * - Anything else (events but no report, no stop asked for) keeps the
+ *   fail-loud no-report fallback (I5/I7).
+ *
+ * @param {{exitCode: number|null, error: object|null,
+ *          view: {summary: object|null, emptySignal: boolean},
+ *          stopRequested: boolean}} input
+ * @returns {{phase: 'done'|'error', stage: 'summary'|'empty'|'stopped'|null, error: object|null}}
+ */
+export function relateEndOfRun({ exitCode, error, view, stopRequested }) {
+  if (error) return { phase: 'error', stage: null, error };
+  const v = view && typeof view === 'object' ? view : {};
+  if (v.summary) {
+    return { phase: 'done', stage: v.summary.aborted ? 'stopped' : 'summary', error: null };
+  }
+  if (v.emptySignal) return { phase: 'done', stage: 'empty', error: null };
+  if (exitCode === 2) return { phase: 'done', stage: 'stopped', error: null };
+  if (stopRequested) return { phase: 'done', stage: 'stopped', error: null };
+  return {
+    phase: 'error',
+    stage: null,
+    error: {
+      code: 'APP-002',
+      name: 'BridgeOutputInvalid',
+      where: 'link',
+      detail: `the link run ended without its report (exit ${exitCode ?? 'unknown'}); links already confirmed are kept, and you can check them in Look up`,
+    },
+  };
 }
 
 /* ---------- pure row helper (unit-testable; the lookup pattern) ---------- */

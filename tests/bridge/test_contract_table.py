@@ -1,6 +1,6 @@
 """The bridge contract table (bridge step 04, L2 §7.1): one row per command.
 
-The table is ONE row per registered `ember` command (23 at this step). Per
+The table is ONE row per registered `ember` command (24 at this step). Per
 row it pins:
 
 - `sample_args`: one sample invocation (`{db}` / `{work}` are substituted
@@ -8,7 +8,8 @@ row it pins:
 - `json_keys`: the top-level keys of the ONE JSON document the command
   prints — under `--format json` for the eleven commands that changed
   output (the step-01 ten plus `maintain`), or the plain stdout document
-  for the always-JSON commands (the six query reads, `capture-source`);
+  for the always-JSON commands (the six query reads, `capture-source`,
+  and the Cleanup read `list-sources-without-items`);
   `None` = the command prints no such document (`set-validated`,
   `clear-validated`, `export`, and — see below — `capture` / `relate`);
 - `format_flag` / `confirm_flag`: whether `--format` / `--confirm` are on
@@ -90,6 +91,19 @@ def _seed_knowledge_base(db_path: str) -> None:
     open_database(db_path).close()
 
 
+def _seed_source_without_items(db_path: str) -> None:
+    """One raw note with no items — the shape `forget-source` accepts."""
+    from ember.adapters.sqlite import open_database
+    from tests.fakes import insert_source
+
+    conn = open_database(db_path)
+    try:
+        insert_source(conn)
+        conn.commit()
+    finally:
+        conn.close()
+
+
 @dataclass(frozen=True)
 class Row:
     """One command's contract (see the module docstring)."""
@@ -130,6 +144,17 @@ ROWS: tuple[Row, ...] = (
         command="clear-validated",
         sample_args=("clear-validated", "--item", "1", "--db", "{db}"),
         seed=_seed_assumption,
+    ),
+    Row(
+        command="forget-source",
+        sample_args=("forget-source", "--source", "1", "--db", "{db}"),
+        seed=_seed_source_without_items,
+    ),
+    Row(
+        command="list-sources-without-items",
+        sample_args=("list-sources-without-items", "--db", "{db}"),
+        seed=_seed_source_without_items,
+        json_keys=("count", "sources"),
     ),
     # --- Engine B: Relate ---
     Row(
@@ -219,7 +244,7 @@ ROWS: tuple[Row, ...] = (
         command="topic-search",
         sample_args=("topic-search", "--query", "sqlite", "--db", "{db}"),
         seed=harness.seed_pair,
-        json_keys=("count", "mode", "query", "results"),
+        json_keys=("count", "mode", "query", "results", "total"),
     ),
     Row(
         command="why",
@@ -362,7 +387,10 @@ def _run_interactive_row(row: Row, tmp_path: Any) -> None:
     """An interactive row: the scripted terminal session's exit code, the
     `--confirm json` session's event names (every stdout line must parse
     as one event object), and — for `maintain` — the `--format json`
-    document of its plain sweep sample."""
+    document of its sweep sample. D-20 (lead ruling B): a REAL json run
+    with the terminal confirm is refused, so the document sub-run is the
+    `--dry-run` document mode (the empty shortlist of a dry run needs no
+    faked AI either)."""
     terminal = _session(row.command, tmp_path / "text", confirm_json=False)
     assert terminal.exit_code == row.exit_ok, terminal.output
 
@@ -373,7 +401,7 @@ def _run_interactive_row(row: Row, tmp_path: Any) -> None:
 
     if row.command == "maintain" and row.json_keys is not None:
         args, _ = _formatted(row, "json", tmp_path)
-        document = _invoke(args + ["--format", "json"])
+        document = _invoke(args + ["--dry-run", "--format", "json"])
         assert document.exit_code == row.exit_ok, document.output
         assert set(json.loads(document.stdout)) == set(row.json_keys)
 

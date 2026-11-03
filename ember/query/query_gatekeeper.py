@@ -49,8 +49,8 @@ def validate_topic_filter(topic_filter: TopicFilter) -> None:
     """Raise `QUERY-006` when a `TopicFilter` value is illegal, else return.
 
     `status` and `type` must be exact-case members of the stored value sets,
-    `limit` must not be negative. Returns `None` on valid input (the caller
-    keeps the filter object it already holds).
+    `limit` and `offset` must not be negative. Returns `None` on valid input
+    (the caller keeps the filter object it already holds).
     """
     if (
         topic_filter.status is not None
@@ -62,6 +62,7 @@ def validate_topic_filter(topic_filter: TopicFilter) -> None:
     if topic_filter.type is not None and topic_filter.type not in ACCEPTED_TYPES:
         raise QueryFilterInvalid("type is not a stored item type", field="type")
     _require_non_negative(topic_filter.limit, "limit")
+    _require_non_negative(topic_filter.offset, "offset")
 
 
 def validate_history_page(page: HistoryPage) -> HistoryPage:

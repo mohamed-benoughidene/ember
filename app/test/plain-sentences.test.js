@@ -93,27 +93,33 @@ test('plain sentences', async (t) => {
   });
 
   await t.test('every code in ember/**/errors.py has sentences (spec §5.6 walk, F5)', async () => {
-    const { MAINTAIN_SENTENCES } = await import('../shared/maintain-sentences.mjs');
-    // Same extraction as the walk above: every code the engine defines.
+    // The same regex walk as the claim-side test above, over the six
+    // errors.py files (N15, per check-report 1.2 option A). Each code
+    // must read its OWN entry through sentenceFor — no merge with any
+    // side table, so a family fallback is never reachable. The -000
+    // base inside ember/errors.py is written `code: str = ...`, which
+    // the bare regex does not match, so EMBER-000 is required here
+    // explicitly.
     const real = new Set();
     for (const dir of ['ember', 'ember/capture', 'ember/maintain', 'ember/query', 'ember/relate', 'ember/adapters']) {
       const file = path.join(REPO_ROOT, dir, 'errors.py');
       if (!fs.existsSync(file)) continue;
-      for (const match of fs.readFileSync(file, 'utf8').matchAll(/code(?::\s*str)? = "([A-Z]+-\d{3})"/g)) {
+      for (const match of fs.readFileSync(file, 'utf8').matchAll(/code = "([A-Z]+-\d{3})"/g)) {
         real.add(match[1]);
       }
     }
     assert.ok(real.size > 90, `the walk found only ${real.size} codes; the file set must be wrong`);
-    const covered = { ...ERROR_SENTENCES, ...MAINTAIN_SENTENCES };
+    real.add('EMBER-000');
     for (const code of real) {
-      const entry = covered[code];
+      const entry = ERROR_SENTENCES[code];
       assert.ok(entry, `${code} (raised by the engine) has no plain-sentence entry anywhere`);
-      if (entry) {
-        for (const field of ['title', 'what', 'next']) {
-          assert.equal(typeof entry[field], 'string', `${code}.${field} is missing`);
-          assert.ok(entry[field].trim().length > 0, `${code}.${field} is blank`);
-        }
-      }
+      // sentenceFor must return exactly the code's own entry. The
+      // family fallback is fingerprinted by its `what` line ("The app
+      // has no plainer words for it yet."); it must never show for a
+      // real code.
+      const shown = sentenceFor(code);
+      assert.deepEqual(shown, entry, `${code} does not read its own entry from the table`);
+      assert.ok(!String(shown.what).includes('no plainer words'), `${code} shows the family fallback, not its own words`);
     }
   });
 

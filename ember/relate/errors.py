@@ -75,6 +75,35 @@ class EmbedderLoadFailed(RelateError):
     name = "EmbedderLoadFailed"
 
 
+class EmbedderPackageMissing(RelateError):
+    """The optional embedder packages are not installed (Batch 6 D-08/I17).
+
+    Its own dedicated code RELATE-039: the fix is installing the `[relate]`
+    extra, wording the app previously read out of detail text under the
+    shared RELATE-017 code. Raised from the embedder adapter (L2 §5.4);
+    the class lives HERE with the rest of the RELATE- family so every
+    engine code has exactly one errors.py home (the claim-side walk
+    contract of the app's sentence table).
+    """
+
+    code = "RELATE-039"
+    name = "EmbedderPackageMissing"
+
+
+class EmbedderLoadTimedOut(RelateError):
+    """The model load thread was still alive after the join timeout
+    (Batch 6 D-08/I17).
+
+    Its own dedicated code RELATE-040: the fix is retrying, not installing
+    anything — different advice from the missing-package code RELATE-039 and
+    from the shared RELATE-017 load-failure code. Same one-home rule as
+    RELATE-039 above.
+    """
+
+    code = "RELATE-040"
+    name = "EmbedderLoadTimedOut"
+
+
 class EmbedderEncodeFailed(RelateError):
     code = "RELATE-018"
     name = "EmbedderEncodeFailed"
@@ -163,3 +192,15 @@ class AiResponseWriteFailed(RelateError):
 class EmbeddingReadFailed(RelateError):
     code = "RELATE-037"
     name = "EmbeddingReadFailed"
+
+
+class ApiKeyMissing(RelateError):
+    """No AI API key is configured (`EMBER_AI_API_KEY` / `OPENROUTER_API_KEY`).
+
+    Its own dedicated code (Batch 6 D-08/I17): the missing-key refusal is a
+    setup problem with different advice from the config code RELATE-035 it
+    previously shared.
+    """
+
+    code = "RELATE-038"
+    name = "ApiKeyMissing"

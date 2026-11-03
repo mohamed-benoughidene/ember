@@ -57,7 +57,9 @@ class ChangeRow(BaseModel):
 
     `group_id` is the additive undo-group stamp (migration 013, undo step
     05): export renders it, defaulting to `None` so every pre-013 caller and
-    reader keeps working unchanged.
+    reader keeps working unchanged. `source_id` is the additive forget
+    stamp (migration 014, Batch 6 D-07): a forgotten note's ledger row
+    names its source; every other row, and every pre-014 file, reads `None`.
     """
 
     id: int
@@ -69,18 +71,22 @@ class ChangeRow(BaseModel):
     timestamp: str
     trigger_cause: str
     group_id: int | None = None
+    source_id: int | None = None
 
 
 class TopicFilter(BaseModel):
-    """What `topic_search` may narrow before it scores (V1.x amendment D).
+    """What `topic_search` may narrow and page (V1.x amendment D, Batch 6).
 
-    `None` means no restriction on that axis. `limit` crops the ranked list
-    behind the sort, so `limit` 0 is an explicit empty result, never an error.
+    `None` means no restriction on that axis. `offset` skips behind the
+    final sort and `limit` crops the ranked list, so `limit` 0 is an
+    explicit empty result, never an error, and neither crop changes the
+    pre-page count the envelope reports as `total`.
     """
 
     status: str | None = None
     type: str | None = None
     limit: int | None = None
+    offset: int | None = None
 
 
 class HistoryPage(BaseModel):
@@ -143,7 +149,9 @@ class HistoryEvent(BaseModel):
     `link_*_item_id` fields sit beside it so the two possible meanings never
     blur. `cause` is the raw `trigger_cause`, and `close_reason` is the one
     derived field (non-null only on a `status_changed` event whose new value
-    is a `Closed` status).
+    is a `Closed` status). `source_id` is non-null only on a
+    `source_forgotten` event (Batch 6, D-26): the forgotten raw note is
+    named by id, never by text.
     """
 
     timestamp: str
@@ -158,6 +166,7 @@ class HistoryEvent(BaseModel):
     old_value: str | None
     new_value: str | None
     close_reason: str | None
+    source_id: int | None = None
 
 
 class ListPage(BaseModel):

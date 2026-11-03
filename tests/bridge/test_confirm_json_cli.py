@@ -76,6 +76,7 @@ def test_capture_json_every_line_parses_and_the_sequence_is_pinned(
     assert events[3]["fields"]["type"] == "Assumption"
     assert events[5] == {
         "event": "summary",
+        "line": "accepted: 1, rejected: 1, warnings: 0, aborted: false",
         "accepted": 1,
         "rejected": 1,
         "warnings": 0,
@@ -150,7 +151,7 @@ def test_capture_json_no_key_exits_1_before_any_event(
 
     assert result.exit_code == 1
     assert result.stdout == ""
-    assert "CAPTURE-008" in result.stderr
+    assert "CAPTURE-022" in result.stderr
 
 
 def test_capture_json_bad_line_reasks_once_then_the_loop_continues(
@@ -213,6 +214,7 @@ def test_capture_json_edit_sub_prompts_are_prompt_events(tmp_path: Path) -> None
     summary = events[-1]
     assert summary == {
         "event": "summary",
+        "line": "accepted: 1, rejected: 1, warnings: 0, aborted: false",
         "accepted": 1,
         "rejected": 1,
         "warnings": 0,
@@ -272,6 +274,7 @@ def test_relate_json_every_line_parses_and_the_sequence_is_pinned(
     assert events[5]["fields"]["index"] == 3
     assert events[-1] == {
         "event": "summary",
+        "line": "accepted: 1, rejected: 1, skipped: 1, aborted: false",
         "accepted": 1,
         "rejected": 1,
         "skipped": 1,
@@ -293,6 +296,7 @@ def test_relate_json_rejection_lines_are_message_events(tmp_path: Path) -> None:
     assert events[0]["text"] != events[1]["text"]
     assert events[-1] == {
         "event": "summary",
+        "line": "accepted: 0, rejected: 2, skipped: 0, aborted: false",
         "accepted": 0,
         "rejected": 2,
         "skipped": 0,
@@ -318,7 +322,7 @@ def test_relate_json_no_key_exits_1_before_any_event(
     monkeypatch.delenv("EMBER_AI_API_KEY", raising=False)
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
     # The optional embedder packages may be absent in CI; stub the boot check
-    # so the FIRST error (before any event) is the missing key (RELATE-035).
+    # so the FIRST error (before any event) is the missing key (RELATE-038).
     monkeypatch.setattr("ember.cli.validate_embedder_config", lambda: 120.0)
     from click.testing import CliRunner
 
@@ -338,7 +342,7 @@ def test_relate_json_no_key_exits_1_before_any_event(
 
     assert result.exit_code == 1
     assert result.stdout == ""
-    assert "RELATE-035" in result.stderr
+    assert "RELATE-038" in result.stderr
 
 
 # --- maintain ----------------------------------------------------------------
@@ -389,6 +393,7 @@ def test_maintain_json_every_line_parses_and_the_sequence_is_pinned(
     assert events[5]["text"] == "closed: 1, challenged: 0, reopened: 0, unchanged: 3"
     assert events[-1] == {
         "event": "summary",
+        "line": "stale: 2, proposed: 1, accepted: 1, rejected: 0, aborted: false",
         "stale": 2,
         "proposed": 1,
         "accepted": 1,

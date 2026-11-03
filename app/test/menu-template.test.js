@@ -21,6 +21,7 @@ const {
   buildMenuTemplate,
   deriveUndoMenuState,
   aboutCreditsText,
+  engineVersionFromStdout,
   MENU_TITLES,
   JOB_NAMES,
 } = require('../shared/menu-template.mjs');
@@ -244,16 +245,70 @@ test('deriveUndoMenuState: an unreadable summary never labels wrongly', () => {
   assert.equal(state.label, 'Undo');
 });
 
-/* ---------------- the About credits (story 108) ---------------- */
+/* ---------------- the About credits (story 108, Batch 6 F7a) ---------------- */
 
-test('the About credits name the typefaces, the OFL licence and where the texts sit', () => {
-  const text = aboutCreditsText({ version: '0.2.0', fontsPath: '/app/assets/fonts' });
+test('the About credits name the typefaces, the OFL files and BOTH versions — never a path (F7a)', () => {
+  const text = aboutCreditsText({ appVersion: '0.2.0', engineVersion: '0.4.0' });
   assert.match(text, /Atkinson Hyperlegible Next/);
   assert.match(text, /Atkinson Hyperlegible Mono/);
   assert.match(text, /SIL Open Font Licence, version 1\.1/);
-  assert.match(text, /-OFL\.txt/);
-  assert.match(text, /\/app\/assets\/fonts/);
-  assert.match(text, /0\.2\.0/);
+  // The app version AND the engine's own version line (Batch 1's
+  // `ember --version`), when the engine answered.
+  assert.match(text, /Ember 0\.2\.0/);
+  assert.match(text, /engine[^\n]*0\.4\.0/);
+  // The full licence text is named by its REAL file (both bundled
+  // faces carry one), not by a folder that may not exist.
+  assert.match(text, /atkinson-hyperlegible-next-OFL\.txt/);
+  assert.match(text, /atkinson-hyperlegible-mono-OFL\.txt/);
+  // F7a: NO install path and NO fonts folder — the About box must not
+  // reveal where (or whether) the app sits on disk.
+  assert.ok(!text.includes('/'), `the About text shows a path-like string:\n${text}`);
+  assert.ok(!/folder/i.test(text), `the About text still names a folder:\n${text}`);
+});
+
+test('when the engine does not answer, the About shows the app version only (F7a)', () => {
+  for (const engineVersion of [null, undefined]) {
+    const text = aboutCreditsText({ appVersion: '0.2.0', engineVersion });
+    assert.match(text, /Ember 0\.2\.0/);
+    // No engine claim at all: a silent engine must not produce a
+    // half-honest line.
+    assert.ok(!/engine/i.test(text), `the About text still claims an engine version:\n${text}`);
+    assert.ok(!text.includes('/'), `the About text shows a path-like string:\n${text}`);
+  }
+});
+
+test('the engine version line parses from `ember --version`; anything else is no answer', () => {
+  // click's version_option with prog_name "ember" (ember/cli.py:379).
+  assert.equal(engineVersionFromStdout('ember, version 0.1.0\n'), '0.1.0');
+  // The packaging stub in tests/fixtures prints the same shape with a tag.
+  assert.equal(engineVersionFromStdout('ember, version 0.1.0 (stub)\n'), '0.1.0');
+  // Anything else — empty stdout, some other program's text — is null,
+  // so the About box falls back to the app version only.
+  assert.equal(engineVersionFromStdout(''), null);
+  assert.equal(engineVersionFromStdout('\n'), null);
+  assert.equal(engineVersionFromStdout('snake oil, version 9.9\n'), null);
+  assert.equal(engineVersionFromStdout(undefined), null);
+});
+
+test('main.js passes BOTH versions to the About box, read once via `ember --version` (F7a wiring)', () => {
+  const source = fs.readFileSync(path.join(APP_ROOT, 'main', 'main.js'), 'utf8');
+  // The credits call carries the app version AND the engine version —
+  // never a fonts path again.
+  const call = source.match(/const credits = aboutCreditsText\(\{([\s\S]*?)\}\);/);
+  assert.ok(call, 'the aboutCreditsText call moved in main.js');
+  assert.match(call[1], /appVersion:/);
+  assert.match(call[1], /engineVersion/);
+  assert.ok(!call[1].includes('fontsPath'), 'the About call still passes a fonts path');
+  // The engine version is read through the SAME resolved ember command
+  // every other child uses (main/ember-command.js -> services.emberCommand):
+  // one `--version` spawn in the main process, parsed by the shared
+  // pure parser — no new IPC route, nothing crosses to the renderer.
+  assert.ok(source.includes("'--version'"), 'main.js no longer asks the engine for its version');
+  assert.match(source, /engineVersionFromStdout/, 'the engine answer is not parsed by the shared pure parser');
+  // The fallback is real: the read never rejects and settles null when
+  // the engine does not answer, so the builder above decides the words.
+  assert.match(source, /function readEngineVersion/, 'the one-shot engine-version read moved');
+  assert.ok(/catch/.test(source.match(/function readEngineVersion[\s\S]*?\n\}/)[0]), 'the engine-version read has no failure fallback');
 });
 
 /* ---------------- drift pins ---------------- */

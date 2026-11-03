@@ -1,9 +1,11 @@
 """CLI integration tests for topic-search filters on a real temp DB.
 
 The no-flags golden test compares raw stdout bytes against
-`tests/fixtures/query/no_flags_golden.json`, captured from the pre-amendment
-build (commit before the filter code). The seed below must stay exactly the
-seed used for that capture, or the byte compare fails.
+`tests/fixtures/query/no_flags_golden.json`. The `topic_search` bytes were
+captured from the pre-amendment build and re-captured verbatim when Batch 6
+added the additive `total` field to the envelope (chunk 7); the `history`
+bytes are still the pre-amendment capture. The seed below must stay exactly
+the seed used for those captures, or the byte compare fails.
 """
 
 from __future__ import annotations
@@ -99,9 +101,10 @@ def test_no_flags_output_is_byte_identical_to_pre_amendment(db_path) -> None:
     )
 
     # The same topic-search byte stream parses to the exact pre-amendment rows,
-    # BM25 floats included.
+    # BM25 floats included; `total` (the additive pre-page count) is 3.
     document = json.loads(GOLDEN["topic_search"])
     assert document["count"] == 3
+    assert document["total"] == 3
     assert [hit["item_id"] for hit in document["results"]] == [1, 2, 3]
     assert [hit["score"] for hit in document["results"]] == [
         0.13353139262452257,
@@ -219,6 +222,71 @@ def test_limit_crops_behind_the_ranking_and_count_is_rows_returned(db_path) -> N
     assert [hit["item_id"] for hit in json.loads(cropped.output)["results"]] == [1, 2]
     assert combined.exit_code == 0
     assert json.loads(combined.output)["count"] == 2
+
+
+def test_offset_pages_behind_the_ranking_and_total_is_the_pre_page_count(db_path) -> None:
+    _seed_four_active(db_path)
+
+    full = CliRunner().invoke(
+        main, ["topic-search", "--query", "sqlite", "--db", db_path]
+    )
+    assert full.exit_code == 0
+    full_doc = json.loads(full.output)
+    assert full_doc["count"] == 4
+    # `total` is the pre-page count: every match, before any crop.
+    assert full_doc["total"] == 4
+
+    # `--offset` skips behind the ranking, `--limit` then caps: page two.
+    second_page = CliRunner().invoke(
+        main,
+        [
+            "topic-search",
+            "--query",
+            "sqlite",
+            "--offset",
+            "2",
+            "--limit",
+            "2",
+            "--db",
+            db_path,
+        ],
+    )
+    assert second_page.exit_code == 0
+    page_doc = json.loads(second_page.output)
+    assert [hit["item_id"] for hit in page_doc["results"]] == [3, 4]
+    assert page_doc["count"] == 2
+    assert page_doc["total"] == 4
+
+    tail = CliRunner().invoke(
+        main, ["topic-search", "--query", "sqlite", "--offset", "3", "--db", db_path]
+    )
+    assert tail.exit_code == 0
+    tail_doc = json.loads(tail.output)
+    assert [hit["item_id"] for hit in tail_doc["results"]] == [4]
+    assert tail_doc["count"] == 1
+    assert tail_doc["total"] == 4
+
+    # An offset past the last match is an explicit empty page, exit 0,
+    # and total still names every match.
+    past = CliRunner().invoke(
+        main, ["topic-search", "--query", "sqlite", "--offset", "4", "--db", db_path]
+    )
+    assert past.exit_code == 0
+    past_doc = json.loads(past.output)
+    assert past_doc["count"] == 0
+    assert past_doc["results"] == []
+    assert past_doc["total"] == 4
+
+
+def test_negative_offset_exits_1_with_query_006_field_offset(db_path) -> None:
+    _seed(db_path)
+
+    result = CliRunner().invoke(
+        main, ["topic-search", "--query", "sqlite", "--offset", "-1", "--db", db_path]
+    )
+
+    assert result.exit_code == 1
+    assert "field=offset" in result.output + (result.stderr or "")
 
 
 def test_bad_status_exits_1_with_query_006_and_field_context(db_path) -> None:

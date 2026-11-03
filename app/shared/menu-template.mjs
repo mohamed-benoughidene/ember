@@ -225,22 +225,50 @@ function jobsInShownOrder(jobs) {
 }
 
 /**
- * Story 108's About-box credits: the fonts' licence facts, the ONE
- * place the step-03 font work points at. Pure: strings in, string out.
+ * The pure parser for one `ember --version` answer (Batch 6 chunk 17,
+ * F7a): click's version_option with prog_name "ember"
+ * (ember/cli.py:379) prints `ember, version X` — this returns X.
+ * Anything else (an empty stdout, some other program's text) is null,
+ * so the caller falls back to the app version only. Pure (T1),
+ * unit-tested in app/test/menu-template.test.js.
  *
- * @param {{version: string, fontsPath: string}} args
+ * @param {string|undefined} text the child's raw stdout
+ * @returns {string|null}
+ */
+export function engineVersionFromStdout(text) {
+  if (typeof text !== 'string') return null;
+  const m = text.match(/^ember, version (\S+)/m);
+  return m ? m[1] : null;
+}
+
+/**
+ * Story 108's About-box credits (F7a): the versions and the fonts'
+ * licence facts, naming the two licence FILES — never the install
+ * path or a fonts folder (the About box must not reveal where, or
+ * whether, the app sits on disk; a bundled app's folder may not exist
+ * as spelled anyway). Pure: strings in, string out.
+ *
+ * @param {{appVersion: string, engineVersion: string|null}} args
+ *   appVersion: the Electron app's own version (package.json).
+ *   engineVersion: the engine's version from one `ember --version`
+ *   read, or null when the engine does not answer — the About box
+ *   then shows the app version only (pinned in the tests).
  * @returns {string}
  */
-export function aboutCreditsText({ version, fontsPath }) {
+export function aboutCreditsText({ appVersion, engineVersion }) {
+  const engineLine =
+    engineVersion && typeof engineVersion === 'string' ? `Ember engine: version ${engineVersion}\n` : '';
   return (
-    `Ember ${version}\n\n` +
+    `Ember ${appVersion}\n` +
+    engineLine +
+    '\n' +
     'Typefaces: Atkinson Hyperlegible Next (the text face) and\n' +
     'Atkinson Hyperlegible Mono (the figures). They are bundled with\n' +
     'this app; no font is loaded from the internet (story 107).\n\n' +
     'Licence: the SIL Open Font Licence, version 1.1. The full licence\n' +
-    'text and the copyright notice for each face sit next to the font\n' +
-    'files, in the folder:\n' +
-    `${fontsPath}\n` +
-    '(the files whose names end in -OFL.txt).'
+    'text and the copyright notice for each face are these two files,\n' +
+    'bundled inside the app:\n' +
+    'atkinson-hyperlegible-next-OFL.txt\n' +
+    'atkinson-hyperlegible-mono-OFL.txt'
   );
 }

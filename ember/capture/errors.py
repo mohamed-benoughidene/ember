@@ -140,3 +140,30 @@ class InitRefused(CaptureError):
 
     code = "CAPTURE-021"
     name = "InitRefused"
+
+
+class ApiKeyMissing(CaptureError):
+    """No AI API key is configured (`EMBER_AI_API_KEY` / `OPENROUTER_API_KEY`).
+
+    Its own dedicated code (Batch 6 D-08/I17): the missing-key refusal is a
+    setup problem with different advice from the call-failure code
+    CAPTURE-008 it previously shared.
+    """
+
+    code = "CAPTURE-022"
+    name = "ApiKeyMissing"
+
+
+class SourceHasItems(CaptureError):
+    """`ember forget-source` on a raw note that still has items (D-07).
+
+    A note whose capture produced items carries real knowledge; forgetting
+    it would delete what the ledger and the items still stand on. Only a
+    note that produced NOTHING (zero items, any status) may be forgotten.
+    Lives HERE with the CAPTURE- family (one home per code — the
+    claim-side walk contract of the app's sentence table); the pure
+    forget rule imports it.
+    """
+
+    code = "CAPTURE-023"
+    name = "SourceHasItems"

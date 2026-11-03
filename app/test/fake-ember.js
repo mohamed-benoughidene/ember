@@ -335,11 +335,12 @@ function runSession() {
           text: '- id: 1',
         },
         { event: 'prompt', kind: 'choice', text: '[y]es / [n]o / [q]uit', choices: ['y', 'n', 'q'] },
-        // `aborted` is here because the REAL engine's summary always carries
-        // it (ember/cli.py passes it for capture/relate/maintain alike) —
-        // the app's field check (batch 5, 4.4 #7/#8) refuses a summary
-        // without it, so the stub must mimic the real shape.
-        { event: 'summary', accepted: 1, rejected: 0, aborted: false },
+        // `line` and `aborted` are here because the REAL engine's summary
+        // always carries them (ember/cli.py passes the human line and
+        // `aborted` for capture/relate/maintain alike) — the app's field
+        // check (batch 5, 4.4 #7/#8) refuses a summary without them, so
+        // the stub must mimic the real shape.
+        { event: 'summary', line: 'accepted: 1, rejected: 0, aborted: false', accepted: 1, rejected: 0, aborted: false },
       ];
 
   // Emit the whole pinned stream, then wait for ONE answer line and
@@ -540,6 +541,7 @@ function runAppMode(argv) {
   if (name === 'topic-search') {
     const query = String(flag('--query') ?? '').toLowerCase();
     const limit = flag('--limit') === null ? null : Number(flag('--limit'));
+    const offset = Number(flag('--offset') ?? '0');
     let rows = items.filter(
       (it) =>
         it.statement.toLowerCase().includes(query) &&
@@ -547,8 +549,11 @@ function runAppMode(argv) {
         (typeFilter === null || it.type === typeFilter),
     );
     const hits = rows.map((it, i) => ({ item_id: it.id, score: 1 - i * 0.01, type: it.type, statement: it.statement, status: it.status }));
-    const page = limit === null ? hits : hits.slice(0, limit);
-    process.stdout.write(`${JSON.stringify({ mode: 'topic_search', query: flag('--query') ?? '', count: page.length, results: page })}\n`);
+    // `total` is the pre-page count (Batch 6): every match before the
+    // offset skip and the limit cap, like the real engine's envelope.
+    const total = hits.length;
+    const page = limit === null ? hits.slice(offset) : hits.slice(offset, offset + limit);
+    process.stdout.write(`${JSON.stringify({ mode: 'topic_search', query: flag('--query') ?? '', total, count: page.length, results: page })}\n`);
     process.exit(0);
   }
 
@@ -564,7 +569,13 @@ function runAppMode(argv) {
   }
 
   if (name === 'history') {
+    // The real engine renders the ledger NEWEST first (`(timestamp, id)`
+    // descending, Batch 6 finding 4.7 #13) and decodes a status row's
+    // new value to its plain status (the `Closed:<reason>` encoding stays
+    // only in the ledger). The fixture already mirrors that shape; the
+    // sort here keeps the answer engine-true regardless of fixture order.
     let events = (fx.history ?? []).slice();
+    events.sort((a, b) => (a.timestamp < b.timestamp ? 1 : a.timestamp > b.timestamp ? -1 : 0));
     const itemFilter = flag('--item') === null ? null : Number(flag('--item'));
     if (itemFilter !== null) {
       events = events.filter((e) => e.item_id === itemFilter);

@@ -20,6 +20,8 @@ from ember.relate.errors import (
     ConfigMissing,
     EmbedderEncodeFailed,
     EmbedderLoadFailed,
+    EmbedderLoadTimedOut,
+    EmbedderPackageMissing,
     RelateError,
 )
 
@@ -34,13 +36,13 @@ class SentenceTransformerEmbedder:
     """`EmbedderPort` on `sentence-transformers`, loaded on construction.
 
     The load runs in a daemon thread so a hung download cannot block the CLI
-    past `load_timeout`; a live thread after the join raises RELATE-017. The
-    model id is mapped to its Hugging Face org id for loading, while
-    `model_name()` returns the configured short name unchanged so the
-    `item_embeddings` cache key stays stable across environments.
+    past `load_timeout`; a live thread after the join raises
+    `EmbedderLoadTimedOut` (RELATE-040). The model id is mapped to its
+    Hugging Face org id for loading, while `model_name()` returns the
+    configured short name unchanged so the `item_embeddings` cache key stays
+    stable across environments.
 
-    Raise `EmbedderLoadFailed` (RELATE-017) when the optional packages are
-    missing or the model cannot load.
+    Raise `EmbedderLoadFailed` (RELATE-017) when the model cannot load.
     """
 
     def __init__(self, model_name: str, *, load_timeout: float = 120.0) -> None:
@@ -99,15 +101,15 @@ def validate_embedder_config(
     Input: an environment mapping (defaults to `os.environ`).
     Output: the parsed load timeout in seconds.
     Raises: `ConfigMissing` (RELATE-035) when the timeout is not a number, and
-    `EmbedderLoadFailed` (RELATE-017) when `sentence_transformers` or `torch`
-    is not installed.
+    `EmbedderPackageMissing` (RELATE-039) when `sentence_transformers` or
+    `torch` is not installed.
     Side effects: none; no model is loaded and nothing is imported.
     """
     values = os.environ if env is None else env
     timeout = _parse_timeout(values.get(LOAD_TIMEOUT_ENV))
     for package in ("sentence_transformers", "torch"):
         if find_spec(package) is None:
-            raise EmbedderLoadFailed(
+            raise EmbedderPackageMissing(
                 f"{package} is not installed; install the optional extra with: "
                 f"{_INSTALL_HINT}",
                 extra="relate",
@@ -122,9 +124,12 @@ def build_embedder(env: Mapping[str, str] | None = None) -> EmbedderPort:
     Keys: `EMBER_EMBEDDER_MODEL` (default `bge-base-en-v1.5`) and
     `EMBER_EMBEDDER_LOAD_TIMEOUT_SECONDS` (default 120).
 
-    Raises `ConfigMissing` (RELATE-035) for a bad timeout and
-    `EmbedderLoadFailed` (RELATE-017) for a missing package or a failed model
-    load. Mirrors the factory style of `build_item_proposer` in the LLM adapter.
+    Raises `ConfigMissing` (RELATE-035) for a bad timeout,
+    `EmbedderPackageMissing` (RELATE-039) for a missing package,
+    `EmbedderLoadFailed` (RELATE-017) for a failed model load, and
+    `EmbedderLoadTimedOut` (RELATE-040) when the load is still running past
+    the timeout. Mirrors the factory style of `build_item_proposer` in the
+    LLM adapter.
 
     Output: an `EmbedderPort`. Side effects: loads the model, which may
     download weights and blocks up to the configured timeout. No DB I/O.
@@ -149,7 +154,8 @@ def _parse_timeout(raw: str | None) -> float:
 
 
 def _load_model(model_name: str, load_timeout: float) -> Any:
-    """Load the model in a daemon thread with a timeout (RELATE-017 on failure)."""
+    """Load the model in a daemon thread with a timeout (RELATE-040 on a live
+    thread after the join, RELATE-017 on a failed load)."""
     transformer_cls = _import_sentence_transformer()
     resolved = _resolve_model_id(model_name)
     result: dict[str, Any] = {}
@@ -166,7 +172,7 @@ def _load_model(model_name: str, load_timeout: float) -> Any:
     thread.start()
     thread.join(load_timeout)
     if thread.is_alive():
-        raise EmbedderLoadFailed(
+        raise EmbedderLoadTimedOut(
             "embedder load timed out",
             model=model_name,
             timeout=load_timeout,
@@ -187,7 +193,7 @@ def _import_sentence_transformer() -> Callable[..., Any]:
         from sentence_transformers import SentenceTransformer
     except RelateError:
         raise
-    except Exception as exc:  # noqa: BLE001 - an import failure is RELATE-017
+    except Exception as exc:  # noqa: BLE001 - an import failure is RELATE-039
         missing = getattr(exc, "name", None)
         if missing:
             message = (
@@ -199,7 +205,7 @@ def _import_sentence_transformer() -> Callable[..., Any]:
                 "sentence-transformers import failed; install the optional extra "
                 f"with: {_INSTALL_HINT}"
             )
-        raise EmbedderLoadFailed(
+        raise EmbedderPackageMissing(
             message,
             extra="relate",
             detail=_detail(exc),

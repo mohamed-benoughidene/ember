@@ -169,11 +169,12 @@ def test_migration_012_preserves_existing_schema(db_path) -> None:
     for table in tables:
         if table == "items":
             continue
-        # change_log gains exactly one trailing nullable column from 013,
-        # which rides the same open.
+        # 013 rides every open, and 014 appends its own nullable column
+        # (source_id) after 013's group_id.
         if table == "change_log":
             assert columns_after[table] == columns_before[table] + [
-                (8, "group_id", "INTEGER", 0, None, 0)
+                (8, "group_id", "INTEGER", 0, None, 0),
+                (9, "source_id", "INTEGER", 0, None, 0),
             ]
             continue
         assert columns_after[table] == columns_before[table], table
@@ -204,7 +205,8 @@ def test_fresh_install_applies_all_migrations_through_012(db_path) -> None:
     conn = open_database(db_path)
 
     version = conn.execute("SELECT version FROM schema_version").fetchone()[0]
-    assert version == 13
+    # Fresh installs go through 012 AND everything after it (014 today).
+    assert version >= 13
     triggers = {
         row["name"]
         for row in conn.execute(

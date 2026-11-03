@@ -5,9 +5,10 @@
  * test walks `ember/**\/errors.py` and fails when a code has no
  * entry"): the table is now TOTAL over every code the engine defines
  * — plus the tested refinements (`app/shared/capture-words.mjs` for
- * CAPTURE-008, `app/shared/maintain-sentences.mjs` for its MAINTAIN
- * codes, `app/shared/relate-words.mjs` for two RELATE details), which
- * keep precedence where they exist. Every below-entry was written
+ * CAPTURE-008 and CAPTURE-022, `app/shared/maintain-sentences.mjs`
+ * for its MAINTAIN codes, `app/shared/relate-words.mjs` for
+ * RELATE-038 and RELATE-039), which keep precedence where they exist.
+ * Every below-entry was written
  * ONLY from the error class's name, docstring and raise sites in the
  * engine — never from assumed behaviour.
  *
@@ -178,6 +179,7 @@ export const HISTORY_KINDS = {
   undone: { label: 'Undone' },
   redone: { label: 'Redone' },
   link_unreversed: { label: 'Reversal undone' },
+  source_forgotten: { label: 'Note forgotten' },
   unknown: { label: 'Change without words' },
 };
 
@@ -250,6 +252,13 @@ export function historyEventSentence(event) {
     case 'link_unreversed':
       sentence = 'A reversal was undone, so the replacement is in force again.';
       break;
+    case 'source_forgotten': {
+      // The forget-source write (Batch 6, D-26): the event names the
+      // forgotten note by its `source_id` and says nothing of its text.
+      const note = event.source_id === null || event.source_id === undefined ? 'a note' : `note ${event.source_id}`;
+      sentence = `${capitalize(note)} was forgotten. Its text is gone from Ember for good.`;
+      break;
+    }
     default:
       sentence = 'A change Ember has no words for was recorded.';
       break;
@@ -460,9 +469,19 @@ Object.assign(ERROR_SENTENCES, {
     next: 'Open the file with the Ember command line once (a write migrates it), then try again. Nothing was changed.',
   },
   'RELATE-017': {
+    title: 'The linking brain could not load.',
+    what: 'Linking loads a language model when it starts; the load failed on this computer. The optional package is installed, so this is not a missing part.',
+    next: 'Run Link items again. If it keeps happening, check the model setting in your environment. Nothing was linked.',
+  },
+  'RELATE-039': {
     title: 'The linking brain is not installed.',
     what: 'Linking needs the optional language package (sentence-transformers), which is missing on this computer.',
     next: 'Install the relate extra: python -m pip install -e ".[relate]". Then run Link items again.',
+  },
+  'RELATE-040': {
+    title: 'The linking brain took too long to load.',
+    what: 'The language model was still loading when the time Ember allows ran out (the first load may download a large file). Nothing is broken and nothing needs installing.',
+    next: 'Run Link items again and let it finish. If it keeps happening, check the connection or raise the load-timeout setting. Nothing was linked.',
   },
   'RELATE-032': {
     title: 'The AI service could not answer.',
@@ -481,10 +500,11 @@ Object.assign(ERROR_SENTENCES, {
  * `ember/**\/errors.py` that no other sentence file owns now has a
  * full {title, what, next} entry, written ONLY from the class name,
  * its docstring and its raise sites (never assumed behaviour). Codes
- * NOT listed here are owned elsewhere: CAPTURE-008 (capture-words),
- * CAPTURE-016 and MAINTAIN-001..006, 013..017, 023..027
- * (maintain-sentences). The -000 family bases are never raised
- * directly; they get honest general words so the table stays total.
+ * NOT listed here are owned elsewhere: CAPTURE-008 (capture-words).
+ * CAPTURE-016 and the MAINTAIN- entries join from maintain-sentences.mjs
+ * in Batch 6 (the one table — see the block at the end). The -000
+ * family bases are never raised directly; they get honest general
+ * words so the table stays total.
  * ===================================================================== */
 
 Object.assign(ERROR_SENTENCES, {
@@ -593,6 +613,16 @@ Object.assign(ERROR_SENTENCES, {
     what: '`ember init` found a file there that is not a healthy Ember knowledge base already at the current format, so it changed nothing.',
     next: 'Pick a new file path to create, or check the existing file (Keep safe) before trying again.',
   },
+  'CAPTURE-022': {
+    title: 'The AI key is missing.',
+    what: 'Adding text asks the AI service for proposals, and no working API key was configured.',
+    next: 'Add the AI key in the app settings (or the environment), then try again. Your text is kept; nothing was created.',
+  },
+  'CAPTURE-023': {
+    title: 'A note with items cannot be forgotten.',
+    what: 'Forgetting works only on a note that produced no items. This note has items, so its knowledge is still in use.',
+    next: 'Nothing was deleted. Review or close the note’s items first, then forget the note.',
+  },
   'RELATE-000': {
     title: 'A problem in the relate engine was reported.',
     what: 'Ember reported a general problem in the part that links items.',
@@ -692,6 +722,11 @@ Object.assign(ERROR_SENTENCES, {
     title: 'Reading the meaning numbers failed.',
     what: 'The stored meaning numbers (the search cache) could not be read.',
     next: 'Run Link items again. If it keeps happening, run the health check (Keep safe). Nothing was linked.',
+  },
+  'RELATE-038': {
+    title: 'The AI key is missing.',
+    what: 'Linking asks the AI service for proposals, and no working API key was configured.',
+    next: 'Add the AI key in the app settings (or the environment), then run Link items again. Nothing was linked.',
   },
   'MAINTAIN-000': {
     title: 'A problem in the maintain engine was reported.',
@@ -817,5 +852,112 @@ Object.assign(ERROR_SENTENCES, {
     title: 'An answer could not be sent.',
     what: 'A confirmation answer could not be wrapped as data to send to Ember. This is an internal guard.',
     next: 'Try again.',
+  },
+});
+
+/* =====================================================================
+ * BATCH 6 — the ONE sentence table (Impl-Batch6 chunk 2). The
+ * MAINTAIN- entries and CAPTURE-016 moved here verbatim out of
+ * app/shared/maintain-sentences.mjs, which is now a thin shim
+ * delegating to sentenceFor. The task's wording is pinned by the
+ * words-table tests (undo-labels; I10's exception) and the registry
+ * walk in test/plain-sentences.test.js now reads sentenceFor only —
+ * no side table is merged in, so a side entry can never mask a code.
+ * ===================================================================== */
+
+Object.assign(ERROR_SENTENCES, {
+  'MAINTAIN-001': {
+    title: 'There is no item with that number.',
+    what: 'The item number is not in this knowledge base.',
+    next: 'Pick the item from the list again and try once more.',
+  },
+  'MAINTAIN-002': {
+    title: 'That close reason is not allowed.',
+    what: 'Only a person chooses between "It was wrong (invalidated)" and "It ran out (expired)".',
+    next: 'Pick the reason again from the list and try once more.',
+  },
+  'MAINTAIN-003': {
+    title: 'That close reason cannot be set by hand.',
+    what: 'A person may close with only "It was wrong (invalidated)" or "It ran out (expired)". "Superseded", "answered" and "reversed" are reasons Ember sets itself when its rules run.',
+    next: 'Try again with "It was wrong (invalidated)" or "It ran out (expired)".',
+  },
+  'MAINTAIN-004': {
+    title: 'This item is already Closed.',
+    what: 'A Closed item keeps its own close reason; it cannot be closed again.',
+    next: 'To bring it back, undo its close with the Undo button.',
+  },
+  'MAINTAIN-005': {
+    title: 'This replacement cannot be reversed.',
+    what: 'A reversal needs the older item closed as superseded, with a confirmed replacement link that is not already reversed.',
+    next: 'Look the item up again in Look up, then try once more.',
+  },
+  'MAINTAIN-006': {
+    title: 'That status change is not allowed.',
+    what: 'You can move an item between Active and Challenged; a Closed item cannot change status. It reopens only by undoing its close.',
+    next: 'Pick a different item, or undo the close first.',
+  },
+  'MAINTAIN-013': {
+    title: 'That field cannot be edited.',
+    what: 'Ember knows the field but never allows it to be edited by hand.',
+    next: 'Use the edit buttons on the item; they show what this item allows.',
+  },
+  'MAINTAIN-014': {
+    title: 'This item cannot be edited that way.',
+    what: 'The rationale belongs to a Decision and the source to a Finding; other kinds keep theirs as written.',
+    next: 'Check the item’s type at the top of the item panel.',
+  },
+  'MAINTAIN-015': {
+    title: 'This link cannot be removed.',
+    what: 'Only a confirmed link can be removed (marked Rejected).',
+    next: 'Check the link in Look up, then try once more.',
+  },
+  'MAINTAIN-016': {
+    title: 'The edit could not be written.',
+    what: 'The knowledge base refused the change while it was being written, and nothing was changed.',
+    next: 'Try again. If it keeps happening, close and reopen the app.',
+  },
+  'MAINTAIN-017': {
+    title: 'The link could not be removed.',
+    what: 'The knowledge base refused the change while it was being written, and nothing was changed.',
+    next: 'Try again. If it keeps happening, close and reopen the app.',
+  },
+  /* --- the undo codes (L2 undo plan §5.3; stories 111-123) --- */
+  'MAINTAIN-023': {
+    title: 'Nothing to undo.',
+    what: 'Undo has no change waiting: every change so far is already undone, or none of your changes are undoable yet.',
+    next: 'The Undo button stays off until you make a change it covers.',
+  },
+  'MAINTAIN-024': {
+    title: 'Nothing to redo.',
+    what: 'Redo has no undone change waiting: nothing was undone, or a newer change cleared the redo.',
+    next: 'The Redo button stays off until you undo something again.',
+  },
+  'MAINTAIN-025': {
+    title: 'This undo was refused.',
+    what: 'At least one item or link this undo would restore has changed since (a sweep, a newer edit). Ember refused so nothing gets mixed up.',
+    next: 'Read the item’s current state in Look up, then try again only if the change still looks right.',
+  },
+  'MAINTAIN-026': {
+    title: 'The undo could not be written.',
+    what: 'The knowledge base refused the undo while it was being written. It was rolled back, so nothing changed and nothing was half-undone.',
+    next: 'Try again. If it keeps happening, close and reopen the app.',
+  },
+  'MAINTAIN-027': {
+    title: 'A ledger entry cannot be read safely.',
+    what: 'The undo history holds an entry Ember does not recognise. Ember refused rather than guess what it meant.',
+    next: 'Run the health check (Keep safe) and send the Details line with a bug report.',
+  },
+  'MAINTAIN-028': {
+    title: 'This undo was stopped before writing.',
+    what: 'The item or link changed in the moment between checking and writing, so Ember stopped rather than overwrite the newer change. Nothing was written and nothing was half-undone.',
+    next: 'Read the item’s current state in Look up, then undo again only if that is still what you want.',
+  },
+  /* Forced-path companion of story 53 ("verified" is Assumption-only):
+     the screen keeps the button off, so this only shows if the rule is
+     somehow reached anyway. */
+  'CAPTURE-016': {
+    title: 'Only an Assumption can carry the verified mark.',
+    what: 'The verified mark records your own checking of an assumption; findings, decisions and questions do not take it.',
+    next: 'Pick the item again from the list.',
   },
 });

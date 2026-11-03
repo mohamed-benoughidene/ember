@@ -41,12 +41,14 @@ from ember.adapters.sqlite import (
     SqliteItemContext,
     SqliteGroupIdPort,
     SqliteItemGatekeeper,
+    SqliteForgetSourceStore,
     SqliteLinkContext,
     SqliteLinkStore,
     SqliteMaintainContext,
     SqliteMaintainStore,
     SqliteQueryContext,
     SqliteSourceStore,
+    SqliteSourcesWithoutItemsRead,
     build_ai_response_store,
     build_embedding_store,
     init_knowledge_base,
@@ -62,6 +64,11 @@ from ember.adapters.sqlite import (
 from ember.bridge.json_out import OutputDocument, render_document
 from ember.capture.confirm_write import run_confirm_loop
 from ember.capture.errors import UserAbort
+from ember.capture.forget_source import (
+    FORGOTTEN_CAUSE,
+    FORGOTTEN_FIELD,
+    plan_forget_source,
+)
 from ember.capture.input_reader import InputMode, read_raw_text
 from ember.capture.item_gatekeeper import (
     GatekeeperRun,
@@ -455,11 +462,23 @@ def capture(file_path: str | None, output: OutputOptions) -> None:
     Exit 0 when every proposal is handled, 1 on a phase 1/2/3 error or a DB
     write failure, and 2 when the user quits mid-prompt. `--confirm json`
     (bridge step 03) requires `--file`: stdin then carries the `{"answer":`
-    ...}` answer lines instead of the pasted text.
+    ...}` answer lines instead of the pasted text. D-20: `--format json` is
+    refused (exit 2) here — the program-facing mode is the `--confirm json`
+    event stream — and so is an empty `--file ""` (it would fall back to
+    reading STDIN).
     """
+    if output.fmt == "json":
+        raise click.UsageError(
+            "capture refuses --format json (the program mode is the"
+            " --confirm json event stream)"
+        )
     if output.confirm == "json" and file_path is None:
         raise click.UsageError(
             "--confirm json requires --file (stdin carries the answer lines)"
+        )
+    if file_path == "":
+        raise click.UsageError(
+            "--file requires a path (an empty name would read stdin)"
         )
     mode = InputMode.FILE if file_path else InputMode.STDIN
     sink, confirm = _confirm_io(output, JsonCaptureConfirm, TerminalConfirm)
@@ -532,6 +551,88 @@ def set_validated(item_id: int, db_path: str) -> None:
 def clear_validated(item_id: int, db_path: str) -> None:
     """Clear the validated flag on an Assumption (human-only, spec 3.5)."""
     _write_validated_flag(item_id, db_path, new_value=False)
+
+
+@main.command("forget-source")
+@click.option(
+    "--source",
+    "source_id",
+    type=int,
+    required=True,
+    help="Raw note (source) id to forget.",
+)
+@click.option(
+    "--db",
+    "db_path",
+    default=DEFAULT_DB_PATH,
+    help="SQLite database path.",
+)
+def forget_source_command(source_id: int, db_path: str) -> None:
+    """Forget a raw note that produced no items, permanently (D-07).
+
+    ONE transaction deletes the note's `sources` row and its raw AI
+    answers (`ai_responses.source_id`) and appends exactly ONE textless
+    ledger line naming the source id by `source_id` (migration 014) with
+    no note text (D-26); its `group_id` stays NULL, so undo never sees it
+    and the forget cannot be undone. A note that still has items is
+    refused with `CAPTURE-023` and nothing is written; a missing id
+    succeeds with nothing written (I8). Text output only: like
+    `set-validated`/`clear-validated` this is a capture-family human
+    write, so no document format is offered on it (the D-20 house rule
+    keeps JSON document mode off the write commands that never had it).
+    """
+    conn = open_existing_database(db_path)
+    try:
+        forget_store = SqliteForgetSourceStore(conn)
+        with unit_of_work(conn):
+            plan = plan_forget_source(
+                source_id=source_id,
+                source_exists=forget_store.source_exists(source_id),
+                item_count=forget_store.item_count_for_source(source_id),
+            )
+            if plan.existed:
+                forget_store.forget_source(
+                    source_id,
+                    field=FORGOTTEN_FIELD,
+                    cause=FORGOTTEN_CAUSE,
+                )
+    finally:
+        conn.close()
+    if plan.existed:
+        click.echo(f"source {source_id} forgotten")
+    else:
+        click.echo(f"source {source_id} already forgotten (nothing written)")
+
+
+@main.command("list-sources-without-items")
+@click.option(
+    "--db",
+    "db_path",
+    default=DEFAULT_DB_PATH,
+    help="SQLite database path.",
+)
+def list_sources_without_items_command(db_path: str) -> None:
+    """List the raw notes that produced NO items, as JSON (D-09).
+
+    The Cleanup list's read: every note whose every proposal was rejected
+    (or never confirmed) — exactly the notes `ember forget-source` may
+    remove. Each row carries the note's `id`, its `created_at` (the
+    `sources.timestamp`) and `preview`, the first words of its text, so
+    the list identifies a note without carrying the whole text. A note
+    that still has items never appears (the forget would refuse it,
+    `CAPTURE-023`). Read-only: like every query boot the file is opened
+    read-only, never migrated (`QUERY-003`/`QUERY-004`/`QUERY-008`/
+    `QUERY-009` on a bad or old file); a failed read answers `CAPTURE-005`.
+    Always prints ONE JSON document on stdout — this command IS a read, so
+    the D-20 refusal stays with the write commands — with `count` and the
+    (possibly empty, I4) `sources` list.
+    """
+    conn = open_query_database(db_path)
+    try:
+        rows = SqliteSourcesWithoutItemsRead(conn).sources_without_items()
+    finally:
+        conn.close()
+    click.echo(json.dumps({"count": len(rows), "sources": rows}, ensure_ascii=False))
 
 
 class _RelateWriteConnection:
@@ -617,12 +718,19 @@ def relate(item_id: int | None, latest: bool, output: OutputOptions) -> None:
     error, and 2 when the user quits mid-prompt. An empty candidate pool
     prints the Phase 2 JSON and exits 0 without an AI call. `--confirm json`
     (bridge step 03) turns every stdout line into one JSON event object.
+    D-20: `--format json` is refused (exit 2) here — the program-facing mode
+    is the `--confirm json` event stream.
 
     N9: every read runs on a STRICTLY read-only connection that never
     migrates and never backs up; the writes (embedding cache, raw AI reply,
     confirmed links) share ONE short-lived write connection that never
     migrates either.
     """
+    if output.fmt == "json":
+        raise click.UsageError(
+            "relate refuses --format json (the program mode is the"
+            " --confirm json event stream)"
+        )
     if item_id is not None and latest:
         raise click.UsageError("use either --item or --latest, not both")
     if item_id is None and not latest:
@@ -720,6 +828,21 @@ def maintain(output: OutputOptions) -> None:
     event object.
     """
     outcome = ProposalOutcome(stale=0, proposed=0, accepted=0, rejected=0)
+    # D-20 (lead ruling B): on a REAL run the terminal confirm would mix the
+    # close-proposal prompts into the JSON document's stdout (4.6 #13), so
+    # the combination is refused before any child work starts (I7/I12). A
+    # `--dry-run` confirms nothing — its document is pure already and keeps
+    # ticket-24's shortlist-as-data.
+    if (
+        output.fmt == "json"
+        and output.confirm == "terminal"
+        and not output.dry_run
+    ):
+        raise click.UsageError(
+            "maintain refuses --format json for real runs with the terminal"
+            " --confirm (the prompts would mix into the JSON); dry-run keeps"
+            " the document mode"
+        )
     json_mode = output.fmt == "json"
     sink, confirm = _confirm_io(output, JsonMaintainConfirm, MaintainTerminalConfirm)
     sweep_changes: list[StatusChange] = []
@@ -1329,6 +1452,13 @@ def current_state_command(db_path: str) -> None:
     help="Keep only the top N ranked results. 0 prints an empty result list.",
 )
 @click.option(
+    "--offset",
+    "offset",
+    type=int,
+    default=None,
+    help="Skip N ranked results. Omit it to skip none.",
+)
+@click.option(
     "--db",
     "db_path",
     default=DEFAULT_DB_PATH,
@@ -1339,16 +1469,20 @@ def topic_search_command(
     status: str | None,
     item_type: str | None,
     limit: int | None,
+    offset: int | None,
     db_path: str,
 ) -> None:
     """Rank items by BM25 over their statements, as JSON.
 
     Every item is searched, `Closed` ones included, and each result carries its
     status. `--status` and `--type` narrow what is scored (the filtered subset
-    is the corpus, so counts recompute) and `--limit` crops the ranked list.
-    Read-only, like every query command.
+    is the corpus, so counts recompute); behind the ranking, `--offset` skips
+    and `--limit` crops the list, while `total` in the envelope counts every
+    match before either crop. Read-only, like every query command.
     """
-    topic_filter = TopicFilter(status=status, type=item_type, limit=limit)
+    topic_filter = TopicFilter(
+        status=status, type=item_type, limit=limit, offset=offset
+    )
     conn = open_query_database(db_path)
     output = run_topic_search(SqliteQueryContext(conn), query, topic_filter)
     click.echo(output)

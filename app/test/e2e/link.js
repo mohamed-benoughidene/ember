@@ -27,7 +27,8 @@
  *  3. PREPARING + STOP (45): no event after the first second -> the
  *     calm preparing state with Stop; Stop ends the child cleanly
  *     (exit 2, no summary, nothing changed). Reduce Motion honoured.
- *  4. MISSING PACKAGE (RELATE-017 through the table, step file §1):
+ *  4. MISSING PACKAGE (RELATE-039 — Batch 6's split of the old
+ *     RELATE-017; step file §1):
  *     plain words + what to install; the code only behind Details.
  *  5. NO KEY (48): the same "needs the connection" path as Add.
  */
@@ -222,7 +223,19 @@ const LINK_1 = {
 const GATEKEEPER = { event: 'message', text: 'relate rejected: RELATE-007 | item 3 is Closed' };
 // rejected = the user's explicit `n` + the gatekeeper rejection (the
 // engine's own arithmetic).
-const SUMMARY_OK = { event: 'summary', accepted: 1, rejected: 2, skipped: 1, aborted: false };
+// Chunk 9 (4.3 #26): the summary event carries the engine's OWN human
+// line (REQUIRED on the app side, see event_schema.json), in the exact
+// shape ember/cli.py's relate sink.summary emits it: the fields, then
+// the line. The app's parse-event-line check refuses a summary without
+// it, so this pin must ride `line` like fake-ember's session summary.
+const SUMMARY_OK = {
+  event: 'summary',
+  accepted: 1,
+  rejected: 2,
+  skipped: 1,
+  aborted: false,
+  line: 'accepted: 1, rejected: 2, skipped: 1, aborted: false',
+};
 
 /* ---------------- flow 1: the main flow ---------------- */
 
@@ -407,10 +420,10 @@ async function preparingAndStopFlow() {
   }
 }
 
-/* ---------------- flow 4: the missing optional package (RELATE-017) ---------------- */
+/* ---------------- flow 4: the missing optional package (RELATE-039, Batch 6's split) ---------------- */
 
 async function missingPackageFlow() {
-  process.stdout.write('--- link: missing optional package (RELATE-017 through the table) ---\n');
+  process.stdout.write('--- link: missing optional package (RELATE-039 through the table) ---\n');
   const workDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ember-e2e-linkpkg-'));
   const dbPath = path.join(workDir, 'kb.db');
   seedMainKb(dbPath);
@@ -420,7 +433,7 @@ async function missingPackageFlow() {
     dbPath,
     relateEnv: {
       FAKE_RELATE_ERROR: '1',
-      FAKE_RELATE_ERROR_CODE: 'RELATE-017 EmbedderLoadFailed',
+      FAKE_RELATE_ERROR_CODE: 'RELATE-039 EmbedderPackageMissing',
       FAKE_RELATE_ERROR_DETAIL: 'sentence_transformers is not installed; install the optional extra with: python -m pip install -e ".[relate]"',
     },
   });
@@ -439,7 +452,7 @@ async function missingPackageFlow() {
     await win.locator('[data-action="show-details"]').click();
     await win.waitForSelector('[data-testid="link-error"] [data-testid="error-code"]:not([hidden])');
     const code = await win.textContent('[data-testid="link-error"] [data-testid="error-code"]');
-    if (!/RELATE-017 EmbedderLoadFailed/.test(code)) fail(`Details must reveal the code, saw ${code}`);
+    if (!/RELATE-039 EmbedderPackageMissing/.test(code)) fail(`Details must reveal the code, saw ${code}`);
     await assertCleanScan(win, 'Link items (missing package)');
     process.stdout.write('missing package OK: what to install, nothing changed, code behind Details\n');
   } finally {
@@ -467,7 +480,7 @@ async function noKeyFlow() {
     await win.locator('[data-testid="state-no-key"] [data-action="link-open-setup"]').click();
     await win.waitForSelector('[data-testid="setup-key-input"]');
     const step = await win.textContent('.setup .sub');
-    if (!/Step 2 of 3/.test(step)) fail(`the button must open the AI-connection setup step, saw: ${step}`);
+    if (!/Step 2 of 2/.test(step)) fail(`the button must open the AI-connection setup step, saw: ${step}`);
     process.stdout.write('no-key OK (story 48, the Add path)\n');
   } finally {
     await app.close().catch(() => {});
@@ -484,7 +497,16 @@ async function main() {
   process.stdout.write('e2e link OK: all five flows green (real seeded KBs, the pinned stub shapes for relate; the real model is the T50 manual check)\n');
 }
 
-main().catch((err) => {
-  process.stderr.write(`e2e link FAILED: ${err.message}\n`);
-  process.exit(1);
-});
+// The e2e runs as a script; importing (for the node suite's event-line
+// pin of these shapes) must not launch anything.
+if (require.main === module) {
+  main().catch((err) => {
+    process.stderr.write(`e2e link FAILED: ${err.message}\n`);
+    process.exit(1);
+  });
+}
+
+/** The pinned stub shapes, for the parser pin in event-line.test.js. */
+module.exports = {
+  PINNED_EVENT_SHAPES: [PREVIEW_1, PREVIEW_2, PREVIEW_3, PROMPT, LINK_1, GATEKEEPER, SUMMARY_OK],
+};
