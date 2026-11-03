@@ -64,6 +64,7 @@ const EVENT_FIELD_SCHEMAS = Object.freeze({
   summary: Object.freeze({
     required: Object.freeze({
       event: Object.freeze(['string']),
+      line: Object.freeze(['string']),
       accepted: Object.freeze(['number']),
       rejected: Object.freeze(['number']),
       aborted: Object.freeze(['boolean']),

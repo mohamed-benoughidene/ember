@@ -76,6 +76,7 @@ def test_capture_json_every_line_parses_and_the_sequence_is_pinned(
     assert events[3]["fields"]["type"] == "Assumption"
     assert events[5] == {
         "event": "summary",
+        "line": "accepted: 1, rejected: 1, warnings: 0, aborted: false",
         "accepted": 1,
         "rejected": 1,
         "warnings": 0,
@@ -213,6 +214,7 @@ def test_capture_json_edit_sub_prompts_are_prompt_events(tmp_path: Path) -> None
     summary = events[-1]
     assert summary == {
         "event": "summary",
+        "line": "accepted: 1, rejected: 1, warnings: 0, aborted: false",
         "accepted": 1,
         "rejected": 1,
         "warnings": 0,
@@ -272,6 +274,7 @@ def test_relate_json_every_line_parses_and_the_sequence_is_pinned(
     assert events[5]["fields"]["index"] == 3
     assert events[-1] == {
         "event": "summary",
+        "line": "accepted: 1, rejected: 1, skipped: 1, aborted: false",
         "accepted": 1,
         "rejected": 1,
         "skipped": 1,
@@ -293,6 +296,7 @@ def test_relate_json_rejection_lines_are_message_events(tmp_path: Path) -> None:
     assert events[0]["text"] != events[1]["text"]
     assert events[-1] == {
         "event": "summary",
+        "line": "accepted: 0, rejected: 2, skipped: 0, aborted: false",
         "accepted": 0,
         "rejected": 2,
         "skipped": 0,
@@ -389,6 +393,7 @@ def test_maintain_json_every_line_parses_and_the_sequence_is_pinned(
     assert events[5]["text"] == "closed: 1, challenged: 0, reopened: 0, unchanged: 3"
     assert events[-1] == {
         "event": "summary",
+        "line": "stale: 2, proposed: 1, accepted: 1, rejected: 0, aborted: false",
         "stale": 2,
         "proposed": 1,
         "accepted": 1,

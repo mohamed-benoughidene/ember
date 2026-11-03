@@ -22,7 +22,7 @@ test('one valid event of each kind parses whole', () => {
     '{"event":"block","kind":"item","fields":{"id":1},"text":"- id: 1"}',
     '{"event":"prompt","kind":"choice","text":"[y]es / [n]o / [q]uit","choices":["y","n","q"]}',
     '{"event":"message","text":"dropped proposal: does not quote the source"}',
-    '{"event":"summary","accepted":1,"rejected":0,"skipped":0,"aborted":false}',
+    '{"event":"summary","line":"accepted: 1, rejected: 0","accepted":1,"rejected":0,"skipped":0,"aborted":false}',
   ];
   for (const line of cases) {
     const result = parseEventLine(line);
@@ -171,5 +171,10 @@ test('{"event":"summary"} with no numbers is refused (the masked-shape case)', (
   const result = parseEventLine('{"event":"summary"}');
   assert.equal(result.ok, false);
   assert.equal(result.error.code, 'APP-002');
-  assert.ok(result.error.detail.includes('accepted'), result.error.detail);
+  // The detail names the FIRST missing required field; the schema lists
+  // `line` before the numbers (the human summary line, 4.3 #26).
+  assert.ok(
+    result.error.detail.includes('line') || result.error.detail.includes('accepted'),
+    result.error.detail,
+  );
 });
