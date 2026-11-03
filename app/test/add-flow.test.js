@@ -209,14 +209,30 @@ test('the reducer never mutates the view it was given', async () => {
 
 /* ---------- the Add error words ---------- */
 
-test('CAPTURE-008 without a key: the plain refusal names the connection and the facts', async () => {
+test('CAPTURE-022 (the missing-key code): the setup path opens', async () => {
   const { addErrorSentence } = await loadWords();
-  const s = addErrorSentence({ code: 'CAPTURE-008', name: 'AiCallFail', where: 'x', detail: 'ai api key missing' });
-  assert.match(s.title, /connection/i);
-  assert.match(s.what, /kept word for word/);
-  assert.match(s.what, /nothing was created/);
+  // Batch 6 (D-08): the engine raises its OWN code for a missing key —
+  // CAPTURE-022, no longer CAPTURE-008 with a detail string. The app
+  // must branch on the code and open the AI-connection setup. Asserted
+  // by the advice block, never the wording (I10).
+  const s = addErrorSentence({ code: 'CAPTURE-022', name: 'ApiKeyMissing', where: 'x', detail: 'ai api key missing' });
   assert.equal(s.openSetup, true); // story 29: the path to the setting
   assert.equal(s.retry, true);
+  // Its own block, not the could-not-answer block CAPTURE-008 selects.
+  const callFail = addErrorSentence({ code: 'CAPTURE-008', name: 'AiCallFail', where: 'x', detail: 'unreachable' });
+  assert.notEqual(s.title, callFail.title);
+});
+
+test('CAPTURE-008 no longer reads the detail text: one advice block for every failure (D-08)', async () => {
+  const { addErrorSentence } = await loadWords();
+  const missingKeyDetail = addErrorSentence({ code: 'CAPTURE-008', name: 'AiCallFail', where: 'x', detail: 'ai api key missing' });
+  const connectionFail = addErrorSentence({
+    code: 'CAPTURE-008',
+    name: 'AiCallFail',
+    where: 'x',
+    detail: 'ai call fail reason=APIConnectionError status=? detail=connection refused',
+  });
+  assert.deepEqual(missingKeyDetail, connectionFail);
 });
 
 test('CAPTURE-008 from an unreachable or refusing service: retry with the same facts', async () => {
