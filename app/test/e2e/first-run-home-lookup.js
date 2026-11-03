@@ -7,12 +7,15 @@
  * the AI service, so no fake AI server is needed).
  *
  * Flows, one per scenario:
- *  1. FIRST RUN: three steps and "about two minutes" (2), the file
- *     default (3), what the file holds (4), the key step with clear
- *     empty/short messages (8) and the plain explanation (6), the key
- *     save (5 PARTIAL: shape check only, decision 5-A; on a basic_text
- *     keyring the APP-003 session-only offer is taken), skip (7) in a
- *     separate fresh launch, and "Add your first text" (9).
+ *  1. FIRST RUN: two steps and "about two minutes" (2, Batch 6: the
+ *     "Ready" step is gone — Skip and Continue go straight to finish),
+ *     the file default (3), what the file holds (4), a refused file
+ *     leaving the PREVIOUS path in the input (F7c: checked before it
+ *     is saved), the key step with clear empty/short messages (8) and
+ *     the plain explanation (6), the key save (5 PARTIAL: shape check
+ *     only, decision 5-A; on a basic_text keyring the APP-003
+ *     session-only offer is taken), skip (7) in a separate fresh
+ *     launch, and the first action is the real Add pane (9).
  *  2. HOME: the no-key banner (never blank), attention first (10) with
  *     the sweep button (15), counts (11-12), latest ledger lines (13),
  *     the main Add text button (14), and the pre-Add empty state.
@@ -79,8 +82,8 @@ async function finishFirstRunKeyStep(win) {
   if (!/real test happens at your first Add/.test(help)) {
     fail(`decision 5-A honesty line missing: ${help.slice(0, 300)}`);
   }
+  // Batch 6: two steps — "Continue" goes straight to finish (the app).
   await win.click('[data-testid="setup-continue"]');
-  await win.waitForSelector('[data-testid="setup-finish"]');
 }
 
 /* ---------------- scenario 1: first run ---------------- */
@@ -93,18 +96,32 @@ async function firstRun() {
   try {
     const win = await app.firstWindow();
 
-    // Step 1: three steps, "about two minutes", the default location
+    // Step 1: two steps, "about two minutes", the default location
     await win.waitForSelector('[data-testid="setup-db-input"]');
     const sub = await win.textContent('.setup .sub');
-    if (!/Step 1 of 3/.test(sub) || !/About two minutes/.test(sub)) fail(`the setup header is wrong: ${sub}`);
+    if (!/Step 1 of 2/.test(sub) || !/About two minutes/.test(sub)) fail(`the setup header is wrong: ${sub}`);
     const stepNames = await win.locator('.steps li').count();
-    if (stepNames !== 3) fail(`expected the three setup steps, saw ${stepNames}`);
+    if (stepNames !== 2) fail(`expected the two setup steps, saw ${stepNames}`);
     const defaultPath = await win.evaluate(() => window.ember.getState().then((s) => s.defaultKbPath));
     const shown = await win.inputValue('[data-testid="setup-db-input"]');
     if (shown !== defaultPath) fail(`the default file location should be ${defaultPath}, saw ${shown}`);
     const holds = await win.textContent('.setup .form');
     if (!/items, their links and the ledger/.test(holds)) fail('the one sentence on what the file holds is missing');
     await assertCleanScan(win, 'first run step 1 (file location)');
+
+    // F7c: a refused file (an existing non-Ember file picked) shows the
+    // refusal and leaves the PREVIOUS path in the input — and never
+    // reaches the settings.
+    const notEmber = path.join(workDir, 'not-ember.txt');
+    fs.writeFileSync(notEmber, 'a plain text file that is no knowledge base', 'utf8');
+    await win.fill('[data-testid="setup-db-input"]', notEmber);
+    await win.click('[data-action="setup-file-continue"]');
+    await win.waitForSelector('[data-testid="setup-message"]');
+    const refused = await win.textContent('[data-testid="setup-message"]');
+    if (!/not an Ember knowledge base/.test(refused)) fail(`a non-Ember file must be refused: ${refused}`);
+    const kept = await win.inputValue('[data-testid="setup-db-input"]');
+    if (kept !== defaultPath) fail(`a refused file must leave the previous path in the input, saw ${kept}`);
+    await assertCleanScan(win, 'first run step 1 (refused file)');
 
     await win.click('[data-action="setup-file-continue"]');
 
@@ -128,17 +145,8 @@ async function firstRun() {
 
     await finishFirstRunKeyStep(win);
 
-    // Step 3: ready, and the first action is Add your first text (9)
-    const ready = await win.textContent('.setup .form');
-    if (!/Ember is ready/.test(ready)) fail(`step 3 should say Ember is ready: ${ready}`);
-    if (!/connected|kept for this session/.test(ready)) fail(`step 3 should name the connection state: ${ready}`);
-    const finishLabel = (await win.textContent('[data-testid="setup-finish"]')).trim();
-    if (finishLabel !== 'Add your first text') fail(`the first action must be "Add your first text", saw ${finishLabel}`);
-    await assertCleanScan(win, 'first run step 3 (ready)');
-
-    await win.click('[data-testid="setup-finish"]');
-    /* App 05 (ticket A34): the Add pane is the real screen now —
-       the draft form replaces the step-04 interim placeholder. */
+    // Continue (or Skip) lands STRAIGHT in the app (Batch 6: no "Ready"
+    // step). Story 9: the first action is the real Add pane.
     await win.waitForSelector('[data-testid="add-pane"]');
     await win.waitForSelector('[data-testid="add-text-input"]');
     const notice = await win.textContent('[data-testid="add-notice"]');
@@ -158,12 +166,13 @@ async function firstRun() {
       await win2.waitForSelector('[data-testid="setup-db-input"]');
       await win2.click('[data-action="setup-file-continue"]');
       await win2.waitForSelector('[data-testid="setup-key-input"]');
+      // Batch 6: two steps — "Skip for now" goes straight to finish:
+      // the app lands on the Add pane with its honest no-key state.
       await win2.click('[data-action="setup-skip-key"]');
-      await win2.waitForSelector('[data-testid="setup-finish"]');
-      const ready2 = await win2.textContent('.setup .form');
-      if (!/not connected yet/.test(ready2)) fail(`skipping must keep the app usable without a key: ${ready2}`);
-      await win2.click('[data-testid="setup-finish"]');
       await win2.waitForSelector('[data-testid="add-pane"]'); /* App 05: real Add pane */
+      await win2.waitForSelector('[data-testid="state-no-key"]');
+      const noKey = await win2.textContent('[data-testid="state-no-key"]');
+      if (!/needs the AI connection/.test(noKey)) fail(`skipping must keep the app usable without a key: ${noKey}`);
       process.stdout.write('first run OK: the key path and the skip path both land in the app (stories 1-9)\n');
     } finally {
       await app2.close();
@@ -243,11 +252,10 @@ async function home() {
     await win.click('[data-action="home-setup-key"]');
     await win.waitForSelector('[data-testid="setup-key-input"]');
     const step2 = await win.textContent('.setup .sub');
-    if (!/Step 2 of 3/.test(step2)) fail(`the banner must re-open the setup AT the key step, saw: ${step2}`);
+    if (!/Step 2 of 2/.test(step2)) fail(`the banner must re-open the setup AT the key step, saw: ${step2}`);
     await assertCleanScan(win, 'first run re-opened from the no-key banner (key step)');
+    // Batch 6: two steps — "Skip for now" goes straight to finish.
     await win.click('[data-action="setup-skip-key"]');
-    await win.waitForSelector('[data-testid="setup-finish"]');
-    await win.click('[data-testid="setup-finish"]');
     await win.waitForSelector('[data-testid="add-pane"]'); /* App 05: real Add pane */
     await win.locator('#nav button[data-job="home"]').click();
     await win.waitForSelector('[data-testid="counts-panel"]');

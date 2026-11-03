@@ -1,10 +1,13 @@
 /**
  * First run (app step file §1, spec stories 1-9): the setup screen that
- * opens on first launch. Three steps and "about two minutes" (2), the
- * knowledge-base file with a sensible default (3) and one sentence on
- * what the file holds (4), the AI key (5-8: shape check at save per
- * decision 5-A — the real refusal shows at the first Add; skip allowed,
- * 7), and the first action "Add your first text" (9).
+ * opens on first launch. Two steps and "about two minutes" (2, Batch 6:
+ * the "Ready" step is gone — Skip for now and Continue go straight to
+ * finish), the knowledge-base file with a sensible default (3) and one
+ * sentence on what the file holds (4), the AI key (5-8: shape check at
+ * save per decision 5-A — the real refusal shows at the first Add; skip
+ * allowed, 7). The file choice is checked BEFORE it is saved (F7c): a
+ * refused file leaves the previous choice in the input and in the
+ * settings.
  *
  * The step list sits on the left, the step form on the right (DESIGN.md
  * Layout). All reads/writes go through the window.ember preload list.
@@ -14,7 +17,7 @@ import { esc } from '../design/escape-html.mjs';
 import { buttonHtml } from '../components/button.mjs';
 import { checkKeyShape } from '../../shared/key-shape.mjs';
 
-const STEPS = ['Knowledge base file', 'AI connection', 'Ready'];
+const STEPS = ['Knowledge base file', 'AI connection'];
 
 export function createFirstRunScreen(ctx) {
   const state = {
@@ -22,6 +25,7 @@ export function createFirstRunScreen(ctx) {
     // setup): start at the key step; a fresh install starts at step 1.
     step: ctx.state.effectiveKbPath ? 2 : 1,
     dbPath: ctx.state.effectiveKbPath || ctx.state.defaultKbPath,
+    chosenPath: ctx.state.effectiveKbPath || ctx.state.defaultKbPath,
     keySaved: false,
     keySessionOnly: false,
     offerSession: false, // the APP-003 offer, shown until used or replaced
@@ -80,20 +84,25 @@ export function createFirstRunScreen(ctx) {
         showMessage('error', 'Choose where the knowledge base file goes. The suggested place is fine for most people.');
         return;
       }
+      // F7c: the existing-file check runs BEFORE the choice is saved,
+      // so a refused file leaves the PREVIOUS choice in the input and
+      // never reaches the settings. The file may simply not exist yet —
+      // that is the normal before-the-first-Add state (app step file
+      // §1 fact). An existing file must be an Ember knowledge base
+      // (APP-006 path).
+      const status = await ctx.api.kbStatus(path);
+      if (status.exists && !status.looksValid) {
+        state.dbPath = state.chosenPath;
+        showMessage('error', 'That file exists but is not an Ember knowledge base. Choose a different file, or pick a new name.');
+        return;
+      }
       const saved = await ctx.api.saveSettings({ knowledgeBasePath: path });
       if (!saved.ok) {
         showMessage('error', 'The choice could not be saved. Try again.');
         return;
       }
+      state.chosenPath = path;
       state.dbPath = path;
-      // The file may simply not exist yet — that is the normal
-      // before-the-first-Add state (app step file §1 fact). An existing
-      // file must be an Ember knowledge base (APP-006 path).
-      const status = await ctx.api.kbStatus();
-      if (status.exists && !status.looksValid) {
-        showMessage('error', 'That file exists but is not an Ember knowledge base. Choose a different file, or pick a new name.');
-        return;
-      }
       state.step = 2;
       state.message = null;
       refresh();
@@ -149,20 +158,14 @@ export function createFirstRunScreen(ctx) {
       }
     });
 
+    // Batch 6: two steps — "Skip for now" and "Continue" go straight
+    // to finish (stories 7 and 9; no "Ready" step in between).
     bind(root, 'setup-skip-key', () => {
-      state.step = 3;
-      state.message = null;
-      state.offerSession = false;
-      refresh();
+      ctx.firstRunDone();
+      ctx.navigate('add');
     });
 
     bind(root, 'setup-ready', () => {
-      state.step = 3;
-      state.message = null;
-      refresh();
-    });
-
-    bind(root, 'setup-finish', () => {
       ctx.firstRunDone();
       ctx.navigate('add');
     });
@@ -184,16 +187,13 @@ function keyShapeMessage(reason) {
 
 function firstRunHtml(state) {
   const n = state.step;
-  const pct = Math.round(((n - 1) / 3) * 100);
-  const bar = `<div class="progress" role="progressbar" aria-valuenow="${pct}" aria-valuemin="0" aria-valuemax="100" aria-label="Setup progress: step ${n} of 3"><i style="width:${pct}%"></i></div>`;
+  const pct = Math.round(((n - 1) / 2) * 100);
+  const bar = `<div class="progress" role="progressbar" aria-valuenow="${pct}" aria-valuemin="0" aria-valuemax="100" aria-label="Setup progress: step ${n} of 2"><i style="width:${pct}%"></i></div>`;
   const steps = STEPS.map(
     (name, i) =>
       `<li ${i + 1 === n ? 'aria-current="step"' : ''}><span class="n">${i + 1 < n ? 'Done' : i + 1}</span><span>${esc(name)}</span></li>`,
   ).join('');
-  let body = '';
-  if (n === 1) body = stepFileHtml(state);
-  else if (n === 2) body = stepKeyHtml(state);
-  else body = stepReadyHtml(state);
+  const body = n === 1 ? stepFileHtml(state) : stepKeyHtml(state);
   const message =
     state.message && state.message.kind === 'error'
       ? `<div class="errbox" role="alert" data-testid="setup-message"><strong>${esc(state.message.text)}</strong>${
@@ -206,7 +206,7 @@ function firstRunHtml(state) {
         : '';
   return `<div class="setup">
     <h1>Set up Ember</h1>
-    <p class="sub">Step ${n} of 3. About two minutes.</p>
+    <p class="sub">Step ${n} of 2. About two minutes.</p>
     ${bar}
     <div class="setup-grid">
       <ol class="steps" aria-label="Setup steps">${steps}</ol>
@@ -256,15 +256,4 @@ function stepKeyHtml(state) {
     <p class="help">Ember checks the key's shape now. The real test happens at your first Add: if the service refuses the key, you will see a clear message there.</p>
     <p class="help">If you skip, you can still look things up, fix items, clean up and back up. Add and Link items wait for a key.</p>
     ${savedMsg}`;
-}
-
-/** Story 9: the first action is Add your first text. */
-function stepReadyHtml(state) {
-  return `<h2 style="margin-top:0">Ember is ready</h2>
-    <p class="help" style="margin:0 0 var(--s3)">Knowledge base file: ${esc(state.dbPath)}. AI connection: ${
-      state.keySaved ? (state.keySessionOnly ? 'kept for this session' : 'connected') : 'not connected yet'
-    }.</p>
-    <div class="actions">
-      ${buttonHtml({ label: 'Add your first text', action: 'setup-finish', variant: 'primary', testid: 'setup-finish' })}
-    </div>`;
 }

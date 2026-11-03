@@ -338,11 +338,9 @@ async function recoveryAndA11y() {
     await win.click('[data-action="setup-file-continue"]');
     await win.waitForSelector('[data-testid="setup-key-input"]');
     await win.click('[data-action="setup-skip-key"]');
-    await win.waitForSelector('[data-testid="setup-finish"]');
-    await win.click('[data-testid="setup-finish"]');
-    // The real Add screen (step 05) replaced the placeholder pane. The
-    // key was skipped, so the screen honestly shows its no-key state
-    // (pointing at the AI connection) instead of the input.
+    // Batch 6 (4.9 #9): "Skip for now" goes straight to finish — no
+    // "Ready" step. The setup completes and the app lands on the real
+    // Add screen, whose honest no-key state this flow asserts below.
     await win.waitForSelector('[data-testid="state-no-key"]');
     // A settings save writes a clean file afterward (the APP-004
     // promise: the corrupt file is replaced, never reused).
