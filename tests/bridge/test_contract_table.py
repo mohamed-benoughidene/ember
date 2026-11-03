@@ -362,7 +362,10 @@ def _run_interactive_row(row: Row, tmp_path: Any) -> None:
     """An interactive row: the scripted terminal session's exit code, the
     `--confirm json` session's event names (every stdout line must parse
     as one event object), and — for `maintain` — the `--format json`
-    document of its plain sweep sample."""
+    document of its sweep sample. D-20 (lead ruling B): a REAL json run
+    with the terminal confirm is refused, so the document sub-run is the
+    `--dry-run` document mode (the empty shortlist of a dry run needs no
+    faked AI either)."""
     terminal = _session(row.command, tmp_path / "text", confirm_json=False)
     assert terminal.exit_code == row.exit_ok, terminal.output
 
@@ -373,7 +376,7 @@ def _run_interactive_row(row: Row, tmp_path: Any) -> None:
 
     if row.command == "maintain" and row.json_keys is not None:
         args, _ = _formatted(row, "json", tmp_path)
-        document = _invoke(args + ["--format", "json"])
+        document = _invoke(args + ["--dry-run", "--format", "json"])
         assert document.exit_code == row.exit_ok, document.output
         assert set(json.loads(document.stdout)) == set(row.json_keys)
 

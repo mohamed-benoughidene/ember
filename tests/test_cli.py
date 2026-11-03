@@ -83,3 +83,42 @@ def test_invalid_utf8_exits_1(db_path, tmp_path) -> None:
     assert result.exit_code == 1
     assert "CAPTURE-004" in result.output
     assert "invalid utf-8" in result.output
+
+
+# --- D-20: the refused flag combinations (Batch 6 chunk 8) -------------------
+# N6: a usage error keeps Click's own exit 2 and names the flag; no CODE.
+
+
+def test_capture_refuses_format_json(db_path) -> None:
+    """`capture --format json` is refused: the confirm loop's program-facing
+    mode is the `--confirm json` event stream, not the document format."""
+    result = CliRunner().invoke(
+        main, ["capture", "--format", "json", "--db", db_path], input="hello"
+    )
+
+    assert result.exit_code == 2
+    assert "--format" in result.stderr
+    assert "CAPTURE-" not in result.stderr
+
+
+def test_relate_refuses_format_json(db_path) -> None:
+    """`relate --format json` is refused like `capture`'s, for the same
+    reason (the event stream is the program mode)."""
+    result = CliRunner().invoke(
+        main, ["relate", "--latest", "--format", "json", "--db", db_path]
+    )
+
+    assert result.exit_code == 2
+    assert "--format" in result.stderr
+    assert "RELATE-" not in result.stderr
+
+
+def test_capture_empty_file_name_exits_2_not_stdin(db_path) -> None:
+    """`--file ""` must be refused: today the empty string is falsy, so the
+    command falls back to reading STDIN (`ember/cli.py`, capture body)."""
+    result = CliRunner().invoke(
+        main, ["capture", "--file", "", "--db", db_path], input="hello"
+    )
+
+    assert result.exit_code == 2
+    assert "--file" in result.stderr
