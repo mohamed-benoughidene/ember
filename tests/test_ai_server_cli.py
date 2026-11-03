@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import time
 from pathlib import Path
 
 import pytest
@@ -138,3 +139,34 @@ def test_one_letter_quote_is_dropped(
     assert "dropped proposal: quote" in result.output
     assert "0 valid proposals" in result.output
     assert _count(db, "SELECT COUNT(*) FROM items") == 0
+
+
+@pytest.mark.slow
+def test_hung_provider_ends_in_the_family_ai_timeout_code(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A provider that accepts the connection and never answers: the engine's
+    own 60 s request timeout fires first, so the capture ends in the family
+    AI-timeout code (CAPTURE-025) — well inside the app's 120 s idle limit,
+    the engine timeout is what the user sees, never the app idle timeout."""
+    note = tmp_path / "note.txt"
+    note.write_text(
+        (FIXTURE_DIR / "case_01.raw_text.txt").read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+    fake = start_fake_ai_server(mode="hang")
+    try:
+        _real_ai_env(monkeypatch, fake.url, tmp_path)
+        started = time.monotonic()
+        result = CliRunner().invoke(
+            main, ["capture", "--file", str(note), "--db", str(tmp_path / "kb.db")]
+        )
+        elapsed = time.monotonic() - started
+    finally:
+        fake.close()
+
+    assert len(fake.calls) == 1  # one request, never answered
+    assert elapsed < 120.0  # the engine timeout fires, not the app idle limit
+    assert result.exit_code == 1
+    assert "CAPTURE-025" in result.stderr
+    print(f"hung-provider elapsed: {elapsed:.1f}s")

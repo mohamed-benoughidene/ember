@@ -33,7 +33,8 @@ version = {attr = "ember.__version__"}
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-q -m 'not live'"
+addopts = "-q -m 'not live and not slow'"
 markers = [
+    "slow: costs about a minute; excluded from the default local run, included in CI",
     "live: hits the real OpenRouter API and costs money; run with -m live",
 ]
