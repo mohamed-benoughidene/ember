@@ -331,6 +331,29 @@ test('the hidden movable jobs are exactly the six the settings Menu pane offers'
   assert.deepEqual(ids, ['add', 'lookup', 'link', 'fix', 'cleanup', 'keepsafe']);
 });
 
+test('every bridge READ command joins MENU_ACTIVITY_SKIPS: a read cannot change the ledger (issue #46)', () => {
+  // The menu skips its undo-label re-derive after commands that cannot
+  // write (main.js MENU_ACTIVITY_SKIPS). bridge-client.js owns the real
+  // read/write split; this pin ties the two together so a Batch-7-style
+  // new read cannot silently trigger the two dry-run child processes.
+  const main = fs.readFileSync(path.join(APP_ROOT, 'main', 'main.js'), 'utf8');
+  const skipBlock = main.match(/const MENU_ACTIVITY_SKIPS = new Set\(\[([\s\S]*?)\]\);/);
+  assert.ok(skipBlock, 'main.js MENU_ACTIVITY_SKIPS moved');
+  const skips = [...skipBlock[1].matchAll(/'([a-z-]+)'/g)].map((m) => m[1]);
+
+  const client = fs.readFileSync(path.join(APP_ROOT, 'main', 'bridge-client.js'), 'utf8');
+  const readBlock = client.match(/const READ_COMMANDS = new Set\(\[([\s\S]*?)\]\);/);
+  assert.ok(readBlock, 'bridge-client.js READ_COMMANDS moved');
+  const reads = [...readBlock[1].matchAll(/'([a-z-]+)'/g)].map((m) => m[1]);
+
+  for (const read of reads) {
+    assert.ok(
+      skips.includes(read),
+      `the read command '${read}' is missing from MENU_ACTIVITY_SKIPS (issue #46)`,
+    );
+  }
+});
+
 /* ---------------- the manager (the one Electron touch) ---------------- */
 
 function fakeMenuApi() {

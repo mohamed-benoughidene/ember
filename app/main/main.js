@@ -357,6 +357,8 @@ function wireIpc(services) {
     'db-check',
     'backup',
     'export',
+    // Batch 6 Chunk 12's Cleanup read (D-09), driven by the app in Chunk 13.
+    'list-sources-without-items',
   ]);
 
   /** The menu's own copy of the two labels' state (the pure derivation). */
