@@ -29,6 +29,14 @@ def test_default_title_is_first_80_chars() -> None:
     assert default_title("x" * 200) == "x" * 80
 
 
+def test_default_title_skips_leading_blank_lines() -> None:
+    assert default_title("\n\n  \nfirst real line\nsecond line") == "first real line"
+
+
+def test_default_title_long_non_blank_first_line_is_cut_to_80() -> None:
+    assert default_title("\n\n" + "y" * 200) == "y" * 80
+
+
 def test_same_text_twice_reuses_first_source_id() -> None:
     store = FakeSourceStore()
     first = store_source(store, "hello")
