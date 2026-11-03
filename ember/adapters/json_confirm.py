@@ -140,7 +140,10 @@ class JsonSink:
         self._emit({"event": "message", "text": text})
 
     def summary(self, line: str, fields: dict[str, Any]) -> None:
-        self._emit({"event": "summary", **fields})
+        # The human summary line rides the event NEXT to the fields
+        # (additive, D5 / 4.3 #26): the app shows one honest sentence
+        # without re-deriving it from the numbers.
+        self._emit({"event": "summary", "line": line, **fields})
 
     def prompt(self, kind: str, text: str, choices: list[str]) -> None:
         self._emit(

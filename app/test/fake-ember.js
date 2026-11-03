@@ -335,11 +335,12 @@ function runSession() {
           text: '- id: 1',
         },
         { event: 'prompt', kind: 'choice', text: '[y]es / [n]o / [q]uit', choices: ['y', 'n', 'q'] },
-        // `aborted` is here because the REAL engine's summary always carries
-        // it (ember/cli.py passes it for capture/relate/maintain alike) —
-        // the app's field check (batch 5, 4.4 #7/#8) refuses a summary
-        // without it, so the stub must mimic the real shape.
-        { event: 'summary', accepted: 1, rejected: 0, aborted: false },
+        // `line` and `aborted` are here because the REAL engine's summary
+        // always carries them (ember/cli.py passes the human line and
+        // `aborted` for capture/relate/maintain alike) — the app's field
+        // check (batch 5, 4.4 #7/#8) refuses a summary without them, so
+        // the stub must mimic the real shape.
+        { event: 'summary', line: 'accepted: 1, rejected: 0, aborted: false', accepted: 1, rejected: 0, aborted: false },
       ];
 
   // Emit the whole pinned stream, then wait for ONE answer line and

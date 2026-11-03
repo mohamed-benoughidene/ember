@@ -52,12 +52,15 @@ SESSIONS = {
 }
 
 # The exact summary key set each command emits (the engine's own
-# arithmetic — pinned per command so the fixture cannot drift).
+# arithmetic — pinned per command so the fixture cannot drift). `line` is
+# the human summary line every command carries next to its fields
+# (4.3 #26, additive D5).
 EXPECTED_SUMMARY_KEYS = {
-    "capture": {"event", "accepted", "rejected", "warnings", "aborted"},
-    "relate": {"event", "accepted", "rejected", "skipped", "aborted"},
+    "capture": {"event", "line", "accepted", "rejected", "warnings", "aborted"},
+    "relate": {"event", "line", "accepted", "rejected", "skipped", "aborted"},
     "maintain": {
         "event",
+        "line",
         "stale",
         "proposed",
         "accepted",

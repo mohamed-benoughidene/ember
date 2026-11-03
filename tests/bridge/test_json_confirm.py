@@ -75,15 +75,38 @@ def test_answer_line_returns_the_text_and_emits_one_prompt_event() -> None:
     assert stream.getvalue().endswith("\n")  # one flushed line
 
 
+def test_summary_event_carries_the_human_line_next_to_the_fields() -> None:
+    """4.3 #26 (additive, D5): the `summary` event carries the exact human
+    summary line NEXT to the machine fields — the app can show one honest
+    sentence without re-deriving it. Today `JsonSink.summary` drops the
+    line it is given; this pins the carriage."""
+    sink, stream = _sink()
+
+    sink.summary(
+        "accepted: 1, rejected: 1, warnings: 0, aborted: false",
+        {"accepted": 1, "rejected": 1, "warnings": 0, "aborted": False},
+    )
+
+    (summary,) = [event for event in _events(stream) if event["event"] == "summary"]
+    assert summary["line"] == "accepted: 1, rejected: 1, warnings: 0, aborted: false"
+    # The fields stay next to it, unchanged (additive).
+    assert summary["accepted"] == 1
+    assert summary["rejected"] == 1
+    assert summary["warnings"] == 0
+    assert summary["aborted"] is False
+
+
 def test_every_line_is_flushed_as_it_is_written() -> None:
     sink, stream = _sink()
     sink.echo("hello")
     # Flushed immediately: visible before any second call.
     assert stream.getvalue() == json.dumps({"event": "message", "text": "hello"}) + "\n"
-    sink.summary("ignored line", {"accepted": 1, "aborted": False})
+    sink.summary(
+        "accepted: 1, aborted: false", {"accepted": 1, "aborted": False}
+    )
     assert _events(stream) == [
         {"event": "message", "text": "hello"},
-        {"event": "summary", "accepted": 1, "aborted": False},
+        {"event": "summary", "line": "accepted: 1, aborted: false", "accepted": 1, "aborted": False},
     ]
 
 
