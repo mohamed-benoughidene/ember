@@ -877,9 +877,9 @@ Object.assign(ERROR_SENTENCES, {
     next: 'Pick the reason again from the list and try once more.',
   },
   'MAINTAIN-003': {
-    title: 'The close reason did not match.',
-    what: 'The reason given is not the reason this item was closed with.',
-    next: 'Check the item in Look up, then try once more.',
+    title: 'That close reason cannot be set by hand.',
+    what: 'A person may close with only "It was wrong (invalidated)" or "It ran out (expired)". "Superseded", "answered" and "reversed" are reasons Ember sets itself when its rules run.',
+    next: 'Try again with "It was wrong (invalidated)" or "It ran out (expired)".',
   },
   'MAINTAIN-004': {
     title: 'This item is already Closed.',

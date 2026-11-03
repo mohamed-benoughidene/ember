@@ -15,14 +15,15 @@
  * block shows).
  *
  * Every branch keeps the two true facts of an Add failure: the text is
- * kept word for word as a source, and nothing was created (the source
- * is stored before the AI call; items are written only after confirms).
+ * kept word for word as a source, and no items were made (the source
+ * is stored before the AI call — `ember/cli.py`: `stored = _store(...)`
+ * runs before `_propose`; items are written only after confirms).
  * Pure module (T1).
  */
 
 import { sentenceFor } from './plain-sentences.mjs';
 
-const TEXT_KEPT = 'Your text is kept word for word as a source; nothing was created.';
+const TEXT_KEPT = 'Your text is kept word for word as a source; no items were made from it.';
 
 /**
  * @param {{code?: string, name?: string, where?: string, detail?: string}|null} error
