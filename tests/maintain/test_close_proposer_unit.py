@@ -1,4 +1,5 @@
-"""Unit tests for the stale pre-filter, the boundary parser, and the retry.
+"""Unit tests for the stale pre-filter, the boundary parser, and the single
+core AI call (no engine retry; the adapter owns the retry).
 
 Pure (T1/T7): fake-lookup snapshots plus recorded answer fixtures, fixed
 `now`s, no DB, no AI.
@@ -297,49 +298,37 @@ def test_parser_confidence_out_of_range_raises_close_ai_schema_invalid() -> None
             parse_close_proposal(answer)
 
 
-# --- the one engine retry -------------------------------------------------
+# --- the single port call (Batch 7, Chunk 5: no engine retry) --------------
 
 
-def test_retry_once_on_call_failure() -> None:
-    proposer = FakeCloseProposer(
-        [CloseAiCallFailed("call fail", item_id=7), _proposal_response()]
-    )
+def test_proposal_response_returns_after_one_call() -> None:
+    proposer = FakeCloseProposer([_proposal_response()])
 
     outcome = propose_close_with_retry(proposer, candidate=_candidate())
 
     assert outcome.proposal is not None
     assert outcome.proposal.reason == "expired"
     assert outcome.raw_response == "RAW-PROPOSAL"
-    assert len(proposer.calls) == 2
+    assert len(proposer.calls) == 1
 
 
-def test_retry_once_on_schema_failure() -> None:
-    proposer = FakeCloseProposer(
-        [
-            CloseAiSchemaInvalid("bad schema", item_id=7),
-            _proposal_response(),
-        ]
-    )
+def test_schema_failure_propagates_after_one_call() -> None:
+    proposer = FakeCloseProposer([CloseAiSchemaInvalid("bad schema", item_id=7)])
 
-    outcome = propose_close_with_retry(proposer, candidate=_candidate())
+    with pytest.raises(CloseAiSchemaInvalid):
+        propose_close_with_retry(proposer, candidate=_candidate())
 
-    assert outcome.proposal is not None
-    assert len(proposer.calls) == 2
+    assert len(proposer.calls) == 1
 
 
-def test_second_failure_propagates_coded_error() -> None:
-    proposer = FakeCloseProposer(
-        [
-            CloseAiCallFailed("call fail 1", item_id=7),
-            CloseAiCallFailed("call fail 2", item_id=7),
-        ]
-    )
+def test_call_failure_propagates_coded_error_after_one_call() -> None:
+    proposer = FakeCloseProposer([CloseAiCallFailed("call fail", item_id=7)])
 
     with pytest.raises(CloseAiCallFailed) as excinfo:
         propose_close_with_retry(proposer, candidate=_candidate())
 
     assert excinfo.value.code == "MAINTAIN-018"
-    assert len(proposer.calls) == 2
+    assert len(proposer.calls) == 1
 
 
 # --- the display block ----------------------------------------------------

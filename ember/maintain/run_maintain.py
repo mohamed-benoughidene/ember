@@ -409,8 +409,9 @@ def run_close_proposals(ports: CloseProposalPorts, now: datetime) -> ProposalOut
     machine-closed is `Closed`, not `Active`, so it cannot be proposed twice
     in one run). `run_sweep` is untouched: this is a separate entry point.
 
-    Per candidate: one AI call (`propose_close_with_retry`, retry ONCE, the
-    second failure propagates `MAINTAIN-018` / `MAINTAIN-019`), then the raw
+    Per candidate: one AI call (`propose_close_with_retry` makes exactly one
+    port call; the adapter owns the ONE retry policy) whose failure
+    propagates `MAINTAIN-018` / `MAINTAIN-019`, then the raw
     answer saved verbatim in `ai_responses` keyed by `item_id` BEFORE
     anything is judged (D8, storage failure maps to `MAINTAIN-021`). A decline
     displays `no close proposed` and prompts nothing. A proposal displays its
