@@ -7,10 +7,8 @@ import os
 import re
 import secrets
 import sqlite3
-import sys
 import time
 import urllib.parse
-from array import array
 from collections import deque
 from contextlib import contextmanager
 from datetime import datetime, timezone
