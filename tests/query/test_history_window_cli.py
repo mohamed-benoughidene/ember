@@ -163,8 +163,11 @@ def test_limit_crops_a_five_row_ledger_and_count_names_what_was_printed(
     document = json.loads(cropped.output)
     assert document["count"] == 2
     assert document["count"] == len(document["events"])
-    # The cap keeps the earliest rows: the ledger order is untouched.
-    assert [event["timestamp"] for event in document["events"]] == FIVE_STAMPS[:2]
+    # The cap keeps the NEWEST rows (Batch 6: newest first).
+    assert [event["timestamp"] for event in document["events"]] == [
+        FIVE_STAMPS[4],
+        FIVE_STAMPS[3],
+    ]
 
 
 @pytest.mark.parametrize("view_flags", [[], ["--item", "1"]])
@@ -181,12 +184,13 @@ def test_offset_skips_and_offset_past_the_end_is_empty(db_path, view_flags) -> N
     assert last.exit_code == 0
     document = json.loads(last.output)
     assert document["count"] == 1
-    assert document["events"][0]["timestamp"] == FIVE_STAMPS[4]
+    # Offset 4 skips the four NEWEST rows, so the OLDEST row remains.
+    assert document["events"][0]["timestamp"] == FIVE_STAMPS[0]
     assert past_end.exit_code == 0
     assert json.loads(past_end.output)["count"] == 0
     assert json.loads(past_end.output)["events"] == []
     assert skip_then_cap.exit_code == 0
-    assert [event["timestamp"] for event in json.loads(skip_then_cap.output)["events"]] == FIVE_STAMPS[1:3]
+    assert [event["timestamp"] for event in json.loads(skip_then_cap.output)["events"]] == [FIVE_STAMPS[3], FIVE_STAMPS[2]]
 
 
 @pytest.mark.parametrize("view_flags", [[], ["--item", "1"]])
@@ -231,16 +235,21 @@ def test_since_window_keeps_the_boundary_row_on_both_views(db_path, view_flags) 
     assert windowed.exit_code == 0
     document = json.loads(windowed.output)
     assert document["count"] == 2
-    assert [event["timestamp"] for event in document["events"]] == FIVE_STAMPS[3:]
+    # Newest first (Batch 6): the 16th renders before the boundary row.
+    assert [event["timestamp"] for event in document["events"]] == [
+        FIVE_STAMPS[4],
+        FIVE_STAMPS[3],
+    ]
     # The +02:00 spelling normalises to the same UTC instant, so the two
     # documents are event-for-event identical.
     assert same_instant.exit_code == 0
     assert json.loads(same_instant.output)["events"] == document["events"]
-    # The time cut runs first, the page then crops the windowed rows.
+    # The time cut runs first, the page then crops the windowed rows
+    # (newest first, so the crop keeps the 16th row).
     assert combined.exit_code == 0
     cropped = json.loads(combined.output)
     assert cropped["count"] == 1
-    assert cropped["events"][0]["timestamp"] == BOUNDARY
+    assert cropped["events"][0]["timestamp"] == FIVE_STAMPS[4]
 
 
 def test_naive_since_exits_1_with_query_007_and_length_only(db_path) -> None:

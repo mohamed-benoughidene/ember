@@ -396,6 +396,9 @@ export function createLookupScreen(ctx) {  const view = {
     body.innerHTML = `<div class="panel"><table class="ember-table" data-testid="ledger-table">
       <thead><tr><th class="nowrap">When</th><th>What changed</th></tr></thead><tbody>${rows}</tbody></table></div>
       <div class="pager">
+        <!-- Engine history renders NEWEST first (Batch 6): offset 0 is the
+             most recent page, so walking the offset UP shows OLDER lines
+             and offset DOWN shows newer ones. The labels match that. -->
         ${view.ledger.offset > 0 ? buttonHtml({ label: 'Newer lines', action: 'ledger-newer', variant: 'secondary', testid: 'ledger-newer' }) : ''}
         ${hasMore ? buttonHtml({ label: 'Older lines', action: 'ledger-older', variant: 'secondary', testid: 'ledger-older' }) : ''}
       </div>`;

@@ -93,7 +93,7 @@ def test_validate_remove_link_reversed_but_confirmed_link_passes() -> None:
     assert changes[0].new_status == "Rejected"
 
 
-def test_e2e_edit_item_then_remove_link_then_history_renders_unknown_kind(
+def test_e2e_edit_item_then_remove_link_then_history_renders_the_kinds(
     db_path,
 ) -> None:
     """The step's ONE combined E2E: both new CLIs plus the read-back.
@@ -101,9 +101,10 @@ def test_e2e_edit_item_then_remove_link_then_history_renders_unknown_kind(
     Item 1 (a Decision) is the source of confirmed link 1. The edit writes
     item 1's rationale, the removal writes a `link_removed` row carrying
     item_id=1 (the link's source), so `history --item 1` must render BOTH
-    new rows as `kind='unknown'` with raw values visible. db-check then
-    reports exit 0: the removal left no drift (no FK violation, replay
-    untouched).
+    new rows with their Batch 6 kinds (`item_edited`, `link_removed`; the
+    old `unknown` pin is replaced, finding 4.7 #4) with raw values visible.
+    db-check then reports exit 0: the removal left no drift (no FK
+    violation, replay untouched).
     """
     Path(db_path).touch()
     conn = open_maintain_database(db_path)
@@ -156,7 +157,7 @@ def test_e2e_edit_item_then_remove_link_then_history_renders_unknown_kind(
     assert shown.exit_code == 0
     events = json.loads(shown.output)["events"]
     assert len(events) == 2
-    assert all(event["kind"] == "unknown" for event in events)
+    assert {event["kind"] for event in events} == {"item_edited", "link_removed"}
     by_field = {event["field_changed"]: event for event in events}
     assert by_field["rationale"]["new_value"] == "chosen for the ceiling"
     assert by_field["rationale"]["item_id"] == 1
