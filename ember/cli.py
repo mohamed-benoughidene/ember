@@ -48,6 +48,7 @@ from ember.adapters.sqlite import (
     SqliteMaintainStore,
     SqliteQueryContext,
     SqliteSourceStore,
+    SqliteSourcesWithoutItemsRead,
     build_ai_response_store,
     build_embedding_store,
     init_knowledge_base,
@@ -601,6 +602,37 @@ def forget_source_command(source_id: int, db_path: str) -> None:
         click.echo(f"source {source_id} forgotten")
     else:
         click.echo(f"source {source_id} already forgotten (nothing written)")
+
+
+@main.command("list-sources-without-items")
+@click.option(
+    "--db",
+    "db_path",
+    default=DEFAULT_DB_PATH,
+    help="SQLite database path.",
+)
+def list_sources_without_items_command(db_path: str) -> None:
+    """List the raw notes that produced NO items, as JSON (D-09).
+
+    The Cleanup list's read: every note whose every proposal was rejected
+    (or never confirmed) — exactly the notes `ember forget-source` may
+    remove. Each row carries the note's `id`, its `created_at` (the
+    `sources.timestamp`) and `preview`, the first words of its text, so
+    the list identifies a note without carrying the whole text. A note
+    that still has items never appears (the forget would refuse it,
+    `CAPTURE-023`). Read-only: like every query boot the file is opened
+    read-only, never migrated (`QUERY-003`/`QUERY-004`/`QUERY-008`/
+    `QUERY-009` on a bad or old file); a failed read answers `CAPTURE-005`.
+    Always prints ONE JSON document on stdout — this command IS a read, so
+    the D-20 refusal stays with the write commands — with `count` and the
+    (possibly empty, I4) `sources` list.
+    """
+    conn = open_query_database(db_path)
+    try:
+        rows = SqliteSourcesWithoutItemsRead(conn).sources_without_items()
+    finally:
+        conn.close()
+    click.echo(json.dumps({"count": len(rows), "sources": rows}, ensure_ascii=False))
 
 
 class _RelateWriteConnection:

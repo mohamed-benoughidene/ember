@@ -1,6 +1,6 @@
 """The bridge contract table (bridge step 04, L2 §7.1): one row per command.
 
-The table is ONE row per registered `ember` command (23 at this step). Per
+The table is ONE row per registered `ember` command (24 at this step). Per
 row it pins:
 
 - `sample_args`: one sample invocation (`{db}` / `{work}` are substituted
@@ -8,7 +8,8 @@ row it pins:
 - `json_keys`: the top-level keys of the ONE JSON document the command
   prints — under `--format json` for the eleven commands that changed
   output (the step-01 ten plus `maintain`), or the plain stdout document
-  for the always-JSON commands (the six query reads, `capture-source`);
+  for the always-JSON commands (the six query reads, `capture-source`,
+  and the Cleanup read `list-sources-without-items`);
   `None` = the command prints no such document (`set-validated`,
   `clear-validated`, `export`, and — see below — `capture` / `relate`);
 - `format_flag` / `confirm_flag`: whether `--format` / `--confirm` are on
@@ -148,6 +149,12 @@ ROWS: tuple[Row, ...] = (
         command="forget-source",
         sample_args=("forget-source", "--source", "1", "--db", "{db}"),
         seed=_seed_source_without_items,
+    ),
+    Row(
+        command="list-sources-without-items",
+        sample_args=("list-sources-without-items", "--db", "{db}"),
+        seed=_seed_source_without_items,
+        json_keys=("count", "sources"),
     ),
     # --- Engine B: Relate ---
     Row(
