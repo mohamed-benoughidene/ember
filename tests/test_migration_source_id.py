@@ -16,6 +16,7 @@ from pathlib import Path
 import pytest
 
 import ember.adapters.sqlite as sqlite_adapter
+from ember.adapters.migrations import LATEST_VERSION
 from ember.adapters.sqlite import open_database
 from ember.capture.errors import DbOpenFailed as CaptureDbOpenFailed
 from tests.fakes import FIXED_TIME, insert_item, insert_link, insert_source
@@ -185,7 +186,7 @@ def test_migration_014_preserves_existing_schema(db_path) -> None:
             ]
         else:
             assert columns_after[table] == columns_before[table], table
-    assert schema_version == 14
+    assert schema_version == LATEST_VERSION
     # The FK check is clean after the structural change.
     assert foreign_key_rows == []
 
@@ -244,7 +245,7 @@ def test_failed_migration_rolls_back_and_keeps_the_v13_file(
         sqlite_adapter,
         "_migration_scripts",
         lambda: real_scripts[:13]
-        + [(14, "ALTER TABLE change_log RENAME TO x;\nTHIS IS NOT SQL;")],
+        + [(LATEST_VERSION, "ALTER TABLE change_log RENAME TO x;\nTHIS IS NOT SQL;")],
     )
 
     with pytest.raises(CaptureDbOpenFailed):
@@ -270,11 +271,11 @@ def test_failed_migration_rolls_back_and_keeps_the_v13_file(
     backup.close()
 
 
-def test_fresh_install_applies_all_migrations_through_014(db_path) -> None:
+def test_fresh_install_applies_all_migrations_to_the_latest(db_path) -> None:
     conn = open_database(db_path)
 
     version = conn.execute("SELECT version FROM schema_version").fetchone()[0]
-    assert version == 14
+    assert version == LATEST_VERSION
     columns = [
         row["name"] for row in conn.execute("PRAGMA table_info(change_log)")
     ]

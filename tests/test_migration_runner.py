@@ -7,6 +7,7 @@ import sqlite3
 import pytest
 
 import ember.adapters.sqlite as sqlite_adapter
+from ember.adapters.migrations import LATEST_VERSION
 from ember.adapters.sqlite import _apply_migrations, open_database
 from ember.capture.errors import DbOpenFailed as CaptureDbOpenFailed
 
@@ -81,7 +82,7 @@ def test_successful_runner_commits_version_with_schema(db_path) -> None:
     conn = open_database(db_path)
 
     version = conn.execute("SELECT version FROM schema_version").fetchone()[0]
-    assert version == 14
+    assert version == LATEST_VERSION
     assert {"links", "item_embeddings"} <= _table_names(conn)
     assert conn.execute("PRAGMA foreign_keys").fetchone()[0] == 1
     conn.close()

@@ -22,6 +22,7 @@ import sys
 import threading
 from pathlib import Path
 
+from ember.adapters.migrations import LATEST_VERSION
 from ember.adapters.sqlite import open_database
 
 # This worktree's root: the directory the subprocess must import `ember` from.
@@ -95,18 +96,18 @@ def _build_v12_db(db_path: Path) -> None:
 
 
 def test_init_creates_and_migrates_a_new_knowledge_base(tmp_path: Path) -> None:
-    """`ember init --db <missing>` creates the file and migrates it to 13."""
+    """`ember init --db <missing>` creates the file and migrates it to the latest version."""
     db_path = tmp_path / "kb.db"
 
     result = _run("init", "--db", str(db_path))
 
     assert result.returncode == 0, _error_text(result)
     assert db_path.exists()
-    assert _version(db_path) == 14
+    assert _version(db_path) == LATEST_VERSION
 
 
 def test_init_on_a_healthy_current_file_changes_nothing(tmp_path: Path) -> None:
-    """`ember init` on an already-healthy v13 file exits 0 and writes nothing."""
+    """`ember init` on an already-healthy current file exits 0 and writes nothing."""
     db_path = tmp_path / "kb.db"
     conn = open_database(str(db_path))
     conn.close()
@@ -116,7 +117,7 @@ def test_init_on_a_healthy_current_file_changes_nothing(tmp_path: Path) -> None:
 
     assert result.returncode == 0, _error_text(result)
     assert _sha256(db_path) == before
-    assert _version(db_path) == 14
+    assert _version(db_path) == LATEST_VERSION
 
 
 def test_init_refuses_a_non_ember_file(tmp_path: Path) -> None:
@@ -211,7 +212,7 @@ def test_two_init_capture_pairs_racing_on_a_new_file_both_succeed(
         assert result.returncode == 0, f"thread 0 {step}: {_error_text(result)}"
     for step, result in zip(("init", "capture-source"), results[1]):
         assert result.returncode == 0, f"thread 1 {step}: {_error_text(result)}"
-    assert _version(db_path) == 14
+    assert _version(db_path) == LATEST_VERSION
     conn = sqlite3.connect(db_path)
     try:
         sources = conn.execute("SELECT COUNT(*) FROM sources").fetchone()[0]
@@ -273,7 +274,7 @@ def test_four_parallel_capture_sources_on_a_new_file_all_succeed(
     for index in range(parallelism):
         for step, result in zip(("init", "capture-source"), results[index]):
             assert result.returncode == 0, f"thread {index} {step}: {_error_text(result)}"
-    assert _version(db_path) == 14
+    assert _version(db_path) == LATEST_VERSION
     conn = sqlite3.connect(db_path)
     try:
         sources = conn.execute("SELECT COUNT(*) FROM sources").fetchone()[0]

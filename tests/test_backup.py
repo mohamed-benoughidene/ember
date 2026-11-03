@@ -24,6 +24,7 @@ from ember.adapters.errors import (
     TargetWriteFailed,
     VerifyFailed,
 )
+from ember.adapters.migrations import LATEST_VERSION
 from ember.adapters.paths import same_path
 from ember.adapters.sqlite import open_database
 from ember.cli import main
@@ -78,7 +79,7 @@ def test_backup_creates_usable_copy(db_path, target_path) -> None:
 
     assert isinstance(report, BackupReport)
     assert report.path == target_path
-    assert report.schema_version == 14
+    assert report.schema_version == LATEST_VERSION
     assert report.item_count == count
     assert report.rotated is None
     conn = sqlite3.connect(target_path)
@@ -89,7 +90,7 @@ def test_backup_creates_usable_copy(db_path, target_path) -> None:
         rows = int(conn.execute("SELECT COUNT(*) FROM items").fetchone()[0])
     finally:
         conn.close()
-    assert version == 14
+    assert version == LATEST_VERSION
     assert rows == count
 
 
@@ -101,7 +102,7 @@ def test_cli_backup_success_line(db_path, target_path) -> None:
     assert result.exit_code == 0
     expected = (
         f"backup written: {target_path}"
-        f" (schema v14, {count} items)"
+        f" (schema v{LATEST_VERSION}, {count} items)"
     )
     assert result.output.strip() == expected
 
