@@ -677,8 +677,8 @@ class _RelateEmbeddingCache:
 
     Wraps the `EmbeddingStorePort` built on the read-only connection for the
     three reads (`get`, `model_name_of`, `first_model_name`) and routes the
-    two writes (`upsert`, `wipe`) to the same port type built on the
-    short-lived write connection.
+    three writes (`upsert`, `wipe`, `delete`) to the same port type built on
+    the short-lived write connection.
     """
 
     def __init__(self, read_store: Any, writes: _RelateWriteConnection) -> None:
@@ -699,6 +699,9 @@ class _RelateEmbeddingCache:
 
     def wipe(self) -> None:
         self._writes.embedding_store().wipe()
+
+    def delete(self, item_id: int) -> None:
+        self._writes.embedding_store().delete(item_id)
 
 
 @main.command("relate")
