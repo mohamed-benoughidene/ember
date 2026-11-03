@@ -178,3 +178,17 @@ test('{"event":"summary"} with no numbers is refused (the masked-shape case)', (
     result.error.detail,
   );
 });
+
+test('every pinned stub shape of the link e2e passes the app event check', () => {
+  // link.js serves its rounds to the fake stub VERBATIM: a pinned shape
+  // that the app's own parse-event-line refuses can only end as an
+  // APP-002 error screen (the batch-6 wave: the relate summary pin
+  // rode without `line` and flow 1 timed out on the summary line).
+  // Pin the shapes at the source so the pin and the check cannot drift.
+  const { PINNED_EVENT_SHAPES } = require('./e2e/link.js');
+  assert.ok(PINNED_EVENT_SHAPES.length >= 6, 'the pinned shapes must be listed');
+  for (const shape of PINNED_EVENT_SHAPES) {
+    const result = parseEventLine(JSON.stringify(shape));
+    assert.equal(result.ok, true, JSON.stringify(shape));
+  }
+});

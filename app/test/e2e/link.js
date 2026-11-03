@@ -223,7 +223,19 @@ const LINK_1 = {
 const GATEKEEPER = { event: 'message', text: 'relate rejected: RELATE-007 | item 3 is Closed' };
 // rejected = the user's explicit `n` + the gatekeeper rejection (the
 // engine's own arithmetic).
-const SUMMARY_OK = { event: 'summary', accepted: 1, rejected: 2, skipped: 1, aborted: false };
+// Chunk 9 (4.3 #26): the summary event carries the engine's OWN human
+// line (REQUIRED on the app side, see event_schema.json), in the exact
+// shape ember/cli.py's relate sink.summary emits it: the fields, then
+// the line. The app's parse-event-line check refuses a summary without
+// it, so this pin must ride `line` like fake-ember's session summary.
+const SUMMARY_OK = {
+  event: 'summary',
+  accepted: 1,
+  rejected: 2,
+  skipped: 1,
+  aborted: false,
+  line: 'accepted: 1, rejected: 2, skipped: 1, aborted: false',
+};
 
 /* ---------------- flow 1: the main flow ---------------- */
 
@@ -485,7 +497,16 @@ async function main() {
   process.stdout.write('e2e link OK: all five flows green (real seeded KBs, the pinned stub shapes for relate; the real model is the T50 manual check)\n');
 }
 
-main().catch((err) => {
-  process.stderr.write(`e2e link FAILED: ${err.message}\n`);
-  process.exit(1);
-});
+// The e2e runs as a script; importing (for the node suite's event-line
+// pin of these shapes) must not launch anything.
+if (require.main === module) {
+  main().catch((err) => {
+    process.stderr.write(`e2e link FAILED: ${err.message}\n`);
+    process.exit(1);
+  });
+}
+
+/** The pinned stub shapes, for the parser pin in event-line.test.js. */
+module.exports = {
+  PINNED_EVENT_SHAPES: [PREVIEW_1, PREVIEW_2, PREVIEW_3, PROMPT, LINK_1, GATEKEEPER, SUMMARY_OK],
+};
