@@ -455,11 +455,23 @@ def capture(file_path: str | None, output: OutputOptions) -> None:
     Exit 0 when every proposal is handled, 1 on a phase 1/2/3 error or a DB
     write failure, and 2 when the user quits mid-prompt. `--confirm json`
     (bridge step 03) requires `--file`: stdin then carries the `{"answer":`
-    ...}` answer lines instead of the pasted text.
+    ...}` answer lines instead of the pasted text. D-20: `--format json` is
+    refused (exit 2) here — the program-facing mode is the `--confirm json`
+    event stream — and so is an empty `--file ""` (it would fall back to
+    reading STDIN).
     """
+    if output.fmt == "json":
+        raise click.UsageError(
+            "capture refuses --format json (the program mode is the"
+            " --confirm json event stream)"
+        )
     if output.confirm == "json" and file_path is None:
         raise click.UsageError(
             "--confirm json requires --file (stdin carries the answer lines)"
+        )
+    if file_path == "":
+        raise click.UsageError(
+            "--file requires a path (an empty name would read stdin)"
         )
     mode = InputMode.FILE if file_path else InputMode.STDIN
     sink, confirm = _confirm_io(output, JsonCaptureConfirm, TerminalConfirm)
@@ -617,12 +629,19 @@ def relate(item_id: int | None, latest: bool, output: OutputOptions) -> None:
     error, and 2 when the user quits mid-prompt. An empty candidate pool
     prints the Phase 2 JSON and exits 0 without an AI call. `--confirm json`
     (bridge step 03) turns every stdout line into one JSON event object.
+    D-20: `--format json` is refused (exit 2) here — the program-facing mode
+    is the `--confirm json` event stream.
 
     N9: every read runs on a STRICTLY read-only connection that never
     migrates and never backs up; the writes (embedding cache, raw AI reply,
     confirmed links) share ONE short-lived write connection that never
     migrates either.
     """
+    if output.fmt == "json":
+        raise click.UsageError(
+            "relate refuses --format json (the program mode is the"
+            " --confirm json event stream)"
+        )
     if item_id is not None and latest:
         raise click.UsageError("use either --item or --latest, not both")
     if item_id is None and not latest:
@@ -720,6 +739,21 @@ def maintain(output: OutputOptions) -> None:
     event object.
     """
     outcome = ProposalOutcome(stale=0, proposed=0, accepted=0, rejected=0)
+    # D-20 (lead ruling B): on a REAL run the terminal confirm would mix the
+    # close-proposal prompts into the JSON document's stdout (4.6 #13), so
+    # the combination is refused before any child work starts (I7/I12). A
+    # `--dry-run` confirms nothing — its document is pure already and keeps
+    # ticket-24's shortlist-as-data.
+    if (
+        output.fmt == "json"
+        and output.confirm == "terminal"
+        and not output.dry_run
+    ):
+        raise click.UsageError(
+            "maintain refuses --format json for real runs with the terminal"
+            " --confirm (the prompts would mix into the JSON); dry-run keeps"
+            " the document mode"
+        )
     json_mode = output.fmt == "json"
     sink, confirm = _confirm_io(output, JsonMaintainConfirm, MaintainTerminalConfirm)
     sweep_changes: list[StatusChange] = []

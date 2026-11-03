@@ -165,17 +165,33 @@ def test_text_golden_json_document_and_db_hash(
     json_target = str(tmp_path / "json-run" / "backup.backup.db")
 
     text_result = harness.invoke(_args(name, text_db, text_target))
-    json_result = harness.invoke(
-        _args(name, json_db, json_target) + ["--format", "json"]
-    )
+    if name == "maintain":
+        # D-20 (lead ruling B): a REAL `maintain --format json` run refuses
+        # the terminal confirm, so its json run goes through the `--confirm
+        # json` event stream; the document arrives as the final `message`
+        # event's `text`. The writes are unchanged, so the DB-hash parity
+        # below proves the same thing it always did.
+        json_result = harness.invoke(
+            _args(name, json_db, json_target)
+            + ["--format", "json", "--confirm", "json"]
+        )
+    else:
+        json_result = harness.invoke(
+            _args(name, json_db, json_target) + ["--format", "json"]
+        )
 
     assert text_result.exit_code == 0, text_result.output
     assert json_result.exit_code == 0, json_result.output
     assert text_result.stdout == _golden(name, str(tmp_path / "text-run")), (
         f"{name}: text output drifted from the pre-change golden"
     )
-    assert set(json.loads(json_result.stdout)) == TOP_LEVEL_KEYS
-    document = json.loads(json_result.stdout)
+    if name == "maintain":
+        event = json.loads(json_result.stdout)
+        assert event["event"] == "message"
+        document = json.loads(event["text"])
+    else:
+        document = json.loads(json_result.stdout)
+    assert set(document) == TOP_LEVEL_KEYS
     assert document["command"] == name
     assert isinstance(document["changes"], list)
     assert isinstance(document["summary"], dict)
@@ -366,14 +382,20 @@ def test_maintain_dry_run_json_document_carries_the_stale_candidates(
 
 def test_maintain_json_document_carries_the_stale_candidates(tmp_path) -> None:
     """A real run with the faked proposer feed: the document still carries
-    the pre-loop shortlist as data, and the text goldens are untouched
-    (this run's stdout is exactly one document, no shortlist lines)."""
+    the pre-loop shortlist as data, and the text goldens are untouched.
+    D-20 (lead ruling B): a real run under `--format json` goes through the
+    `--confirm json` event stream, so the document arrives as the final
+    `message` event's `text`."""
     result = cs.maintain_session(
-        tmp_path, input_text="y\nn\n", extra_args=("--format", "json")
+        tmp_path,
+        input_text='{"answer": "y"}\n{"answer": "n"}\n',
+        extra_args=("--format", "json", "--confirm", "json"),
     )
 
     assert result.exit_code == 0
-    document = json.loads(result.stdout.splitlines()[-1])
+    final_event = json.loads(result.stdout.splitlines()[-1])
+    assert final_event["event"] == "message"
+    document = json.loads(final_event["text"])
     shortlist = document["summary"]["stale_candidates"]
     assert shortlist["truncated"] is False
     assert [c["item_id"] for c in shortlist["candidates"]] == [7, 9]
@@ -381,3 +403,29 @@ def test_maintain_json_document_carries_the_stale_candidates(tmp_path) -> None:
     # Document mode: the text shortlist lines are NOT on stdout — the
     # document carries the facts instead.
     assert "item 7: stale Question" not in result.stdout
+
+
+# --- D-20 (Batch 6 chunk 8): refused flag combinations -----------------------
+
+
+def test_maintain_json_with_default_confirm_terminal_exits_2(db_path: str) -> None:
+    """`maintain --format json` on a REAL run with the default terminal
+    confirm mixes the proposal prompts into the document's stdout (4.6 #13),
+    so it is refused. N6: a usage error keeps Click's exit 2 and names the
+    combination. The carve-out (lead ruling B): a `--dry-run` confirms
+    nothing, so its json document stays pure and keeps ticket-24's
+    shortlist-as-data."""
+    harness.seed_contradicted_active(db_path)
+
+    result = harness.invoke(["maintain", "--format", "json", "--db", db_path])
+
+    assert result.exit_code == 2
+    assert "--format" in result.stderr
+    assert "--confirm" in result.stderr
+
+    dry = harness.invoke(
+        ["maintain", "--dry-run", "--format", "json", "--db", db_path]
+    )
+
+    assert dry.exit_code == 0
+    assert json.loads(dry.stdout)["dry_run"] is True
