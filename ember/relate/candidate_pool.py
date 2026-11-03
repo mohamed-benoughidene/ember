@@ -17,7 +17,11 @@ from pydantic import BaseModel
 
 from ember.relate.embedder import EmbedderPort
 from ember.relate.embedding_store import EmbeddingStorePort
-from ember.relate.errors import CosineComputeFailed, MetadataReadFailed
+from ember.relate.errors import (
+    CosineComputeFailed,
+    EmbeddingReadFailed,
+    MetadataReadFailed,
+)
 from ember.relate.link_lookup import LinkLookupPort
 from ember.relate.load_filter import LoadedCandidates
 from ember.relate.rows import NewItem, Pool, RankedCandidate, SignalKind
@@ -69,18 +73,23 @@ def build_candidate_pool(
     text, or None.
 
     Raises (propagated from the ports and the two core helpers):
-    - `RELATE-037 EmbeddingReadFailed` when a cache read fails.
+    - `RELATE-037 EmbeddingReadFailed` when a cache read fails (a failed
+      vector `get` is instead repaired by delete-and-re-encode; the raise
+      remains for the model-name reads and any repair that cannot write).
     - `RELATE-018 EmbedderEncodeFailed` when the model cannot encode.
-    - `RELATE-019 EmbeddingWriteFailed` when a cache write or wipe fails.
+    - `RELATE-019 EmbeddingWriteFailed` when a cache write, delete, or wipe fails.
     - `RELATE-021 GraphReadFailed` when the neighbor read fails.
-    - `RELATE-022 CosineComputeFailed` on a zero or unequal-length vector.
+    - `RELATE-022 CosineComputeFailed` on a zero or unequal-length vector
+      (a damaged cached vector is repaired before cosine, so only a zero
+      cached vector or a wrong-length fresh encoding raises).
     - `RELATE-023 MetadataReadFailed` on a malformed or mixed-zone timestamp.
     - `RELATE-017 EmbedderLoadFailed` if the model failed to load.
 
-    Side effects: may upsert vectors into `item_embeddings`, and may wipe the
-    cache (returning `warning`) when the universe is non-empty and the cached
-    model differs from the active model. On an empty universe nothing runs:
-    no model check, no wipe, no warning. The returned pool carries at most
+    Side effects: may upsert vectors into `item_embeddings`, delete a damaged
+    cache row for immediate re-encode, and may wipe the cache (returning
+    `warning`) when the universe is non-empty and the cached model differs
+    from the active model. On an empty universe nothing runs: no model
+    check, no wipe, no warning. The returned pool carries at most
     `CANDIDATE_POOL_CAP` ranked candidates. The caller prints `warning`; this
     module writes no output itself.
     """
@@ -133,17 +142,30 @@ def _resolve_vector(
     model: str,
     dimension: int,
 ) -> list[float]:
-    """Return the item's vector from the cache, or encode it and cache it."""
-    cached = store.get(item.id)
-    if cached is not None and store.model_name_of(item.id) == model:
-        if len(cached) != dimension:
-            raise CosineComputeFailed(
-                "cached vector length mismatch",
-                item_id=item.id,
-                expected=dimension,
-                got=len(cached),
-            )
-        return cached
+    """Return the item's vector from the cache, or encode it and cache it.
+
+    A damaged cached vector is repaired, not raised (Batch 7 chunk 11): a
+    wrong-length vector, or a read failure (`EmbeddingReadFailed`, RELATE-037,
+    from an undecodable blob), deletes the row through the port and re-encodes
+    the item in the same run. The cache is derived, rebuildable data, so the
+    delete loses nothing. A fresh encoding that still comes back the wrong
+    length is an embedder bug, not cache damage, and stays a
+    `CosineComputeFailed` raise (RELATE-022).
+    """
+    damaged = False
+    try:
+        cached = store.get(item.id)
+    except EmbeddingReadFailed:
+        cached = None
+        damaged = True
+    else:
+        if cached is not None and store.model_name_of(item.id) == model:
+            if len(cached) != dimension:
+                damaged = True
+            else:
+                return cached
+    if damaged:
+        store.delete(item.id)
     vector = list(embedder.embed([item.statement])[0])
     if len(vector) != dimension:
         raise CosineComputeFailed(

@@ -90,6 +90,9 @@ class TimedEmbeddingStore:
         self._inner.wipe()
         self.wipe_seconds += time.perf_counter() - start
 
+    def delete(self, item_id: int) -> None:
+        self._inner.delete(item_id)
+
 
 class TimedEmbedder:
     """Thin timing wrapper at the `EmbedderPort` boundary.

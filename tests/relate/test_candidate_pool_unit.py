@@ -867,15 +867,88 @@ def test_zero_vector_embedding_raises_relate_022(
     assert excinfo.value.context == {"item_id": 2, "length": 3}
 
 
-def test_wrong_length_cached_vector_raises_relate_022() -> None:
+def test_wrong_length_cached_vector_is_deleted_and_recomputed() -> None:
+    """A damaged cached vector is repaired, not raised (Batch 7 chunk 11).
+
+    The row for item 2 holds an invalid 2-length vector. Today that raises
+    `CosineComputeFailed` RELATE-022; the repair change deletes the row
+    through the port and re-encodes the item instead.
+
+    Unlike every other test in this file, this one asserts calls: the plan
+    names `delete` plus a re-`embed` as the repair contract, and cache state
+    alone cannot tell "deleted, then re-upserted" from a plain upsert.
+    """
     store = FakeEmbeddingStore({1: [1.0, 0.0, 0.0], 2: [1.0, 0.0]}, model_name=MODEL)
+    embedder = FakeEmbedder(
+        {"statement 1": [1.0, 0.0, 0.0], "statement 2": [1.0, 0.0, 0.0]},
+        model_name=MODEL,
+    )
+
+    pool = _build(_candidate(), embedder=embedder, store=store)
+
+    # The damaged row was deleted first, then re-encoded and re-cached.
+    assert store.deleted == [2]
+    assert "statement 2" in [text for call in embedder.calls for text in call]
+    assert store.rows == {1: [1.0, 0.0, 0.0], 2: [1.0, 0.0, 0.0]}
+    assert store.model_names == {1: MODEL, 2: MODEL}
+    assert pool.warning is None
+    assert pool.counts == {"dense": 1, "graph": 0, "metadata": 0}
+    assert _scored(pool.ranked) == [(2, 1.0)]
+
+
+class _UndecodableStore(FakeEmbeddingStore):
+    """Raises RELATE-037 from `get` for given ids, like an undecodable blob."""
+
+    def __init__(
+        self,
+        bad_ids: list[int],
+        rows: dict[int, list[float]] | None = None,
+        *,
+        model_name: str = MODEL,
+    ) -> None:
+        super().__init__(rows, model_name=model_name)
+        self._bad_ids = set(bad_ids)
+
+    def get(self, item_id: int) -> list[float] | None:
+        if item_id in self._bad_ids:
+            raise EmbeddingReadFailed("embedding decode fail", item_id=item_id)
+        return super().get(item_id)
+
+
+def test_cache_read_failure_row_is_deleted_and_recomputed() -> None:
+    """An undecodable cache row (RELATE-037) is repaired, not raised.
+
+    `store.get` raises `EmbeddingReadFailed` for item 2, the real
+    `SqliteEmbedderStore` shape for a blob that cannot decode. The repair
+    treats it exactly like a wrong-length vector: delete the row, re-encode,
+    re-cache.
+    """
+    store = _UndecodableStore([2], rows={2: [1.0, 0.0]})
+    embedder = FakeEmbedder(
+        {"statement 1": [1.0, 0.0, 0.0], "statement 2": [1.0, 0.0, 0.0]},
+        model_name=MODEL,
+    )
+
+    pool = _build(_candidate(), embedder=embedder, store=store)
+
+    assert store.deleted == [2]
+    assert "statement 2" in [text for call in embedder.calls for text in call]
+    assert store.rows == {1: [1.0, 0.0, 0.0], 2: [1.0, 0.0, 0.0]}
+    assert store.model_names == {1: MODEL, 2: MODEL}
+    assert _scored(pool.ranked) == [(2, 1.0)]
+
+
+def test_fresh_encoding_still_wrong_length_raises_relate_022() -> None:
+    """Only the cache is repaired: a re-encode that comes back the wrong
+    length is an embedder bug, and still raises RELATE-022."""
+    store = FakeEmbeddingStore({1: [1.0, 0.0, 0.0], 2: [1.0, 0.0]}, model_name=MODEL)
+    embedder = FakeEmbedder(
+        {"statement 1": [1.0, 0.0, 0.0], "statement 2": [1.0, 0.0]},
+        model_name=MODEL,
+    )
 
     with pytest.raises(CosineComputeFailed) as excinfo:
-        _build(
-            _candidate(),
-            embedder=_NoEncodeEmbedder(model_name=MODEL),
-            store=store,
-        )
+        _build(_candidate(), embedder=embedder, store=store)
 
     assert excinfo.value.code == "RELATE-022"
     assert excinfo.value.context == {"item_id": 2, "expected": 3, "got": 2}
@@ -960,8 +1033,14 @@ def test_embedder_load_failure_is_reraised_unchanged() -> None:
     assert excinfo.value is error
 
 
-@pytest.mark.parametrize("method", ["get", "first_model_name"])
+@pytest.mark.parametrize("method", ["first_model_name"])
 def test_store_read_failure_propagates_relate_037(method: str) -> None:
+    """A pre-flight read failure still propagates RELATE-037 unchanged.
+
+    Batch 7 chunk 11 removed the `get` case: a failed vector read is now
+    repaired by delete-and-re-encode (see the repair tests above), so only
+    the model-name reads keep the propagate contract here.
+    """
     error = EmbeddingReadFailed("cache row unreadable", item_id=1)
     embedder, store, lookup = _ports_with_failure(method, error)
 

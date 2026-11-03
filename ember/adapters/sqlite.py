@@ -2988,6 +2988,25 @@ class SqliteEmbedderStore:
         except sqlite3.Error as exc:
             raise EmbeddingWriteFailed("embedding wipe fail") from exc
 
+    def delete(self, item_id: int) -> None:
+        """Delete one cached vector row, for repairing a damaged cache.
+
+        The candidate pool deletes a wrong-length or undecodable row and
+        re-encodes the item in the same run; the cache is derived data, so
+        the row is rebuilt immediately.
+
+        Raise `EmbeddingWriteFailed` (RELATE-019) on a write failure.
+        """
+        try:
+            self._conn.execute(
+                "DELETE FROM item_embeddings WHERE item_id = ?", (item_id,)
+            )
+            self._conn.commit()
+        except sqlite3.Error as exc:
+            raise EmbeddingWriteFailed(
+                "embedding delete fail", item_id=item_id
+            ) from exc
+
 
 def build_embedding_store(conn: sqlite3.Connection) -> EmbeddingStorePort:
     """Build the `item_embeddings` cache adapter for the relate engine.
