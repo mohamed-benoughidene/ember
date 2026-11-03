@@ -15,7 +15,7 @@ jobs:
       - name: Install the package and dev tools
         run: pip install -e ".[dev]"
       - name: Run the test suite (includes the architecture test, rule T9)
-        run: pytest
+        run: pytest -m "not live"
 
   # App step 13 (decision 2, spec story 109): the desktop app is BUILT and
   # LAUNCH-CHECKED on all three systems. Debian is the only real installer

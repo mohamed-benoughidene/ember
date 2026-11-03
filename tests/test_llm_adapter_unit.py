@@ -10,7 +10,9 @@ from openai import APITimeoutError, OpenAIError
 
 from ember.adapters.llm import (
     REQUEST_TIMEOUT_SECONDS,
+    OpenAiCloseProposer,
     OpenAiItemProposer,
+    OpenAiLinkProposer,
     build_item_proposer,
     build_link_proposer,
 )
@@ -22,6 +24,10 @@ from ember.capture.errors import (
 )
 from ember.capture.item_proposal import ContextItem, ItemType
 from ember.errors import EmberError
+from ember.maintain.close_proposer import StaleCandidate
+from ember.maintain.errors import CloseAiCallFailed, CloseAiCallTimedOut
+from ember.relate.errors import AiCallFailed, AiCallTimedOut
+from ember.relate.rows import NewItem
 
 RAW_TEXT = "We decided to use SQLite."
 ANSWER = json.dumps(
@@ -317,6 +323,86 @@ def test_429_retried_once_with_a_backoff_sleep_between_attempts() -> None:
     assert len(sleeps) == 1
     assert sleeps[0][0] == 1
     assert 0 < sleeps[0][1]
+
+
+def test_the_budget_covers_the_whole_next_attempt_retries_included() -> None:
+    """The spec (one total time budget per AI call, RETRIES INCLUDED, under
+    the app's idle limit): a timed-out attempt already burned 60 s of the
+    90 s budget, so the whole next attempt — wait plus one more full 60 s
+    request timeout — cannot fit. The policy must raise at once (the
+    timeout's capture code) with EXACTLY one port call and no wait, never
+    start attempt 2."""
+    read = {"calls": 0}
+
+    def clock() -> float:
+        # One 60 s read per clock call: deterministic, no real waiting.
+        read["calls"] += 1
+        return read["calls"] * REQUEST_TIMEOUT_SECONDS
+
+    sleeps: list[float] = []
+    proposer = OpenAiItemProposer(
+        _FakeClient(_timeout_boom()),
+        "test-model",
+        sleep=sleeps.append,
+        jitter=lambda: 0.0,
+        clock=clock,
+    )
+
+    with pytest.raises(AiTimeoutError) as excinfo:
+        proposer.propose(RAW_TEXT, [])
+
+    assert len(proposer._client.completions.calls) == 1
+    assert sleeps == []  # the next attempt cannot fit: no wait, no retry
+    assert excinfo.value.code == AiTimeoutError.code
+
+
+def test_relate_and_maintain_route_through_the_whole_attempt_budget() -> None:
+    """Proof of routing: relate AND maintain propose through the shared
+    `_send_with_one_retry` policy (Chunk 3), so the whole-next-attempt
+    budget binds them too — a timeout-shaped failure under a spent clock
+    leaves EXACTLY one provider call and each family's OWN timeout code
+    (RELATE-042, MAINTAIN-030), never a second attempt."""
+    read = {"calls": 0}
+
+    def clock() -> float:
+        # One 60 s read per clock call: one read == one request timeout.
+        read["calls"] += 1
+        return read["calls"] * REQUEST_TIMEOUT_SECONDS
+
+    # relate (OpenAiLinkProposer.propose_links)
+    link = OpenAiLinkProposer(
+        _FakeClient(_timeout_boom()),
+        "test-model",
+        sleep=lambda _s: None,
+        jitter=lambda: 0.0,
+        clock=clock,
+    )
+    new_item = NewItem(id=1, type="Decision", statement="s", created_at="t")
+    with pytest.raises(AiCallFailed) as link_exc:
+        link.propose_links(new_item, [])
+    assert len(link._client.completions.calls) == 1
+    assert link_exc.value.code == AiCallTimedOut.code
+
+    # maintain (OpenAiCloseProposer.propose_close)
+    closer = OpenAiCloseProposer(
+        _FakeClient(_timeout_boom()),
+        "test-model",
+        sleep=lambda _s: None,
+        jitter=lambda: 0.0,
+        clock=clock,
+    )
+    stale = StaleCandidate(
+        item_id=1,
+        item_type="Decision",
+        statement="s",
+        newest_answers_link_id=1,
+        answered_by_item_id=2,
+        newest_answer_created_at="t",
+    )
+    with pytest.raises(CloseAiCallFailed) as close_exc:
+        closer.propose_close(stale)
+    assert len(closer._client.completions.calls) == 1
+    assert close_exc.value.code == CloseAiCallTimedOut.code
 
 
 def test_propose_sends_temperature_zero() -> None:
