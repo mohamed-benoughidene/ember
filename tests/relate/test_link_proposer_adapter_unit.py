@@ -157,3 +157,45 @@ def test_propose_links_timed_out_maps_to_the_timeout_code() -> None:
     assert excinfo.value.code == "RELATE-042"
     assert excinfo.value.code != "RELATE-032"
     assert len(client.chat.completions.calls) == 2
+
+
+# --- base-URL pins (Chunk 17) ---------------------------------------------
+
+
+def test_build_link_proposer_sends_default_base_url(monkeypatch) -> None:
+    """Chunk 17 pin: with no `EMBER_AI_BASE_URL`, the relate client gets
+    the module's default OpenRouter URL (`DEFAULT_BASE_URL` in
+    ember/adapters/llm.py). The value is pinned as a literal so a change
+    to the constant fails this test (the mutation proof)."""
+    recorded: dict = {}
+
+    def fake_openai(**kwargs):
+        recorded.update(kwargs)
+        return object()
+
+    monkeypatch.setattr("ember.adapters.llm.OpenAI", fake_openai)
+
+    build_link_proposer({"EMBER_AI_API_KEY": "k"})
+
+    assert recorded["base_url"] == "https://openrouter.ai/api/v1"
+
+
+def test_build_link_proposer_base_url_env_override_reaches_the_client(
+    monkeypatch,
+) -> None:
+    """Chunk 17 pin: an `EMBER_AI_BASE_URL` override reaches the OpenAI
+    client as its `base_url` (same recording pattern as the close-side
+    test_build_close_proposer_uses_env_overrides)."""
+    recorded: dict = {}
+
+    def fake_openai(**kwargs):
+        recorded.update(kwargs)
+        return object()
+
+    monkeypatch.setattr("ember.adapters.llm.OpenAI", fake_openai)
+
+    build_link_proposer(
+        {"EMBER_AI_API_KEY": "k", "EMBER_AI_BASE_URL": "http://example.internal/v1"}
+    )
+
+    assert recorded["base_url"] == "http://example.internal/v1"
