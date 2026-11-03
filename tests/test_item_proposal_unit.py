@@ -134,40 +134,25 @@ def test_system_prompt_asks_for_quote_and_confidence() -> None:
     assert "confidence" in SYSTEM_PROMPT
 
 
-# --- retry policy (plan section 5) ----------------------------------------
+# --- retry ownership (one port call, errors propagate) ---------------------
 
 
-def test_first_call_fail_makes_a_second_call() -> None:
-    proposer = FakeItemProposer(
-        [AiCallError("ai call fail"), _ai_response(_good_proposal())]
-    )
-
-    result = propose_items(proposer, raw_text=RAW_TEXT, context=[])
-
-    assert len(proposer.calls) == 2
-    assert result.batch.proposals == [_good_proposal()]
-
-
-def test_second_call_fail_raises() -> None:
-    proposer = FakeItemProposer(
-        [AiCallError("ai call fail"), AiCallError("ai call fail again")]
-    )
+def test_ai_call_error_propagates_after_one_call() -> None:
+    proposer = FakeItemProposer([AiCallError("ai call fail")])
 
     with pytest.raises(AiCallError):
         propose_items(proposer, raw_text=RAW_TEXT, context=[])
 
-    assert len(proposer.calls) == 2
+    assert len(proposer.calls) == 1
 
 
-def test_unreadable_response_also_retries_once() -> None:
-    proposer = FakeItemProposer(
-        [AiSchemaError("ai response not json"), _ai_response(_good_proposal())]
-    )
+def test_unreadable_response_propagates_after_one_call() -> None:
+    proposer = FakeItemProposer([AiSchemaError("ai response not json")])
 
-    result = propose_items(proposer, raw_text=RAW_TEXT, context=[])
+    with pytest.raises(AiSchemaError):
+        propose_items(proposer, raw_text=RAW_TEXT, context=[])
 
-    assert len(proposer.calls) == 2
-    assert result.batch.proposals == [_good_proposal()]
+    assert len(proposer.calls) == 1
 
 
 def test_raw_text_is_handed_to_the_ai() -> None:
