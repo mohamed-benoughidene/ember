@@ -5,7 +5,8 @@ from __future__ import annotations
 import json
 
 import pytest
-from openai import OpenAIError
+import openai._httpx2  # the SDK's own vendored httpx2 (request shape only)
+from openai import APITimeoutError, OpenAIError
 
 from ember.adapters.llm import (
     REQUEST_TIMEOUT_SECONDS,
@@ -13,7 +14,12 @@ from ember.adapters.llm import (
     build_item_proposer,
     build_link_proposer,
 )
-from ember.capture.errors import AiCallError, AiSchemaError
+from ember.capture.errors import (
+    AiCallError,
+    AiRateLimitError,
+    AiSchemaError,
+    AiTimeoutError,
+)
 from ember.capture.item_proposal import ContextItem, ItemType
 from ember.errors import EmberError
 
@@ -38,6 +44,27 @@ ANSWER = json.dumps(
 
 class _Boom(OpenAIError):
     pass
+
+
+class _RateLimitedBoom(_Boom):
+    """A 429-shaped provider error: the shape the SDK raises as
+    `APIStatusError` with `status_code = 429` (Chunk 1)."""
+
+    status_code = 429
+
+
+class _TimeoutBoom(APITimeoutError):
+    """A timeout-shaped provider error: the exact class real request
+    timeouts arrive as (`openai.APITimeoutError`), so the fake copies no
+    shape by hand."""
+
+    pass
+
+
+def _timeout_boom() -> _TimeoutBoom:
+    """Build the timeout fake; the SDK's constructor wants a request."""
+    request = openai._httpx2.httpx2.Request("POST", "http://127.0.0.1")
+    return _TimeoutBoom(request=request)
 
 
 class _Message:
@@ -200,6 +227,30 @@ def test_strange_reply_without_choices_attr_becomes_schema_error() -> None:
         proposer.propose(RAW_TEXT, [])
 
     assert excinfo.value.code == "CAPTURE-009"
+
+
+def test_429_provider_failure_raises_the_capture_rate_limited_code() -> None:
+    """A 429 reply carries its OWN capture code (Chunk 1); the number is
+    the next free one in the family, not pinned here."""
+    proposer = _proposer(_RateLimitedBoom("rate limit exceeded"))
+
+    with pytest.raises(AiCallError) as excinfo:
+        proposer.propose(RAW_TEXT, [])
+
+    assert isinstance(excinfo.value, AiRateLimitError)
+    assert excinfo.value.code == AiRateLimitError.code
+
+
+def test_timeout_provider_failure_raises_the_capture_timed_out_code() -> None:
+    """A request timeout carries its OWN capture code (Chunk 1); the
+    number is the next free one in the family, not pinned here."""
+    proposer = _proposer(_timeout_boom())
+
+    with pytest.raises(AiCallError) as excinfo:
+        proposer.propose(RAW_TEXT, [])
+
+    assert isinstance(excinfo.value, AiTimeoutError)
+    assert excinfo.value.code == AiTimeoutError.code
 
 
 # --- config ---------------------------------------------------------------

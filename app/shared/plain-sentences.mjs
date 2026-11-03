@@ -623,6 +623,16 @@ Object.assign(ERROR_SENTENCES, {
     what: 'Forgetting works only on a note that produced no items. This note has items, so its knowledge is still in use.',
     next: 'Nothing was deleted. Review or close the note’s items first, then forget the note.',
   },
+  'CAPTURE-024': {
+    title: 'The AI service is asking us to slow down.',
+    what: 'Adding text asked the AI service for proposals, and it received too many requests (a rate limit), so the answer was refused.',
+    next: 'Wait a moment, then try again. Nothing was created.',
+  },
+  'CAPTURE-025': {
+    title: 'The AI service took too long to answer.',
+    what: 'Adding text waited for the AI service, and no answer arrived in time.',
+    next: 'Wait a moment, then try again. Your text is kept; nothing was created.',
+  },
   'RELATE-000': {
     title: 'A problem in the relate engine was reported.',
     what: 'Ember reported a general problem in the part that links items.',
