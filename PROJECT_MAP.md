@@ -428,6 +428,7 @@ Earlier logo and character images, kept for history.
 - `tests/fixtures/export_source_verbatim.txt`: The verbatim-round-trip fixture for the export tests: blank lines, two- and four-space leading indentation, a trailing-space line, emoji and other non-ASCII, a bare marker-look-alike line, the full sha256-stamped end marker of a DIFFERENT source id, and no trailing newline (both ending modes are exercised with and without one added newline).
 - `tests/test_source_storage_unit.py`: Phase 1 unit tests on a fake store, no DB.
 - `tests/test_source_storage_integration.py`: Phase 1 tests on a real SQLite temp DB.
+- `tests/test_retry_ownership.py`: Engine retry-ownership pins — the capture, relate and maintain AI-port wrappers each call the port exactly once and propagate every error (retries live only in the adapter's own policy, Batch 7).
 - `tests/test_item_proposal_unit.py`: Phase 2 unit tests on a fake AI and fake item reader, no network.
 - `tests/test_item_proposal_fixtures.py`: Phase 2 parser tests on saved AI answers.
 - `tests/test_llm_adapter_unit.py`: LLM adapter tests on a fake client, no network.
