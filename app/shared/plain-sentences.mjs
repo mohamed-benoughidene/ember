@@ -5,9 +5,10 @@
  * test walks `ember/**\/errors.py` and fails when a code has no
  * entry"): the table is now TOTAL over every code the engine defines
  * — plus the tested refinements (`app/shared/capture-words.mjs` for
- * CAPTURE-008, `app/shared/maintain-sentences.mjs` for its MAINTAIN
- * codes, `app/shared/relate-words.mjs` for two RELATE details), which
- * keep precedence where they exist. Every below-entry was written
+ * CAPTURE-008 and CAPTURE-022, `app/shared/maintain-sentences.mjs`
+ * for its MAINTAIN codes, `app/shared/relate-words.mjs` for
+ * RELATE-038 and RELATE-039), which keep precedence where they exist.
+ * Every below-entry was written
  * ONLY from the error class's name, docstring and raise sites in the
  * engine — never from assumed behaviour.
  *
@@ -460,9 +461,19 @@ Object.assign(ERROR_SENTENCES, {
     next: 'Open the file with the Ember command line once (a write migrates it), then try again. Nothing was changed.',
   },
   'RELATE-017': {
+    title: 'The linking brain could not load.',
+    what: 'Linking loads a language model when it starts; the load failed on this computer. The optional package is installed, so this is not a missing part.',
+    next: 'Run Link items again. If it keeps happening, check the model setting in your environment. Nothing was linked.',
+  },
+  'RELATE-039': {
     title: 'The linking brain is not installed.',
     what: 'Linking needs the optional language package (sentence-transformers), which is missing on this computer.',
     next: 'Install the relate extra: python -m pip install -e ".[relate]". Then run Link items again.',
+  },
+  'RELATE-040': {
+    title: 'The linking brain took too long to load.',
+    what: 'The language model was still loading when the time Ember allows ran out (the first load may download a large file). Nothing is broken and nothing needs installing.',
+    next: 'Run Link items again and let it finish. If it keeps happening, check the connection or raise the load-timeout setting. Nothing was linked.',
   },
   'RELATE-032': {
     title: 'The AI service could not answer.',
@@ -594,6 +605,11 @@ Object.assign(ERROR_SENTENCES, {
     what: '`ember init` found a file there that is not a healthy Ember knowledge base already at the current format, so it changed nothing.',
     next: 'Pick a new file path to create, or check the existing file (Keep safe) before trying again.',
   },
+  'CAPTURE-022': {
+    title: 'The AI key is missing.',
+    what: 'Adding text asks the AI service for proposals, and no working API key was configured.',
+    next: 'Add the AI key in the app settings (or the environment), then try again. Your text is kept; nothing was created.',
+  },
   'RELATE-000': {
     title: 'A problem in the relate engine was reported.',
     what: 'Ember reported a general problem in the part that links items.',
@@ -693,6 +709,11 @@ Object.assign(ERROR_SENTENCES, {
     title: 'Reading the meaning numbers failed.',
     what: 'The stored meaning numbers (the search cache) could not be read.',
     next: 'Run Link items again. If it keeps happening, run the health check (Keep safe). Nothing was linked.',
+  },
+  'RELATE-038': {
+    title: 'The AI key is missing.',
+    what: 'Linking asks the AI service for proposals, and no working API key was configured.',
+    next: 'Add the AI key in the app settings (or the environment), then run Link items again. Nothing was linked.',
   },
   'MAINTAIN-000': {
     title: 'A problem in the maintain engine was reported.',

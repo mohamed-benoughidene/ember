@@ -163,20 +163,51 @@ test('pickRowFor reads statements only back from the list-items document (D3)', 
 
 /* ---------- relate-words ---------- */
 
-test('the missing-package refusal tells what to install, no bare code', async () => {
+test('RELATE-039 (the missing-package code): the install advice, never the retry branch', async () => {
   const { relateErrorSentence } = await loadWords();
-  const words = relateErrorSentence({ code: 'RELATE-017', name: 'EmbedderLoadFailed', where: 'x', detail: 'sentence_transformers is not installed' });
+  // Batch 6 (D-08): the package refusal carries its OWN code —
+  // RELATE-039, no longer RELATE-017. Branch keyed by code only;
+  // the wording is pinned by the words tables' own tests (I10).
+  const words = relateErrorSentence({ code: 'RELATE-039', name: 'EmbedderPackageMissing', where: 'x', detail: 'sentence_transformers is not installed' });
   assert.match(words.title, /not installed/);
   assert.match(words.next, /pip install -e "\.\[relate\]"/);
   assert.equal(words.openSetup, false);
   assert.equal(words.retry, false);
 });
 
-test('the missing key at the first relate opens the setup (the story-48 twin)', async () => {
+test('RELATE-040 (the load-timeout code): the retry branch, NOT the missing-package branch', async () => {
+  const { relateErrorSentence } = await loadWords();
+  const words = relateErrorSentence({ code: 'RELATE-040', name: 'EmbedderLoadTimedOut', where: 'x', detail: 'embedder load timed out' });
+  assert.equal(words.retry, true);
+  assert.equal(words.openSetup, false);
+  assert.ok(!/pip install/.test(words.next), 'a timeout must not tell the user to install anything');
+  // It reads its own table entry, not the family fallback (code 000 walk).
+  assert.ok(!words.what.includes('no plainer words'));
+});
+
+test('RELATE-017 (a failed load) rides its own table entry, with the retry advice', async () => {
+  const { relateErrorSentence } = await loadWords();
+  const words = relateErrorSentence({ code: 'RELATE-017', name: 'EmbedderLoadFailed', where: 'x', detail: 'model load failed' });
+  assert.equal(words.retry, true);
+  assert.ok(!/pip install/.test(words.next), 'a failed load is not a missing package');
+  assert.ok(!words.what.includes('no plainer words'));
+});
+
+test('RELATE-038 (the missing-key code) opens the setup (the story-48 twin)', async () => {
+  const { relateErrorSentence } = await loadWords();
+  // The engine raises its OWN code for a missing key — RELATE-038,
+  // no longer RELATE-035 with a detail string (D-08). Branch keyed by
+  // the code; asserted by the advice block, never the wording (I10).
+  const words = relateErrorSentence({ code: 'RELATE-038', name: 'ApiKeyMissing', where: 'x', detail: 'ai api key missing' });
+  assert.equal(words.openSetup, true);
+  assert.equal(words.retry, true);
+  assert.ok(!words.what.includes('no plainer words'));
+});
+
+test('RELATE-035 no longer reads the detail text: the setup path never opens from a detail string', async () => {
   const { relateErrorSentence } = await loadWords();
   const words = relateErrorSentence({ code: 'RELATE-035', name: 'ConfigMissing', where: 'x', detail: 'ai api key missing' });
-  assert.match(words.title, /AI connection/);
-  assert.equal(words.openSetup, true);
+  assert.equal(words.openSetup, false);
   assert.equal(words.retry, true);
 });
 
