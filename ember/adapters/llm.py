@@ -377,9 +377,12 @@ def build_link_proposer(env: Mapping[str, str] | None = None) -> OpenAiLinkPropo
     configured — its own dedicated code since Batch 6 (D-08), no longer the
     shared `ConfigMissing` (RELATE-035) — and `ConfigMissing` (RELATE-035)
     when `EMBER_AI_BASE_URL` is not a usable URL. The client is built with an
-    explicit timeout and
-    `max_retries=0`, so the only retry is the one `propose_links_with_retry`
-    owns.
+    explicit timeout and `max_retries=0` (Batch 7, Chunk 3): the provider SDK
+    itself never retries, and the only retry is the ONE policy inside
+    `OpenAiLinkProposer.propose_links` — at most `MAX_ATTEMPTS` attempts,
+    retry-after or backoff, one `TOTAL_CALL_BUDGET_SECONDS` total budget (see
+    the class docstring). The engine core's `propose_links_with_retry` makes
+    exactly one port call and does not retry.
     """
     values = os.environ if env is None else env
     validate_base_url(values, ConfigMissing)
@@ -483,8 +486,13 @@ def build_close_proposer(env: Mapping[str, str] | None = None) -> OpenAiClosePro
     Keys: `EMBER_AI_API_KEY` (or `OPENROUTER_API_KEY`), `EMBER_AI_MODEL`,
     `EMBER_AI_BASE_URL`. Raise `CloseAiConfigMissing` (MAINTAIN-020) when no
     API key is configured or when `EMBER_AI_BASE_URL` is not a usable URL.
-    The client is built with an explicit timeout and `max_retries=0`, so the
-    only retry is the one `propose_close_with_retry` owns.
+    The client is built with an explicit timeout and `max_retries=0` (Batch 7,
+    Chunk 3): the provider SDK itself never retries, and the only retry is
+    the ONE policy inside `OpenAiCloseProposer.propose_close` — at most
+    `MAX_ATTEMPTS` attempts, retry-after or backoff, one
+    `TOTAL_CALL_BUDGET_SECONDS` total budget (see the class docstring). The
+    engine core's `propose_close_with_retry` makes exactly one port call and
+    does not retry.
     """
     values = os.environ if env is None else env
     validate_base_url(values, CloseAiConfigMissing)

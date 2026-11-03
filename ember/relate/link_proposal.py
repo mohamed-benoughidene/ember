@@ -8,7 +8,6 @@ from typing import Protocol
 from pydantic import BaseModel, ValidationError
 
 from ember.relate.errors import (
-    AiCallFailed,
     AiResponseSchemaInvalid,
     ProposalSourceMismatch,
     TargetNotInCandidates,
@@ -96,14 +95,13 @@ def propose_links_with_retry(
     new_item: NewItem,
     candidates: list[NewItem],
 ) -> LinkProposalResponse:
-    """Call the port; on AiCallFailed retry ONCE; the second failure propagates.
+    """Call the port ONCE and propagate whatever it raises (Batch 7, Chunk 5).
 
-    AiResponseSchemaInvalid is NOT caught (no retry, RELATE-033).
+    The engine core does not retry and does not catch: the ONE retry policy
+    lives inside the adapter (`OpenAiLinkProposer.propose_links`). Keeping
+    the historical name so callers read unchanged.
     """
-    try:
-        return proposer.propose_links(new_item, candidates)
-    except AiCallFailed:
-        return proposer.propose_links(new_item, candidates)
+    return proposer.propose_links(new_item, candidates)
 
 
 def validate_proposals(
