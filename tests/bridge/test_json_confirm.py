@@ -146,6 +146,42 @@ def test_capture_edit_prompt_drift_is_unknown_never_mislabeled() -> None:
     assert event["choices"] == []
 
 
+def test_relate_unknown_prompt_drift_is_never_mislabeled() -> None:
+    """Story 9 (prompt-kind drift fails loud): prompt text that is not the
+    relate engine's real PROMPT constant is engine drift, so the kind says
+    `unknown` and the raw text stays in the event — it must not masquerade
+    as a real `choice` prompt."""
+    drift = "[y]es / [n]o (never asked by the relate engine)"
+
+    sink, stream = _sink()
+    confirm = JsonRelateConfirm(sink, stdin=io.StringIO('{"answer": "y"}\n'))
+    confirm.ask(drift)
+
+    event = _events(stream)[0]
+    assert event["event"] == "prompt"
+    assert event["kind"] == "unknown"
+    assert event["text"] == drift
+    assert event["choices"] == []
+
+
+def test_maintain_unknown_prompt_drift_is_never_mislabeled() -> None:
+    """Story 9 (prompt-kind drift fails loud): prompt text that is not the
+    maintain engine's real PROMPT constant is engine drift, so the kind
+    says `unknown` and the raw text stays in the event — it must not
+    masquerade as a real `choice` prompt."""
+    drift = "[y]es / [n]o / [q]uit / [x]extra"
+
+    sink, stream = _sink()
+    confirm = JsonMaintainConfirm(sink, stdin=io.StringIO('{"answer": "y"}\n'))
+    confirm.ask(drift)
+
+    event = _events(stream)[0]
+    assert event["event"] == "prompt"
+    assert event["kind"] == "unknown"
+    assert event["text"] == drift
+    assert event["choices"] == []
+
+
 def test_first_bad_line_reasks_once_then_accepts_the_good_answer() -> None:
     confirm, stream = _capture('not json at all\n{"answer": "e"}\n')
 

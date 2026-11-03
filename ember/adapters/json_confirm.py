@@ -65,7 +65,9 @@ from ember.bridge.block_parse import (
 )
 from ember.capture.confirm_write import PROMPT as CAPTURE_PROMPT
 from ember.capture.errors import UserAbort as CaptureUserAbort
+from ember.maintain.close_proposer import PROMPT as MAINTAIN_PROMPT
 from ember.maintain.errors import UserAbort as MaintainUserAbort
+from ember.relate.confirm_write import PROMPT as RELATE_PROMPT
 from ember.relate.errors import UserAbort as RelateUserAbort
 
 # The capture edit sub-prompts are built inline by the engine
@@ -259,7 +261,9 @@ class JsonRelateConfirm(_JsonConfirm):
     user_abort = RelateUserAbort
 
     def _prompt_kind(self, prompt: str) -> str:
-        return "choice"
+        if prompt == RELATE_PROMPT:
+            return "choice"
+        return "unknown"  # drift: fail loud, the raw text stays in the event
 
     def write(self, text: str) -> None:
         if text.startswith("Proposal "):
@@ -302,7 +306,9 @@ class JsonMaintainConfirm(_JsonConfirm):
             self._sink.echo(text)
 
     def _prompt_kind(self, prompt: str) -> str:
-        return "choice"
+        if prompt == MAINTAIN_PROMPT:
+            return "choice"
+        return "unknown"  # drift: fail loud, the raw text stays in the event
 
     def _flush(self) -> None:
         if not self._pending:
