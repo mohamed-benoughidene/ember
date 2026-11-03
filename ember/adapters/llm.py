@@ -9,7 +9,11 @@ the contract, which the tests pin and the app side assumes:
 
 * one provider HTTP request: `REQUEST_TIMEOUT_SECONDS` = 60 s below;
 * one whole `propose` call, retries included: `TOTAL_CALL_BUDGET_SECONDS`
-  = 90 s, enforced against the caller-injected clock. 90 s sits under the
+  = 90 s, enforced against the caller-injected clock — a next attempt
+  starts only when its WHOLE span (the wait plus one full request timeout)
+  still fits, so a hung provider reports the engine's timeout code well
+  under the budget instead of stacking two 60 s attempts past it. 90 s
+  sits under the
   app's capture idle limit of 120 s (`app/main/bridge-client.js`: one-shot
   reads wait 30 s; a `capture-source` write gets 120 s and is never retried;
   a confirm-session may sit inactive 120 s; a prompt may wait for the user
@@ -79,8 +83,10 @@ _API_KEY_VARS = ("EMBER_AI_API_KEY", "OPENROUTER_API_KEY")
 # The ONE capture retry policy (Batch 7, Chunk 2). At most 2 attempts, one
 # wait between them: a 429 reply's `retry-after` when the provider says so
 # (capped), otherwise exponential backoff with jitter. The whole call — all
-# attempts and waits — must stay inside one budget of 90 s (see the module
-# docstring for how that sits under the app's idle limits).
+# attempts and waits, retries included — must stay inside one budget of
+# 90 s: a next attempt starts only if its whole span (the wait plus one
+# full request timeout) still fits (see the module docstring for how that
+# sits under the app's idle limits).
 MAX_ATTEMPTS = 2
 BACKOFF_BASE_SECONDS = 2.0
 RETRY_AFTER_CAP_SECONDS = 30.0
@@ -117,10 +123,12 @@ class OpenAiItemProposer:
         The ONE retry policy (Batch 7, Chunk 2): at most `MAX_ATTEMPTS`
         attempts; when an attempt fails, wait once — the provider's
         `retry-after` for a 429 reply, capped at `RETRY_AFTER_CAP_SECONDS`,
-        otherwise exponential backoff with jitter — but never start a wait
-        that would push the whole call past `TOTAL_CALL_BUDGET_SECONDS` as
-        measured by the injected clock. When the budget is spent (or the
-        attempt limit is reached), the failure raises with its capture code.
+        otherwise exponential backoff with jitter — but never start a next
+        attempt unless its WHOLE span (the wait plus one full request
+        timeout, retries included) would keep the call inside
+        `TOTAL_CALL_BUDGET_SECONDS` as measured by the injected clock. When
+        the budget is spent (or the attempt limit is reached), the failure
+        raises with its capture code.
         Side effect: one or two HTTP requests to the provider.
         """
         started = self._clock()
@@ -158,8 +166,23 @@ class OpenAiItemProposer:
         )
 
     def _budget_spent(self, started: float, wait: float) -> bool:
-        """True when waiting `wait` and retrying would pass the one budget."""
-        return self._clock() - started + wait >= TOTAL_CALL_BUDGET_SECONDS
+        """True when the WHOLE next attempt no longer fits the one budget:
+        the wait plus one full request timeout would push the call past
+        `TOTAL_CALL_BUDGET_SECONDS` (retries included — the spec's "one
+        total time budget per AI call, retries included").
+
+        Arithmetic: an instant 429 leaves elapsed ≈ 0 s, its wait is 1 s
+        of backoff or a `retry-after` capped at `RETRY_AFTER_CAP_SECONDS`
+        (30 s), and one request timeout is 60 s, so the worst case
+        0 + 30 + 60 = 90 s ≤ 90 s still fits and attempt 2 happens as in
+        Chunk 2. Only an attempt that itself burned budget — a 60 s
+        request timeout: 60 + 1 + 60 = 121 s > 90 s — is refused, so the
+        policy raises at once without waiting and without retrying.
+        """
+        return (
+            self._clock() - started + wait + REQUEST_TIMEOUT_SECONDS
+            > TOTAL_CALL_BUDGET_SECONDS
+        )
 
 
 def _capture_ai_call_error(exc: OpenAIError, api_key: str | None) -> AiCallError:
@@ -204,9 +227,24 @@ def _retry_wait_seconds(exc: OpenAIError, attempt: int, jitter: Callable[[], flo
 def _budget_would_exceed(
     started: float, wait: float, clock: Callable[[], float]
 ) -> bool:
-    """True when waiting `wait` and retrying would pass the ONE budget of
-    `TOTAL_CALL_BUDGET_SECONDS`, as measured by the injected clock."""
-    return clock() - started + wait >= TOTAL_CALL_BUDGET_SECONDS
+    """True when the WHOLE next attempt no longer fits the ONE budget of
+    `TOTAL_CALL_BUDGET_SECONDS`, as measured by the injected clock: the
+    wait plus one full request timeout would push the call past the budget
+    (retries included — the spec's "one total time budget per AI call,
+    retries included").
+
+    Arithmetic: an instant 429 leaves elapsed ≈ 0 s, its wait is 1 s of
+    backoff or a `retry-after` capped at `RETRY_AFTER_CAP_SECONDS` (30 s),
+    and one request timeout is 60 s, so the worst case 0 + 30 + 60 = 90 s
+    ≤ 90 s still fits and attempt 2 happens as in Chunk 3. Only an
+    attempt that itself burned budget — a 60 s request timeout:
+    60 + 1 + 60 = 121 s > 90 s — is refused, so the policy raises at once
+    without waiting and without retrying.
+    """
+    return (
+        clock() - started + wait + REQUEST_TIMEOUT_SECONDS
+        > TOTAL_CALL_BUDGET_SECONDS
+    )
 
 
 def _send_with_one_retry(
@@ -222,11 +260,12 @@ def _send_with_one_retry(
     `OpenAiItemProposer.propose` (the capture path, Chunk 2): at most
     `MAX_ATTEMPTS` attempts; when an attempt fails, wait once — the
     provider's `retry-after` for a 429 reply, capped, otherwise exponential
-    backoff with jitter — but never start a wait that would push the whole
-    call past `TOTAL_CALL_BUDGET_SECONDS`. When the budget is spent (or the
-    attempt limit is reached), the family error `failure(exc)` builds is
-    raised. `send` performs one provider call; `failure` maps one failed
-    call to the caller's family error (it must not raise).
+    backoff with jitter — but never start a next attempt unless its WHOLE
+    span (the wait plus one full request timeout, retries included) would
+    keep the call inside `TOTAL_CALL_BUDGET_SECONDS`. When the budget is
+    spent (or the attempt limit is reached), the family error `failure(exc)`
+    builds is raised. `send` performs one provider call; `failure` maps one
+    failed call to the caller's family error (it must not raise).
     """
     started = clock()
     for attempt in range(1, MAX_ATTEMPTS + 1):
@@ -325,10 +364,12 @@ class OpenAiLinkProposer:
         The ONE retry policy (Batch 7, Chunk 3): at most `MAX_ATTEMPTS`
         attempts; when an attempt fails, wait once — the provider's
         `retry-after` for a 429 reply, capped at `RETRY_AFTER_CAP_SECONDS`,
-        otherwise exponential backoff with jitter — but never start a wait
-        that would push the whole call past `TOTAL_CALL_BUDGET_SECONDS` as
-        measured by the injected clock. When the budget is spent (or the
-        attempt limit is reached), the failure raises with its relate code.
+        otherwise exponential backoff with jitter — but never start a next
+        attempt unless its WHOLE span (the wait plus one full request
+        timeout, retries included) would keep the call inside
+        `TOTAL_CALL_BUDGET_SECONDS` as measured by the injected clock. When
+        the budget is spent (or the attempt limit is reached), the failure
+        raises with its relate code.
         Side effect: one or two HTTP requests to the provider.
         """
         response = _send_with_one_retry(
@@ -431,11 +472,13 @@ class OpenAiCloseProposer:
         The ONE retry policy (Batch 7, Chunk 3): at most `MAX_ATTEMPTS`
         attempts; when an attempt fails, wait once — the provider's
         `retry-after` for a 429 reply, capped at `RETRY_AFTER_CAP_SECONDS`,
-        otherwise exponential backoff with jitter — but never start a wait
-        that would push the whole call past `TOTAL_CALL_BUDGET_SECONDS` as
-        measured by the injected clock. When the budget is spent (or the
-        attempt limit is reached), the failure raises with its maintain
-        code. Side effect: one or two HTTP requests to the provider.
+        otherwise exponential backoff with jitter — but never start a next
+        attempt unless its WHOLE span (the wait plus one full request
+        timeout, retries included) would keep the call inside
+        `TOTAL_CALL_BUDGET_SECONDS` as measured by the injected clock. When
+        the budget is spent (or the attempt limit is reached), the failure
+        raises with its maintain code.
+        Side effect: one or two HTTP requests to the provider.
         """
         response = _send_with_one_retry(
             lambda: self._client.chat.completions.create(
