@@ -20,6 +20,8 @@ from ember.relate.errors import (
     ConfigMissing,
     EmbedderEncodeFailed,
     EmbedderLoadFailed,
+    EmbedderLoadTimedOut,
+    EmbedderPackageMissing,
     RelateError,
 )
 
@@ -28,31 +30,6 @@ DEFAULT_LOAD_TIMEOUT_SECONDS = 120.0
 MODEL_ENV = "EMBER_EMBEDDER_MODEL"
 LOAD_TIMEOUT_ENV = "EMBER_EMBEDDER_LOAD_TIMEOUT_SECONDS"
 _INSTALL_HINT = "pip install -e '.[relate]'"
-
-
-class EmbedderPackageMissing(RelateError):
-    """The optional embedder packages are not installed (Batch 6 D-08/I17).
-
-    Its own dedicated code RELATE-039: the fix is installing the `[relate]`
-    extra, wording the app previously read out of detail text under the
-    shared RELATE-017 code.
-    """
-
-    code = "RELATE-039"
-    name = "EmbedderPackageMissing"
-
-
-class EmbedderLoadTimedOut(RelateError):
-    """The model load thread was still alive after the join timeout
-    (Batch 6 D-08/I17).
-
-    Its own dedicated code RELATE-040: the fix is retrying, not installing
-    anything — different advice from the missing-package code RELATE-039 and
-    from the shared RELATE-017 load-failure code.
-    """
-
-    code = "RELATE-040"
-    name = "EmbedderLoadTimedOut"
 
 
 class SentenceTransformerEmbedder:
