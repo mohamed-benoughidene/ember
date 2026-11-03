@@ -109,8 +109,23 @@ class _FakeClient:
         self.chat = type("_Chat", (), {"completions": self.completions})()
 
 
-def _proposer(outcome: object, model: str = "test-model") -> OpenAiItemProposer:
-    return OpenAiItemProposer(_FakeClient(outcome), model)
+def _proposer(
+    outcome: object,
+    model: str = "test-model",
+    *,
+    sleep=None,
+    jitter=None,
+    clock=None,
+) -> OpenAiItemProposer:
+    """Build a proposer with the retry injectables faked out (no real
+    waiting, deterministic backoff) unless a test passes its own."""
+    return OpenAiItemProposer(
+        _FakeClient(outcome),
+        model,
+        sleep=sleep if sleep is not None else (lambda _seconds: None),
+        jitter=jitter if jitter is not None else (lambda: 0.0),
+        clock=clock if clock is not None else (lambda: 0.0),
+    )
 
 
 # --- request shape --------------------------------------------------------
@@ -251,6 +266,48 @@ def test_timeout_provider_failure_raises_the_capture_timed_out_code() -> None:
 
     assert isinstance(excinfo.value, AiTimeoutError)
     assert excinfo.value.code == AiTimeoutError.code
+
+
+# --- the one capture retry policy (Chunk 2) --------------------------------
+
+
+def test_429_retried_once_with_a_backoff_sleep_between_attempts() -> None:
+    """Chunk 2: a 429 is not fatal at once — the policy retries once. The
+    fake sees exactly 2 attempts, and the ONE wait between them goes
+    through the injected `sleep` (no real waiting in tests)."""
+    client = _FakeClient(_RateLimitedBoom("rate limit exceeded"))
+    sleeps: list[tuple[int, float]] = []
+
+    def controlled_sleep(seconds: float) -> None:
+        # Record how many calls the fake had seen when the sleep began.
+        sleeps.append((len(client.completions.calls), seconds))
+
+    proposer = OpenAiItemProposer(
+        client,
+        "test-model",
+        sleep=controlled_sleep,
+        jitter=lambda: 0.0,
+        clock=lambda: 0.0,
+    )
+
+    with pytest.raises(AiRateLimitError):
+        proposer.propose(RAW_TEXT, [])
+
+    assert len(client.completions.calls) == 2
+    # Exactly one sleep, and it happened AFTER attempt 1, BEFORE attempt 2.
+    assert len(sleeps) == 1
+    assert sleeps[0][0] == 1
+    assert 0 < sleeps[0][1]
+
+
+def test_propose_sends_temperature_zero() -> None:
+    """Chunk 2: capture sends temperature=0 (deterministic), through the
+    same policy that owns the retry."""
+    proposer = _proposer(_Response("[]"))
+
+    proposer.propose(RAW_TEXT, [])
+
+    assert proposer._client.completions.calls[0]["temperature"] == 0
 
 
 # --- config ---------------------------------------------------------------

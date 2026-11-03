@@ -3,11 +3,26 @@
 Points at the OpenRouter base URL by default (L1 section 0). The provider SDK
 and the request shape live here; the engine core only knows the port. The raw
 answer is checked with `parse_proposals` at this boundary (rule I9).
+
+ONE place for both sides' time limits (Batch 7, Chunk 2) — the engine side of
+the contract, which the tests pin and the app side assumes:
+
+* one provider HTTP request: `REQUEST_TIMEOUT_SECONDS` = 60 s below;
+* one whole `propose` call, retries included: `TOTAL_CALL_BUDGET_SECONDS`
+  = 90 s, enforced against the caller-injected clock. 90 s sits under the
+  app's capture idle limit of 120 s (`app/main/bridge-client.js`: one-shot
+  reads wait 30 s; a `capture-source` write gets 120 s and is never retried;
+  a confirm-session may sit inactive 120 s; a prompt may wait for the user
+  30 minutes). The relate session's dedicated client gets 10 min
+  (`app/main/relate-session.js:50`).
 """
 
 from __future__ import annotations
 
 import os
+import random
+import time
+from collections.abc import Callable
 from typing import Any, Mapping, Sequence
 from urllib.parse import urlparse
 
@@ -57,13 +72,34 @@ DEFAULT_BASE_URL = "https://openrouter.ai/api/v1"
 REQUEST_TIMEOUT_SECONDS = 60.0
 _API_KEY_VARS = ("EMBER_AI_API_KEY", "OPENROUTER_API_KEY")
 
+# The ONE capture retry policy (Batch 7, Chunk 2). At most 2 attempts, one
+# wait between them: a 429 reply's `retry-after` when the provider says so
+# (capped), otherwise exponential backoff with jitter. The whole call — all
+# attempts and waits — must stay inside one budget of 90 s (see the module
+# docstring for how that sits under the app's idle limits).
+MAX_ATTEMPTS = 2
+BACKOFF_BASE_SECONDS = 2.0
+RETRY_AFTER_CAP_SECONDS = 30.0
+TOTAL_CALL_BUDGET_SECONDS = 90.0
+
 
 class OpenAiItemProposer:
     """`ItemProposerPort` on the OpenAI SDK, OpenRouter base URL by default."""
 
-    def __init__(self, client: OpenAI, model: str) -> None:
+    def __init__(
+        self,
+        client: OpenAI,
+        model: str,
+        *,
+        sleep: Callable[[float], None] = time.sleep,
+        jitter: Callable[[], float] = random.random,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
         self._client = client
         self._model = model
+        self._sleep = sleep
+        self._jitter = jitter
+        self._clock = clock
 
     def propose(self, raw_text: str, context: list[ContextItem]) -> ProposalResponse:
         """Return the raw provider answer and the proposals checked from it.
@@ -72,25 +108,78 @@ class OpenAiItemProposer:
         message when the call fails — a 429 reply is `AiRateLimitError`
         (CAPTURE-024) and a request timeout is `AiTimeoutError` (CAPTURE-025) —
         and `AiSchemaError` (CAPTURE-009) when the answer cannot be read.
-        Side effect: one HTTP request to the provider.
+        Temperature is 0.0.
+
+        The ONE retry policy (Batch 7, Chunk 2): at most `MAX_ATTEMPTS`
+        attempts; when an attempt fails, wait once — the provider's
+        `retry-after` for a 429 reply, capped at `RETRY_AFTER_CAP_SECONDS`,
+        otherwise exponential backoff with jitter — but never start a wait
+        that would push the whole call past `TOTAL_CALL_BUDGET_SECONDS` as
+        measured by the injected clock. When the budget is spent (or the
+        attempt limit is reached), the failure raises with its capture code.
+        Side effect: one or two HTTP requests to the provider.
         """
-        try:
-            response = self._client.chat.completions.create(
-                model=self._model,
-                messages=_messages(raw_text, context),
-            )
-        except OpenAIError as exc:
-            raise _capture_ai_call_error_class(exc)(
-                "ai call fail",
-                reason=type(exc).__name__,
-                status=getattr(exc, "status_code", "?"),
-                detail=_without_secret(str(exc), self._client.api_key),
-            ) from exc
-        content = _content(response)
-        return ProposalResponse(
-            raw_response=content,
-            batch=parse_proposals(content, raw_text),
+        started = self._clock()
+        for attempt in range(1, MAX_ATTEMPTS + 1):
+            try:
+                response = self._client.chat.completions.create(
+                    model=self._model,
+                    messages=_messages(raw_text, context),
+                    temperature=0.0,
+                )
+            except OpenAIError as exc:
+                if attempt >= MAX_ATTEMPTS:
+                    raise _capture_ai_call_error(exc, self._client.api_key) from exc
+                wait = self._retry_wait(exc, attempt)
+                if self._budget_spent(started, wait):
+                    raise _capture_ai_call_error(exc, self._client.api_key) from exc
+                self._sleep(wait)
+            else:
+                content = _content(response)
+                return ProposalResponse(
+                    raw_response=content,
+                    batch=parse_proposals(content, raw_text),
+                )
+        raise AssertionError("unreachable: the attempt loop always returns or raises")
+
+    def _retry_wait(self, exc: OpenAIError, attempt: int) -> float:
+        """Seconds to wait before the next attempt: the provider's
+        `retry-after` when it gives one (429 replies do), capped; otherwise
+        exponential backoff, halved-to-full by the injected jitter."""
+        retry_after = _retry_after_seconds(exc)
+        if retry_after is not None:
+            return min(retry_after, RETRY_AFTER_CAP_SECONDS)
+        return BACKOFF_BASE_SECONDS * 2 ** (attempt - 1) * (
+            0.5 + 0.5 * self._jitter()
         )
+
+    def _budget_spent(self, started: float, wait: float) -> bool:
+        """True when waiting `wait` and retrying would pass the one budget."""
+        return self._clock() - started + wait >= TOTAL_CALL_BUDGET_SECONDS
+
+
+def _capture_ai_call_error(exc: OpenAIError, api_key: str | None) -> AiCallError:
+    """Wrap one failed provider call in its capture code (Chunk 1 kept)."""
+    return _capture_ai_call_error_class(exc)(
+        "ai call fail",
+        reason=type(exc).__name__,
+        status=getattr(exc, "status_code", "?"),
+        detail=_without_secret(str(exc), api_key),
+    )
+
+
+def _retry_after_seconds(exc: OpenAIError) -> float | None:
+    """Read `retry-after` (seconds) off a 429-shaped provider error, when
+    the SDK error carries a response with headers. Absent or unreadable
+    means "not given": the caller falls back to backoff."""
+    headers = getattr(getattr(exc, "response", None), "headers", None)
+    value = headers.get("retry-after") if headers is not None else None
+    if value is None:
+        return None
+    try:
+        return max(float(value), 0.0)
+    except (TypeError, ValueError):
+        return None
 
 
 def validate_base_url(
@@ -124,8 +213,11 @@ def build_item_proposer(
     `AiCallError` (CAPTURE-008) — and `BaseUrlInvalid` (CAPTURE-019) when
     `EMBER_AI_BASE_URL` is not a usable URL.
 
-    The client is built with an explicit timeout and `max_retries=0`, so the
-    only retry is the one `propose_items` owns (plan section 5, rule I15).
+    The client is built with an explicit timeout and `max_retries=0` (Chunk
+    2): the provider SDK itself never retries, and the only retry is the ONE
+    policy inside `OpenAiItemProposer.propose` — 2 attempts, retry-after or
+    backoff, one 90 s total budget (see the module docstring). The engine
+    core's `propose_items` makes exactly one port call and does not retry.
     """
     values = os.environ if env is None else env
     validate_base_url(values, BaseUrlInvalid)
