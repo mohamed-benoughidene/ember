@@ -743,6 +743,16 @@ Object.assign(ERROR_SENTENCES, {
     what: 'Linking asks the AI service for proposals, and no working API key was configured.',
     next: 'Add the AI key in the app settings (or the environment), then run Link items again. Nothing was linked.',
   },
+  'RELATE-041': {
+    title: 'The AI service is asking us to slow down.',
+    what: 'Linking asked the AI service for proposals, and it received too many requests (a rate limit). Ember waited once and asked again; the answer was still refused.',
+    next: 'Wait a moment, then run Link items again. Nothing was linked.',
+  },
+  'RELATE-042': {
+    title: 'The AI service took too long to answer.',
+    what: 'Linking waited for the AI service, and no answer arrived in time. Ember waited once and asked again; still no answer.',
+    next: 'Wait a moment, then run Link items again. Nothing was linked.',
+  },
   'MAINTAIN-000': {
     title: 'A problem in the maintain engine was reported.',
     what: 'Ember reported a general problem in the part that keeps items current.',
@@ -966,6 +976,16 @@ Object.assign(ERROR_SENTENCES, {
     title: 'This undo was stopped before writing.',
     what: 'The item or link changed in the moment between checking and writing, so Ember stopped rather than overwrite the newer change. Nothing was written and nothing was half-undone.',
     next: 'Read the item’s current state in Look up, then undo again only if that is still what you want.',
+  },
+  'MAINTAIN-029': {
+    title: 'The AI service is asking us to slow down.',
+    what: 'The sweep asked the AI service for close suggestions, and it received too many requests (a rate limit). Ember waited once and asked again; the answer was still refused. The changes the sweep already made stay in your file, and the ledger records them.',
+    next: 'Wait a moment, then run Clean up again.',
+  },
+  'MAINTAIN-030': {
+    title: 'The AI service took too long to answer.',
+    what: 'The sweep waited for the AI service, and no answer arrived in time. Ember waited once and asked again; still no answer. The changes the sweep already made stay in your file, and the ledger records them.',
+    next: 'Wait a moment, then run Clean up again.',
   },
   /* Forced-path companion of story 53 ("verified" is Assumption-only):
      the screen keeps the button off, so this only shows if the rule is

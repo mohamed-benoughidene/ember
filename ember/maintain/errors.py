@@ -148,3 +148,31 @@ class GroupRecordInvalid(MaintainError):
 class InverseTargetMoved(MaintainError):
     code = "MAINTAIN-028"
     name = "InverseTargetMoved"
+
+
+class CloseAiRateLimited(CloseAiCallFailed):
+    """The AI service refused the close-suggestion request with a 429 reply
+    (Batch 7, Chunk 3 — `OpenAiCloseProposer`'s own retry policy).
+
+    Its own dedicated code MAINTAIN-029: the fix is waiting and retrying,
+    different advice from the shared MAINTAIN-018 call-failure code the
+    failure previously carried. Carries `item_id` like its base (I19).
+    Subclasses `CloseAiCallFailed`, so only the base ever needs catching.
+    """
+
+    code = "MAINTAIN-029"
+    name = "CloseAiRateLimited"
+
+
+class CloseAiCallTimedOut(CloseAiCallFailed):
+    """The close-suggestion request timed out waiting for the AI service
+    (Batch 7, Chunk 3 — `OpenAiCloseProposer`'s own retry policy).
+
+    Its own dedicated code MAINTAIN-030: the fix is retrying after a pause,
+    different advice from the shared MAINTAIN-018 call-failure code. Carries
+    `item_id` like its base (I19). Subclasses `CloseAiCallFailed`, so only
+    the base ever needs catching.
+    """
+
+    code = "MAINTAIN-030"
+    name = "CloseAiCallTimedOut"
