@@ -28,6 +28,10 @@ MODEL_CHANGED_LINE = (
 CONTENT_TOP_K = 10
 FLAT_COSINE = 0.5
 METADATA_WINDOW = timedelta(days=30)
+# Spec line 63: at most this many candidates reach the relate AI, chosen
+# dense first, then graph, then labels. This is the planned initial value,
+# tuned after the batch (decision I11).
+CANDIDATE_POOL_CAP = 40
 
 
 class Signals(BaseModel):
@@ -74,14 +78,17 @@ def build_candidate_pool(
     - `RELATE-017 EmbedderLoadFailed` if the model failed to load.
 
     Side effects: may upsert vectors into `item_embeddings`, and may wipe the
-    cache (returning `warning`) when the cached model differs from the active
-    model. The caller prints `warning`; this module writes no output itself.
+    cache (returning `warning`) when the universe is non-empty and the cached
+    model differs from the active model. On an empty universe nothing runs:
+    no model check, no wipe, no warning. The returned pool carries at most
+    `CANDIDATE_POOL_CAP` ranked candidates. The caller prints `warning`; this
+    module writes no output itself.
     """
     model = embedder.model_name()
-    warning = _model_change_warning(embedding_store, model=model)
     items = loaded.universe.items
     if not items:
-        return Pool.empty(warning=warning)
+        return Pool.empty()
+    warning = _model_change_warning(embedding_store, model=model)
     new_item = loaded.new_item
     dimension = embedder.dim()
     new_vector = _resolve_vector(
@@ -99,7 +106,7 @@ def build_candidate_pool(
     metadata = _metadata_signal(items, new_item)
     signals = Signals(content=content, graph=graph, metadata=metadata)
     return Pool(
-        ranked=_merge(items, signals),
+        ranked=_cap_ranked(_merge(items, signals)),
         counts={
             "dense": len(signals.content),
             "graph": len(signals.graph),
@@ -264,6 +271,23 @@ def _merge(items: list[NewItem], signals: Signals) -> list[RankedCandidate]:
         )
         for item_id in order
     ]
+
+
+def _cap_ranked(ranked: list[RankedCandidate]) -> list[RankedCandidate]:
+    """Cap the pool, keeping dense candidates first, then graph, then labels.
+
+    Within each source band the merged order (cosine descending, then item id
+    ascending) decides who survives; the survivors keep the merged order.
+    """
+    if len(ranked) <= CANDIDATE_POOL_CAP:
+        return ranked
+    kept = [
+        candidate
+        for kind in (SignalKind.dense, SignalKind.graph, SignalKind.metadata)
+        for candidate in ranked
+        if candidate.source is kind
+    ][:CANDIDATE_POOL_CAP]
+    return sorted(kept, key=lambda candidate: (-candidate.cosine, candidate.item.id))
 
 
 def _cosine(left: list[float], right: list[float], *, item_id: int) -> float:
