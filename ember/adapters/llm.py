@@ -50,12 +50,16 @@ from ember.maintain.close_proposer import (
 )
 from ember.maintain.errors import (
     CloseAiCallFailed,
+    CloseAiCallTimedOut,
     CloseAiConfigMissing,
+    CloseAiRateLimited,
     CloseAiSchemaInvalid,
 )
 from ember.errors import scrub_secrets
 from ember.relate.errors import (
     AiCallFailed,
+    AiCallTimedOut,
+    AiRateLimited,
     AiResponseSchemaInvalid,
     ApiKeyMissing as RelateApiKeyMissing,
     ConfigMissing,
@@ -182,6 +186,63 @@ def _retry_after_seconds(exc: OpenAIError) -> float | None:
         return None
 
 
+def _retry_wait_seconds(exc: OpenAIError, attempt: int, jitter: Callable[[], float]) -> float:
+    """The ONE policy's wait, in seconds (Batch 7, Chunk 3). Mirrors
+    `OpenAiItemProposer._retry_wait` (the capture path, Chunk 2) exactly —
+    the provider's `retry-after` when it gives one (429 replies do),
+    capped; otherwise exponential backoff, halved-to-full by the injected
+    jitter. The capture method stays untouched on its chunk boundary; the
+    shared constants above keep this the ONE policy."""
+    retry_after = _retry_after_seconds(exc)
+    if retry_after is not None:
+        return min(retry_after, RETRY_AFTER_CAP_SECONDS)
+    return BACKOFF_BASE_SECONDS * 2 ** (attempt - 1) * (
+        0.5 + 0.5 * jitter()
+    )
+
+
+def _budget_would_exceed(
+    started: float, wait: float, clock: Callable[[], float]
+) -> bool:
+    """True when waiting `wait` and retrying would pass the ONE budget of
+    `TOTAL_CALL_BUDGET_SECONDS`, as measured by the injected clock."""
+    return clock() - started + wait >= TOTAL_CALL_BUDGET_SECONDS
+
+
+def _send_with_one_retry(
+    send: Callable[[], Any],
+    failure: Callable[[OpenAIError], EmberError],
+    *,
+    sleep: Callable[[float], None],
+    jitter: Callable[[], float],
+    clock: Callable[[], float],
+) -> Any:
+    """The ONE retry policy (Batch 7, Chunk 3) around a provider send, for
+    the relate and maintain proposers — the same loop as
+    `OpenAiItemProposer.propose` (the capture path, Chunk 2): at most
+    `MAX_ATTEMPTS` attempts; when an attempt fails, wait once — the
+    provider's `retry-after` for a 429 reply, capped, otherwise exponential
+    backoff with jitter — but never start a wait that would push the whole
+    call past `TOTAL_CALL_BUDGET_SECONDS`. When the budget is spent (or the
+    attempt limit is reached), the family error `failure(exc)` builds is
+    raised. `send` performs one provider call; `failure` maps one failed
+    call to the caller's family error (it must not raise).
+    """
+    started = clock()
+    for attempt in range(1, MAX_ATTEMPTS + 1):
+        try:
+            return send()
+        except OpenAIError as exc:
+            family_error = failure(exc)
+            if attempt >= MAX_ATTEMPTS:
+                raise family_error from exc
+            wait = _retry_wait_seconds(exc, attempt, jitter)
+            if _budget_would_exceed(started, wait, clock):
+                raise family_error from exc
+            sleep(wait)
+    raise AssertionError("unreachable: the attempt loop always returns or raises")
+
+
 def validate_base_url(
     env: Mapping[str, str], error_class: type[Exception]
 ) -> None:
@@ -236,37 +297,76 @@ def build_item_proposer(
 class OpenAiLinkProposer:
     """`LinkProposerPort` on the OpenAI SDK, OpenRouter base URL by default."""
 
-    def __init__(self, client: OpenAI, model: str) -> None:
+    def __init__(
+        self,
+        client: OpenAI,
+        model: str,
+        *,
+        sleep: Callable[[float], None] = time.sleep,
+        jitter: Callable[[], float] = random.random,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
         self._client = client
         self._model = model
+        self._sleep = sleep
+        self._jitter = jitter
+        self._clock = clock
 
     def propose_links(
         self, new_item: NewItem, candidates: list[NewItem]
     ) -> LinkProposalResponse:
         """Return the raw provider answer and the proposals checked from it.
 
-        Raise `AiCallFailed` (RELATE-032) when the call fails, and
-        `AiResponseSchemaInvalid` (RELATE-033) when the answer cannot be read.
-        Temperature is 0.0.
+        Raise `AiCallFailed` (RELATE-032) when the call fails — a 429 reply
+        is `AiRateLimited` (RELATE-041) and a request timeout is
+        `AiCallTimedOut` (RELATE-042) — and `AiResponseSchemaInvalid`
+        (RELATE-033) when the answer cannot be read. Temperature is 0.0.
+
+        The ONE retry policy (Batch 7, Chunk 3): at most `MAX_ATTEMPTS`
+        attempts; when an attempt fails, wait once — the provider's
+        `retry-after` for a 429 reply, capped at `RETRY_AFTER_CAP_SECONDS`,
+        otherwise exponential backoff with jitter — but never start a wait
+        that would push the whole call past `TOTAL_CALL_BUDGET_SECONDS` as
+        measured by the injected clock. When the budget is spent (or the
+        attempt limit is reached), the failure raises with its relate code.
+        Side effect: one or two HTTP requests to the provider.
         """
-        try:
-            response = self._client.chat.completions.create(
+        response = _send_with_one_retry(
+            lambda: self._client.chat.completions.create(
                 model=self._model,
                 messages=_link_messages(new_item, candidates),
                 temperature=0.0,
-            )
-        except OpenAIError as exc:
-            raise AiCallFailed(
-                "ai call fail",
-                reason=type(exc).__name__,
-                status=getattr(exc, "status_code", "?"),
-                detail=_without_secret(str(exc), self._client.api_key),
-            ) from exc
+            ),
+            lambda exc: _relate_ai_call_error(exc, self._client.api_key),
+            sleep=self._sleep,
+            jitter=self._jitter,
+            clock=self._clock,
+        )
         content = _link_content(response)
         return LinkProposalResponse(
             raw_response=content,
             proposals=parse_link_proposals(content),
         )
+
+
+def _relate_ai_call_error(exc: OpenAIError, api_key: str | None) -> AiCallFailed:
+    """Wrap one failed provider call in its relate code (Chunk 3): a 429
+    reply is `AiRateLimited` (RELATE-041) and a request timeout is
+    `AiCallTimedOut` (RELATE-042); everything else keeps the shared
+    call-failure code RELATE-032. All three are `AiCallFailed` subclasses,
+    so only one base ever needs catching."""
+    if getattr(exc, "status_code", None) == 429:
+        error_class: type[AiCallFailed] = AiRateLimited
+    elif isinstance(exc, APITimeoutError):
+        error_class = AiCallTimedOut
+    else:
+        error_class = AiCallFailed
+    return error_class(
+        "ai call fail",
+        reason=type(exc).__name__,
+        status=getattr(exc, "status_code", "?"),
+        detail=_without_secret(str(exc), api_key),
+    )
 
 
 def build_link_proposer(env: Mapping[str, str] | None = None) -> OpenAiLinkProposer:
@@ -300,39 +400,80 @@ def build_link_proposer(env: Mapping[str, str] | None = None) -> OpenAiLinkPropo
 class OpenAiCloseProposer:
     """`CloseProposerPort` on the OpenAI SDK, OpenRouter base URL by default."""
 
-    def __init__(self, client: OpenAI, model: str) -> None:
+    def __init__(
+        self,
+        client: OpenAI,
+        model: str,
+        *,
+        sleep: Callable[[float], None] = time.sleep,
+        jitter: Callable[[], float] = random.random,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
         self._client = client
         self._model = model
+        self._sleep = sleep
+        self._jitter = jitter
+        self._clock = clock
 
     def propose_close(self, candidate: StaleCandidate) -> CloseProposalResponse:
         """Return the raw provider answer and the proposal checked from it.
 
-        Raise `CloseAiCallFailed` (MAINTAIN-018) when the call fails (carries
-        `item_id` and the provider status), and `CloseAiSchemaInvalid`
+        Raise `CloseAiCallFailed` (MAINTAIN-018) when the call fails — a 429
+        reply is `CloseAiRateLimited` (MAINTAIN-029) and a request timeout is
+        `CloseAiCallTimedOut` (MAINTAIN-030) — and `CloseAiSchemaInvalid`
         (MAINTAIN-019) when the answer cannot be read (I9: the raw answer is
-        checked at this boundary with `parse_close_proposal`). Temperature is
-        0.0. Side effect: one HTTP request to the provider.
+        checked at this boundary with `parse_close_proposal`). Every call
+        failure carries `item_id` (I19). Temperature is 0.0.
+
+        The ONE retry policy (Batch 7, Chunk 3): at most `MAX_ATTEMPTS`
+        attempts; when an attempt fails, wait once — the provider's
+        `retry-after` for a 429 reply, capped at `RETRY_AFTER_CAP_SECONDS`,
+        otherwise exponential backoff with jitter — but never start a wait
+        that would push the whole call past `TOTAL_CALL_BUDGET_SECONDS` as
+        measured by the injected clock. When the budget is spent (or the
+        attempt limit is reached), the failure raises with its maintain
+        code. Side effect: one or two HTTP requests to the provider.
         """
-        try:
-            response = self._client.chat.completions.create(
+        response = _send_with_one_retry(
+            lambda: self._client.chat.completions.create(
                 model=self._model,
                 messages=_close_messages(candidate),
                 temperature=0.0,
-            )
-        except OpenAIError as exc:
-            raise CloseAiCallFailed(
-                "ai call fail",
-                item_id=candidate.item_id,
-                reason=type(exc).__name__,
-                status=getattr(exc, "status_code", "?"),
-                detail=_without_secret(str(exc), self._client.api_key),
-            ) from exc
+            ),
+            lambda exc: _maintain_ai_call_error(exc, self._client.api_key, candidate.item_id),
+            sleep=self._sleep,
+            jitter=self._jitter,
+            clock=self._clock,
+        )
         content = _close_content(response, candidate.item_id)
         try:
             proposal = parse_close_proposal(content)
         except CloseAiSchemaInvalid as exc:
             raise CloseAiSchemaInvalid(str(exc), item_id=candidate.item_id) from exc
         return CloseProposalResponse(raw_response=content, proposal=proposal)
+
+
+def _maintain_ai_call_error(
+    exc: OpenAIError, api_key: str | None, item_id: int
+) -> CloseAiCallFailed:
+    """Wrap one failed provider call in its maintain code (Chunk 3): a 429
+    reply is `CloseAiRateLimited` (MAINTAIN-029) and a request timeout is
+    `CloseAiCallTimedOut` (MAINTAIN-030); everything else keeps the shared
+    call-failure code MAINTAIN-018. All three are `CloseAiCallFailed`
+    subclasses, so only one base ever needs catching."""
+    if getattr(exc, "status_code", None) == 429:
+        error_class: type[CloseAiCallFailed] = CloseAiRateLimited
+    elif isinstance(exc, APITimeoutError):
+        error_class = CloseAiCallTimedOut
+    else:
+        error_class = CloseAiCallFailed
+    return error_class(
+        "ai call fail",
+        item_id=item_id,
+        reason=type(exc).__name__,
+        status=getattr(exc, "status_code", "?"),
+        detail=_without_secret(str(exc), api_key),
+    )
 
 
 def build_close_proposer(env: Mapping[str, str] | None = None) -> OpenAiCloseProposer:
