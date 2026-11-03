@@ -78,7 +78,7 @@ from ember.relate.errors import (
     SchemaOutdated,
 )
 from ember.relate.rows import ChangeLogEntry, GroupIdPort, Link, NewItem
-from ember.relate.vector_format import pack_vector, unpack_vector
+from ember.relate.vector_format import VECTOR_FORMAT, pack_vector, unpack_vector
 
 _MIGRATIONS_MODULE = "ember.adapters.migrations"
 
@@ -2947,7 +2947,7 @@ class SqliteEmbedderStore:
                 # defines: little-endian float32. Pre-015 rows (and files not
                 # yet migrated, which lack the column) read the same float32,
                 # so NULL/missing/`float32` all mean one format.
-                (item_id, blob, model_name, timestamp, "float32"),
+                (item_id, blob, model_name, timestamp, VECTOR_FORMAT),
             )
             self._conn.commit()
         except sqlite3.Error as exc:

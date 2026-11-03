@@ -32,3 +32,10 @@ def unpack_vector(blob: bytes) -> list[float]:
     if sys.byteorder != "little":
         values.byteswap()
     return values.tolist()
+
+
+VECTOR_FORMAT = "float32"
+"""The ONE cache byte format this module defines, as written into the
+`item_embeddings.vector_format` tag column (migration 015). Pre-015 rows
+(and files not yet migrated, which lack the column) read the same float32,
+so NULL/missing/`float32` all mean one format."""
