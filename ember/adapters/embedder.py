@@ -29,6 +29,7 @@ DEFAULT_MODEL = "bge-base-en-v1.5"
 DEFAULT_LOAD_TIMEOUT_SECONDS = 120.0
 MODEL_ENV = "EMBER_EMBEDDER_MODEL"
 LOAD_TIMEOUT_ENV = "EMBER_EMBEDDER_LOAD_TIMEOUT_SECONDS"
+OFFLINE_ENV = "HF_HUB_OFFLINE"
 _INSTALL_HINT = "pip install -e '.[relate]'"
 
 
@@ -42,11 +43,30 @@ class SentenceTransformerEmbedder:
     configured short name unchanged so the `item_embeddings` cache key stays
     stable across environments.
 
+    In offline mode (`HF_HUB_OFFLINE`) a model missing from the local
+    cache raises `EmbedderLoadFailed` (RELATE-017) at once, so the
+    load thread never starts and no download is attempted (Chunk 14).
+
     Raise `EmbedderLoadFailed` (RELATE-017) when the model cannot load.
     """
 
-    def __init__(self, model_name: str, *, load_timeout: float = 120.0) -> None:
+    def __init__(
+        self,
+        model_name: str,
+        *,
+        load_timeout: float = 120.0,
+        env: Mapping[str, str] | None = None,
+    ) -> None:
         self._model_name = model_name
+        values = os.environ if env is None else env
+        if _is_offline(values) and not _model_is_cached(
+            model_name, _resolve_model_id(model_name)
+        ):
+            raise EmbedderLoadFailed(
+                f"model {model_name} is missing from the local cache and the "
+                f"environment is offline; no download was started",
+                model=model_name,
+            )
         self._model = _load_model(model_name, load_timeout)
 
     def embed(self, texts: list[str]) -> list[list[float]]:
@@ -100,7 +120,8 @@ def validate_embedder_config(
 
     Input: an environment mapping (defaults to `os.environ`).
     Output: the parsed load timeout in seconds.
-    Raises: `ConfigMissing` (RELATE-035) when the timeout is not a number, and
+    Raises: `ConfigMissing` (RELATE-035) when the timeout is not a positive
+    number, and
     `EmbedderPackageMissing` (RELATE-039) when `sentence_transformers` or
     `torch` is not installed.
     Side effects: none; no model is loaded and nothing is imported.
@@ -124,33 +145,79 @@ def build_embedder(env: Mapping[str, str] | None = None) -> EmbedderPort:
     Keys: `EMBER_EMBEDDER_MODEL` (default `bge-base-en-v1.5`) and
     `EMBER_EMBEDDER_LOAD_TIMEOUT_SECONDS` (default 120).
 
-    Raises `ConfigMissing` (RELATE-035) for a bad timeout,
+    Raises `ConfigMissing` (RELATE-035) for a bad (non-positive or
+    non-numeric) timeout,
     `EmbedderPackageMissing` (RELATE-039) for a missing package,
     `EmbedderLoadFailed` (RELATE-017) for a failed model load, and
     `EmbedderLoadTimedOut` (RELATE-040) when the load is still running past
-    the timeout. Mirrors the factory style of `build_item_proposer` in the
-    LLM adapter.
+    the timeout. With `HF_HUB_OFFLINE` set and the model missing from the
+    local cache, `EmbedderLoadFailed` raises at once — before the load
+    thread starts (Chunk 14). Mirrors the factory style of
+    `build_item_proposer` in the LLM adapter.
 
     Output: an `EmbedderPort`. Side effects: loads the model, which may
-    download weights and blocks up to the configured timeout. No DB I/O.
+    download weights and blocks up to the configured timeout unless the
+    offline fail-fast above applies first. No DB I/O.
     """
     values = os.environ if env is None else env
     timeout = _parse_timeout(values.get(LOAD_TIMEOUT_ENV))
     model_name = values.get(MODEL_ENV, DEFAULT_MODEL)
-    return SentenceTransformerEmbedder(model_name, load_timeout=timeout)
+    return SentenceTransformerEmbedder(model_name, load_timeout=timeout, env=values)
 
 
 def _parse_timeout(raw: str | None) -> float:
     if raw is None:
         return DEFAULT_LOAD_TIMEOUT_SECONDS
     try:
-        return float(raw)
+        timeout = float(raw)
     except ValueError as exc:
         raise ConfigMissing(
             f"{LOAD_TIMEOUT_ENV} must be a number",
             var=LOAD_TIMEOUT_ENV,
             value=raw,
         ) from exc
+    if timeout <= 0:
+        raise ConfigMissing(
+            f"{LOAD_TIMEOUT_ENV} must be a positive number",
+            var=LOAD_TIMEOUT_ENV,
+            value=raw,
+        )
+    return timeout
+
+
+def _is_offline(values: Mapping[str, str]) -> bool:
+    """Return whether `HF_HUB_OFFLINE` turns the hub offline.
+
+    The truthy words the hub library itself accepts (`1`, `on`, `yes`,
+    `true`, case-insensitive); unset, `0` or any other value means online.
+    """
+    return values.get(OFFLINE_ENV, "").strip().lower() in ("1", "on", "yes", "true")
+
+
+def _model_is_cached(model_name: str, resolved_model_id: str) -> bool:
+    """Return whether the model is usable without any network access.
+
+    A model string naming an existing local directory is cached by
+    definition (`sentence-transformers` loads local paths directly). All
+    other names are looked up in the local Hugging Face disk cache with
+    `scan_cache_dir`, which is purely local (no network). The hub import is
+    lazy, exactly like `sentence_transformers` (module docstring), so the
+    suite keeps working without the `relate` extra. This function is the
+    monkeypatch seam for the offline tests (Chunk 14, decisions N21).
+    """
+    if os.path.isdir(model_name):
+        return True
+    try:
+        from huggingface_hub import scan_cache_dir
+    except Exception:  # noqa: BLE001 - hub extra absent: there is no cache info
+        return False
+    try:
+        cached_repos = scan_cache_dir().repos
+    except Exception:  # noqa: BLE001 - an unreadable cache counts as no model
+        return False
+    return any(
+        repo.repo_id in (resolved_model_id, model_name) for repo in cached_repos
+    )
 
 
 def _load_model(model_name: str, load_timeout: float) -> Any:
