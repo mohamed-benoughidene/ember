@@ -1,6 +1,6 @@
 # T50 — the live test: every button, one pass
 
-You are testing the **installed app** (Ember 0.3.0 from the `.deb`).
+You are testing the **installed app** (Ember 0.3.1 from the `.deb`).
 Goal: press every button once and compare what happens with "you should
 see". Anything different — even small — write it down **with the step
 number**. Each difference becomes one fix ticket, same as every finding
@@ -200,7 +200,7 @@ Before you start (5 minutes):
 
 ## 10. The menu bar, top to bottom
 
-52. **Ember** menu: **About Ember** (font credits + version 0.3.0),
+52. **Ember** menu: **About Ember** (font credits + version 0.3.1),
     **Settings…**, **Hide** (minimises on Linux), **Quit** — try each
     (Quit last, reopen after).
 53. **File**: **Add text…** (opens the quick popup), **Open a knowledge
