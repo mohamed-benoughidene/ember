@@ -420,6 +420,7 @@ Earlier logo and character images, kept for history.
 - `ember/adapters/migrations/013_add_change_log_group_id.sql`: Adds the `change_log.group_id` column (nullable INTEGER, no default, no rebuild, no backfill). One undo group id = one human action's shared ledger stamp (engine-undo-plan §5.1). Pre-013 rows, sweep rows and capture/relate rows read NULL.
 - `ember/adapters/migrations/014_add_change_log_source_id.sql`: Batch 6 — adds the nullable `change_log.source_id` column holding the source a forgotten-note ledger line refers to (N14, D-07); no backfill, no rename, pre-014 rows read NULL.
 - `ember/adapters/migrations/015_add_item_embeddings_format.sql`: Batch 7 (chunk 13) — adds the nullable `item_embeddings.vector_format` TEXT tag column (constitution D5: optional field, no rebuild, no backfill); NULL/missing means the one format `ember/relate/vector_format.py` defines (little-endian float32).
+- `ember/adapters/migrations/016_add_change_log_ts_id_index.sql`: Batch 8 — adds the additive `idx_change_log_ts_id` index on `change_log (timestamp, id)`, so bounded history reads (`list_change_log(..., window=...)`) fetch the newest `offset + limit` rows by index instead of sorting the whole ledger every call.
 
 ## Tests (`tests/`)
 - `tests/__init__.py`: Marks the tests folder as a package.
