@@ -1,5 +1,11 @@
 'use strict';
 
+// [shortcut graveyard fix] Boots here must not really register the global
+// shortcut — every real bind left a stale KDE portal entry on the founder's
+// machine. Nothing in this file asserts registration; the scenarios that do
+// (popup.js, settings.js) opt out explicitly.
+process.env.EMBER_APP_SHORTCUT_REFUSED ??= '1';
+
 /**
  * The Playwright E2E walking skeleton (dev-only, Linux) — same
  * guarantees as the step-02 smoke, now over the real step-04 shell:
@@ -64,6 +70,7 @@ const EXPECTED_API = [
   // App 10 (ticket A39): the Settings panes join the pinned surface.
   'registerShortcut',
   'keyHint',
+  'shortcutStatus', // fix #42: the pane's real shortcut status line
   // App 08 (ticket A37): the Clean up screen joins the pinned surface —
   // preview and apply only; the session's answer()/stop() ride the
   // handle maintainApply returns, and its events ride the

@@ -31,7 +31,7 @@ const FIXTURE = path.join(__dirname, '..', 'fixtures', 'steps-04.json');
  *   or FAKE_SPAWN_LOG without touching the other callers.
  * @returns {Promise<{app: object, workDir: string, kbPath: string}>}
  */
-async function launchShell({ workDir, mode = 'app', withDb = true, fixture = FIXTURE, extraEnv = {} }) {
+async function launchShell({ workDir, mode = 'app', withDb = true, fixture = FIXTURE, extraEnv = {}, refusedShortcut = true }) {
   const configDir = path.join(workDir, 'config');
   const stateDir = path.join(workDir, 'state');
   const { mkdirSync, writeFileSync } = require('node:fs');
@@ -52,6 +52,13 @@ async function launchShell({ workDir, mode = 'app', withDb = true, fixture = FIX
     ...extraEnv,
   };
   if (withDb) env.EMBER_APP_DB = kbPath;
+  // [shortcut graveyard fix] The default is the REFUSED seam: a plain
+  // e2e boot must not make a real global-shortcut registration, because
+  // every one of those left a stale portal entry in the founder's KDE
+  // shortcut list (1,529 counted once; the cleanups could not keep up
+  // with the suite's own boots). Scenarios that prove the registration
+  // itself pass `refusedShortcut: false` explicitly.
+  if (refusedShortcut) env.EMBER_APP_SHORTCUT_REFUSED = '1';
 
   const app = await _electron.launch({ args: ['.'], cwd: APP_ROOT, env });
   return { app, workDir, kbPath, configDir, stateDir };

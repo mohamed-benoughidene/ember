@@ -103,7 +103,7 @@ function settingsText(kbPath, { position = 'bottom-right' } = {}) {
   )}\n`;
 }
 
-async function launchPopupApp({ workDir, aiBaseUrl, quickAdd = false, withDb = true, withKey = true, position, refusedShortcut = false }) {
+async function launchPopupApp({ workDir, aiBaseUrl, quickAdd = false, withDb = true, withKey = true, position, refusedShortcut = true }) {
   const configDir = path.join(workDir, 'config');
   const userData = path.join(configDir, 'ember-app');
   fs.mkdirSync(userData, { recursive: true });
@@ -229,7 +229,12 @@ async function isShortcutRegistered(app, accelerator = 'CommandOrControl+Alt+E')
 async function popupAddAndDraft(ai) {
   process.stdout.write('--- popup: add-only add flow, draft kept, open main ---\n');
   const workDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ember-e2e-popup-'));
-  const { app, mainWin } = await launchPopupApp({ workDir, aiBaseUrl: ai.url });
+  // Real registration on purpose: this scenario proves the boot register
+  // (story 90) — it asserts isShortcutRegistered below. (Fix: the e2e
+  // default is the refused seam, so fresh boots never bind on the
+  // founder's real KDE session — one stale portal entry per boot was
+  // how the shortcut graveyard grew.)
+  const { app, mainWin } = await launchPopupApp({ workDir, aiBaseUrl: ai.url, refusedShortcut: false });
   try {
     await mainWin.waitForSelector('[data-testid="home-pane"]');
     // Story 90, boot half: the default shortcut is registered after first run.
@@ -434,7 +439,7 @@ async function popupShortcutAfterFirstRun() {
   // A fresh install: no settings file, no knowledge base, no key — the
   // main window opens FIRST RUN, exactly like the settings e2e's
   // recovery scenario drives it (no pre-seeded settings.json).
-  const { app, mainWin } = await launchPopupApp({ workDir, aiBaseUrl: null, withDb: false, withKey: false });
+  const { app, mainWin } = await launchPopupApp({ workDir, aiBaseUrl: null, withDb: false, withKey: false, refusedShortcut: false });
   try {
     await mainWin.waitForSelector('[data-testid="setup-db-input"]');
     // The boot rule (scenario 4's case): nothing registers before first run.

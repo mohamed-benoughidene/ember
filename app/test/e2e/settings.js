@@ -138,7 +138,7 @@ async function changeRestartIntact() {
   });
   seedSettings(path.join(workDir, 'config'), kbPath);
 
-  const shell = await launchShell({ workDir, withDb: false });
+  const shell = await launchShell({ workDir, withDb: false, refusedShortcut: false });
   const { app } = shell;
   let out1 = [];
   try {
