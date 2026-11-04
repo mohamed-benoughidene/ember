@@ -112,13 +112,13 @@ A plain, readable record kept by a careful custodian. The ground is aged paper a
 - **Worn Paper** (#CFC4B0): selected table row, status tint.
 - **Rule Line** (#CBBFAA): panel and table separators. **Control Line** (#8E8068): input and button outlines.
 - **Iron Ink** (#2B2118): main text and the sidebar. 12:1 on Ledger Paper.
-- **Faded Ink** (#5A4B3D): secondary text. 6.4:1 on Ledger Paper, 5.1:1 on Paper Ground.
+- **Faded Ink** (#5A4B3D): secondary text. 6.5:1 on Ledger Paper, 5.3:1 on Paper Ground.
 - **Brick Wash** (#9C3B2B): the one main button per screen. White text 6.8:1. Hover Brick Deep (#7A2D20).
-- **Ember Heat** (#B8421F): status marks only. 4.2:1 on Ledger Paper (a non-text mark needs 3:1).
+- **Ember Heat** (#B8421F): status marks only. 4.3:1 on Ledger Paper (a non-text mark needs 3:1).
 - **Ochre Wash** (#E0C88F) with **Ochre Ink** (#3A2A0A): the "Challenged" tint where one is needed.
 
 ### Dark (Soot)
-Warm near-black, not navy or slate. Ground #14100E, surface #1D1714, raised #261E1A, lines #2E2520, sidebar #0D0A09, text #EDEAE6, secondary text #B0ABA4 (7.5:1), heat #F08A3E (7.1:1). The main button is light (#EDEAE6 with dark text), so orange never means two things. The selected menu row is Warm Apricot (#F5C090) with Charred Wood text (10.2:1).
+Warm near-black, not navy or slate. Ground #14100E, surface #1D1714, raised #261E1A, lines #2E2520, sidebar #0D0A09, text #EDEAE6, secondary text #B0ABA4 (8.3:1), heat #F08A3E (7.6:1). The main button is light (#EDEAE6 with dark text), so orange never means two things. The selected menu row is Warm Apricot (#F5C090) with Charred Wood text (10.2:1).
 
 ### Named Rules
 **The Heat Only Rule.** Orange and brick mark status or the one main action. If a screen has neither, it has no ember colour.
