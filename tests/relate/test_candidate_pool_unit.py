@@ -13,6 +13,7 @@ unchanged, and the generic-failure tests prove a code bug is never wrapped
 
 from __future__ import annotations
 
+import re
 import struct
 from datetime import datetime, timedelta
 
@@ -1301,3 +1302,40 @@ def test_embedding_calls_are_batched() -> None:
         len(texts) <= 32 for texts in embedder.embed_calls
     ), embedder.embed_calls
     assert len(embedder.embed_calls) < 41, embedder.embed_calls
+
+
+def test_progress_lines_report_done_and_total() -> None:
+    """The batched encode loop reports a done/total line after every batch.
+
+    Same 41-miss setup as `test_embedding_calls_are_batched`, plus the NEW
+    optional `echo` keyword (Batch 8 finding 4.8 #2): the capture list must
+    collect at least two lines, each shaped `encoding embeddings: <n>/41`
+    (41 = the number of cache-miss texts in the run, new item included),
+    ending at `41/41`. A pool built with NO `echo` argument (today's default)
+    captures nothing — the calls stay silent.
+    """
+    new_item = _item(1)
+    items = [_item(item_id, days=FAR_DAYS) for item_id in range(2, 42)]
+
+    capture: list[str] = []
+    build_candidate_pool(
+        _loaded(new_item, items),
+        link_lookup=FakeLinkLookup(items=[]),
+        embedding_store=FakeEmbeddingStore(model_name=MODEL),
+        embedder=_RecordingEmbedder(model_name=MODEL),
+        echo=capture.append,
+    )
+
+    assert len(capture) >= 2, capture
+    for line in capture:
+        assert re.fullmatch(r"encoding embeddings: (\d+)/41", line), capture
+    assert capture[-1] == "encoding embeddings: 41/41", capture
+
+    silent_capture: list[str] = []
+    build_candidate_pool(
+        _loaded(new_item, items),
+        link_lookup=FakeLinkLookup(items=[]),
+        embedding_store=FakeEmbeddingStore(model_name=MODEL),
+        embedder=_RecordingEmbedder(model_name=MODEL),
+    )
+    assert silent_capture == []
