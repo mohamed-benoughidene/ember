@@ -236,7 +236,7 @@ function wireIpc(services) {
   // real popup through this same seam). The
   // Electron edge effects stay here, at the edge (T2).
   const { Tray, Menu } = require('electron');
-  const { createShortcutManager, createTrayManager, registerSettingsShortcut, bootShortcutFor } = require('./shortcuts');
+  const { createShortcutManager, createTrayManager, registerSettingsShortcut, bootShortcutFor, bootTrayFor } = require('./shortcuts');
 
   /* =================================================================
      APP STEP 11 (ticket A40): the quick popup (stories 90-95; plan
@@ -571,8 +571,12 @@ function wireIpc(services) {
 
 
   let tray = null;
-  const showTrayFallback = () => {
-    if (tray !== null) return; // the fallback is built once per run
+  // [fix #40] renamed from showTrayFallback: this is no longer only the
+  // APP-005 error fallback. The tray is a first-class citizen now — the
+  // boot block below builds it whenever a knowledge base is set — and
+  // this same idempotent builder serves the refusal path too.
+  const ensureTray = () => {
+    if (tray !== null) return; // built once per run
     tray = createTrayManager({ TrayCtor: Tray, MenuBuilder: Menu, iconPath: services.iconPath });
     const shown = tray.show({
       // [app 11] Quick add is the popup itself now (story 95); Open Ember stays the full window.
@@ -593,7 +597,7 @@ function wireIpc(services) {
     globalShortcut: globalShortcutApi,
     // [app 11] the keys open the quick popup now (story 90).
     onQuickAdd: () => openQuickPopup({ park: true }),
-    onFailure: () => showTrayFallback(),
+    onFailure: () => ensureTray(),
   });
   const maskedKeyHint = require('./key-hint');
 
@@ -685,8 +689,12 @@ function wireIpc(services) {
       // a same-key second registration. An OS refusal lands in the
       // shipped APP-005 tray fallback (onFailure above — built once per
       // run), never in silence.
-      const accelerator = bootShortcutFor(services.settingsStore.load().settings);
+      const saved = services.settingsStore.load().settings;
+      const accelerator = bootShortcutFor(saved);
       if (accelerator !== null) registerSettingsShortcut({ manager: shortcutManager, accelerator });
+      // [fix #40] a first run finishing through this same save gets its
+      // tray live too, on the same no-restart rule as the shortcut.
+      if (bootTrayFor(saved)) ensureTray();
     },
     // [story 13] the text-field focus flip (see the step-12 block above).
     onTextFocusChanged: setTextFocus,
@@ -703,8 +711,17 @@ function wireIpc(services) {
   // registers through the step-10 seam. An OS refusal lands in the
   // shipped APP-005 path above: the tray fallback appears and the
   // launch-note goes to stderr — never a silent failure (I7).
-  const bootAccelerator = bootShortcutFor(services.settingsStore.load().settings);
+  const bootSettings = services.settingsStore.load().settings;
+  const bootAccelerator = bootShortcutFor(bootSettings);
   if (bootAccelerator !== null) shortcutManager.register(bootAccelerator);
+  // [fix #40] The tray is NOT an error artefact: D-24's close-to-tray
+  // needs a reachable icon even when the registration SHOUTS success —
+  // on the founder's KDE Wayland desktop the portal answers true while
+  // binding nothing (issue 41), and the window then sat stranded with
+  // no icon anywhere (issue 40). Same settings gate as the boot
+  // registration (story 90); the refusal path lands on the same
+  // already-built tray (ensureTray is idempotent).
+  if (bootTrayFor(bootSettings)) ensureTray();
 
   return { registered, openQuickPopup };
 }

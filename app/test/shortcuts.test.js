@@ -7,7 +7,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { createShortcutManager, createTrayManager } = require('../main/shortcuts');
+const { createShortcutManager, createTrayManager, bootTrayFor } = require('../main/shortcuts');
 
 function fakeGlobalShortcut(result) {
   const calls = [];
@@ -114,6 +114,19 @@ test('the tray fallback builds the pinned three-item menu', () => {
   );
   template[0].click();
   assert.equal(quickAdd, true);
+});
+
+test('bootTrayFor: the tray boots once a knowledge base is set, never before first run (fix #40)', () => {
+  // The tray is no longer an error-only artefact (issue 40): D-24's
+  // close-to-tray must always leave a reachable icon, even when the
+  // shortcut registration falsely "succeeds" (issue 41's portal lie).
+  // Same boot gate as the shortcut registration (story 90): before
+  // first run the wizard owns the screen and its own Quit is reachable.
+  assert.equal(bootTrayFor({ knowledgeBasePath: '', quickPopup: { shortcut: 'CommandOrControl+Alt+E' } }), false, 'no knowledge base chosen yet: no tray at boot');
+  assert.equal(bootTrayFor({}), false);
+  assert.equal(bootTrayFor(undefined), false);
+  assert.equal(bootTrayFor({ knowledgeBasePath: '/x/ember.db' }), true, 'a knowledge base is the boot gate');
+  assert.equal(bootTrayFor({ knowledgeBasePath: '   ' }), false, 'a blank path is not a knowledge base');
 });
 
 test('a tray failure reports honestly (the File -> Add text route remains)', () => {
