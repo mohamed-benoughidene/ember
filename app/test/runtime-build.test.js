@@ -92,7 +92,7 @@ case "\${1:-}" in
     if [ "\${EMBER_STUB_GATE:-}" = broken ]; then
       echo 'error: CAPTURE-999 broken on purpose (stub)' >&2
     else
-      echo 'error: CAPTURE-008 no ai api key set - set EMBER_AI_API_KEY and run ember setup again (stub)' >&2
+      echo 'error: CAPTURE-022 ApiKeyMissing | fake.ember.capture | ai api key missing (stub)' >&2
     fi
     exit 1 ;;
   db-check)
