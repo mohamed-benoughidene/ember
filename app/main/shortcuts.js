@@ -157,4 +157,24 @@ function bootShortcutFor(settings) {
   return typeof chosen === 'string' && chosen.trim() !== '' ? chosen : 'CommandOrControl+Alt+E';
 }
 
-module.exports = { createShortcutManager, createTrayManager, registerSettingsShortcut, bootShortcutFor };
+/**
+ * [fix #40] The tray's boot gate, beside bootShortcutFor's: the tray
+ * is a first-class citizen now, not an error-only artefact. Issue 40
+ * on the founder's desktop — D-24's close-to-tray parked the window
+ * with NO reachable icon whenever the shortcut registration reported
+ * success (issue 41's portal lie: the XDG GlobalShortcuts portal refuses
+ * a reused session handle yet Electron answers true). So the tray boots
+ * whenever a knowledge base is set — the SAME gate as the boot shortcut
+ * (story 90: before first run the wizard owns the screen and the
+ * window's own Quit is reachable). Pure (T1).
+ *
+ * @param {object} [settings] the settings-schema settings object
+ * @returns {boolean} true when the tray must exist at boot
+ */
+function bootTrayFor(settings) {
+  const s = settings && typeof settings === 'object' ? settings : {};
+  const kb = typeof s.knowledgeBasePath === 'string' ? s.knowledgeBasePath.trim() : '';
+  return kb !== '';
+}
+
+module.exports = { createShortcutManager, createTrayManager, registerSettingsShortcut, bootShortcutFor, bootTrayFor };
