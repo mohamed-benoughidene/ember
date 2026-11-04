@@ -756,6 +756,15 @@ def relate(item_id: int | None, latest: bool, output: OutputOptions) -> None:
             sink.echo("no unrelated items")
             return
         if result.universe.items:
+            # Batch 8, 4.8 #2 (stories 7 and 8): the core prints its warning
+            # (before the wipe) and its progress lines through ONE echo
+            # callable. On `--confirm json` that is `sink.echo`, so both ride
+            # stdout message events; on the terminal both go to stderr. The
+            # caller never re-prints `pool.warning`.
+            if output.confirm == "json":
+                echo = sink.echo
+            else:
+                echo = lambda text: click.echo(text, err=True)
             pool = build_candidate_pool(
                 result,
                 link_lookup=lookup,
@@ -763,11 +772,10 @@ def relate(item_id: int | None, latest: bool, output: OutputOptions) -> None:
                     build_embedding_store(conn), writes
                 ),
                 embedder=build_embedder(),
+                echo=echo,
             )
         else:
             pool = Pool.empty()
-        if pool.warning:
-            click.echo(pool.warning, err=True)
         if not pool.ranked:
             sink.echo(
                 json.dumps(
