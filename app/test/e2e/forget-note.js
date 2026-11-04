@@ -1,5 +1,11 @@
 'use strict';
 
+// [shortcut graveyard fix] Boots here must not really register the global
+// shortcut — every real bind left a stale KDE portal entry on the founder's
+// machine. Nothing in this file asserts registration; the scenarios that do
+// (popup.js, settings.js) opt out explicitly.
+process.env.EMBER_APP_SHORTCUT_REFUSED ??= '1';
+
 /**
  * The Batch 6 Chunk 13 E2E (dev-only, Linux; plan Impl-Batch6.md
  * chunk 13, stories 4, 5, 7, 8; findings D-07/D-09/D-10): the "Forget

@@ -1,5 +1,11 @@
 'use strict';
 
+// [shortcut graveyard fix] Boots here must not really register the global
+// shortcut — every real bind left a stale KDE portal entry on the founder's
+// machine. Nothing in this file asserts registration; the scenarios that do
+// (popup.js, settings.js) opt out explicitly.
+process.env.EMBER_APP_SHORTCUT_REFUSED ??= '1';
+
 /**
  * The Clean up E2E (L3 app step 08, ticket A37; the step file's check
  * command: `npm --prefix app run e2e -- cleanup`).
