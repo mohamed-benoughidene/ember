@@ -1339,3 +1339,39 @@ def test_progress_lines_report_done_and_total() -> None:
         embedder=_RecordingEmbedder(model_name=MODEL),
     )
     assert silent_capture == []
+
+
+def test_model_change_warning_prints_before_wipe() -> None:
+    """The model-change warning rides `echo` BEFORE the cache wipe runs (4.8 #2).
+
+    The store is cached under `other-model` while the embedder reports
+    `fake-model`, so the pre-flight wipe fires. The store subclass appends
+    `"WIPE"` into the SAME capture list the `echo` sink writes into, so the
+    capture order proves the order of the two side effects: the warning line
+    through `echo` first, then the wipe. The `Pool` contract does not change —
+    the returned warning is still `MODEL_CHANGED_LINE`.
+    """
+    capture: list[str] = []
+
+    class _WipeRecordingStore(FakeEmbeddingStore):
+        """Appends `"WIPE"` to the same capture the `echo` sink writes into."""
+
+        def wipe(self) -> None:
+            capture.append("WIPE")
+            super().wipe()
+
+    store = _WipeRecordingStore(
+        {DROPPED_ID: [9.0, 9.0, 9.0]}, model_name="other-model"
+    )
+    embedder = _RecordingEmbedder(model_name=MODEL)
+
+    pool = build_candidate_pool(
+        _candidate(),
+        link_lookup=FakeLinkLookup(items=[]),
+        embedding_store=store,
+        embedder=embedder,
+        echo=capture.append,
+    )
+
+    assert capture[:2] == [MODEL_CHANGED_LINE, "WIPE"], capture
+    assert pool.warning == MODEL_CHANGED_LINE

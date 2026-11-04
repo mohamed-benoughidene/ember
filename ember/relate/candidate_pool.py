@@ -110,7 +110,7 @@ def build_candidate_pool(
     items = loaded.universe.items
     if not items:
         return Pool.empty()
-    warning = _model_change_warning(embedding_store, model=model)
+    warning = _model_change_warning(embedding_store, model=model, echo=echo)
     new_item = loaded.new_item
     dimension = embedder.dim()
     vectors = _resolve_vectors(
@@ -136,11 +136,24 @@ def build_candidate_pool(
     )
 
 
-def _model_change_warning(store: EmbeddingStorePort, *, model: str) -> str | None:
-    """Wipe a cache written by another embedder and return the warning text."""
+def _model_change_warning(
+    store: EmbeddingStorePort,
+    *,
+    model: str,
+    echo: Callable[[str], None] | None = None,
+) -> str | None:
+    """Wipe a cache written by another embedder and return the warning text.
+
+    Batch 8 finding 4.8 #2: when the cached model differs, `echo` (when not
+    None) receives `MODEL_CHANGED_LINE` BEFORE `store.wipe()` runs, so the
+    caller sees the warning at the moment the wipe starts rather than after
+    the whole encode phase. The returned warning text is unchanged.
+    """
     cached = store.first_model_name()
     if cached is None or cached == model:
         return None
+    if echo is not None:
+        echo(MODEL_CHANGED_LINE)
     store.wipe()
     return MODEL_CHANGED_LINE
 
