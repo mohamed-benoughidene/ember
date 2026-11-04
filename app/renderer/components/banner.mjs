@@ -13,5 +13,8 @@ import { buttonHtml } from './button.mjs';
 export function bannerHtml({ text, actionLabel = null, action = null, testid = 'banner' } = {}) {
   if (typeof text !== 'string' || text.trim() === '') throw new Error('a banner needs text');
   const btn = actionLabel && action ? buttonHtml({ label: actionLabel, action, variant: 'text' }) : '';
-  return `<div class="banner" data-testid="${esc(testid)}" role="note">${esc(text)}${btn}</div>`;
+  // The text rides in its own span so the action button sits APART from
+  // the sentence (flex gap in components.css) instead of running into
+  // it — "…meanwhile.Set up the AI connection" was the report.
+  return `<div class="banner" data-testid="${esc(testid)}" role="note"><span class="banner-text">${esc(text)}</span>${btn}</div>`;
 }

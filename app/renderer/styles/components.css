@@ -157,12 +157,26 @@ button, input, select, textarea { font: inherit; color: inherit; }
 
 /* ---------- banner (notices) ---------- */
 
+/* Flex with a real gap: the one action is a sibling of the sentence,
+   never glued to its last word (feedback: "…meanwhile.Set up the AI
+   connection"). Row gap keeps a wrapped action off the sentence; the
+   home failure banner's appended Details/code line takes the full row
+   (banner.mjs callers append a .help inside the same div). */
 .banner {
   background: var(--banner-bg);
   color: var(--banner-ink);
   padding: var(--s3) var(--s6);
   font-size: var(--type-label-size);
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--s1) var(--s3);
 }
+.banner > .help { flex: 0 0 100%; }
+/* A text button ON the dark banner must not grow the light-theme .btn
+   hover fill on hover — banner ink on its hover fill was 1.15:1 (the
+   label all but vanished). The underline already carries the afford. */
+.banner .btn--text:hover { background: none; }
 
 /* ---------- provenance lines: Source, Why, Challenged by, Replaced by,
      Answered by (DESIGN.md "Provenance list") ---------- */
