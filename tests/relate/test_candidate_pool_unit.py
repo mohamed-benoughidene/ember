@@ -1268,3 +1268,36 @@ def test_fresh_query_vector_and_float32_cache_hit_score_same_score() -> None:
     a_float32_loss_is_real = as_float32(float64_vector) != float64_vector
     assert a_float32_loss_is_real
     assert fresh_run == cached_run
+
+
+# --- embedding call batching (Batch 8 finding 4.8 #1) -----------------------
+
+
+class _RecordingEmbedder(FakeEmbedder):
+    """Recording embedder for the batching test.
+
+    Defined inline by subclassing the shared `FakeEmbedder` so the shared
+    fake keeps its today's behavior for every other test in this file.
+    """
+
+
+def test_embedding_calls_are_batched() -> None:
+    """The pool encodes cache misses in batches, not one item per call.
+
+    41 texts (the new item plus a 40-item universe) all miss the cache, so
+    today's loop calls `embed([statement])` once per item — 41 one-text
+    calls. The pin: every recorded call carries at most 32 texts and the
+    whole run needs fewer than 41 calls. Committed red on purpose; chunk 7
+    collapses the count to ⌈41/32⌉ = 2 batched calls.
+    """
+    new_item = _item(1)
+    items = [_item(item_id, days=FAR_DAYS) for item_id in range(2, 42)]
+    embedder = _RecordingEmbedder(model_name=MODEL)
+    store = FakeEmbeddingStore(model_name=MODEL)
+
+    _build(_loaded(new_item, items), embedder=embedder, store=store)
+
+    assert all(
+        len(texts) <= 32 for texts in embedder.embed_calls
+    ), embedder.embed_calls
+    assert len(embedder.embed_calls) < 41, embedder.embed_calls
