@@ -218,7 +218,7 @@ Before you start (5 minutes):
 
 ## 11. Quick popup and tray
 
-58. Press the popup shortcut (`Ctrl+Alt+E` by default).
+58. Press the popup shortcut (`Ctrl+Alt+N` by default).
     - You should see: the small add window near the saved position;
       the draft text kept from last time if any.
 59. In the popup: add one text end-to-end; press `Esc` mid-loop (stop);

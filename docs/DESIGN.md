@@ -202,7 +202,7 @@ One corner radius for controls and panels: 6px. Status is a heat mark with a wor
 - **Ledger entry:** mono timestamp, plain sentence, "Confirmed by you" when a person confirmed it.
 - **Empty, loading, error:** empty keeps its frame with one sentence; loading shows grey bars at real size; errors appear in the failed block with a retry.
 - **Settings:** four panes in a tab row: Appearance (text size, colours), Quick popup (shortcut, position), Menu (which jobs show and in what order), AI connection. Opens with Command+Comma on a Mac and Ctrl+Comma elsewhere. The window title names the pane, and the last pane is remembered. Each control saves itself and shows a quiet "Saved".
-- **Popup shortcut:** default Option+Command+E on a Mac and Ctrl+Alt+E on Windows and Linux. Keys are listed in Apple's order: Control, Option, Shift, Command. On a Mac the setting warns about Control (the system uses it), about no modifier, and about standard Command shortcuts. Conflicts with other programs are not detected.
+- **Popup shortcut:** default Option+Command+N on a Mac and Ctrl+Alt+N on Windows and Linux. Keys are listed in Apple's order: Control, Option, Shift, Command. On a Mac the setting warns about Control (the system uses it), about no modifier, and about standard Command shortcuts. Conflicts with other programs are not detected.
 
 ## Do's and Don'ts
 

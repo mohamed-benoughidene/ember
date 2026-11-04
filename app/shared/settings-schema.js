@@ -32,7 +32,13 @@ const DEFAULTS = Object.freeze({
   textSize: 'default',
   colourTheme: 'system',
   quickPopup: Object.freeze({
-    shortcut: 'CommandOrControl+Alt+E',
+    // The shipped default (a fresh user's first boot): Ctrl+Alt+N on
+    // Windows/Linux, Option+Command+N on a Mac — "N for a new note".
+    // Changed from the original Ctrl+Alt+E: the founder's real desktop
+    // already had it bound (spike-app), and one global key conflict is
+    // exactly what the portal consent dance chokes on (issue 41/40).
+    // Free on the founder's machine; uncommon as a desktop-global bind.
+    shortcut: 'CommandOrControl+Alt+N',
     position: 'bottom-right',
   }),
   menuOrder: DEFAULT_MENU_ORDER,

@@ -189,6 +189,6 @@ test('bootShortcutFor: nothing registers before first run is done; the saved key
   assert.equal(bootShortcutFor({}), null);
   assert.equal(bootShortcutFor(undefined), null);
   assert.equal(bootShortcutFor({ knowledgeBasePath: '/x/ember.db', quickPopup: { shortcut: 'CommandOrControl+Alt+K' } }), 'CommandOrControl+Alt+K', 'the founder\u2019s saved choice is what boots');
-  assert.equal(bootShortcutFor({ knowledgeBasePath: '/x/ember.db' }), 'CommandOrControl+Alt+E', 'an unreadable quickPopup shape falls back to the spec \u00a710 default');
-  assert.equal(bootShortcutFor({ knowledgeBasePath: '/x/ember.db', quickPopup: { shortcut: '   ' } }), 'CommandOrControl+Alt+E');
+  assert.equal(bootShortcutFor({ knowledgeBasePath: '/x/ember.db' }), 'CommandOrControl+Alt+N', 'an unreadable quickPopup shape falls back to the spec \u00a710 default');
+  assert.equal(bootShortcutFor({ knowledgeBasePath: '/x/ember.db', quickPopup: { shortcut: '   ' } }), 'CommandOrControl+Alt+N');
 });

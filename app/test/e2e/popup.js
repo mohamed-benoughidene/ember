@@ -92,7 +92,7 @@ function settingsText(kbPath, { position = 'bottom-right' } = {}) {
       schema: 1,
       textSize: 'default',
       colourTheme: 'system',
-      quickPopup: { shortcut: 'CommandOrControl+Alt+E', position },
+      quickPopup: { shortcut: 'CommandOrControl+Alt+N', position },
       menuOrder: ['add', 'lookup', 'link', 'fix', 'cleanup', 'keepsafe'],
       menuHidden: [],
       lastPane: 'home',
@@ -220,7 +220,7 @@ async function assertCleanScan(win, label) {
   process.stdout.write(`a11y scan clean on ${label} (${checked.tabbableCount} tabbable controls)\n`);
 }
 
-async function isShortcutRegistered(app, accelerator = 'CommandOrControl+Alt+E') {
+async function isShortcutRegistered(app, accelerator = 'CommandOrControl+Alt+N') {
   return app.evaluate(({ globalShortcut }, acc) => globalShortcut.isRegistered(acc), accelerator);
 }
 

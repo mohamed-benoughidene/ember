@@ -175,7 +175,7 @@ function bootShortcutFor(settings) {
   const kb = typeof s.knowledgeBasePath === 'string' ? s.knowledgeBasePath.trim() : '';
   if (kb === '') return null;
   const chosen = s.quickPopup && typeof s.quickPopup === 'object' ? s.quickPopup.shortcut : null;
-  return typeof chosen === 'string' && chosen.trim() !== '' ? chosen : 'CommandOrControl+Alt+E';
+  return typeof chosen === 'string' && chosen.trim() !== '' ? chosen : 'CommandOrControl+Alt+N';
 }
 
 /**

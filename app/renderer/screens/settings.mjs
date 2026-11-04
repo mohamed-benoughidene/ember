@@ -77,7 +77,7 @@ const POSITION_CHOICES = [
   { value: 'bottom-right', name: 'Bottom right' },
 ];
 
-const DEFAULT_SHORTCUT = 'CommandOrControl+Alt+E';
+const DEFAULT_SHORTCUT = 'CommandOrControl+Alt+N';
 
 /** The shown name of a pane id; an unknown id falls back (never blank). */
 function paneName(id) {
