@@ -138,6 +138,13 @@ function createWindow({ showOnReady = true } = {}) {
   mainWindow = new BrowserWindow({
     width: 1000,
     height: 640,
+    // The window floor (Batch 9 UI audit, finding 3): at the Largest
+    // text size (200%) the sidebar alone is 11rem = 330px, so anything
+    // narrower than ~800px cannot render the screens readably — the
+    // title row starves and the tables outgrow their columns. The
+    // floor makes that state unreachable; height stays free (vertical
+    // scrolling is normal reading behavior).
+    minWidth: 800,
     show: false,
     title: 'Ember',
     // [app 13] the real raster icon in the taskbar when the tree
