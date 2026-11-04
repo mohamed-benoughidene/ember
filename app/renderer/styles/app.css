@@ -64,12 +64,15 @@
 
 /* Largest text: the sidebar narrows and hides its hints (DESIGN.md).
    Under an 800px window the rail narrows too — but the button NAMES
-   stay readable: the rail widens enough for the names and the hints to
-   wrap, instead of being sliced at a 4rem rail's edge (Batch 6 design
-   audit, finding 11 #4: no clipped labels in a narrow window). */
+   stay readable: the rail widens enough for the names, and the HINTS
+   hide (they wrapped into 2-3 ragged lines per row at the floor —
+   "Update / statuses / (sweep)"). The prototype hides every rail text
+   here; Batch 6 deliberately kept the names (finding 11 #4: no clipped
+   labels), the hints are the part that does not fit. */
 @media (max-width: 800px) {
   .nav { width: 9rem; flex-basis: 9rem; }
   .nav button { padding: var(--s3); }
+  .nav button .t small { display: none; }
   .nav button .t { white-space: normal; min-width: 0; }
 }
 
@@ -402,3 +405,14 @@ body.quick { margin: 0; background: var(--ground); height: 100vh; overflow: hidd
 .quick-pane .source-verbatim { white-space: pre-wrap; word-break: break-word; }
 .quick-pane textarea, .quick-pane input[type='text'] { width: 100%; }
 .quick-pane .panel { max-width: 100%; }
+
+/* ---------- Keep safe spacing (design audit, measured): the four
+   blocks stacked with ZERO gap (panel bottoms = next panel tops), the
+   knowledge-base line touched the first panel, and the error/verdict
+   boxes touched the text above them. Groups sit apart (step 6, 20px),
+   short block gaps (step 4, 12px), the label-to-text gap comes from
+   .help's own step-2 margin once the screens' inline margin:0 is
+   gone. ---------- */
+[data-testid='keepsafe-pane'] .panel + .panel { margin-top: var(--s6); }
+[data-testid='keepsafe-pane'] .errbox { margin-top: var(--s4); }
+[data-testid='ks-kb-line'] { margin-bottom: var(--s4); }

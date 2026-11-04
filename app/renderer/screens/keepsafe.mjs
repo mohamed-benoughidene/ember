@@ -90,7 +90,7 @@ export function createKeepSafeScreen(ctx) {
         : '';
     return `<div class="panel"><div class="pad" data-testid="ks-backup">
       <strong>Back up</strong>
-      <p class="help" style="margin:0">A copy you can restore later by opening it as your knowledge base file. Ember refuses to write over your knowledge base file itself, and keeps up to three older copies beside a new one.</p>
+       <p class="help">A copy you can restore later by opening it as your knowledge base file. Ember refuses to write over your knowledge base file itself, and keeps up to three older copies beside a new one.</p>
       <div class="actions">${buttonHtml({ label: 'Back up now', action: 'ks-backup-run', variant: 'primary', testid: 'ks-backup-run' })}</div>
       ${caution}${result}
     </div></div>`;
@@ -108,7 +108,7 @@ export function createKeepSafeScreen(ctx) {
     }
     return `<div class="panel"><div class="pad" data-testid="ks-export">
       <strong>Export</strong>
-      <p class="help" style="margin:0">A plain text file any editor can read, so your knowledge outlives Ember. An export cannot be restored into Ember.</p>
+       <p class="help">A plain text file any editor can read, so your knowledge outlives Ember. An export cannot be restored into Ember.</p>
       <div class="actions">${buttonHtml({ label: 'Export as text…', action: 'ks-export-run', variant: 'secondary', testid: 'ks-export-run' })}</div>
       ${result}
     </div></div>`;
@@ -135,7 +135,7 @@ export function createKeepSafeScreen(ctx) {
     }
     return `<div class="panel"><div class="pad" data-testid="ks-check">
       <strong>Health check</strong>
-      <p class="help" style="margin:0">Looks for broken or missing data inside the file. It reads only; it changes nothing.</p>
+       <p class="help">Looks for broken or missing data inside the file. It reads only; it changes nothing.</p>
       ${body}
     </div></div>`;
   }
@@ -162,8 +162,8 @@ export function createKeepSafeScreen(ctx) {
     }
     return `<div class="panel"><div class="pad" data-testid="ks-open">
       <strong>Knowledge base file</strong>
-      <p class="help" style="margin:0">Ember is using: <span class="mono" data-testid="ks-open-current">${esc(kbPath)}</span></p>
-      <p class="help" style="margin:0">To go back to an older state, open an older backup file as the knowledge base. Restore is not a command: the file itself is the restore.</p>
+       <p class="help">Ember is using: <span class="mono" data-testid="ks-open-current">${esc(kbPath)}</span></p>
+       <p class="help">To go back to an older state, open an older backup file as the knowledge base. Restore is not a command: the file itself is the restore.</p>
       <div class="actions">${buttonHtml({ label: 'Open a different file…', action: 'ks-open-pick', variant: 'secondary', testid: 'ks-open-pick' })}</div>
       ${body}
     </div></div>`;
