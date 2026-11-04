@@ -302,7 +302,7 @@ export function createLookupScreen(ctx) {  const view = {
     }
     return `<div class="pad" data-testid="provenance-panel">
       <p class="lbl-pill">${esc(item.type ?? '')}</p>
-      <p style="margin:.15rem 0 var(--s3)">${esc(item.statement ?? '')} ${statusPillHtml(item.status)}</p>
+      <p style="margin:var(--s1) 0 var(--s3)">${esc(item.statement ?? '')} ${statusPillHtml(item.status)}</p>
       <ul class="lineage" data-testid="provenance">${lineage.join('')}</ul>
       <p class="help">Nothing here is deleted: links show as Rejected, items as Closed.</p>
     </div>`;
