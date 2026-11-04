@@ -64,7 +64,7 @@ from ember.query.errors import (
     ItemsReadFailed as QueryItemsReadFailed,
     SchemaOutdated as QuerySchemaOutdated,
 )
-from ember.query.rows import ChangeRow, QueryItem
+from ember.query.rows import ChangeRow, HistoryPage, QueryItem
 from ember.relate.embedding_store import EmbeddingStorePort
 from ember.relate.errors import (
     ChangeLogWriteFailed,
@@ -1670,9 +1670,24 @@ class SqliteQueryContext:
             for row in rows
         ]
 
-    def list_change_log(self) -> list[ChangeRow]:
-        """Return every `change_log` row, ordered by id ascending.
+    def list_change_log(
+        self,
+        item_id: int | None = None,
+        window: HistoryPage | None = None,
+    ) -> list[ChangeRow]:
+        """Return `change_log` rows, filtered and bounded in SQL.
 
+        `item_id` keeps only the rows about that item by subject or by link
+        — exactly the `_belongs_to` rule of `ember/query/history.py`:
+        `item_id = ?` or the row's link touches the item on either side.
+        `window.limit` bounds the read to at most `offset + limit` rows of
+        the NEWEST `(timestamp, id)` prefix (`ORDER BY ... DESC`, hitting
+        migration 016's index; Batch 8, finding 4.7 #12) — `history()` sorts
+        descending and crops `events[:limit]`, so a newest prefix is the
+        correct prefix. `window.since` pre-filters on the stored TEXT: the
+        in-memory check in `history()` still compares parsed instants, so
+        the pre-filter only ever narrows what the full window would keep.
+        `None` on either parameter keeps the whole-ledger read (I10).
         `group_id` is selected only when the column exists (migration 013):
         on a pre-013 file every `ChangeRow` keeps the model default `None`
         (finding 4.7 #11). Raise `ItemsReadFailed` (QUERY-005) on a read
@@ -1689,9 +1704,28 @@ class SqliteQueryContext:
             has_source_id = column_exists(self._conn, "change_log", "source_id")
             if has_source_id:
                 columns += ", source_id"
-            rows = self._conn.execute(
-                f"SELECT {columns} FROM change_log ORDER BY id"
-            ).fetchall()
+            clauses: list[str] = []
+            params: list[object] = []
+            if item_id is not None:
+                clauses.append(
+                    "(item_id = ? OR link_id IN (SELECT id FROM links"
+                    " WHERE source_item_id = ? OR target_item_id = ?))"
+                )
+                params += [item_id, item_id, item_id]
+            if window is not None and window.since is not None:
+                clauses.append("timestamp >= ?")
+                params.append(window.since)
+            where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
+            sql = (
+                f"SELECT {columns} FROM change_log{where}"
+                " ORDER BY timestamp DESC, id DESC"
+            )
+            if window is not None and window.limit is not None:
+                # Offset only widens the prefix; `history()` still applies
+                # the full window, so the final view is unchanged.
+                sql += " LIMIT ?"
+                params.append((window.offset or 0) + window.limit)
+            rows = self._conn.execute(sql, params).fetchall()
         except sqlite3.Error as exc:
             raise QueryItemsReadFailed(
                 "change_log read fail", table="change_log"
