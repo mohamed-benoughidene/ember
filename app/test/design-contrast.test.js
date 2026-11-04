@@ -10,7 +10,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const { APP_ROOT } = require('./util');
+const { APP_ROOT, REPO_ROOT } = require('./util');
 
 const { contrastRatio } = require('../renderer/design/color-contrast.mjs');
 
@@ -80,19 +80,40 @@ for (const [what, fg, bg, min] of MARK_PAIRS) {
 }
 
 test('contrast: the DESIGN.md quoted numbers are true (printed, not guessed)', () => {
-  const said = {
-    'iron ink on ledger paper 12:1': contrastRatio(P['iron-ink'], P['ledger-paper']),
-    'faded ink on ledger paper 6.4:1': contrastRatio(P['faded-ink'], P['ledger-paper']),
-    'faded ink on paper ground 5.1:1': contrastRatio(P['faded-ink'], P['paper-ground']),
-    'white on brick wash 6.8:1': contrastRatio('#FFFFFF', P['brick-wash']),
-    'ember heat on ledger paper 4.2:1': contrastRatio(P['ember-heat'], P['ledger-paper']),
-    'soot faded ink 7.5:1': contrastRatio(P['soot-faded-ink'], P['soot-ground']),
-    'soot heat 7.1:1': contrastRatio(P['soot-heat'], P['soot-ground']),
-    'warm apricot + charred wood 10.2:1': contrastRatio(P['warm-apricot'], '#3D0C02'),
-  };
-  const printed = Object.entries(said).map(([k, v]) => `${k} -> computed ${v}`).join('; ');
-  process.stdout.write(`${printed}\n`);
-  for (const [label, ratio] of Object.entries(said)) {
-    assert.ok(ratio >= 3, `${label}: computed ${ratio}`);
+  const designMd = fs.readFileSync(path.join(REPO_ROOT, 'docs', 'DESIGN.md'), 'utf8');
+  const number = '(\\d+(?:\\.\\d+)?)';
+  const specs = [
+    // [what, fg, bg, how DESIGN.md frames the quoted ratio for this pair]
+    ['iron ink on ledger paper', P['iron-ink'], P['ledger-paper'],
+      new RegExp(`Iron Ink.*?${number}:1`)],
+    ['faded ink on ledger paper', P['faded-ink'], P['ledger-paper'],
+      new RegExp(`Faded Ink.*?${number}:1`)],
+    ['faded ink on paper ground', P['faded-ink'], P['paper-ground'],
+      new RegExp(`Faded Ink.*?${number}:1 on Paper Ground`)],
+    ['white on brick wash', '#FFFFFF', P['brick-wash'],
+      new RegExp(`White text ${number}:1`)],
+    ['ember heat on ledger paper', P['ember-heat'], P['ledger-paper'],
+      new RegExp(`Ember Heat.*?${number}:1`)],
+    ['soot faded ink on soot ground', P['soot-faded-ink'], P['soot-ground'],
+      new RegExp(`secondary text #B0ABA4 \\(${number}:1\\)`)],
+    ['soot heat on soot ground', P['soot-heat'], P['soot-ground'],
+      new RegExp(`heat #F08A3E \\(${number}:1\\)`)],
+    ['warm apricot + charred wood', P['warm-apricot'], '#3D0C02',
+      new RegExp(`Charred Wood text \\(${number}:1\\)`)],
+  ];
+  const printed = [];
+  const wrong = [];
+  for (const [what, fg, bg, quotedRe] of specs) {
+    const m = designMd.match(quotedRe);
+    assert.ok(m, `${what}: DESIGN.md does not quote a ratio for this pair`);
+    const said = m[1];
+    const decimals = (said.split('.')[1] || '').length;
+    const computed = contrastRatio(fg, bg).toFixed(decimals);
+    printed.push(`${what}: quoted ${said}:1, computed ${computed}:1`);
+    if (computed !== said) {
+      wrong.push(`${what}: DESIGN.md says ${said}:1, computed ${computed}:1`);
+    }
   }
+  process.stdout.write(`${printed.join('; ')}\n`);
+  assert.deepEqual(wrong, [], `the quoted DESIGN.md ratios are not all true: ${wrong.join('; ')}`);
 });
