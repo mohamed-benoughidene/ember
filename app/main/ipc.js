@@ -71,6 +71,8 @@ const WHERE = 'main.ipc';
  * @param {(name: string, args: string[]) => void} [options.onCommand] test seam
  * @param {((accelerator: string) => {ok: boolean, error?: object})|null}
  *   [options.shortcutRegistrar] the Settings pane's shortcut re-registration
+ *   [options.shortcutStatus] the REAL registration state (main's manager) the
+ *   pane's status line reads (fix #42)
  *   seam (app 10; null keeps the step-02/04 behaviour and the pane's honest
  *   "not available in this build" words)
  * @param {(() => string|null)} [options.keyHintProvider] the masked key hint
@@ -121,6 +123,10 @@ function registerIpcHandlers(options) {
     // to null so the step-02/04 wirings and tests stay untouched.
     shortcutRegistrar = null,
     keyHintProvider = null,
+    // [fix #42] the REAL shortcut registration state (main's manager
+    // + saved settings) for the pane's persistent status line; null
+    // keeps the older wirings and tests untouched.
+    shortcutStatus = null,
     // [app 11] the quick popup seams; default null (see the JSDoc above)
     openQuickPopup = null,
     openMainRequest = null,
@@ -542,7 +548,13 @@ function registerIpcHandlers(options) {
      * registrar has already told the shell to build the tray fallback
      * (plan §5.5); the pane shows the APP-005 words.
      */
-    'ember:registerShortcut': (accelerator) => {
+    'ember:registerShortcut': (payload) => {
+      // [fix #42 companion] The pinned contract is { accelerator } (the
+      // preload's shape). This channel used to expect a bare string and
+      // silently refused every REAL save from the Settings screen (the
+      // object never passed the string check — issue 41's "refused even
+      // for the chosen key" had this under it).
+      const accelerator = payload && typeof payload === 'object' && !Array.isArray(payload) ? payload.accelerator : null;
       if (typeof accelerator !== 'string' || accelerator.trim() === '') {
         return { ok: false, error: appErrorInfo('APP-005', `${WHERE}.registerShortcut`, 'no quick-popup shortcut was given') };
       }
@@ -550,6 +562,18 @@ function registerIpcHandlers(options) {
         return { ok: false, error: appErrorInfo('APP-005', `${WHERE}.registerShortcut`, 'the shortcut manager is not available in this build') };
       }
       return shortcutRegistrar(accelerator);
+    },
+
+    /**
+     * [fix #42] The REAL shortcut registration state for the pane's
+     * persistent status line: the saved choice and what the OS last
+     * accepted (main's manager), never a renderer-side guess. The
+     * provider defaults to "nothing configured" for wirings and tests
+     * that never built a manager.
+     */
+    'ember:shortcutStatus': () => {
+      if (typeof shortcutStatus !== 'function') return { configured: null, live: null, active: false };
+      return shortcutStatus();
     },
 
     /**

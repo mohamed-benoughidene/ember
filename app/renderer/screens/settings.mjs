@@ -152,6 +152,7 @@ export function createSettingsScreen(ctx) {
     kbPath: '',
     kbStatus: null, // {path, exists, looksValid} for the shown path
     kbLoading: true,
+    shortcutStatus: null, // [fix #42] {configured, live, active} from main's real manager
   };
   // The shell's live settings object (bootState); save() mutates it in
   // place, so the HTML always reads the current values through it.
@@ -214,6 +215,21 @@ export function createSettingsScreen(ctx) {
       state.aiStatusError = true;
     }
     state.aiLoading = false;
+    refresh();
+  }
+
+  /** [fix #42] The REAL shortcut registration state for the status
+   *  line: what the OS last accepted (main's manager) against the
+   *  saved choice. Loaded on entering the pane, after every shortcut
+   *  save, and whenever the settings save re-derived the registration
+   *  (first-run completion included — its save goes through the same
+   *  onSettingsSaved that registers). The refreshToken guard is the
+   *  same pane-wide rule as the AI/KB loads. */
+  async function loadShortcutStatus() {
+    const token = ++refreshToken;
+    const status = await ctx.api.shortcutStatus();
+    if (token !== refreshToken) return;
+    if (status) state.shortcutStatus = status;
     refresh();
   }
 
@@ -499,6 +515,9 @@ export function createSettingsScreen(ctx) {
       } else {
         showError('The keyboard shortcut was refused.', 'Another program may already use it. The tray icon and the Add screen still work. Your choice was saved and is tried again next time Ember starts.');
       }
+      // [fix #42] the persistent status line re-reads the REAL state
+      // after every attempt — the toast fades, the line stays.
+      loadShortcutStatus();
       refresh();
     }
   }
@@ -519,6 +538,7 @@ export function createSettingsScreen(ctx) {
     document.querySelector('[role="tab"][aria-selected="true"]')?.focus();
     if (pane === 'ai') loadAiStatus();
     if (pane === 'kbfile') loadKbStatus();
+    if (pane === 'popup') loadShortcutStatus();
   }
 
   return { state, refresh };
@@ -607,7 +627,7 @@ function appearanceHtml(state) {
   )}`;
 }
 
-function popupHtml(state) {
+export function popupHtml(state) {
   const settings = state.settings;
   const current = state.candidate ?? settings.quickPopup.shortcut;
   const keys = displayKeys(current, IS_MAC ? 'mac' : 'other');
@@ -618,6 +638,17 @@ function popupHtml(state) {
   const warningHtml = warnings
     .map((warning) => `<p class="help" data-testid="popup-warning"><strong>Check:</strong> ${esc(warning)}</p>`)
     .join('');
+  // [fix #42] The persistent truth line, from the REAL registration
+  // state (main's manager), loaded when the pane opens and after every
+  // shortcut save — not a renderer-side guess, and it survives
+  // navigating away and back (the toast does not).
+  const status = state.shortcutStatus;
+  let statusHtml = '';
+  if (status && status.configured) {
+    statusHtml = status.active
+      ? `<p class="help" data-testid="popup-shortcut-status">Your system accepted these keys. If they ever stop opening the small window, restart Ember — some systems only take a key from a running app at its start.</p>`
+      : `<p class="help" data-testid="popup-shortcut-status"><strong>Not working right now:</strong> your system refused these keys, or a restart is still needed after a change. Your choice is saved and is tried again next time Ember starts. The tray icon and the Add screen always work.</p>`;
+  }
   const control = `${keysHtml}
     <div class="actions" style="margin-top:var(--s3)">
       ${state.capturing ? '' : buttonHtml({ label: 'Change keys', action: 'popup-capture', variant: 'secondary', testid: 'popup-capture' })}
@@ -625,6 +656,7 @@ function popupHtml(state) {
       ${!state.capturing && current !== DEFAULT_SHORTCUT ? buttonHtml({ label: 'Use the default', action: 'popup-reset', variant: 'text', testid: 'popup-reset' }) : ''}
     </div>
     ${warningHtml}
+    ${statusHtml}
     <p class="help">If another program already uses these keys, the popup will not open. Ember cannot check other programs: the shortcut is untested on this system. The tray icon and the Add screen always work.</p>`;
   const position = settings.quickPopup.position;
   return `${paneRow(

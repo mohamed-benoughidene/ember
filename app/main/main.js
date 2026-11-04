@@ -658,6 +658,14 @@ function wireIpc(services) {
     },
     // [app 10] the Settings seams (stories 85-89)
     shortcutRegistrar: (accelerator) => registerSettingsShortcut({ manager: shortcutManager, accelerator }),
+    // [fix #42] the REAL registration state the pane's status line
+    // reads: the saved choice against what the OS last accepted
+    // (the manager's current()). Never a renderer-side guess.
+    shortcutStatus: () => {
+      const configured = (services.settingsStore.load().settings.quickPopup ?? {}).shortcut ?? null;
+      const live = shortcutManager.current();
+      return { configured, live, active: configured !== null && live === configured };
+    },
     // Fix F6: only a really readable key has a hint; an unreadable
     // one shows no masked echo at all (the status pane says why).
     keyHintProvider: () => {

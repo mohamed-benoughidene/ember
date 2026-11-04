@@ -55,6 +55,7 @@ const EMBER_PRELOAD_API = Object.freeze([
   'ember:undoPlan',
   'ember:registerShortcut',
   'ember:keyHint',
+  'ember:shortcutStatus',
   'ember:maintainPreview',
   'ember:maintainApply',
   'ember:maintainAnswer',
@@ -192,6 +193,9 @@ contextBridge.exposeInMainWorld('ember', {
 
   /** Re-register the quick-popup shortcut from the Settings pane. */
   registerShortcut: (accelerator) => ipcRenderer.invoke('ember:registerShortcut', { accelerator }),
+
+  /** The real shortcut registration state (main reads the manager), for the pane's status line (fix #42). */
+  shortcutStatus: () => ipcRenderer.invoke('ember:shortcutStatus'),
 
   /** The masked key hint (last four characters), for the AI pane's status. */
   keyHint: () => ipcRenderer.invoke('ember:keyHint'),
