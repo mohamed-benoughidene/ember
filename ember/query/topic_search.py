@@ -7,6 +7,7 @@ fixed by the L2 plan. `k1` and `b` are not tuned here.
 from __future__ import annotations
 
 import math
+from collections import Counter
 
 from ember.query.rows import QueryItem, SearchHit, TopicFilter
 from ember.query.tokenize import tokenize
@@ -63,18 +64,21 @@ def topic_search(
         return 0, []
 
     hits: list[SearchHit] = []
-    for item, tokens in zip(selected, tokens_per_item):
+    counters_per_item = [Counter(tokens) for tokens in tokens_per_item]
+    token_sets = [set(tokens) for tokens in tokens_per_item]
+    document_frequency = {
+        term: sum(1 for token_set in token_sets if term in token_set)
+        for term in query_terms
+    }
+    for item, tokens, counts in zip(selected, tokens_per_item, counters_per_item):
         score = 0.0
         for term in query_terms:
-            frequency = tokens.count(term)
+            frequency = counts[term]
             if frequency == 0:
                 continue
-            document_frequency = sum(
-                1 for other in tokens_per_item if term in other
-            )
             length_ratio = len(tokens) / average_length
             denominator = frequency + K1 * (1 - B + B * length_ratio)
-            score += _idf(len(selected), document_frequency) * (
+            score += _idf(len(selected), document_frequency[term]) * (
                 frequency * (K1 + 1) / denominator
             )
         if score > 0:
