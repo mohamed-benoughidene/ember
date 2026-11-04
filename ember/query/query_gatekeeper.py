@@ -15,7 +15,7 @@ from ember.query.errors import (
     QueryTextEmpty,
 )
 from ember.query.lookup import QueryLookupPort
-from ember.query.rows import HistoryPage, TopicFilter
+from ember.query.rows import HistoryPage, ListPage, TopicFilter
 from ember.query.tokenize import tokenize
 
 ACCEPTED_STATUSES = {"Active", "Challenged", "Closed"}
@@ -49,8 +49,8 @@ def validate_topic_filter(topic_filter: TopicFilter) -> None:
     """Raise `QUERY-006` when a `TopicFilter` value is illegal, else return.
 
     `status` and `type` must be exact-case members of the stored value sets,
-    `limit` must not be negative. Returns `None` on valid input (the caller
-    keeps the filter object it already holds).
+    `limit` and `offset` must not be negative. Returns `None` on valid input
+    (the caller keeps the filter object it already holds).
     """
     if (
         topic_filter.status is not None
@@ -62,6 +62,7 @@ def validate_topic_filter(topic_filter: TopicFilter) -> None:
     if topic_filter.type is not None and topic_filter.type not in ACCEPTED_TYPES:
         raise QueryFilterInvalid("type is not a stored item type", field="type")
     _require_non_negative(topic_filter.limit, "limit")
+    _require_non_negative(topic_filter.offset, "offset")
 
 
 def validate_history_page(page: HistoryPage) -> HistoryPage:
@@ -100,3 +101,15 @@ def validate_query_item(lookup: QueryLookupPort, item_id: int) -> None:
     """Raise `QUERY-001` when `item_id` is not in `items`, else return."""
     if not lookup.item_exists(item_id):
         raise QueryItemNotFound("item not found", item_id=item_id)
+
+
+def validate_list_page(page: ListPage) -> ListPage:
+    """Raise `QUERY-006` when a `ListPage` value is negative, else return.
+
+    Bridge step 02: `list-items` pages exactly like `history`, so `limit`
+    and `offset` go through the ONE shared non-negative helper (`_require_non_negative`),
+    keeping `QUERY-006` single ownership of that rule (I9).
+    """
+    _require_non_negative(page.limit, "limit")
+    _require_non_negative(page.offset, "offset")
+    return page

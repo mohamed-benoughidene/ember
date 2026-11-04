@@ -4,13 +4,16 @@ Step 02 adds `MaintainPorts` / `MaintainRequest` / `MaintainResult` and the
 `run_sweep` entry point here (it owns the store port). Step 03 adds the three
 validators and their human entry points. Step 04 adds `run_edit_item`, which
 returns the edit changes directly (`MaintainResult` stays the sweep's shape).
-Step 05 adds `run_remove_link`, the same single-element shape. This module
-owns the read step.
+Step 05 adds `run_remove_link`, the same single-element shape. Undo step 04
+adds `run_undo` / `run_redo` and `UndoRequest` (the snapshot loader rides
+`_load_undo_snapshot`). This module owns the read step.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from collections.abc import Callable
+from contextlib import AbstractContextManager, nullcontext
+from dataclasses import dataclass, field
 from datetime import datetime
 
 from ember.maintain.apply_status import MaintainStorePort
@@ -40,17 +43,35 @@ from ember.maintain.rows import (
     LinkChange,
     MaintainSnapshot,
     StatusChange,
+    UndoResult,
+    UndoSnapshot,
 )
+from ember.maintain.undo import derive_redo, derive_undo
 from ember.relate.ai_response_store import AiResponseStorePort
-from ember.relate.rows import ChangeLogEntry
+from ember.relate.rows import ChangeLogEntry, GroupIdPort
 
 
 @dataclass(frozen=True)
 class MaintainPorts:
-    """The two ports the maintain pipeline reads and writes through."""
+    """The ports the maintain pipeline reads and writes through.
+
+    `group_ids` is the neutral undo-group id source (B2, injected, undo step
+    01): the six human entry points stamp one shared group id per action
+    through it. `None` keeps every entry point's behaviour byte for byte.
+    """
 
     lookup: MaintainLookupPort
     store: MaintainStorePort
+    # Keyword-only (Python >=3.10) so `CloseProposalPorts` can add its own
+    # required ports after it without reordering existing call sites.
+    group_ids: GroupIdPort | None = field(default=None, kw_only=True)
+    # One unit of work per user action (Batch 4 chunk 8, 4.3 #9): a factory
+    # for the adapter's connection-scoped `unit_of_work` context manager.
+    # `None` (engine-test fakes and direct-store callers) keeps today's
+    # per-store-commit behaviour byte for byte.
+    unit_of_work: Callable[[], AbstractContextManager[None]] | None = field(
+        default=None, kw_only=True
+    )
 
 
 @dataclass(frozen=True)
@@ -129,17 +150,43 @@ def _build_result(
     )
 
 
+def _next_group_id(ports: MaintainPorts) -> int | None:
+    """Allocate ONE undo group id for one human action, or None.
+
+    `None` when no group-id port was injected (pre-013 behaviour). The
+    caller stamps every ledger row its action writes with the SAME id, so
+    `run_set_status`'s status batch and its shield share it (undo step 01).
+    """
+    return None if ports.group_ids is None else ports.group_ids.next_group_id()
+
+
+def _unit_of_work(ports: MaintainPorts) -> AbstractContextManager[None]:
+    """Wrap one user action's writes in ONE transaction (Batch 4 chunk 8).
+
+    Inside it, no store commits or rolls back on its own, so the whole
+    action — e.g. `run_set_status`'s status batch plus its manual shield —
+    commits once or rolls back whole (4.3 #9). Without the port (engine
+    fakes, direct-store callers) the stores keep today's own behaviour.
+    """
+    return nullcontext() if ports.unit_of_work is None else ports.unit_of_work()
+
+
 def _apply_and_report(
     ports: MaintainPorts,
     snapshot: MaintainSnapshot,
     changes: list[StatusChange],
+    group_id: int | None = None,
 ) -> MaintainResult:
     """Write the batch through the store port, then build the result.
 
-    Raises `MAINTAIN-011 StatusWriteFailed` / `MAINTAIN-012 ChangeLogWriteFailed`
+    `group_id` stamps every ledger row of the batch (undo step 01); the
+    sweep passes None and its rows read NULL — the store's parameter default
+    is None, so passing it explicitly is the same call byte for byte
+    (undo step 01 contract). Raises
+    `MAINTAIN-011 StatusWriteFailed` / `MAINTAIN-012 ChangeLogWriteFailed`
     from the store, which rolls the whole batch back (I7).
     """
-    applied = ports.store.apply_status_changes(changes)
+    applied = ports.store.apply_status_changes(changes, group_id)
     return _build_result(changes, applied, snapshot)
 
 
@@ -152,7 +199,8 @@ def run_sweep(ports: MaintainPorts, request: MaintainRequest) -> MaintainResult:
     """
     snapshot = _load(ports.lookup)
     changes = derive_status_changes(snapshot)
-    return _apply_and_report(ports, snapshot, changes)
+    with _unit_of_work(ports):
+        return _apply_and_report(ports, snapshot, changes)
 
 
 def run_close_item(ports: MaintainPorts, request: MaintainRequest) -> MaintainResult:
@@ -161,11 +209,15 @@ def run_close_item(ports: MaintainPorts, request: MaintainRequest) -> MaintainRe
     Reads `request.item_id` and `request.reason`. Raises `MAINTAIN-001` /
     `002` / `003` / `004` from the validator, `MAINTAIN-010` on a read failure,
     `MAINTAIN-011` / `012` from the store. The close does **not** set the shield
-    (a human close is a derived close, step-03 §4.1).
+    (a human close is a derived close, step-03 §4.1). The close is a human
+    action: its close row and every `dependency_closed` row share ONE group
+    id (undo step 01) — an AI-proposed close accepted in `run_close_proposals`
+    rides this entry point, so it is stamped the same way.
     """
     snapshot = _load(ports.lookup)
     changes = validate_close_item(snapshot, request.item_id, request.reason)
-    return _apply_and_report(ports, snapshot, changes)
+    with _unit_of_work(ports):
+        return _apply_and_report(ports, snapshot, changes, _next_group_id(ports))
 
 
 def run_set_status(ports: MaintainPorts, request: MaintainRequest) -> MaintainResult:
@@ -175,19 +227,23 @@ def run_set_status(ports: MaintainPorts, request: MaintainRequest) -> MaintainRe
     `006` from the validator, `MAINTAIN-010` on a read failure, `MAINTAIN-011` /
     `012` from the store. Only a `Challenged -> Active` clear writes the
     `status_origin='manual'` shield, and only when a change was actually applied
-    (so a no-op does not shield). The shield is a second transaction (step-03
-    §4.2).
+    (so a no-op does not shield). The status batch and its shield are ONE
+    transaction (Batch 4 chunk 8, 4.3 #9): a shield failure rolls the whole
+    action back, so the item keeps its old status. ONE group id stamps both
+    halves (undo step 01).
     """
     snapshot = _load(ports.lookup)
     changes = validate_set_status(snapshot, request.item_id, request.to_status)
-    result = _apply_and_report(ports, snapshot, changes)
-    if (
-        result.applied
-        and request.to_status == "Active"
-        and changes
-        and changes[0].old_status == "Challenged"
-    ):
-        ports.store.apply_status_origin(request.item_id, "manual")
+    group_id = _next_group_id(ports) if changes else None
+    with _unit_of_work(ports):
+        result = _apply_and_report(ports, snapshot, changes, group_id)
+        if (
+            result.applied
+            and request.to_status == "Active"
+            and changes
+            and changes[0].old_status == "Challenged"
+        ):
+            ports.store.apply_status_origin(request.item_id, "manual", group_id)
     return result
 
 
@@ -201,7 +257,8 @@ def run_reverse_supersedes(
     `012` from the store. The reversal writes the item restore, the `status`
     row, the `reversed_at` column on the `links` row, and the `link_reversed`
     marker row in one transaction from one clock read (L2 §6 pairing rule). It
-    never sets the shield (step-03 §4.3).
+    never sets the shield (step-03 §4.3). Both ledger rows share ONE group
+    id (undo step 01).
     """
     snapshot = _load(ports.lookup)
     changes = validate_reverse_supersedes(
@@ -217,7 +274,8 @@ def run_reverse_supersedes(
         timestamp="",
         trigger_cause="reversal",
     )
-    applied = ports.store.apply_reversal(change, marker)
+    group_id = _next_group_id(ports)
+    applied = ports.store.apply_reversal(change, marker, group_id)
     return _build_result(changes, applied, snapshot)
 
 
@@ -239,7 +297,8 @@ def run_edit_item(
     )
     if not changes:
         return []
-    ports.store.apply_item_edit(changes[0])
+    group_id = _next_group_id(ports)
+    ports.store.apply_item_edit(changes[0], group_id)
     return changes
 
 
@@ -257,8 +316,69 @@ def run_remove_link(
     """
     snapshot = _load(ports.lookup)
     changes = validate_remove_link(snapshot, request.link_id)
-    ports.store.apply_remove_link(changes[0])
+    group_id = _next_group_id(ports)
+    ports.store.apply_remove_link(changes[0], group_id)
     return changes
+
+
+@dataclass(frozen=True)
+class UndoRequest:
+    """The data for one undo or redo run (undo step 04).
+
+    `dry_run` is the maintainer's D3-locked `--dry-run` flag (an
+    acknowledged I2 exception like the four existing dry-run commands):
+    True loads and derives only and writes ZERO rows.
+    """
+
+    dry_run: bool = False
+
+
+def _load_undo_snapshot(lookup: MaintainLookupPort) -> UndoSnapshot:
+    """Read the whole world the pure undo core needs (undo step 04).
+
+    The grouped ledger, every item, ALL links (any status, with
+    `reversed_at`, the binding step-03 deviation U3-3 — the refusal rule
+    compares rows against LIVE link state) and whether pre-013 ledger rows
+    exist. Raises `MAINTAIN-010 ItemsReadFailed` when any read fails (I7).
+    """
+    return UndoSnapshot(
+        groups=lookup.list_grouped_ledger(),
+        items=lookup.list_items(),
+        links=lookup.list_all_links(),
+        ungrouped_rows_exist=lookup.has_ungrouped_rows(),
+    )
+
+
+def run_undo(ports: MaintainPorts, request: UndoRequest) -> UndoResult:
+    """Undo the newest still-undoable human change (undo step 04, L2 §4/§5).
+
+    Load, derive the inverse plan with the pure `derive_undo`, then apply it
+    through the store in ONE transaction — unless `request.dry_run`, which
+    derives only and writes zero rows. Refusals are raised, never returned
+    (I4): `MAINTAIN-023` NothingToUndo, `MAINTAIN-025` UndoRefused,
+    `MAINTAIN-027` GroupRecordInvalid from the core, `MAINTAIN-010` on a
+    read, `MAINTAIN-026` / `MAINTAIN-012` from the store. The returned
+    `UndoResult` carries `source_group_id`, `source_action` and
+    `target_label` for the report line (story 113).
+    """
+    plan = derive_undo(_load_undo_snapshot(ports.lookup))
+    if not request.dry_run:
+        ports.store.apply_inverse_group(plan)
+    return plan
+
+
+def run_redo(ports: MaintainPorts, request: UndoRequest) -> UndoResult:
+    """Re-apply the most recent undone human change (undo step 04, L2 §4/§5).
+
+    `run_undo`'s mirror: `derive_redo` derives the plan, the store applies
+    it in ONE transaction, `request.dry_run` writes zero rows. Raises the
+    same codes with `MAINTAIN-024` NothingToRedo in place of `MAINTAIN-023`
+    (a newer original action clears the redo, spec 12.6 rule 2).
+    """
+    plan = derive_redo(_load_undo_snapshot(ports.lookup))
+    if not request.dry_run:
+        ports.store.apply_inverse_group(plan)
+    return plan
 
 
 @dataclass(frozen=True)
@@ -289,8 +409,9 @@ def run_close_proposals(ports: CloseProposalPorts, now: datetime) -> ProposalOut
     machine-closed is `Closed`, not `Active`, so it cannot be proposed twice
     in one run). `run_sweep` is untouched: this is a separate entry point.
 
-    Per candidate: one AI call (`propose_close_with_retry`, retry ONCE, the
-    second failure propagates `MAINTAIN-018` / `MAINTAIN-019`), then the raw
+    Per candidate: one AI call (`propose_close_with_retry` makes exactly one
+    port call; the adapter owns the ONE retry policy) whose failure
+    propagates `MAINTAIN-018` / `MAINTAIN-019`, then the raw
     answer saved verbatim in `ai_responses` keyed by `item_id` BEFORE
     anything is judged (D8, storage failure maps to `MAINTAIN-021`). A decline
     displays `no close proposed` and prompts nothing. A proposal displays its
@@ -341,7 +462,12 @@ def run_close_proposals(ports: CloseProposalPorts, now: datetime) -> ProposalOut
                 rejected += 1
                 continue
             result = run_close_item(
-                MaintainPorts(lookup=ports.lookup, store=ports.store),
+                MaintainPorts(
+                    lookup=ports.lookup,
+                    store=ports.store,
+                    group_ids=ports.group_ids,
+                    unit_of_work=ports.unit_of_work,
+                ),
                 MaintainRequest(
                     item_id=candidate.item_id, reason=response.proposal.reason
                 ),

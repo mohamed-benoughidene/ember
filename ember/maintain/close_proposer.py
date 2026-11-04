@@ -16,7 +16,7 @@ from typing import Protocol
 
 from pydantic import BaseModel
 
-from ember.maintain.errors import CloseAiCallFailed, CloseAiSchemaInvalid
+from ember.maintain.errors import CloseAiSchemaInvalid
 from ember.maintain.human_actions import HUMAN_SETTABLE_REASONS
 from ember.maintain.rows import MaintainSnapshot
 from ember.relate.rows import Link
@@ -146,6 +146,12 @@ def stale_close_candidates(
     for link in snapshot.links:
         if link.status != "Confirmed" or link.link_type != "answers":
             continue
+        # Finding 4.6 #8: the id guard runs BEFORE the (created_at, id)
+        # tuple comparison — a None id would raise `None > int` against a
+        # real id on an exact created_at tie. A synthetic None-id link is
+        # not a candidate, never raises.
+        if link.id is None:
+            continue
         created = _confirmed_at(link)
         if created is None:
             continue
@@ -217,15 +223,13 @@ def parse_close_proposal(ai_response: str) -> CloseProposal | None:
 def propose_close_with_retry(
     proposer: CloseProposerPort, *, candidate: StaleCandidate
 ) -> CloseProposalResponse:
-    """Call the port and retry ONCE on `MAINTAIN-018` or `MAINTAIN-019`. The
-    second failure propagates. Both failure kinds are retried (the capture
-    `propose_items` shape), deliberately unlike relate's schema-no-retry:
-    the ticket's pinned policy retries an empty answer too.
+    """Call the port ONCE and propagate whatever it raises (Batch 7, Chunk 5).
+
+    The engine core does not retry and does not catch: the ONE retry policy
+    lives inside the adapter (`OpenAiCloseProposer.propose_close`).
+    Keeping the historical name so callers read unchanged.
     """
-    try:
-        return proposer.propose_close(candidate)
-    except (CloseAiCallFailed, CloseAiSchemaInvalid):
-        return proposer.propose_close(candidate)
+    return proposer.propose_close(candidate)
 
 
 def format_proposal_block(

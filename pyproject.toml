@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ember"
-version = "0.1.0"
+dynamic = ["version"]
 description = "Ember: project context management system"
 requires-python = ">=3.12"
 dependencies = [
@@ -25,12 +25,16 @@ ember = "ember.cli:main"
 [tool.setuptools.packages.find]
 include = ["ember*"]
 
+[tool.setuptools.dynamic]
+version = {attr = "ember.__version__"}
+
 [tool.setuptools.package-data]
 "ember.adapters.migrations" = ["*.sql"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-q -m 'not live'"
+addopts = "-q -m 'not live and not slow'"
 markers = [
+    "slow: costs about a minute; excluded from the default local run, included in CI",
     "live: hits the real OpenRouter API and costs money; run with -m live",
 ]

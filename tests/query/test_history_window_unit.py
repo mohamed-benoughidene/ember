@@ -48,19 +48,21 @@ def test_history_page_windows_within_the_union_rule() -> None:
     full = history(rows, links, 1)
     assert [event.item_id for event in full] == [1, 1]
 
-    # Union first, then sort, then the crop: offset 1 skips the earlier row.
+    # Union first, then sort (newest first), then the crop: offset 1 skips
+    # the NEWER of the two rows, so the older subject row is what remains.
     item_page = history(
         rows, links, 1, HistoryPage(offset=1, limit=1)
     )
     assert len(item_page) == 1
     assert item_page[0].item_id == 1
-    assert item_page[0].old_value == row_both.old_value
+    assert item_page[0].timestamp == row_subject.timestamp
 
     # The NULL-subject row stays global-only, behind the same window rule.
+    # Newest first, offset 1 skips the NULL row (the newest of the three).
     global_page = history(
         rows, links, None, HistoryPage(offset=1, limit=10)
     )
-    assert [event.item_id for event in global_page] == [1, None]
+    assert [event.item_id for event in global_page] == [1, 1]
 
 
 def test_since_drops_older_rows() -> None:
@@ -73,9 +75,10 @@ def test_since_drops_older_rows() -> None:
 
     page = validate_history_page(HistoryPage(since="2026-01-15T00:00:00+00:00"))
     events = history(rows, [], None, page)
+    # Newest first (Batch 6): the later day renders first.
     assert [event.timestamp for event in events] == [
-        "2026-01-15T00:00:00+00:00",
         "2026-01-16T00:00:00+00:00",
+        "2026-01-15T00:00:00+00:00",
     ]
 
     # The same view scoped to one item drops the same older rows (all three
@@ -85,8 +88,8 @@ def test_since_drops_older_rows() -> None:
     )
     kept = history(rows, [], 1, page_item)
     assert [event.timestamp for event in kept] == [
-        "2026-01-15T00:00:00+00:00",
         "2026-01-16T00:00:00+00:00",
+        "2026-01-15T00:00:00+00:00",
     ]
 
     # The TZ case: the row is stamped tz-aware UTC and the since is a
@@ -95,9 +98,10 @@ def test_since_drops_older_rows() -> None:
     # lost to a spelling.
     tz_page = validate_history_page(HistoryPage(since="2026-01-15T02:00:00+02:00"))
     assert tz_page.since == "2026-01-15T00:00:00+00:00"
+    # Newest first: the later day renders first.
     assert [event.timestamp for event in history(rows, [], None, tz_page)] == [
-        "2026-01-15T00:00:00+00:00",
         "2026-01-16T00:00:00+00:00",
+        "2026-01-15T00:00:00+00:00",
     ]
 
     # Spellings `fromisoformat` accepts, pinned here (G.2): a space
@@ -115,6 +119,43 @@ def test_since_drops_older_rows() -> None:
         validate_history_page(HistoryPage(since="2026-01-15"))
 
 
+def test_history_since_parses_timestamps_instead_of_comparing_text() -> None:
+    """`--since` compares instants, not ISO text (finding 4.7 #9, story 38).
+
+    Two rows whose TEXT order runs opposite their instant order: row 1 is
+    stored in a `-10:00` spelling but is the LATER instant (06:00Z on the
+    15th); row 2 is a `+02:00` spelling of an instant BEFORE the window
+    (22:30Z on the 14th). A raw text compare keeps the wrong row and drops
+    the right one; parsing both sides keeps exactly row 1.
+    """
+    rows = [
+        make_change_row(1, timestamp="2026-01-14T20:00:00-10:00"),
+        make_change_row(2, timestamp="2026-01-15T00:30:00+02:00"),
+    ]
+    # The full view still shows both rows, stored spellings rendered
+    # verbatim, newest (descending `timestamp` TEXT) first — here the
+    # TEXT order runs OPPOSITE the instant order, exactly the case the
+    # instant-based `--since` cut below exists for (Batch 6: the sort is
+    # descending; the cut is unchanged).
+    assert [event.timestamp for event in history(rows, [], None)] == [
+        "2026-01-15T00:30:00+02:00",
+        "2026-01-14T20:00:00-10:00",
+    ]
+
+    page = validate_history_page(HistoryPage(since="2026-01-15T00:00:00+00:00"))
+    assert page.since == "2026-01-15T00:00:00+00:00"
+    events = history(rows, [], None, page)
+    assert [event.timestamp for event in events] == [
+        "2026-01-14T20:00:00-10:00",
+    ]
+
+    # The cut composes with the item view behind the same instant rule.
+    item_events = history(rows, [], 1, page)
+    assert [event.timestamp for event in item_events] == [
+        "2026-01-14T20:00:00-10:00",
+    ]
+
+
 def test_offset_skips_then_limit_caps() -> None:
     rows = _five_rows()
 
@@ -130,12 +171,13 @@ def test_offset_skips_then_limit_caps() -> None:
         for event in history(rows, [], None, HistoryPage(offset=2, limit=2))
     ] == [1, 1]
 
-    # The ledger order still runs timestamp then id behind the crop.
+    # The ledger order still runs timestamp then id DESCENDING behind the
+    # crop: the default page keeps the NEWEST three rows.
     assert [
         event.timestamp for event in history(rows, [], None, HistoryPage(limit=3))
     ] == [
-        "2026-01-01T00:00:00+00:00",
-        "2026-01-02T00:00:00+00:00",
+        "2026-01-05T00:00:00+00:00",
+        "2026-01-04T00:00:00+00:00",
         "2026-01-03T00:00:00+00:00",
     ]
 

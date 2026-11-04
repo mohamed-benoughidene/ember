@@ -2,12 +2,30 @@
 
 from __future__ import annotations
 
+import importlib.resources
 import sqlite3
 
 from ember.adapters.sqlite import open_database
-from ember.query.rows import ChangeRow, CurrentStateRow, QueryItem
+from ember.query.rows import ChangeRow, CurrentStateRow, HistoryPage, QueryItem
 from ember.relate.rows import Link
 from tests.fakes import FIXED_TIME
+
+_V10_MIGRATIONS = (
+    "001_create_sources.sql",
+    "002_create_items.sql",
+    "003_create_change_log.sql",
+    "004_add_item_detail_columns.sql",
+    "005_create_ai_responses.sql",
+    "006_create_links.sql",
+    "007_create_item_embeddings.sql",
+    "008_add_change_log_link_fk.sql",
+    "009_drop_source_id_not_null_and_add_item_id.sql",
+    "010_add_item_close_reason.sql",
+)
+
+_V11_MIGRATIONS = _V10_MIGRATIONS + (
+    "011_add_links_reversed_at_and_enforcement_triggers.sql",
+)
 
 
 class FakeQueryLookup:
@@ -22,10 +40,13 @@ class FakeQueryLookup:
         items: list[QueryItem] | None = None,
         links: list[Link] | None = None,
         change_rows: list[ChangeRow] | None = None,
+        source_texts: dict[int, str] | None = None,
     ) -> None:
         self._items = list(items or [])
         self._links = list(links or [])
         self._change_rows = list(change_rows or [])
+        # Bridge step 02: `source_text_for` texts, keyed by item id.
+        self._source_texts = dict(source_texts or {})
         self.calls: list[str] = []
 
     def list_items(self) -> list[QueryItem]:
@@ -36,13 +57,55 @@ class FakeQueryLookup:
         self.calls.append("list_links")
         return list(self._links)
 
-    def list_change_log(self) -> list[ChangeRow]:
+    def list_change_log(
+        self,
+        item_id: int | None = None,
+        window: HistoryPage | None = None,
+    ) -> list[ChangeRow]:
+        """Mirror the adapter's SQL filter in memory.
+
+        The item filter is exactly `history`'s `_belongs_to` rule (subject
+        or touching link), `since` a TEXT `>=` prefilter, the crop the
+        NEWEST `offset + limit` rows by `(timestamp, id)` DESCENDING — the
+        same prefix the SQL read returns (Batch 8, finding 4.7 #12).
+        """
         self.calls.append("list_change_log")
-        return list(self._change_rows)
+        rows = list(self._change_rows)
+        if item_id is not None:
+            links = {
+                int(link.id): link
+                for link in self._links
+                if link.id is not None
+            }
+            rows = [
+                row
+                for row in rows
+                if row.item_id == item_id
+                or (
+                    row.link_id is not None
+                    and row.link_id in links
+                    and item_id
+                    in (
+                        links[row.link_id].source_item_id,
+                        links[row.link_id].target_item_id,
+                    )
+                )
+            ]
+        if window is not None and window.since is not None:
+            rows = [row for row in rows if row.timestamp >= window.since]
+        rows.sort(key=lambda row: (row.timestamp, row.id), reverse=True)
+        if window is not None and window.limit is not None:
+            start = window.offset or 0
+            rows = rows[start : start + window.limit]
+        return rows
 
     def item_exists(self, item_id: int) -> bool:
         self.calls.append(f"item_exists:{item_id}")
         return any(item.id == item_id for item in self._items)
+
+    def source_text_for(self, item_id: int) -> str:
+        self.calls.append(f"source_text_for:{item_id}")
+        return self._source_texts.get(item_id, "")
 
 
 def make_item(
@@ -56,6 +119,8 @@ def make_item(
     status_origin: str = "derived",
     rationale: str | None = None,
     created_at: str = FIXED_TIME,
+    source: str | None = None,
+    validated: bool | None = None,
 ) -> QueryItem:
     """Build one `QueryItem` for the pure-core tests."""
     return QueryItem(
@@ -68,6 +133,8 @@ def make_item(
         rationale=rationale,
         created_at=created_at,
         source_id=source_id,
+        source=source,
+        validated=validated,
     )
 
 
@@ -124,6 +191,7 @@ def make_link(
     *,
     link_type: str = "depends_on",
     status: str = "Confirmed",
+    reversed_at: str | None = None,
 ) -> Link:
     """Build one `Link` for the history tests."""
     return Link(
@@ -133,12 +201,59 @@ def make_link(
         link_type=link_type,
         status=status,
         created_at=FIXED_TIME,
+        reversed_at=reversed_at,
     )
 
 
 def make_v10(db_path: str) -> sqlite3.Connection:
-    """Create a real schema-version-10 database and return a writing handle."""
-    return open_database(db_path)
+    """Create a real schema-version-10 database and return a writing handle.
+
+    The migration SQL scripts 001-010 are applied by hand and the version
+    is stamped 10, so nothing past 010 ever runs (finding 4.7 #10, story
+    44): the file is a genuine pre-011 database where `links.reversed_at`
+    and `items.metadata` do not exist, and the read-only boot accepts it
+    as-is without migrating. Calling it again on an already-built file
+    just returns a writing handle.
+    """
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    built = conn.execute(
+        "SELECT COUNT(*) FROM sqlite_master"
+        " WHERE type = 'table' AND name = 'schema_version'"
+    ).fetchone()[0]
+    if built:
+        return conn
+    conn.execute("CREATE TABLE schema_version (version INTEGER NOT NULL)")
+    conn.execute("INSERT INTO schema_version (version) VALUES (10)")
+    package = importlib.resources.files("ember.adapters.migrations")
+    for name in _V10_MIGRATIONS:
+        conn.executescript(package.joinpath(name).read_text(encoding="utf-8"))
+    return conn
+
+
+def make_v11(db_path: str) -> sqlite3.Connection:
+    """Create a real schema-version-11 database and return a writing handle.
+
+    Same recipe as `make_v10`, one migration further: scripts 001-011 are
+    applied by hand and the version is stamped 11, so nothing past 011 ever
+    runs. The file genuinely has `links.reversed_at` (migration 011) but no
+    `items.metadata` (012) and no `change_log.group_id` (013). Calling it
+    again on an already-built file just returns a writing handle.
+    """
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    built = conn.execute(
+        "SELECT COUNT(*) FROM sqlite_master"
+        " WHERE type = 'table' AND name = 'schema_version'"
+    ).fetchone()[0]
+    if built:
+        return conn
+    conn.execute("CREATE TABLE schema_version (version INTEGER NOT NULL)")
+    conn.execute("INSERT INTO schema_version (version) VALUES (11)")
+    package = importlib.resources.files("ember.adapters.migrations")
+    for name in _V11_MIGRATIONS:
+        conn.executescript(package.joinpath(name).read_text(encoding="utf-8"))
+    return conn
 
 
 def make_v9(db_path: str) -> None:

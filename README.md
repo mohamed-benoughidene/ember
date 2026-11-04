@@ -154,10 +154,13 @@ All other commands run only on your computer. After its first download, the `rel
 
 | Command | What it does | Needs a key |
 |---|---|---|
+| `init` | Creates the knowledge base file; on an existing file verifies it and changes nothing | No |
 | `capture` | Reads a note, proposes items, saves the ones you confirm | Yes |
 | `capture-source` | Stores a raw note only, with no AI | No |
 | `set-validated` | Marks an Assumption as verified | No |
 | `clear-validated` | Clears that flag | No |
+| `forget-source` | Permanently forgets a raw note that produced no items | No |
+| `list-sources-without-items` | Lists the notes with no items yet (the Cleanup list) | No |
 | `relate` | Proposes typed links for one item, saves the ones you confirm | Yes, plus the `relate` extra |
 | `maintain` | Updates item statuses from confirmed links, with no AI | Only for the AI close proposals |
 | `close-item` | Closes an item by hand | No |
@@ -165,15 +168,21 @@ All other commands run only on your computer. After its first download, the `rel
 | `reverse-supersedes` | Undoes a `supersedes` link | No |
 | `edit-item` | Edits the rationale of a Decision or the source of a Finding | No |
 | `remove-link` | Removes one confirmed link by marking it Rejected | No |
+| `undo` | Undoes the newest change by writing its reverse to the ledger | No |
+| `redo` | Re-applies the change you just undid | No |
 | `current-state` | Lists live items, Challenged first | No |
 | `topic-search` | Searches item statements by topic | No |
 | `why` | Shows the reasons behind an item | No |
 | `history` | Shows the ledger, for one item or for all | No |
+| `list-items` | Lists every item in any status, with filters | No |
+| `show-item` | Shows one item with its source text and all its links | No |
 | `db-check` | Reports the health of the knowledge base file | No |
 | `backup` | Saves a restorable snapshot | No |
 | `export` | Writes everything as one plain text file | No |
 
 For every flag, what each command writes, and every error code, read the [full command inventory](docs/commands.md).
+
+A program (the desktop app, a script) can also read these commands as data: `--format json` turns a command's output into one JSON document, and `--confirm json` turns the three interactive commands' questions into JSON event lines you answer on stdin. See "Machine use" in the [command inventory](docs/commands.md).
 
 ## Status
 
@@ -181,8 +190,8 @@ Ember has five parts, called engines. All five are built and verified by the off
 
 - **Engine A, Capture:** Stores raw notes and asks AI to propose items. You confirm each one.
 - **Engine B, Relate:** Ranks link candidates and asks AI to propose typed links. You confirm each one.
-- **Engine C, Maintain:** A sweep with no AI updates statuses from confirmed links. Five commands make manual changes.
-- **Engine D, Query:** Four read-only commands show the current state, search topics, explain a decision, and show the ledger.
+- **Engine C, Maintain:** A sweep with no AI updates statuses from confirmed links. Seven commands make manual changes (including Undo and Redo).
+- **Engine D, Query:** Six read-only commands show the current state, search topics, explain a decision, show the ledger, and list or show items.
 - **Engine E, Utility:** Safety commands: `backup`, `export`, and the read-only `db-check`.
 
 ## FAQ
@@ -222,7 +231,7 @@ pytest
 pytest -m live
 ```
 
-`pytest` runs the offline tests. `pytest -m live` calls the real AI service, needs `EMBER_AI_API_KEY`, and costs money.
+`pytest` runs the offline tests; the one `slow` test (a hung provider, about a minute) is skipped locally and runs in CI. `pytest -m live` calls the real AI service, needs `EMBER_AI_API_KEY`, and costs money; the live tests are skipped without the key and are never run in CI.
 
 ## What is in this repository
 

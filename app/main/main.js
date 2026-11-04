@@ -1,0 +1,831 @@
+'use strict';
+
+/**
+ * The Electron main process: the app shell (L3 app step 02).
+ *
+ * Owns: app lifecycle, the one window, the stores, and the wiring of
+ * the narrow IPC list (main/ipc.js). The renderer has no Node access;
+ * it only talks to the preload allowlist (B5, T9).
+ *
+ * Boot order: resolve the ember command (APP-007 if the configured
+ * path is missing), load settings once (APP-004 notice rides along,
+ * I13), open the window, register the IPC handlers.
+ *
+ * `EMBER_APP_LAUNCH_CHECK=1` runs the S1 walking skeleton instead of
+ * idling: open the window, run ONE read command (`list-items`) against
+ * the knowledge base, print `items: N` on stdout, exit 0 — or print
+ * `launch-check-error: CODE ...` and exit 1.
+ */
+
+const { app, BrowserWindow, safeStorage, ipcMain, dialog, clipboard, shell } = require('electron');
+const path = require('node:path');
+const { spawn } = require('node:child_process');
+const {
+  resolveEmberCommand,
+  checkEmberCommand,
+  validateKnowledgeBasePath,
+  bundledEmber,
+  bundledChildEnv,
+} = require('./ember-command');
+const { trayIconPath, windowIconPath } = require('./app-icon');
+const { loadErrorPattern } = require('./error-pattern');
+const { createBridgeClient } = require('./bridge-client');
+// F7a: the shared PURE parser for one `ember --version` answer, used
+// by readEngineVersion below (module scope — unlike the menu block's
+// require further down, which sits inside wireIpc).
+const { engineVersionFromStdout } = require('../shared/menu-template.mjs');
+const { createSettingsStore } = require('./settings-store');
+const { createKeyStore } = require('./key-store');
+const { registerIpcHandlers } = require('./ipc');
+const { schemaVersionIsAtLeast } = require('./kb-schema-version');
+
+// App 11 (ticket A40): the quick popup manager + its pure parts, and
+// the `--quick-add` launch route (plan §5.5).
+const { createPopupManager, popupBoundsFor, quickAddRequested, shouldParkMainWindow } = require('./popup');
+
+const LAUNCH_CHECK = process.env.EMBER_APP_LAUNCH_CHECK === '1';
+const DB_OVERRIDE = process.env.EMBER_APP_DB ?? null;
+// [app 11] `ember-app --quick-add`: boot straight into the popup; the
+// main window is created but stays parked until something opens it.
+const QUICK_ADD = quickAddRequested(process.argv);
+
+let mainWindow = null;
+// The popup's last "open the main window on setup" request, held when
+// the main window's renderer is still loading (see openMainRequest).
+let pendingOpenRequest = null;
+// Batch 5 4.9 #6: true from 'before-quit' until the end — only a REAL
+// quit may destroy windows (the close-to-tray intercept below and the
+// window-all-closed guard both read it).
+let quitting = false;
+
+function appVersion() {
+  try {
+    return app.getVersion();
+  } catch {
+    return '0.0.0';
+  }
+}
+
+/**
+ * Batch 6 chunk 17 (F7a): the engine's version for the About box, read
+ * ONCE per app run through the SAME resolved ember command every other
+ * child uses (services.emberCommand — the main/ember-command.js
+ * command-resolution path). `ember --version` (Batch 1) answers
+ * "ember, version 0.1.0" on stdout; ANY other outcome — a spawn
+ * failure, non-zero exit, a timeout, unparsable output — settles null
+ * and the About box shows the app version only. Never rejects and
+ * never throws (a silent engine must not break About). Main process
+ * only; nothing here crosses to the renderer, so the preload
+ * allowlist is untouched. It cannot ride bridge-client's runCommand:
+ * that builder always appends a subcommand and `--db`, and `--version`
+ * is a top-level flag.
+ *
+ * @param {string[]} emberCommand the resolved command argv prefix
+ * @param {typeof import('node:child_process').spawn} [spawnFn] test seam
+ * @returns {Promise<string|null>}
+ */
+function readEngineVersion(emberCommand, spawnFn = spawn) {
+  return new Promise((resolve) => {
+    let settled = false;
+    const settle = (value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(value);
+    };
+    // I15: a time limit on every child call. The version read is a
+    // cheap one; 5 s is generous.
+    const timer = setTimeout(() => {
+      try {
+        child.kill();
+      } catch {
+        /* already gone */
+      }
+      settle(null);
+    }, 5000);
+    let child;
+    try {
+      child = spawnFn(emberCommand[0], [...emberCommand.slice(1), '--version'], {
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+    } catch {
+      settle(null);
+      return;
+    }
+    let stdoutText = '';
+    child.stdout.on('data', (chunk) => {
+      stdoutText += chunk;
+    });
+    child.on('error', () => settle(null));
+    child.on('close', (code) => {
+      settle(code === 0 ? engineVersionFromStdout(stdoutText) : null);
+    });
+  });
+}
+
+/** Focus (and restore/hide-reopen) the one main window. The single
+ * seam the tray's Open Ember, the popup's story-93 link via
+ * openMainRequest, and the second-instance event all share. */
+function focusMainWindow() {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    if (mainWindow.isMinimized()) mainWindow.restore();
+    mainWindow.show();
+    mainWindow.focus();
+  }
+}
+
+function createWindow({ showOnReady = true } = {}) {
+  mainWindow = new BrowserWindow({
+    width: 1000,
+    height: 640,
+    // The window floor (Batch 9 UI audit, finding 3): at the Largest
+    // text size (200%) the sidebar alone is 11rem = 330px, so anything
+    // narrower than ~800px cannot render the screens readably — the
+    // title row starves and the tables outgrow their columns. The
+    // floor makes that state unreachable; height stays free (vertical
+    // scrolling is normal reading behavior).
+    minWidth: 800,
+    show: false,
+    title: 'Ember',
+    // [app 13] the real raster icon in the taskbar when the tree
+    // ships it; undefined keeps Electron's default otherwise.
+    icon: windowIconPath(path.join(__dirname, '..')) || undefined,
+    webPreferences: {
+      preload: path.join(__dirname, '..', 'preload', 'preload.js'),
+      contextIsolation: true, // the renderer cannot reach Node (B5)
+      nodeIntegration: false, // doubled down; asserted by a node test
+      sandbox: true,
+    },
+  });
+  mainWindow.loadFile(path.join(__dirname, '..', 'renderer', 'index.html'));
+  // [app 11] with `--quick-add` the main window stays parked behind the
+  // popup until the popup's "Open Ember" link (or a route) asks for it.
+  mainWindow.once('ready-to-show', () => {
+    if (showOnReady) mainWindow.show();
+  });
+  // Batch 5 (story 24, D-24's safety half): the window is a closed
+  // box. Any in-page navigation attempt is refused (the renderer is
+  // the one local page; its own router never uses real navigation),
+  // and no window.open / target=_blank ever opens a new window.
+  // A same-URL reload is NOT navigation away (Keep safe's "Show the
+  // new file" reloads the one local page after a kb change), so the
+  // deny guard must not swallow it.
+  mainWindow.webContents.on('will-navigate', (event, url) => {
+    if (url === mainWindow.webContents.getURL()) return;
+    event.preventDefault();
+  });
+  mainWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+  // The popup's held "open setup" request re-sends once the page can
+  // hear it (the early-push race; see openMainRequest).
+  mainWindow.webContents.on('did-finish-load', () => {
+    if (pendingOpenRequest !== null && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('ember:openRequest', pendingOpenRequest);
+      pendingOpenRequest = null;
+    }
+  });
+  mainWindow.on('close', (event) => {
+    // Batch 5 (story 5, D-24): closing the window never ends Ember —
+    // it hides to the tray (the tray fallback / popup / second-launch
+    // routes can bring it back) and the process stays. Only a REAL
+    // quit (the tray's Quit, app.quit()) reaches here with `quitting`
+    // already set by 'before-quit', so quitting still closes windows.
+    if (quitting) return;
+    event.preventDefault();
+    if (!mainWindow.isDestroyed()) mainWindow.hide();
+  });
+  mainWindow.on('closed', () => {
+    mainWindow = null;
+  });
+  return mainWindow;
+}
+
+/** Build the adapters once at boot; Electron/OS effects only (T2). */
+function buildServices(env = process.env) {
+  const userData = app.getPath('userData');
+  const appDir = path.join(__dirname, '..');
+  // [app 13] the bundled Ember runtime (decision 3-B): when this tree
+  // carries one (or is a packaged install with the bundle.json
+  // manifest), the app points at it; the children then read the model
+  // weights from INSIDE the app folder, offline (story 107).
+  const bundling = bundledEmber(appDir);
+  if (bundling.emberPath) {
+    Object.assign(process.env, bundledChildEnv(bundling.emberPath));
+  }
+  return {
+    settingsStore: createSettingsStore({ file: path.join(userData, 'settings.json') }),
+    keyStore: createKeyStore({ file: path.join(userData, 'key.enc'), safeStorage }),
+    errorPattern: loadErrorPattern(appDir),
+    emberCommand: resolveEmberCommand(env, bundling),
+    userDataPath: userData,
+    // [app 13] the real raster tray icon when the tree ships one
+    // (the step-11 honest placeholder debt); null keeps the old
+    // default-icon behaviour in trees without the asset.
+    iconPath: trayIconPath(appDir),
+  };
+}
+
+function bootNoticeFor(services) {
+  // Boot notice: APP-007 when a path-shaped ember command is missing.
+  const commandCheck = checkEmberCommand(services.emberCommand);
+  return commandCheck.ok ? null : commandCheck.error;
+}
+
+function wireIpc(services) {
+  // [app 10] Settings panes: the quick-popup shortcut re-registration
+  // seam and the tray fallback (stories 85-86; app step 11 opens the
+  // real popup through this same seam). The
+  // Electron edge effects stay here, at the edge (T2).
+  const { Tray, Menu } = require('electron');
+  const { createShortcutManager, createTrayManager, registerSettingsShortcut, bootShortcutFor, bootTrayFor } = require('./shortcuts');
+
+  /* =================================================================
+     APP STEP 11 (ticket A40): the quick popup (stories 90-95; plan
+     §5.5). Bracketed, additive: the window manager, the open/hide
+     action every route shares (the global shortcut, the tray's Quick
+     add, the `--quick-add` launch option, and from here step 12's
+     File -> Add text menu item), and the popup's one route back into
+     this window (stories 93/94).
+     ================================================================= */
+  const { screen } = require('electron');
+  const { appErrorInfo } = require('../shared/errors'); // also the launch-check failure path's missing import (see build notes)
+  const popup = createPopupManager({
+    BrowserWindowCtor: BrowserWindow,
+    screenApi: screen,
+    pagePath: path.join(__dirname, '..', 'renderer', 'quick.html'),
+    preloadPath: path.join(__dirname, '..', 'preload', 'preload.js'),
+    positionFor: () => services.settingsStore.load().settings.quickPopup.position,
+    alwaysOnTop: false, // the founder-review proposal (plan §5.5): default OFF, for the step gate to confirm
+  });
+  /**
+   * One open/hide action for every quick-add route. `park` (the
+   * shortcut, the tray, the launch option) tucks the main window away
+   * ONLY when Ember itself was the focused window, so Esc returns to
+   * the program the user came from (shouldParkMainWindow pins the rule).
+   * The renderer-facing route (the e2e seam, step 12's menu item) never
+   * parks. `action: 'hide'` is the popup page closing itself.
+   */
+  const openQuickPopup = ({ park = false, action = 'toggle' } = {}) => {
+    if (action === 'hide' || popup.visible()) {
+      popup.hide();
+      return { ok: true, visible: false, parked: false };
+    }
+    let parked = false;
+    if (
+      park &&
+      mainWindow &&
+      !mainWindow.isDestroyed() &&
+      shouldParkMainWindow({ focused: mainWindow.isFocused(), visible: mainWindow.isVisible() })
+    ) {
+      mainWindow.hide();
+      parked = true;
+    }
+    const shown = popup.show();
+    if (!shown.ok) process.stderr.write(`launch-note: ${shown.error.code} ${shown.error.name} | ${shown.error.detail}\n`);
+    return { ok: shown.ok, visible: shown.ok, parked };
+  };
+  /**
+   * The popup's route to the full window: story 93 ("Open Ember") and
+   * story 94's path to fix a missing setup. Focus (and restore) the
+   * main window, then tell its page which view was asked for.
+   */
+  const openMainRequest = ({ view = 'ember' } = {}) => {
+    if (!mainWindow || mainWindow.isDestroyed()) {
+      return { ok: false, error: appErrorInfo('APP-007', 'main.main.quickOpenMain', 'the main window is not available') };
+    }
+    focusMainWindow();
+    if (view === 'setup') {
+      // Under load the main window's renderer may still be booting when
+      // the popup asks (the same early-push race the Add session solved
+      // with its buffered attach): hold the LAST request and re-send it
+      // when the page finishes loading (main.js, the did-finish-load
+      // hook), instead of losing it (ticket A39-merge, lead fix).
+      if (mainWindow.webContents.isLoading()) {
+        pendingOpenRequest = { view };
+      } else {
+        mainWindow.webContents.send('ember:openRequest', { view });
+      }
+    }
+    return { ok: true, view };
+  };
+  /* === App 11 block ends === */
+
+  /* =================================================================
+     APP STEP 12 (ticket A41): the application menu (spec §9; plan
+     §5.7) as ONE pure definition (shared/menu-template.mjs) built by
+     the manager (main/app-menu.js) and consumed here. The dispatch
+     maps the template's action ids onto the OS effects; the Edit
+     menu's Undo/Redo labels re-derive from `undo --dry-run --format
+     json` (the step-07 derivation in shared/undo-labels.mjs — the
+     same words the Fix and close bar shows) whenever the knowledge
+     base may have changed: after any bridge command or session
+     settles (the ipc onBridgeActivity hook), after a settings save or
+     a knowledge-base switch (onSettingsSaved), and once at boot. The
+     requests reach the renderer over ONE new push channel
+     (ember:menuRequest); navigation is always the renderer's own
+     router (B4), and Undo/Redo land on the Fix and close screen's
+     own controls — one code path, no forked undo.
+     ================================================================= */
+  const { createAppMenuManager } = require('./app-menu');
+  const { deriveUndoMenuState, aboutCreditsText } = require('../shared/menu-template.mjs');
+  const { validateKnowledgeBasePath: menuKbGuard } = require('./ember-command');
+
+  /**
+   * F7a: the engine version for the About box, read ONCE per run and
+   * cached (the first ask warms it; every later ask reuses the cache).
+   * The read goes through the SAME resolved ember command every other
+   * child uses (services.emberCommand) — no new IPC route, no preload
+   * or allowlist change, nothing crosses to the renderer. A null
+   * answer (engine missing, slow, or silent) is cached alike: the
+   * About box shows the app version only, per the pinned fallback.
+   */
+  let engineVersionPromise = null;
+  const engineVersionOnce = () => {
+    if (engineVersionPromise === null) {
+      engineVersionPromise = readEngineVersion(services.emberCommand);
+    }
+    return engineVersionPromise;
+  };
+  void engineVersionOnce(); // warm at boot, so the first About click already has the answer
+
+  /**
+   * Commands that CANNOT change the ledger: no label re-derive after
+   * them (the reads, and the file-producing backup/export). `maintain`
+   * is deliberately NOT skipped: its apply run writes. The refresh runs
+   * two short-lived child processes (one dry-run each way).
+   */
+  const MENU_ACTIVITY_SKIPS = new Set([
+    'list-items',
+    'show-item',
+    'current-state',
+    'topic-search',
+    'why',
+    'history',
+    'capture-source',
+    'db-check',
+    'backup',
+    'export',
+    // Batch 6 Chunk 12's Cleanup read (D-09), driven by the app in Chunk 13.
+    'list-sources-without-items',
+  ]);
+
+  /** The menu's own copy of the two labels' state (the pure derivation). */
+  const menuState = {
+    sidebarHidden: false,
+    undo: deriveUndoMenuState(null, 'undo'),
+    redo: deriveUndoMenuState(null, 'redo'),
+    // Story 13 (4.9 #14): the renderer's pushed text-field focus state
+    // (ember:textFocusChanged); flips Edit's Undo/Redo to the roles.
+    textFieldFocused: false,
+  };
+
+  let labelClient = null; // ONE client for the label dry-runs, per file
+  let labelClientDb = null;
+  function labelClientFor(db) {
+    if (labelClient === null || labelClientDb !== db) {
+      labelClient = createBridgeClient({
+        emberCommand: services.emberCommand,
+        dbPath: db,
+        errorPattern: services.errorPattern,
+        // Fix F6: get() names its result now; only state 'key' hands
+        // the key to the child (never 'unreadable' — the engine then
+        // behaves exactly as with no key, which the screens say).
+        apiKeyProvider: () => {
+          const held = services.keyStore.get();
+          return held.state === 'key' ? held.key : null;
+        },
+        // Deliberately NO onActivity here: the refresh must not re-arm itself.
+      });
+      labelClientDb = db;
+    }
+    return labelClient;
+  }
+
+  let labelTimer = null;
+  let labelRefreshInFlight = false;
+  function scheduleUndoLabelRefresh() {
+    if (labelTimer) clearTimeout(labelTimer);
+    labelTimer = setTimeout(() => {
+      labelTimer = null;
+      refreshUndoLabels();
+    }, 250);
+  }
+
+  /** Re-derive both labels from the real engine (D3), then rebuild. */
+  async function refreshUndoLabels() {
+    if (labelRefreshInFlight) return; // one at a time; a queued timer follows up
+    labelRefreshInFlight = true;
+    try {
+      const db = DB_OVERRIDE ?? services.settingsStore.load().settings.knowledgeBasePath;
+      if (typeof db === 'string' && db !== '' && menuKbGuard(db).ok && (await undoLabelsSafeForFile(db))) {
+        const client = labelClientFor(db);
+        const [undoResult, redoResult] = await Promise.all([
+          client.runCommand('undo', ['--dry-run']),
+          client.runCommand('redo', ['--dry-run']),
+        ]);
+        menuState.undo = deriveUndoMenuState(undoResult, 'undo');
+        menuState.redo = deriveUndoMenuState(redoResult, 'redo');
+      } else {
+        // No usable knowledge base, or a pre-undo file (schema < 13):
+        // the undo dry-run opens through the WRITE path and would
+        // silently migrate an older file (found by the keep-safe e2e).
+        // The labels stay in their honest disabled state instead.
+        menuState.undo = deriveUndoMenuState(null, 'undo');
+        menuState.redo = deriveUndoMenuState(null, 'redo');
+      }
+    } catch (err) {
+      process.stderr.write(`launch-note: APP-000 AppError | the Edit menu's Undo and Redo labels could not be re-derived (${err instanceof Error ? err.message : 'unknown error'})\n`);
+    } finally {
+      labelRefreshInFlight = false;
+      menuManager.refresh();
+    }
+  }
+
+  /**
+   * The undo-label gate (the review verdict's fix, ticket A43; the G2
+   * decision changed its mechanism 2026-11-01): the PROBE is now the
+   * engine's read-only `db-check` child — the app never opens the
+   * knowledge base file itself (rule B2). The decision stays here
+   * where the label derivation lives; the module is directly tested
+   * on real files (`schemaVersionIsAtLeast`).
+   */
+  async function undoLabelsSafeForFile(dbPath) {
+    return schemaVersionIsAtLeast(dbPath, 13, {
+      emberCommand: services.emberCommand,
+      errorPattern: services.errorPattern,
+    });
+  }
+
+  /** One menu request into the main window's renderer (B4: the
+   * renderer owns its router; main only asks). */
+  const sendMenuRequest = (payload) => {
+    if (!mainWindow || mainWindow.isDestroyed()) return;
+    if (payload.kind !== 'undo' && payload.kind !== 'redo') focusMainWindow();
+    mainWindow.webContents.send('ember:menuRequest', payload);
+  };
+
+  /** Story 108: the About box carries the versions and the font/licence
+   * credits (F7a) — the engine's version when it answers, the app
+   * version only when it does not (the pinned fallback). */
+  const showAbout = async () => {
+    const engineVersion = await engineVersionOnce();
+    const credits = aboutCreditsText({
+      appVersion: appVersion(),
+      engineVersion,
+    });
+    if (process.platform === 'darwin') {
+      app.setAboutPanelOptions({ credits });
+      app.showAboutPanel();
+      return;
+    }
+    const owner = mainWindow && !mainWindow.isDestroyed() ? mainWindow : null;
+    dialog
+      .showMessageBox(owner, {
+        type: 'info',
+        title: 'About Ember',
+        message: `Ember ${appVersion()}`,
+        detail: credits,
+        buttons: ['OK'],
+      })
+      .catch(() => {}); // a closed window while showing is not an error
+  };
+
+  /** The action ids -> the OS effects (the only edge). */
+  const dispatchMenuAction = (id) => {
+    switch (id) {
+      case 'about':
+        showAbout();
+        break;
+      case 'settings':
+        sendMenuRequest({ kind: 'navigate', pane: 'settings' });
+        break;
+      // The always-available add route (plan §5.5): the SAME open/hide
+      // action the shortcut, the tray and `--quick-add` use. Never parks:
+      // the caller is Ember's own menu.
+      case 'file-add-text':
+        openQuickPopup({ action: 'toggle', park: false });
+        break;
+      case 'file-open-kb':
+      case 'file-backup':
+      case 'file-export':
+        // These jobs live on Keep safe (stories 70-76: the pickers, the
+        // story-76 confirmation, the report lines). The menu takes the
+        // user there; it never starts a write or a pick itself.
+        sendMenuRequest({ kind: 'navigate', pane: 'keepsafe' });
+        break;
+      case 'edit-undo':
+      case 'edit-redo':
+        sendMenuRequest({ kind: id === 'edit-undo' ? 'undo' : 'redo' });
+        break;
+      case 'edit-find':
+        sendMenuRequest({ kind: 'find' });
+        break;
+      case 'view-sidebar':
+        menuState.sidebarHidden = !menuState.sidebarHidden;
+        sendMenuRequest({ kind: 'toggle-sidebar', visible: !menuState.sidebarHidden });
+        menuManager.refresh();
+        break;
+      default:
+        if (typeof id === 'string' && id.startsWith('job-')) {
+          sendMenuRequest({ kind: 'navigate', pane: id.slice(4) });
+        }
+    }
+  };
+
+  const menuManager = createAppMenuManager({
+    MenuApi: Menu,
+    platform: process.platform === 'darwin' ? 'darwin' : 'other',
+    context: () => {
+      const s = services.settingsStore.load().settings;
+      const kbChosen =
+        DB_OVERRIDE !== null ||
+        (typeof s.knowledgeBasePath === 'string' && s.knowledgeBasePath.trim() !== '');
+      return {
+        kbChosen,
+        sidebarVisible: !menuState.sidebarHidden,
+        jobs: { order: s.menuOrder, hidden: s.menuHidden },
+        undo: menuState.undo,
+        redo: menuState.redo,
+        textFieldFocused: menuState.textFieldFocused,
+      };
+    },
+    dispatch: dispatchMenuAction,
+  });
+  menuManager.refresh(); // the menu exists from boot (about/quit/Help work pre-window)
+  scheduleUndoLabelRefresh(); // the first real derivation, ~250 ms after boot
+
+  /**
+   * Story 13 (finding 4.9 #14): the renderer pushes its text-field
+   * focus state (one boolean, `ember:textFocusChanged`). The Edit menu
+   * REBUILDS only when the value FLIPS — Electron role Undo/Redo while
+   * a field holds the keys (the role's own text undo, no Ember job
+   * action routable), the Ember derivation the moment no field does
+   * (byte-identical to the old menu). Same rebuild path as every other
+   * context change: the manager replaces the whole menu.
+   */
+  const setTextFocus = (focused) => {
+    if (menuState.textFieldFocused === focused) return;
+    menuState.textFieldFocused = focused;
+    menuManager.refresh();
+  };
+  /* === App 12 menu block ends === */
+
+
+  let tray = null;
+  // [fix #40] renamed from showTrayFallback: this is no longer only the
+  // APP-005 error fallback. The tray is a first-class citizen now — the
+  // boot block below builds it whenever a knowledge base is set — and
+  // this same idempotent builder serves the refusal path too.
+  const ensureTray = () => {
+    if (tray !== null) return; // built once per run
+    tray = createTrayManager({ TrayCtor: Tray, MenuBuilder: Menu, iconPath: services.iconPath });
+    const shown = tray.show({
+      // [app 11] Quick add is the popup itself now (story 95); Open Ember stays the full window.
+      onQuickAdd: () => openQuickPopup({ park: true }),
+      onOpenEmber: focusMainWindow,
+      onQuit: () => app.quit(),
+    });
+    if (!shown.ok) process.stderr.write(`launch-note: ${shown.error.code} ${shown.error.detail}\n`);
+  };
+  // [app 11] The e2e seam EMBER_APP_SHORTCUT_REFUSED=1 stands in for an
+  // OS refusal (same family as EMBER_APP_PICK_PATH) using the SAME fake
+  // shape the manager's unit tests already pin — no manager change.
+  const globalShortcutApi =
+    process.env.EMBER_APP_SHORTCUT_REFUSED === '1'
+      ? { register: () => false, unregisterAll: () => {} }
+      : require('electron').globalShortcut;
+  const shortcutManager = createShortcutManager({
+    globalShortcut: globalShortcutApi,
+    // [app 11] the keys open the quick popup now (story 90).
+    onQuickAdd: () => openQuickPopup({ park: true }),
+    onFailure: () => ensureTray(),
+  });
+  const maskedKeyHint = require('./key-hint');
+
+  const registered = registerIpcHandlers({
+    ipcMain,
+    settingsStore: services.settingsStore,
+    keyStore: services.keyStore,
+    // Fix F6: same named-result rule as above (and site 2's note).
+    apiKeyProvider: () => {
+      const held = services.keyStore.get();
+      return held.state === 'key' ? held.key : null;
+    },
+    errorPattern: services.errorPattern,
+    emberCommand: services.emberCommand,
+    dbOverride: DB_OVERRIDE,
+    appVersion: appVersion(),
+    userDataPath: services.userDataPath,
+    bootNotice: bootNoticeFor(services),
+    kbChooser: () => {
+      // E2E seam (step 09), same family as EMBER_APP_COMMAND/EMBER_APP_DB:
+      // the native open dialog cannot be driven by Playwright, so a set
+      // EMBER_APP_PICK_PATH stands in for the user's pick. Unset, it is
+      // the real dialog.
+      if (typeof process.env.EMBER_APP_PICK_PATH === 'string' && process.env.EMBER_APP_PICK_PATH !== '') {
+        return { path: process.env.EMBER_APP_PICK_PATH };
+      }
+      const chosen = dialog.showOpenDialogSync({
+        title: 'Open a knowledge base file',
+        properties: ['openFile'],
+        filters: [{ name: 'Ember knowledge base', extensions: ['db', 'sqlite', '*'] }],
+      });
+      if (!chosen || chosen.length === 0) return null;
+      return { path: chosen[0] };
+    },
+    // Step 09: the `where to save` dialog for backup and export.
+    saveChooser: (ask) => {
+      // E2E seam: EMBER_APP_SAVE_PATH stands in for the user's save
+      // pick (the native save dialog cannot be driven by Playwright).
+      if (typeof process.env.EMBER_APP_SAVE_PATH === 'string' && process.env.EMBER_APP_SAVE_PATH !== '') {
+        return { path: process.env.EMBER_APP_SAVE_PATH };
+      }
+      const isBackup = ask && ask.kind === 'backup';
+      const chosen = dialog.showSaveDialogSync({
+        title: isBackup ? 'Where should the backup go?' : 'Where should the export go?',
+        defaultPath: ask && typeof ask.defaultName === 'string' && ask.defaultName !== '' ? ask.defaultName : undefined,
+        properties: ['createDirectory', 'showOverwriteConfirmation'],
+      });
+      if (!chosen || chosen === '') return null;
+      return { path: chosen };
+    },
+    /* --- App 08 (Clean up): the sweep-session event push (additive; ticket A37).
+       The apply session streams its validated events to the one window over the
+       named channel below. A closing window is not an error: the app is quitting. --- */
+    sweepNotify: (payload) => {
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('ember:maintainEvent', payload);
+      }
+    },
+    // [app 10] the Settings seams (stories 85-89)
+    shortcutRegistrar: (accelerator) => registerSettingsShortcut({ manager: shortcutManager, accelerator }),
+    // [fix #42] the REAL registration state the pane's status line
+    // reads: the saved choice against what the OS last accepted
+    // (the manager's current()). Never a renderer-side guess.
+    shortcutStatus: () => {
+      const configured = (services.settingsStore.load().settings.quickPopup ?? {}).shortcut ?? null;
+      const live = shortcutManager.current();
+      return { configured, live, active: configured !== null && live === configured };
+    },
+    // Fix F6: only a really readable key has a hint; an unreadable
+    // one shows no masked echo at all (the status pane says why).
+    keyHintProvider: () => {
+      const held = services.keyStore.get();
+      return maskedKeyHint.maskKey(held.state === 'key' ? held.key : null);
+    },
+    /* --- [app 11] the quick popup's two renderer-facing channels
+       (stories 90-95): the renderer-safe route to the popup — the
+       SAME action object the shortcut, the tray and `--quick-add`
+       use (parking off; step 12's File -> Add text item will point
+       at this handler too) — and the popup's one route back into
+       the full window (93) with its path to fix a missing setup (94). --- */
+    openQuickPopup: ({ action = 'toggle' } = {}) => openQuickPopup({ action, park: false }),
+    openMainRequest,
+    // [app 12] the menu's re-derive hooks (see the step-12 block above).
+    onBridgeActivity: (name) => {
+      if (!MENU_ACTIVITY_SKIPS.has(name)) scheduleUndoLabelRefresh();
+    },
+    onSettingsSaved: () => {
+      menuManager.refresh();
+      scheduleUndoLabelRefresh();
+      // Batch 5 chunk 21 (story 9, 4.9 #8): a settings save that leaves
+      // a knowledge base set (first run's step-1 save included — it
+      // goes through the same handler) must leave the capture shortcut
+      // live WITHOUT a restart. The same bootShortcutFor choice the
+      // boot block below uses, through the SAME step-10 seam the
+      // Settings screen uses (unregister the old grab first, then
+      // register) — never a raw re-register riding on the OS tolerating
+      // a same-key second registration. An OS refusal lands in the
+      // shipped APP-005 tray fallback (onFailure above — built once per
+      // run), never in silence.
+      const saved = services.settingsStore.load().settings;
+      const accelerator = bootShortcutFor(saved);
+      if (accelerator !== null) registerSettingsShortcut({ manager: shortcutManager, accelerator });
+      // [fix #40] a first run finishing through this same save gets its
+      // tray live too, on the same no-restart rule as the shortcut.
+      if (bootTrayFor(saved)) ensureTray();
+    },
+    // [story 13] the text-field focus flip (see the step-12 block above).
+    onTextFocusChanged: setTextFocus,
+    /* --- Batch 2 Chunk 13: the EMBER-000 crash report's OS adapters
+       (D-16): the real clipboard and shell for Copy crash report /
+       Show file on the Add screen (Chunk 14). --- */
+    clipboard,
+    shell,
+  });
+
+  // [app 11] The default global shortcut, registered at boot AFTER
+  // first run is done (step file story 90: before that there is no
+  // knowledge base to add into). A changed choice from Settings re-
+  // registers through the step-10 seam. An OS refusal lands in the
+  // shipped APP-005 path above: the tray fallback appears and the
+  // launch-note goes to stderr — never a silent failure (I7).
+  const bootSettings = services.settingsStore.load().settings;
+  const bootAccelerator = bootShortcutFor(bootSettings);
+  if (bootAccelerator !== null) shortcutManager.register(bootAccelerator);
+  // [fix #40] The tray is NOT an error artefact: D-24's close-to-tray
+  // needs a reachable icon even when the registration SHOUTS success —
+  // on the founder's KDE Wayland desktop the portal answers true while
+  // binding nothing (issue 41), and the window then sat stranded with
+  // no icon anywhere (issue 40). Same settings gate as the boot
+  // registration (story 90); the refusal path lands on the same
+  // already-built tray (ensureTray is idempotent).
+  if (bootTrayFor(bootSettings)) ensureTray();
+
+  return { registered, openQuickPopup };
+}
+
+/** The normal boot: window + IPC, then idle — the window closing only
+ * parks Ember in the tray (story 5); a real quit ends the process. */
+function boot() {
+  const services = buildServices();
+  services.settingsStore.load(); // I13: loaded once at boot, passed down
+  const { openQuickPopup } = wireIpc(services);
+  // [app 11] `--quick-add`: the main window is created but parked; the
+  // popup is the app's front (the launch route that always works).
+  createWindow({ showOnReady: !QUICK_ADD });
+  if (QUICK_ADD) openQuickPopup({ park: false });
+}
+
+function onceReadyToShow(win) {
+  return new Promise((resolve) => {
+    if (win.isVisible()) resolve();
+    else win.once('ready-to-show', () => resolve());
+  });
+}
+
+function failLaunchCheck(error) {
+  process.stderr.write(`launch-check-error: ${error.code} ${error.name} | ${error.detail}\n`);
+  app.exit(1);
+}
+
+/** The S1 walking skeleton: window + one read command + honest exit. */
+async function runLaunchCheck() {
+  const services = buildServices();
+  const commandCheck = checkEmberCommand(services.emberCommand);
+  if (!commandCheck.ok) return failLaunchCheck(commandCheck.error);
+  const db = DB_OVERRIDE ?? services.settingsStore.load().settings.knowledgeBasePath;
+  const kbCheck = validateKnowledgeBasePath(db);
+  if (!kbCheck.ok) return failLaunchCheck(kbCheck.error);
+
+  const win = createWindow();
+  await onceReadyToShow(win);
+  const client = createBridgeClient({
+    emberCommand: services.emberCommand,
+    dbPath: db,
+    errorPattern: services.errorPattern,
+    // Fix F6: only a readable key becomes the child's env variable.
+    apiKeyProvider: () => {
+      const held = services.keyStore.get();
+      return held.state === 'key' ? held.key : null;
+    },
+  });
+  const result = await client.runCommand('list-items', []);
+  if (!result.ok) return failLaunchCheck(result.error);
+  process.stdout.write(`items: ${result.data.total}\n`);
+  app.exit(0);
+}
+
+// Batch 5 (stories 7, 8; 4.9 #7): ONE Ember at a time. The first
+// instance holds the lock; a second launch exits immediately, and the
+// first one takes the `second-instance` event to focus its window —
+// the user's second click on the icon lands on the window they
+// already have, never a second copy. The lock keys on the userData
+// path, so every throwaway-profile instance (e2e, launch checks) is
+// its own world and never steals another's lock.
+const gotLock = app.requestSingleInstanceLock();
+if (!gotLock) {
+  app.quit();
+} else {
+  app.on('second-instance', () => {
+    focusMainWindow();
+  });
+
+  app.whenReady().then(() => {
+    if (LAUNCH_CHECK) {
+      runLaunchCheck().catch((err) =>
+        failLaunchCheck(appErrorInfo('APP-000', 'main.main.runLaunchCheck', err instanceof Error ? err.message : 'unknown launch failure')),
+      );
+    } else {
+      boot();
+    }
+  });
+
+  app.on('before-quit', () => {
+    // The one edge where closing windows is allowed (see the close
+    // intercept in createWindow): a real quit is starting.
+    quitting = true;
+  });
+
+  app.on('window-all-closed', () => {
+    // Batch 5 4.9 #6: this stays the app-LIFETIME edge, but it quits
+    // ONLY when a real quit is in progress. The quick popup hides
+    // (never destroys — main/popup.js) and the main window's close is
+    // intercepted to the tray, so all-windows-gone can only ever
+    // happen while quitting itself is destroying them.
+    if (quitting) app.quit();
+  });
+}
+
+// NOTE: this module is Electron's main entry. The checks live in
+// test/launch-check.js (`npm run check:launch`) and
+// test/e2e/smoke.js (`npm run test:e2e`).

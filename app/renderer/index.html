@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self'; img-src 'self'"
+    />
+    <title>Ember</title>
+    <link rel="stylesheet" href="styles/tokens.css" />
+    <link rel="stylesheet" href="styles/fonts.css" />
+    <link rel="stylesheet" href="styles/components.css" />
+    <link rel="stylesheet" href="styles/app.css" />
+  </head>
+  <body>
+    <div class="app" id="app">
+      <div class="app-notice"><div id="top-banner"></div></div>
+      <div class="shell">
+        <nav class="nav" id="nav" aria-label="Jobs"></nav>
+        <main class="main" id="pane" tabindex="-1"></main>
+      </div>
+    </div>
+    <script type="module" src="screens/app.mjs"></script>
+  </body>
+</html>

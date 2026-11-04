@@ -10,10 +10,13 @@ from __future__ import annotations
 import sys
 import time
 import types
+from pathlib import Path
 
 import pytest
 
 from ember.adapters.embedder import (
+    EmbedderLoadTimedOut,
+    EmbedderPackageMissing,
     SentenceTransformerEmbedder,
     build_embedder,
     validate_embedder_config,
@@ -210,21 +213,21 @@ def test_constructor_failure_raises_relate_017(monkeypatch: pytest.MonkeyPatch) 
     assert excinfo.value.code == "RELATE-017"
 
 
-def test_missing_module_raises_relate_017_with_install_hint(
+def test_missing_module_raises_relate_039_with_install_hint(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     # None in sys.modules makes the lazy import raise ModuleNotFoundError.
     monkeypatch.setitem(sys.modules, MODULE, None)
 
-    with pytest.raises(EmbedderLoadFailed) as excinfo:
+    with pytest.raises(EmbedderPackageMissing) as excinfo:
         SentenceTransformerEmbedder("bge-base-en-v1.5")
 
-    assert excinfo.value.code == "RELATE-017"
+    assert excinfo.value.code == "RELATE-039"
     assert ".[relate]" in excinfo.value.message
     assert ".[relate]" in str(excinfo.value)
 
 
-def test_slow_load_times_out_with_relate_017(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_slow_load_times_out_with_relate_040(monkeypatch: pytest.MonkeyPatch) -> None:
     class Fake:
         def __init__(self, model_id: str, **kwargs: object) -> None:
             time.sleep(0.3)
@@ -237,10 +240,10 @@ def test_slow_load_times_out_with_relate_017(monkeypatch: pytest.MonkeyPatch) ->
 
     install_fake(monkeypatch, Fake)
 
-    with pytest.raises(EmbedderLoadFailed) as excinfo:
+    with pytest.raises(EmbedderLoadTimedOut) as excinfo:
         SentenceTransformerEmbedder("bge-base-en-v1.5", load_timeout=0.01)
 
-    assert excinfo.value.code == "RELATE-017"
+    assert excinfo.value.code == "RELATE-040"
 
 
 def test_dim_returns_int(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -305,10 +308,10 @@ def test_build_embedder_timeout_env_is_applied(monkeypatch: pytest.MonkeyPatch) 
 
     install_fake(monkeypatch, Fake)
 
-    with pytest.raises(EmbedderLoadFailed) as excinfo:
+    with pytest.raises(EmbedderLoadTimedOut) as excinfo:
         build_embedder({"EMBER_EMBEDDER_LOAD_TIMEOUT_SECONDS": "0.01"})
 
-    assert excinfo.value.code == "RELATE-017"
+    assert excinfo.value.code == "RELATE-040"
 
 
 @pytest.mark.parametrize(
@@ -331,15 +334,15 @@ def test_validate_embedder_config_returns_the_parsed_timeout(
 
 
 @pytest.mark.parametrize("missing", ["sentence_transformers", "torch"])
-def test_validate_embedder_config_missing_package_raises_relate_017(
+def test_validate_embedder_config_missing_package_raises_relate_039(
     monkeypatch: pytest.MonkeyPatch, missing: str
 ) -> None:
     patch_find_spec(monkeypatch, missing={missing})
 
-    with pytest.raises(EmbedderLoadFailed) as excinfo:
+    with pytest.raises(EmbedderPackageMissing) as excinfo:
         validate_embedder_config({})
 
-    assert excinfo.value.code == "RELATE-017"
+    assert excinfo.value.code == "RELATE-039"
     assert excinfo.value.context["package"] == missing
     assert missing in excinfo.value.message
     assert ".[relate]" in excinfo.value.message
@@ -357,3 +360,78 @@ def test_validate_embedder_config_bad_timeout_raises_relate_035(
         validate_embedder_config({"EMBER_EMBEDDER_LOAD_TIMEOUT_SECONDS": "soon"})
 
     assert excinfo.value.code == "RELATE-035"
+
+
+@pytest.mark.parametrize("value", ["0", "-1"])
+def test_validate_embedder_config_refuses_non_positive_timeout(
+    monkeypatch: pytest.MonkeyPatch, value: str
+) -> None:
+    def _must_not_probe(name: str) -> object:
+        raise AssertionError("the timeout is parsed before the packages are probed")
+
+    monkeypatch.setattr("ember.adapters.embedder.find_spec", _must_not_probe)
+
+    with pytest.raises(ConfigMissing) as excinfo:
+        validate_embedder_config({"EMBER_EMBEDDER_LOAD_TIMEOUT_SECONDS": value})
+
+    assert excinfo.value.code == "RELATE-035"
+    assert excinfo.value.context["var"] == "EMBER_EMBEDDER_LOAD_TIMEOUT_SECONDS"
+    assert excinfo.value.context["value"] == value
+
+
+@pytest.mark.parametrize("value", ["0", "-1"])
+def test_build_embedder_refuses_non_positive_timeout(
+    monkeypatch: pytest.MonkeyPatch, value: str
+) -> None:
+    # No fake installed: a refused timeout must raise before the lazy import,
+    # the offline cache check and the model-load thread.
+    with pytest.raises(ConfigMissing) as excinfo:
+        build_embedder({"EMBER_EMBEDDER_LOAD_TIMEOUT_SECONDS": value})
+
+    assert excinfo.value.code == "RELATE-035"
+
+
+def test_offline_with_no_cached_model_fails_at_once_and_the_thread_never_starts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    load_calls: list[str] = []
+
+    def not_cached(model_name: str, resolved_model_id: str) -> bool:
+        return False
+
+    def must_not_load(model_name: str, load_timeout: float) -> object:
+        load_calls.append(model_name)
+        raise AssertionError(
+            "the model-load path must never run for a missing offline cache"
+        )
+
+    # The seam helper answers "not cached" (Chunk 14 seam: the cache read
+    # is a module-level function so tests can patch it without the network).
+    monkeypatch.setattr("ember.adapters.embedder._model_is_cached", not_cached)
+    monkeypatch.setattr("ember.adapters.embedder._load_model", must_not_load)
+
+    with pytest.raises(EmbedderLoadFailed) as excinfo:
+        build_embedder({"HF_HUB_OFFLINE": "1"})
+
+    assert excinfo.value.code == "RELATE-017"
+    assert excinfo.value.context["model"] == "bge-base-en-v1.5"
+    assert load_calls == []
+
+
+def test_offline_with_a_local_model_directory_loads_without_the_hub(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # A model string naming an existing local directory is "cached" by
+    # definition: it passes the offline check and the real directory scan
+    # never runs, so no hub call of any kind is made.
+    Fake = recording_transformer()
+    install_fake(monkeypatch, Fake)
+    local_model = tmp_path / "my-model"
+    local_model.mkdir()
+
+    embedder = build_embedder(
+        {"HF_HUB_OFFLINE": "1", "EMBER_EMBEDDER_MODEL": str(local_model)}
+    )
+
+    assert Fake.load_ids == [str(local_model)]
+    assert embedder.model_name() == str(local_model)

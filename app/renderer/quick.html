@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self'; img-src 'self'"
+    />
+    <title>Ember quick add</title>
+    <link rel="stylesheet" href="styles/tokens.css" />
+    <link rel="stylesheet" href="styles/fonts.css" />
+    <link rel="stylesheet" href="styles/components.css" />
+    <link rel="stylesheet" href="styles/app.css" />
+  </head>
+  <body class="quick">
+    <!-- The quick popup (app step 11, stories 90-95): Add only (91),
+         the same Add screen as the full window (92), and the one link
+         back to the full window (93). The header is the popup page's
+         own; everything below it is the unmodified Add screen. -->
+    <div class="quick-app" id="app">
+      <header class="quick-top">
+        <span class="quick-title">Quick add</span>
+        <button type="button" class="btn btn--text" data-testid="quick-open-main">Open Ember</button>
+      </header>
+      <main class="quick-pane" id="pane" tabindex="-1" aria-label="Quick add"></main>
+    </div>
+    <script type="module" src="screens/quick-popup.mjs"></script>
+  </body>
+</html>

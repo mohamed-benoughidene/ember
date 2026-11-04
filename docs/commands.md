@@ -13,13 +13,39 @@ Facts in this file come from the code (`ember/cli.py` and the engine modules), n
 
 ---
 
+## Machine use (reading commands from a program)
+
+A program (the desktop app, a script) can read Ember's output as data instead of parsing sentences. Three tools, described once here:
+
+**`--format text|json`** (default `text`) is offered by the ten write and utility commands `maintain`, `close-item`, `set-status`, `reverse-supersedes`, `edit-item`, `remove-link`, `undo`, `redo`, `backup`, `db-check`. With `json`, the command prints ONE JSON document on stdout (sorted keys), with top-level keys `command`, `changes` (the run's change records), `summary` (the counts), and `dry_run` (true on a `--dry-run` run). The terminal `text` default prints, byte for byte, what it always printed. The six Query commands, `capture-source` and `list-sources-without-items` always print their one JSON document; their shapes are the "Envelope" lines in their own sections. On `capture` and `relate` the flag is refused (a usage error, exit 2) — their program-facing mode is the event stream below.
+
+**`--confirm terminal|json`** (default `terminal`) is offered by the three interactive commands `capture`, `relate`, `maintain`. With `json`, every stdout line is one flushed JSON event object, and the answers arrive as stdin lines instead of keystrokes:
+
+- Events, one JSON object per line: `{"event": "block", "kind": "item"|"link-preview"|"link"|"close", "fields": {...}|null, "text": "..."}` (the printed proposal or link block, machine-readable in `fields` when it parses, always raw in `text`); `{"event": "prompt", "kind": "choice"|"type"|"statement"|"metadata", "text": "...", "choices": ["y", ...]}`; `{"event": "message", "text": "..."}` (information lines that bypass the prompts); and `{"event": "summary", ...}` as the final line.
+- Answers: one stdin line per prompt, exactly `{"answer": "<text>"}` (a plain `y`, the edit text to use, or `q` to quit).
+- A stdin line that is not that shape is refused once and the prompt is asked again (`BRIDGE-001`); a second bad line, or the end of input, aborts as a user quit (exit 2), nothing half-written.
+- `capture --confirm json` requires `--file` (the pasted text goes in the file; stdin carries the answers). Without `--file` it is a usage error (exit 2).
+
+**Errors** stay one stderr line in every mode: `error: <CODE> <Name> | <location> | <message>` (the message may itself contain `|` or line breaks; a program reads the first stderr line, matches this shape, and treats the rest as continuation). Exit codes are unchanged: 0 success, 1 on any `CODE-###` error, 2 on a usage error or a user abort.
+
+The whole table above (one row per command: sample arguments, document keys, flags, exit codes) is pinned by the test `tests/bridge/test_contract_table.py` — it fails when a command changes its contract without a row.
+
+---
+
 ## Engine A: Capture (writes entries into the knowledge base)
+
+### `ember init --db PATH` - no key
+
+The one command that creates the knowledge base file, on purpose (D-25): every other command refuses a missing file before opening it (`CAPTURE-020 DbFileMissing`) instead of creating it, so nothing in Ember writes a database file except `ember init`.
+
+On a path with no file, it creates the file and runs every migration, then prints `initialized <path>`. On a path that already holds a file, it succeeds only when that file is a healthy Ember database already at the latest schema version with all expected tables intact; it then changes nothing (the file stays byte-identical) and prints `<path> is already up to date; no changes`, exit 0. Anything else is refused with `CAPTURE-021 InitRefused` and left untouched (exit 1): a file that is not an Ember database, tables but no version table, an older or newer schema version, or missing tables — nothing is ever adopted. Just behind the latest version, or a busy read, is re-inspected for up to 5 seconds first, because another `ember init` on the same file may still be mid-migration. No API key, no AI call.
 
 ### `ember capture [--file PATH] [--db PATH]` - needs key
 
 The full Phase 1-4 pipeline. Reads raw text from a file or STDIN (file input capped at 5 MiB, UTF-8), dedupes by SHA-256 content hash, asks the AI for typed proposals, validates each (type, non-empty statement, the quote must appear in the stored source, near-duplicate warning), then opens the confirm loop.
 
 - Confirm keys: `y` accept, `n` reject, `e` edit, `q` quit (exit 2).
+- `--format json` is refused (a usage error, exit 2): the program mode for this command is the `--confirm json` event stream above. `--file ""` is refused too (an empty file name would fall back to reading STDIN).
 - `e` re-asks the type (one of `Decision`, `Assumption`, `Finding`, `Question`), the statement, and the optional project label; a failed edit drops that proposal, nothing is written.
 - Writes: `sources`, `ai_responses`, `items` (only confirmed ones), `change_log` rows for proposals you rejected.
 - The AI sees the newest 50 items as context (mode `B`, default); set `EMBER_CAPTURE_CONTEXT_MODE=A` for no context.
@@ -33,6 +59,14 @@ Phase 1 alone: store or reuse the raw source, nothing else. Prints one JSON docu
 
 Set or clear the `validated` flag on an item. Only an `Assumption` may carry the flag; anything else exits 1. Both write a `change_log` row (`validated`).
 
+### `ember forget-source --source N [--db PATH]` - no key
+
+Permanently forget a raw note that produced no items (D-07). One transaction deletes the `sources` row and its `ai_responses` rows and appends exactly ONE textless ledger line (`source_forgotten` / `user_forget_source`) that names the note by its `source_id` (migration 014) and carries no note text; the line's `group_id` is NULL, so `undo` never sees it — the forget cannot be undone. A note that still has items is refused with `CAPTURE-023 SourceHasItems` (exit 1) and nothing is written. A missing id exits 0 with nothing written (delete-missing is success, I8). Text output only: like `set-validated`/`clear-validated` this human write offers no `--format json` document.
+
+### `ember list-sources-without-items [--db PATH]` - no key
+
+The Cleanup list's read (D-09): every raw note that produced ZERO items, ordered by id — the notes whose every proposal was rejected (or never confirmed), exactly the notes `forget-source` may remove. Each row carries `id`, `created_at` (the note's `sources.timestamp` — the column holding its creation time) and `preview` (its first 8 words, so the list identifies a note without carrying its whole text). A note that still has items never appears (the forget would refuse it, `CAPTURE-023`). Read-only: the file is opened read-only and never migrated, like the query boot (`QUERY-003` missing file, `QUERY-004` under the floor, `QUERY-008` busy, `QUERY-009` needs recovery); a failed read answers `CAPTURE-005`. Always prints ONE JSON document (a read — the D-20 refusal stays with the write commands). An empty base prints an empty list, never null (I4). Envelope: `count`, `sources`.
+
 ---
 
 ## Engine B: Relate (writes links between items)
@@ -45,6 +79,7 @@ Links one item to the rest of the graph in four phases: load and filter, rank a 
 - The content signal needs `pip install -e ".[relate]"` (sentence-transformers); without the extra the command refuses at boot with the install hint.
 - Embeddings are cached in `item_embeddings` per model; a model change wipes the cache and prints a warning (one-time minutes-long rebuild).
 - Confirm keys: `y` accept, `n` reject, `s` skip (nothing written, the candidate may resurface for a later item), `q` quit (exit 2).
+- `--format json` is refused (a usage error, exit 2): the program mode for this command is the `--confirm json` event stream above.
 - The link types are `supports`, `contradicts`, `depends_on`, `supersedes`, `answers`, restricted by a per-type compatibility table (11 allowed pairs).
 - The gatekeeper runs 9 ordered rules per proposal; refusals print `relate rejected: CODE | detail` (duplicates, `supersedes` cycles, Closed targets). All rejected-row checks also see reversed links.
 - An empty candidate pool exits 0 without ever calling the AI. Summary line at the end: `accepted: N, rejected: N, skipped: N, aborted: true|false`.
@@ -62,6 +97,7 @@ The status sweep: load items and confirmed links, derive the correct status per 
 - The four rules: a confirmed `supersedes` closes its target (reason `superseded`); a confirmed `answers` closes an answered `Question` (reason `answered`); a confirmed `contradicts` challenges its target; a confirmed `depends_on` onto an invalidated/superseded target challenges the dependent.
 - Escalation only: the sweep never moves an item to a safer status. A human-set status is shielded until newer link evidence arrives, then re-armed (`sweep_rearm` in the ledger).
 - `--dry-run` writes nothing and needs no key.
+- `--format json` on a **real run** requires `--confirm json`: a real run with the terminal `--confirm` would print the proposal prompts into the JSON, and is refused (a usage error, exit 2). `--dry-run --format json` keeps the one-document mode (nothing is confirmed there, so prompts cannot mix in).
 - **Phase 5, real runs only:** after applying, an AI close-proposal loop runs for `Question` items whose newest confirmed `answers` link is at least 30 days old, capped at 10 per run. Raw answers are saved verbatim before judging; each proposal is confirmed with `[y]es / [n]o / [q]uit`; an accepted close goes through the human `close-item` path. An empty shortlist builds no AI adapter and reads no key.
 
 ### `ember close-item --item N --reason invalidated|expired [--dry-run] [--db PATH]` - no key
@@ -84,36 +120,50 @@ The authorial-slot editor. `rationale` is writable on a `Decision`, `source` on 
 
 Remove one confirmed link by status flip (`Confirmed` -> `Rejected`) plus its `link_removed` ledger row, in one transaction. The row is never deleted, so the history stays complete. A missing or already-rejected link exits 1. `--dry-run` prints `link <id>: Confirmed -> Rejected (dry-run)`.
 
+### `ember undo [--dry-run] [--db PATH]` - no key
+
+Reverse the newest human change (`close-item`, `set-status`, `set-validated`, `clear-validated`, `edit-item`, `remove-link`, or `reverse-supersedes`) by appending its inverse rows to the ledger as a NEW group: nothing is erased, the ledger only grows. The sweep's own changes carry no undo group and are never undoable; older rows written before the grouping upgrade are refused with a note saying so (`MAINTAIN-023`). A change whose target moved since (a sweep, a newer edit) is refused and nothing is written (`MAINTAIN-025`); the same held at the write itself — every inverse update re-checks the recorded value in its own transaction, and a row that moved in between is refused with nothing written (`MAINTAIN-028`). A one-line report names the group undone, its new group id, action and target, then one segment per changed item or link. `--dry-run` prints that line, ends it in `(dry-run)`, and writes zero rows.
+
+### `ember redo [--dry-run] [--db PATH]` - no key
+
+Re-apply the change you just undid, the same append-only way (a new group with the original values restored). A newer human change clears the redo (`MAINTAIN-024`): run `ember undo` again to make it available. Same refusal rule (`MAINTAIN-025`), same one-line report, same `--dry-run` as `ember undo`.
+
 ---
 
 ## Engine D: Query (read-only views)
 
-All four print exactly one JSON document on stdout and read only `items`, `links`, `change_log`. They enforce a schema floor (`QUERY-004` on an older file) and never migrate. `--db PATH` everywhere.
+All six print exactly one JSON document on stdout and read only `items`, `links`, `change_log`. They enforce a schema floor (`QUERY-004` on an older file) and never migrate. `--db PATH` everywhere.
 
 ### `ember current-state [--db PATH]`
 Live statuses only: `Active` and `Challenged` items, `Closed` omitted, `Challenged` listed first. Envelope: `mode`, `count`, `items` (each row carries a `challenged` flag).
 
-### `ember topic-search --query TEXT [--status S] [--type T] [--limit N] [--db PATH]`
-BM25 keyword search over item statements (all statuses, `Closed` included). `--status` accepts `Active|Challenged|Closed`, `--type` accepts `Decision|Assumption|Finding|Question`; filters narrow the corpus before scoring. `--limit 0` is an explicit empty result; negative values exit 1 (`QUERY-006`). Envelope: `mode`, `query`, `count`, `results`.
+### `ember topic-search --query TEXT [--status S] [--type T] [--limit N] [--offset N] [--db PATH]`
+BM25 keyword search over item statements (all statuses, `Closed` included). `--status` accepts `Active|Challenged|Closed`, `--type` accepts `Decision|Assumption|Finding|Question`; filters narrow the corpus before scoring. `--limit 0` is an explicit empty result; negative values exit 1 (`QUERY-006`). Behind the scored order `--offset` skips and `--limit` crops the window; `total` is the count of matches BEFORE either crop, `count` the rows printed. Envelope: `mode`, `query`, `total`, `count`, `results`.
 
 ### `ember why --item N [--db PATH]`
-The reasons behind an item: follows `depends_on` (to its target) and `supports` (to its source), Confirmed links only, transitively, cycle-safe. Unknown ids exit 1 (`QUERY-001`). Envelope: `mode`, `item`, `count`, `reasons` (ordered by depth then id, carrying each reason's rationale text).
+The reasons behind an item: follows `depends_on` (to its target) and `supports` (to its source), Confirmed links only, transitively, cycle-safe. Unknown ids exit 1 (`QUERY-001`); a link whose other end is gone from the file answers `QUERY-010` and exits 1, nothing changed. Envelope: `mode`, `item`, `count`, `reasons` (ordered by depth then id, carrying each reason's rationale text).
 
 ### `ember history [--item N] [--limit N] [--offset N] [--since TS] [--db PATH]`
-The ledger view, item-scoped or global. Item scope includes rows whose `link_id` touches the item; a row matching both ways appears once. Events are classified into readable kinds (`created`, `link_confirmed`, `status_changed`, `link_reversed`, ... anything unmatchable is `unknown`). Sort is `(timestamp, id)` ascending; `--limit 0` is an explicit empty page. `--since` must parse as ISO-8601 **with a UTC offset** (naive or garbage input exits 1, `QUERY-007`). Envelope: `mode`, `item_id`, `count`, `events`.
+The ledger view, item-scoped or global. Item scope includes rows whose `link_id` touches the item; a row matching both ways appears once. Events are classified into readable kinds (`created`, `link_confirmed`, `status_changed`, `link_reversed`, and — since Undo — `undone` / `redone` for the undo/redo pointers and the same kind as the original on undo/redo inverse rows; anything unmatchable is `unknown`). Sort is `(timestamp, id)` ascending; `--limit 0` is an explicit empty page. `--since` must parse as ISO-8601 **with a UTC offset** (naive or garbage input exits 1, `QUERY-007`). Envelope: `mode`, `item_id`, `count`, `events`.
+
+### `ember list-items [--status S] [--type T] [--limit N] [--offset N] [--counts] [--db PATH]`
+Every item in any status, `Closed` included — that is the point: `current-state` hides them. `--status` accepts `Active|Challenged|Closed` and `--type` accepts `Decision|Assumption|Finding|Question` (same values and `QUERY-006` handling as `ember topic-search`); `total` is the count after the filters but before the page crops it, and `--limit 0` is an explicit empty list. Each item carries `id`, `type`, `statement`, `status`, `close_reason`, `rationale`, `source`, `validated`, `created_at`. Envelope: `total`, `items`. With `--counts` the command instead prints one document whose `summary` carries the four Home counts: `active`, `challenged`, `closed`, `total` — each equal to the `total` the matching `--status` call reports (`total` counts every item, all statuses included).
+
+### `ember show-item --item N [--db PATH]`
+One item, its verbatim source text, and ALL its links in both directions (`links_out`: the item is the source, `links_in`: the item is the target), Rejected and reversed links included. Each link carries `id`, `type`, `status`, the other item's `other_item_id` / `other_item_type` / `other_item_statement` / `other_item_status`, and `reversed_at` (the reversal timestamp; `null` on a live link, and always `null` on a pre-011 schema file where the column does not exist — the file is never migrated). Unknown ids exit 1 (`QUERY-001`); a link whose other end is gone from the file answers `QUERY-010` and exits 1, nothing changed. Envelope: `item`, `source`, `links_out`, `links_in`.
 
 ---
 
 ## Engine E: Utility (safety commands, human-only)
 
 ### `ember db-check [--db PATH]` - read-only health report
-Checks schema version against the floors (relate 12, maintain 11, query 10, capture none), the enforcement triggers, the link-compatibility table against the code, foreign keys, and replays the reversal ledger against the live `links.reversed_at`. Prints the report and exits 0 with `result: OK`; any drift exits 1 (`DRIFT`), and an unreadable database exits 1 too (`UNREADABLE`: missing file, non-SQLite bytes, or any database error mid-check). Never migrates, never writes.
+Checks schema version against the floors (relate 12, maintain 11, query 10, capture none), the enforcement triggers, the link-compatibility table against the code, foreign keys, the reversal ledger replay against the live `links.reversed_at`, and (undo step 05) the undo-group pointers: on schema 13+ every `undo_of` / `redo_of` ledger row must name an existing group; on a v12 file that check prints `group_id: not applicable (schema v12)` instead — there is deliberately no version-13 floor, so a healthy v12 file is never reported as drift. Prints the report and exits 0 with `result: OK`; any drift exits 1 (`DRIFT`), and an unreadable database exits 1 too (`UNREADABLE`: missing file, non-SQLite bytes, or any database error mid-check). Never migrates, never writes.
 
 ### `ember backup TARGET_PATH [--db PATH]` - writes only the target file
 A restorable snapshot (GLOSSARY: Backup). Uses SQLite's online backup API (a consistent page image even mid-write), opens the source read-only with no schema floors (older files stay restorable; boot upgrades on restore), refuses a target that is the source file itself or an existing directory, and rotates an existing target into `.old-1..3` (newest 3 kept, the same retention as the migration runner's `.bak-v`), then verifies: re-opens the copy and reads its schema version plus item count. A failed snapshot or verify deletes the partial copy, so no broken file is ever left behind. Prints `backup written: <path> (schema v<N>, <count> items)`; a rotation adds `rotated to <path>` on stderr. Restore is deliberately not a command: copy the file back or point `--db` at it. Codes: `BACKUP-001` source open, `BACKUP-002` source invalid, `BACKUP-003` target write, `BACKUP-004` verify failed.
 
 ### `ember export [--out PATH] [--db PATH]` - read-only, hash-proven
-A readable text rendering (GLOSSARY: Export, not restorable). Every `items`, `links`, `sources`, and `change_log` row, all columns, in fixed order (items by id, links by id, sources by id, ledger by timestamp then id), with derived tables (`item_embeddings`, `ai_responses`) declared excluded in the header. Deterministic: no wall clock (the header's as-of line is the newest ledger timestamp), so the same database renders byte-identical text every time. Raw source text is verbatim between sha256-stamped markers (the end marker names the source id, byte count, and sha256; if a source text does not end with a newline, exactly one is added so the marker starts its own line, and the declared byte count preserves the original). `--out` writes the file and prints `exported <N> items, <M> links, <K> ledger rows, <S> sources -> <path>`; without it the text goes to stdout. `--out` naming the database file itself is refused before anything is opened (`EXPORT-002`), database untouched. Codes: `EXPORT-001` output write failed, `EXPORT-002` overwrite refused; `QUERY-003`/`QUERY-004` reused for the database open.
+A readable text rendering (GLOSSARY: Export, not restorable). Every `items`, `links`, `sources`, and `change_log` row, all columns, in fixed order (items by id, links by id, sources by id, ledger by timestamp then id), with derived tables (`item_embeddings`, `ai_responses`) declared excluded in the header. Deterministic: no wall clock (the header's as-of line is the newest ledger timestamp), so the same database renders byte-identical text every time. Each ledger row also carries its `group_id`: the undo-group stamp when set, `-` when the row has none or when the file is an older schema without the column (the file is read only, never migrated). Raw source text is verbatim between sha256-stamped markers (the end marker names the source id, byte count, and sha256; if a source text does not end with a newline, exactly one is added so the marker starts its own line, and the declared byte count preserves the original). `--out` writes the file and prints `exported <N> items, <M> links, <K> ledger rows, <S> sources -> <path>`; without it the text goes to stdout. `--out` naming the database file itself is refused before anything is opened (`EXPORT-002`), database untouched. Codes: `EXPORT-001` output write failed (any bad `--out` exits 1 this way), `EXPORT-002` overwrite refused; the database open reuses `QUERY-003` (file missing), `QUERY-004` (schema under the floor), `QUERY-008` (busy) or `QUERY-009` (needs recovery), and a failed read mid-export (a damaged stored text included) reads as `QUERY-005`.
 
 ---
 

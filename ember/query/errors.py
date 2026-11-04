@@ -59,3 +59,31 @@ class QuerySinceInvalid(QueryError):
 
     code = "QUERY-007"
     name = "QuerySinceInvalid"
+
+
+class DbBusy(QueryError):
+    """The database is locked by another process; it is healthy, just busy."""
+
+    code = "QUERY-008"
+    name = "DbBusy"
+
+
+class DbRecoveryNeeded(QueryError):
+    """The database file exists but cannot be read; it likely needs recovery."""
+
+    code = "QUERY-009"
+    name = "DbRecoveryNeeded"
+
+
+class QueryLinkEndGone(QueryError):
+    """A link names an item at its other end that `items` no longer holds.
+
+    A dangling other end (finding 4.7 #2): a hand edit or a damaged file
+    can delete the item row while the link row survives, and no foreign
+    key sits between them. Neither reading half of the link nor pretending
+    the item exists is honest, so the read answers with this code instead
+    of crashing.
+    """
+
+    code = "QUERY-010"
+    name = "QueryLinkEndGone"

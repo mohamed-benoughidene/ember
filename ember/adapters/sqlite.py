@@ -4,17 +4,27 @@ from __future__ import annotations
 
 import json
 import os
-import shutil
+import re
+import secrets
 import sqlite3
-import sys
+import time
 import urllib.parse
-from array import array
 from collections import deque
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from importlib import resources
-from typing import Callable
+from typing import Callable, Iterator
 
+from ember.adapters.errors import (
+    HalfCreatedDatabase,
+    ScriptSetInvalid,
+    VersionTableMissing,
+)
+from ember.adapters.migrations import LATEST_VERSION as _LATEST_VERSION
 from ember.capture.errors import (
+    DbFileMissing as CaptureDbFileMissing,
+    DbOpenFailed as CaptureDbOpenFailed,
+    InitRefused as CaptureInitRefused,
     ItemDbReadError,
     ItemDbWriteError,
     SourceDbReadError,
@@ -28,19 +38,33 @@ from ember.maintain.errors import (
     ChangeLogWriteFailed as MaintainChangeLogWriteFailed,
     DbMigrationFailed as MaintainDbMigrationFailed,
     DbOpenFailed as MaintainDbOpenFailed,
+    GroupRecordInvalid as MaintainGroupRecordInvalid,
+    InverseTargetMoved as MaintainInverseTargetMoved,
     ItemEditWriteFailed as MaintainItemEditWriteFailed,
     ItemsReadFailed as MaintainItemsReadFailed,
     RemoveLinkWriteFailed as MaintainRemoveLinkWriteFailed,
     SchemaOutdated as MaintainSchemaOutdated,
     StatusWriteFailed as MaintainStatusWriteFailed,
+    UndoWriteFailed as MaintainUndoWriteFailed,
 )
-from ember.maintain.rows import EditChange, ItemState, LinkChange, StatusChange
+from ember.maintain.rows import (
+    EditChange,
+    InverseChange,
+    ItemState,
+    LedgerGroup,
+    LinkChange,
+    StatusChange,
+    UndoResult,
+    split_status_value,
+)
 from ember.query.errors import (
+    DbBusy as QueryDbBusy,
     DbOpenFailed as QueryDbOpenFailed,
+    DbRecoveryNeeded as QueryDbRecoveryNeeded,
     ItemsReadFailed as QueryItemsReadFailed,
     SchemaOutdated as QuerySchemaOutdated,
 )
-from ember.query.rows import ChangeRow, QueryItem
+from ember.query.rows import ChangeRow, HistoryPage, QueryItem
 from ember.relate.embedding_store import EmbeddingStorePort
 from ember.relate.errors import (
     ChangeLogWriteFailed,
@@ -53,11 +77,26 @@ from ember.relate.errors import (
     LinkWriteFailed,
     SchemaOutdated,
 )
-from ember.relate.rows import ChangeLogEntry, Link, NewItem
+from ember.relate.rows import ChangeLogEntry, GroupIdPort, Link, NewItem
+from ember.relate.vector_format import VECTOR_FORMAT, pack_vector, unpack_vector
 
 _MIGRATIONS_MODULE = "ember.adapters.migrations"
 
+# The latest migration version is DERIVED from the scripts directory (issue
+# #45): `ember.adapters.migrations` computes it from the shipped `NN_*.sql`
+# listing at import time, so adding the next migration `.sql` file is the
+# whole bump — no by-hand pin. The script set discovered on disk must still
+# be exactly 1.._LATEST_VERSION before any open migrates anything; a
+# dropped or renamed `.sql` refuses up front with `ScriptSetInvalid`
+# (MIGRATION-001) instead of building a half schema.
+
 _BACKUPS_TO_KEEP = 3
+
+# The house UTC file-name stamp (the same `%Y%m%dT%H%M%SZ` pattern the
+# crash reports use): fixed width, so the names sort in age order, and
+# the `Z` says UTC.
+_TIME_FORMAT = "%Y%m%dT%H%M%SZ"
+_BACKUP_STAMP = re.compile(r"\d{8}T\d{6}Z(?:-[0-9a-f]{6})?")
 
 # One definition for "a supersedes edge the cycle rules walk" (rule 8/9): the
 # row is Confirmed and was never reversed. Shared by supersedes_ancestors and
@@ -66,10 +105,22 @@ LIVE_SUPERSEDES_EDGE = "status = 'Confirmed' AND reversed_at IS NULL"
 
 
 def _connect(db_path: str) -> sqlite3.Connection:
-    """Open a raw SQLite connection with row access by name and foreign keys on."""
-    conn = sqlite3.connect(db_path)
+    """Open a raw SQLite connection with row access by name and foreign keys on.
+
+    The busy limit is set HERE, on every connection this adapter opens
+    (decision I8): `timeout=0` clears the stdlib's library-side default so
+    the explicit `PRAGMA busy_timeout = 5000` below is the ONE visible
+    source of the 5000 ms limit shared by every opener — reads, writes,
+    the migration retry and the parallel-writer tests. There is no
+    behavior change between the two ways of setting it (both drive the
+    same C-level busy timeout); `timeout=0` just makes the pragma the
+    single place the limit lives, so removing it is a visible red test,
+    not a silent fall-back to the stdlib default.
+    """
+    conn = sqlite3.connect(db_path, timeout=0)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
+    conn.execute("PRAGMA busy_timeout = 5000")
     return conn
 
 
@@ -89,10 +140,250 @@ def _connect_readonly(db_path: str) -> sqlite3.Connection:
 
 
 def open_database(db_path: str) -> sqlite3.Connection:
-    """Open a SQLite connection, enforce foreign keys, apply migrations."""
-    conn = _connect(db_path)
-    _apply_migrations(conn)
-    return conn
+    """Open a SQLite connection, enforce foreign keys, apply migrations.
+
+    Raise `DbOpenFailed` (CAPTURE-017) when the connection or the
+    migrations fail; the failed connection is closed first, and the
+    detail carries the file name only, never the full path.
+    """
+    conn: sqlite3.Connection | None = None
+    try:
+        conn = _connect(db_path)
+        _apply_migrations(conn)
+        return conn
+    except sqlite3.Error as exc:
+        if conn is not None:
+            conn.close()
+        raise CaptureDbOpenFailed(
+            "db open fail", db_path=os.path.basename(db_path)
+        ) from exc
+
+
+def open_existing_database(db_path: str) -> sqlite3.Connection:
+    """Open an EXISTING capture database; refuse a missing file (N8, D-25).
+
+    The open path behind the user commands that must never create the
+    knowledge base (`capture-source`, and through the validated write the
+    `set-validated` / `clear-validated` pair): the file is checked BEFORE
+    any open, so a missing file is refused with `DbFileMissing`
+    (CAPTURE-020) and nothing is created or migrated. `open_database` itself
+    keeps its connect-create semantics — it is `ember init`'s create path
+    and the test seeding path (N8: one command creates on purpose).
+    """
+    if not os.path.exists(db_path):
+        raise CaptureDbFileMissing(
+            "db file missing", db_path=os.path.basename(db_path)
+        )
+    return open_database(db_path)
+
+
+# One transaction per user action (Batch 4 chunk 8, spec 4.3 #9). The
+# per-connection depth marks the write methods that sit inside a unit of
+# work: IN one, no store commits or rolls back on its own (the unit of work
+# owns the transaction); OUTSIDE one, every store keeps today's own
+# commit/rollback behaviour byte for byte.
+#
+# `sqlite3.Connection` cannot be weak-referenced, so the depth lives in a
+# plain `id()`-keyed map. Safe: an entry exists only while its connection is
+# alive inside the `unit_of_work` frame that put it there, and it is removed
+# again when the depth returns to 0.
+_UNIT_OF_WORK_DEPTH: dict[int, int] = {}
+
+
+def _uow_depth(conn: sqlite3.Connection) -> int:
+    return _UNIT_OF_WORK_DEPTH.get(id(conn), 0)
+
+
+def in_unit_of_work(conn: sqlite3.Connection) -> bool:
+    """Whether `conn` currently runs inside a `unit_of_work` block.
+
+    Store write methods consult this before their own commit/rollback: a
+    store never ends the transaction it only participates in.
+    """
+    return _uow_depth(conn) > 0
+
+
+@contextmanager
+def unit_of_work(conn: sqlite3.Connection) -> Iterator[None]:
+    """Run ONE user action's writes in ONE transaction.
+
+    `BEGIN IMMEDIATE` takes the connection's write lock before the first
+    statement (chunk 13's multi-writer paths build on this), a single
+    `COMMIT` ends the action when the block succeeds, and a single
+    `ROLLBACK` undoes EVERYTHING the action wrote when it fails — so a user
+    action is never half-written (4.3 #9). Nesting counts a depth, so an
+    inner unit of work neither commits nor rolls back; only the outermost
+    one owns the transaction.
+    """
+    depth = _uow_depth(conn)
+    if depth == 0:
+        conn.execute("BEGIN IMMEDIATE")
+    _UNIT_OF_WORK_DEPTH[id(conn)] = depth + 1
+    try:
+        yield
+    except BaseException:
+        if depth == 0:
+            conn.rollback()
+        raise
+    else:
+        if depth == 0:
+            conn.commit()
+    finally:
+        if depth == 0:
+            _UNIT_OF_WORK_DEPTH.pop(id(conn), None)
+        else:
+            _UNIT_OF_WORK_DEPTH[id(conn)] = depth
+
+
+_EXPECTED_TABLES_AT_LATEST = frozenset(
+    {
+        "schema_version",
+        "sources",
+        "items",
+        "change_log",
+        "ai_responses",
+        "links",
+        "item_embeddings",
+        "link_compat",
+    }
+)
+
+
+def init_knowledge_base(db_path: str) -> str:
+    """Create and migrate a NEW knowledge base; accept nothing else (N8).
+
+    The create side of `ember init` (decision D-25: that one command is the
+    only thing in Ember that creates the file, on purpose). Returns
+    `"created"` after creating and migrating a missing file, and
+    `"current"` when the path already holds a healthy Ember database at the
+    latest migration version — checked strictly read-only, so an already-
+    current file stays byte-identical.
+
+    The healthy check (N8's essentials): the `schema_version` table
+    present, its version equal to the latest migration number, and the
+    expected tables intact. Anything else raises `InitRefused`
+    (CAPTURE-021): a file that is not an Ember database, no version table,
+    a version other than the latest, or missing tables. Nothing is ever
+    adopted and nothing is migrated by `init` after the first create.
+    """
+    if not os.path.exists(db_path):
+        try:
+            open_database(db_path).close()
+        except (CaptureDbOpenFailed, HalfCreatedDatabase):
+            # Two first-Adds-at-once (story 11): another `ember init` may
+            # have created and migrated the same fresh file between the
+            # exists check and the open. The healthy-latest check below
+            # then decides; a file missing again re-raises the open
+            # failure. A file mid-flight in another init's migration can
+            # also present the version-0-no-items shape (the version
+            # table is committed before the scripts run), so the story-16
+            # refusal is retried through the same settle window below
+            # instead of deciding on a half-second-old snapshot.
+            if not os.path.exists(db_path):
+                raise
+        else:
+            return "created"
+    return _require_healthy_current(db_path)
+
+
+def _require_healthy_current(db_path: str) -> str:
+    """Return `"current"` for a healthy latest-version database, refuse the rest.
+
+    Opened STRICTLY read-only: a current file is left byte-identical, and a
+    refusal writes nothing. Raise `InitRefused` (CAPTURE-021) on every
+    shape `ember init` cannot accept (see `init_knowledge_base`).
+
+    Only the TRANSIENT shapes get a settle window (5 s, the busy-timeout
+    scale): a file reading as an Ember database BEHIND the latest version,
+    a busy read, or a still-EMPTY (0-byte) file — another `ember init` that
+    has touched the path but not yet committed its version table (the
+    batch-8 founder decision; acceptance never widens, refusal only ever
+    waits) — may be another `ember init` mid-flight (story 11's two
+    first-Adds-at-once), so it is re-inspected until it reaches the
+    latest or the window ends. The other permanent shapes — not an Ember
+    database, a no-version NON-empty file, a version ABOVE the latest,
+    missing tables at the latest — are refused immediately; no waiting
+    makes those healthy.
+    """
+    latest = max(number for number, _ in _migration_scripts())
+    deadline = time.monotonic() + 5.0
+    while True:
+        where, detail, transient = _inspect_health(db_path, latest)
+        if where == "current":
+            return "current"
+        if not transient or time.monotonic() >= deadline:
+            raise CaptureInitRefused(
+                where, detail=detail, db_path=os.path.basename(db_path)
+            )
+        time.sleep(0.05)
+
+
+def _inspect_health(db_path: str, latest: int) -> tuple[str, str, bool]:
+    """Read the file's health once, STRICTLY read-only (no writes, ever).
+
+    Returns `(refusal_where, detail, transient)`, or `("current", ..., False)`
+    for a healthy database at the latest version. The transient shapes (a
+    behind version, a busy file) may be another `ember init` mid-migration
+    and get the settle window; every other shape refuses immediately.
+    """
+    conn: sqlite3.Connection | None = None
+    try:
+        conn = _connect_readonly(db_path)
+        tables = {
+            row["name"]
+            for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            )
+        }
+        if "schema_version" not in tables:
+            # A brand-new path can present this shape mid-first-init: the
+            # creating `ember init` has touched the file but not yet
+            # committed the version table (story 11's two first-Adds-at-
+            # once). An EMPTY file (0 bytes — SQLite creates the main file
+            # on connect, before the first commit) is exactly that moment,
+            # so it is transient and settles; any OTHER no-version shape
+            # (a non-empty file that is not an Ember database) stays
+            # permanent — the batch-8 founder decision: acceptance never
+            # widens, refusal only ever waits.
+            if os.path.getsize(db_path) == 0:
+                return ("no schema_version table", "the version table is missing", True)
+            return ("no schema_version table", "the version table is missing", False)
+        row = conn.execute("SELECT version FROM schema_version").fetchone()
+        if row is None:
+            return ("empty schema_version table", "no version row", False)
+        version = int(row["version"])
+        if version > latest:
+            return (
+                "schema version is not the latest",
+                f"version={version} required={latest} (version above latest)",
+                False,
+            )
+        if version < latest:
+            return (
+                "schema version is not the latest",
+                f"version={version} required={latest}",
+                True,
+            )
+        missing = sorted(_EXPECTED_TABLES_AT_LATEST - tables)
+        if missing:
+            return ("missing tables", ", ".join(missing), False)
+        return ("current", "", False)
+    except (TypeError, ValueError):
+        return (
+            "empty schema_version table",
+            "the version row is not a number",
+            False,
+        )
+    except sqlite3.Error as exc:
+        message = str(exc).lower()
+        if "locked" in message or "busy" in message:
+            # Another writer holds the file; its outcome decides at the
+            # next poll, so this is a retryable read, not a verdict.
+            return ("schema version is not the latest", f"file busy ({exc})", True)
+        return ("not an ember database", f"unreadable ({exc})", False)
+    finally:
+        if conn is not None:
+            conn.close()
 
 
 def open_relate_database(db_path: str) -> sqlite3.Connection:
@@ -103,7 +394,7 @@ def open_relate_database(db_path: str) -> sqlite3.Connection:
     migration fails.
     """
     if not os.path.exists(db_path):
-        raise DbOpenFailed("db file missing", db_path=db_path)
+        raise DbOpenFailed("db file missing", db_path=os.path.basename(db_path))
     conn: sqlite3.Connection | None = None
     try:
         conn = _connect(db_path)
@@ -111,12 +402,12 @@ def open_relate_database(db_path: str) -> sqlite3.Connection:
     except sqlite3.Error as exc:
         if conn is not None:
             conn.close()
-        raise DbOpenFailed("db open fail", db_path=db_path) from exc
+        raise DbOpenFailed("db open fail", db_path=os.path.basename(db_path)) from exc
     try:
         _apply_migrations(conn)
     except (sqlite3.Error, ValueError, OSError) as exc:
         conn.close()
-        raise DbMigrationFailed("migration fail", db_path=db_path) from exc
+        raise DbMigrationFailed("migration fail", db_path=os.path.basename(db_path)) from exc
     try:
         ensure_relate_schema(conn)
     except EmberError:
@@ -129,16 +420,87 @@ def ensure_relate_schema(conn: sqlite3.Connection) -> None:
     """Check the applied schema version is new enough for the relate engine.
 
     Raise `DbOpenFailed` (RELATE-012) if the version cannot be read, and
-    `SchemaOutdated` (RELATE-014) if the version is below the required 12
-    (the relate engine reads `items.metadata` from migration 012 on).
+    `SchemaOutdated` (RELATE-014) if the version is below the required 15
+    (the cache writes tag `item_embeddings.vector_format`, migration 015,
+    and read `items.metadata` from migration 012 on).
     """
     try:
         row = conn.execute("SELECT version FROM schema_version").fetchone()
         version = 0 if row is None else int(row["version"])
     except (sqlite3.Error, ValueError, TypeError) as exc:
         raise DbOpenFailed("schema version read fail") from exc
+    if version < 15:
+        raise SchemaOutdated(
+            "schema version too old", version=version, required=15
+        )
+
+
+def open_relate_database_readonly(db_path: str) -> sqlite3.Connection:
+    """Open an existing relate DB STRICTLY read-only, never migrate (N9).
+
+    For the relate reads (candidate universe, link and cache lookups,
+    gatekeeper reads): opening or reading a file must never migrate it
+    silently and never write a pre-migration backup; the version bump, when
+    one is ever needed, happens when a write opens the database. Raise
+    `DbOpenFailed` (RELATE-012) when the file is missing, is not a readable
+    SQLite database, or the version cannot be read, and `SchemaOutdated`
+    (RELATE-014) when the version is below the floor 12 (the relate engine
+    reads `items.metadata` from migration 012 on).
+    """
+    if not os.path.exists(db_path):
+        raise DbOpenFailed("db file missing", db_path=os.path.basename(db_path))
+    conn: sqlite3.Connection | None = None
+    try:
+        conn = _connect_readonly(db_path)
+        conn.execute("SELECT COUNT(*) FROM sqlite_master").fetchone()
+    except sqlite3.Error as exc:
+        if conn is not None:
+            conn.close()
+        raise DbOpenFailed("db open fail", db_path=os.path.basename(db_path)) from exc
+    try:
+        version = int(
+            conn.execute("SELECT version FROM schema_version").fetchone()["version"]
+        )
+    except (sqlite3.Error, TypeError, ValueError) as exc:
+        conn.close()
+        raise DbOpenFailed("schema version read fail") from exc
     if version < 12:
-        raise SchemaOutdated("schema version too old", version=version, required=12)
+        conn.close()
+        raise SchemaOutdated(
+            "schema version too old (relate never migrates)",
+            version=version,
+            required=12,
+        )
+    return conn
+
+
+def open_relate_database_write(db_path: str) -> sqlite3.Connection:
+    """Open the ONE short-lived relate write connection; never migrates (N9).
+
+    Relate's writes (embedding-cache upserts and the model-change wipe, the
+    raw AI reply save, and the confirmed-link writes) share this one
+    connection. It checks the floor 12 version but applies no migration and
+    makes no backup: the read-only open before it has already verified the
+    file is readable and current, so no migration, `.bak` copy, or version
+    bump ever happens here. Raise the same errors as the read-only opener
+    (`RELATE-012`, `RELATE-014`).
+    """
+    if not os.path.exists(db_path):
+        raise DbOpenFailed("db file missing", db_path=os.path.basename(db_path))
+    conn: sqlite3.Connection | None = None
+    try:
+        conn = _connect(db_path)
+        conn.execute("SELECT COUNT(*) FROM sqlite_master").fetchone()
+        ensure_relate_schema(conn)
+    except EmberError:
+        if conn is not None:
+            conn.close()
+        raise
+    except sqlite3.Error as exc:
+        if conn is not None:
+            conn.close()
+        raise DbOpenFailed("db open fail", db_path=os.path.basename(db_path)) from exc
+    return conn
 
 
 def open_maintain_database(db_path: str) -> sqlite3.Connection:
@@ -150,7 +512,7 @@ def open_maintain_database(db_path: str) -> sqlite3.Connection:
     version is below the required 10.
     """
     if not os.path.exists(db_path):
-        raise MaintainDbOpenFailed("db file missing", db_path=db_path)
+        raise MaintainDbOpenFailed("db file missing", db_path=os.path.basename(db_path))
     conn: sqlite3.Connection | None = None
     try:
         conn = _connect(db_path)
@@ -158,17 +520,57 @@ def open_maintain_database(db_path: str) -> sqlite3.Connection:
     except sqlite3.Error as exc:
         if conn is not None:
             conn.close()
-        raise MaintainDbOpenFailed("db open fail", db_path=db_path) from exc
+        raise MaintainDbOpenFailed("db open fail", db_path=os.path.basename(db_path)) from exc
     try:
         _apply_migrations(conn)
     except (sqlite3.Error, ValueError, OSError) as exc:
         conn.close()
-        raise MaintainDbMigrationFailed("migration fail", db_path=db_path) from exc
+        raise MaintainDbMigrationFailed("migration fail", db_path=os.path.basename(db_path)) from exc
     try:
         ensure_maintain_schema(conn)
     except EmberError:
         conn.close()
         raise
+    return conn
+
+
+def open_maintain_database_readonly(
+    db_path: str, *, required_version: int
+) -> sqlite3.Connection:
+    """Open an existing maintain DB STRICTLY read-only, never migrate (G2-B).
+
+    For the `--dry-run` reads (`maintain --dry-run`, `undo --dry-run`,
+    `redo --dry-run`): plan §5.5 / story 76 — opening or reading an older
+    file must never migrate it silently; the pre-migration `.bak-v12` copy
+    and the version bump happen only when a real write opens the database
+    the normal way. Raise `DbOpenFailed` (MAINTAIN-007) when the file is
+    missing or not a readable SQLite database, and `SchemaOutdated`
+    (MAINTAIN-009) when the applied version is below `required_version`
+    (the maintain floor is 11; an undo/redo dry-run, which reads the undo
+    groups, needs 13).
+    """
+    if not os.path.exists(db_path):
+        raise MaintainDbOpenFailed("db file missing", db_path=os.path.basename(db_path))
+    conn: sqlite3.Connection | None = None
+    try:
+        conn = _connect_readonly(db_path)
+        conn.execute("SELECT COUNT(*) FROM sqlite_master").fetchone()
+    except sqlite3.Error as exc:
+        if conn is not None:
+            conn.close()
+        raise MaintainDbOpenFailed("db open fail", db_path=os.path.basename(db_path)) from exc
+    try:
+        version = int(conn.execute("SELECT version FROM schema_version").fetchone()["version"])
+    except (sqlite3.Error, TypeError, ValueError) as exc:
+        conn.close()
+        raise MaintainDbOpenFailed("schema version read fail") from exc
+    if version < required_version:
+        conn.close()
+        raise MaintainSchemaOutdated(
+            "schema version too old (dry-run never migrates)",
+            version=version,
+            required=required_version,
+        )
     return conn
 
 
@@ -192,23 +594,32 @@ def ensure_maintain_schema(conn: sqlite3.Connection) -> None:
 def open_query_database(db_path: str) -> sqlite3.Connection:
     """Open an existing query DB **read-only**, check the schema, never migrate.
 
-    Raise `DbOpenFailed` (QUERY-003) when the file is missing or is not a
-    readable SQLite database, and `SchemaOutdated` (QUERY-004) when the applied
-    version is below the required 10.
+    Raise `DbOpenFailed` (QUERY-003) when the file is missing, `DbBusy`
+    (QUERY-008) when another process holds the write lock, `DbRecoveryNeeded`
+    (QUERY-009) when the file exists but cannot be read, and `SchemaOutdated`
+    (QUERY-004) when the applied version is below the required 10.
 
     Unlike every other engine's boot path this one applies no migration: a read
     command that rewrites the ledger is not a read, and `query` is the one
     command an AI may run against the user's database.
     """
     if not os.path.exists(db_path):
-        raise QueryDbOpenFailed("db file missing", db_path=db_path)
+        raise QueryDbOpenFailed("db file missing", db_path=os.path.basename(db_path))
+    conn: sqlite3.Connection | None = None
     try:
         conn = _connect_readonly(db_path)
         conn.execute("SELECT COUNT(*) FROM sqlite_master").fetchone()
     except sqlite3.Error as exc:
-        raise QueryDbOpenFailed("db open fail", db_path=db_path) from exc
+        if conn is not None:
+            conn.close()
+        message = str(exc).lower()
+        if "locked" in message or "busy" in message:
+            raise QueryDbBusy("db busy", db_path=os.path.basename(db_path)) from exc
+        raise QueryDbRecoveryNeeded(
+            "db needs recovery", db_path=os.path.basename(db_path)
+        ) from exc
     try:
-        ensure_query_schema(conn, db_path)
+        ensure_query_schema(conn, os.path.basename(db_path))
     except EmberError:
         conn.close()
         raise
@@ -249,51 +660,125 @@ def _database_file(conn: sqlite3.Connection) -> str | None:
     return None
 
 
-def _backup_database(conn: sqlite3.Connection, current: int) -> None:
-    """Copy the database file once before any above-version script runs.
+def _backup_database(conn: sqlite3.Connection) -> None:
+    """Snapshot the database file online before any above-version script runs.
 
-    The copy is `<db>.bak-v<current>` (D7), taken with `copy2` so metadata
-    survives. Retention: keep the newest 3 `<db>.bak-v*` files, delete older.
-    Raise the raw `OSError` on failure. Per-engine boot call sites wrap it.
+    The copy is `<db>.bak-<UTC timestamp>` (B4-16): the name is NOT
+    reusable, so a repeated run never overwrites the same file the way
+    the old `.bak-v<current>` name did — every pending run leaves its own
+    snapshot. The snapshot is taken with SQLite's online backup API
+    (`conn.backup`), never `copy2`, so the copy is a consistent page
+    image even if a writer was mid-transaction (4.3 #13). The 6-hex
+    suffix keeps two runs in the same second distinct (the house crash-id
+    convention), and the file is fsynced before it may ever be relied on.
+    Retention: keep the newest 3 timestamped snapshots, delete older
+    (`_prune_backups`). Raise the raw error on failure — a partial copy
+    is deleted first — and the per-engine boot call sites wrap it.
     """
     db_path = _database_file(conn)
     if db_path is None:
         return
-    shutil.copy2(db_path, f"{db_path}.bak-v{current}")
+    stamp = datetime.now(timezone.utc).strftime(_TIME_FORMAT)
+    backup_path = f"{db_path}.bak-{stamp}-{secrets.token_hex(3)}"
+    dest: sqlite3.Connection | None = None
+    try:
+        dest = sqlite3.connect(backup_path)
+        conn.backup(dest)
+        dest.close()
+        dest = None
+        fd = os.open(backup_path, os.O_RDONLY)
+        try:
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+    except (OSError, sqlite3.Error):
+        if dest is not None:
+            dest.close()
+        try:
+            os.remove(backup_path)
+        except OSError:
+            pass
+        raise
     _prune_backups(db_path)
 
 
 def _prune_backups(db_path: str) -> None:
-    """Keep the newest 3 `<db>.bak-v*` files next to `db_path`, delete older."""
+    """Keep the newest 3 pre-migration backups next to `db_path`, delete older.
+
+    Two name families share the retention, each pruned to the newest 3 in
+    its own age order (B4-16): the timestamped `.bak-<stamp>-<hex>`
+    snapshots (names sort = age order) and the legacy `.bak-v<N>` files
+    (highest N is newest), so files written by an older check-out still
+    age out of the window.
+    """
     directory = os.path.dirname(os.path.abspath(db_path))
-    prefix = os.path.basename(os.path.abspath(db_path)) + ".bak-v"
-    backups: list[tuple[int, str]] = []
-    for name in os.listdir(directory):
-        if not name.startswith(prefix):
-            continue
-        suffix = name[len(prefix):]
-        if suffix.isdigit():
-            backups.append((int(suffix), name))
-    backups.sort(reverse=True)
-    for _, name in backups[_BACKUPS_TO_KEEP:]:
-        os.remove(os.path.join(directory, name))
+    name = os.path.basename(os.path.abspath(db_path))
+    legacy: list[tuple[int, str]] = []
+    stamps: list[str] = []
+    for entry in os.listdir(directory):
+        if entry.startswith(f"{name}.bak-v"):
+            suffix = entry[len(name) + 6:]
+            if suffix.isdigit():
+                legacy.append((int(suffix), entry))
+        elif entry.startswith(f"{name}.bak-"):
+            suffix = entry[len(name) + 5:]
+            if _BACKUP_STAMP.fullmatch(suffix):
+                stamps.append(entry)
+    for _, entry in sorted(legacy, reverse=True)[_BACKUPS_TO_KEEP:]:
+        os.remove(os.path.join(directory, entry))
+    for entry in sorted(stamps)[: max(0, len(stamps) - _BACKUPS_TO_KEEP)]:
+        os.remove(os.path.join(directory, entry))
 
 
 def _apply_migrations(conn: sqlite3.Connection) -> None:
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL)"
-    )
-    if conn.execute("SELECT COUNT(*) FROM schema_version").fetchone()[0] == 0:
-        conn.execute("INSERT INTO schema_version (version) VALUES (0)")
-    conn.commit()
-    current = conn.execute("SELECT version FROM schema_version").fetchone()[0]
+    # The pinned script set is checked BEFORE anything is touched (story
+    # 14): a wrong set refuses with `ScriptSetInvalid` without creating
+    # even the version table.
+    scripts = _migration_scripts()
+    existing_tables = _existing_tables(conn)
+    # A pre-version-tracking file is never adopted (story 15): the refusal
+    # fires before the CREATE TABLE below could stamp a version onto it,
+    # so the file stays byte-identical.
+    if existing_tables and "schema_version" not in existing_tables:
+        raise VersionTableMissing(
+            "file has tables but no schema_version table",
+            tables=", ".join(sorted(existing_tables)),
+        )
+    # The migration lock (chunk 11, finding 4.3 #1): the version table is
+    # bootstrapped inside ONE `BEGIN EXCLUSIVE` transaction, so parallel
+    # openers of a brand-new file serialize on the write lock instead of
+    # racing their first writes.
+    _begin_exclusive(conn)
+    try:
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL)"
+        )
+        if conn.execute("SELECT COUNT(*) FROM schema_version").fetchone()[0] == 0:
+            conn.execute("INSERT INTO schema_version (version) VALUES (0)")
+        conn.commit()
+    except sqlite3.Error:
+        conn.rollback()
+        raise
+    current = int(conn.execute("SELECT version FROM schema_version").fetchone()[0])
+    # A version-0 file with no `items` table never finished being created
+    # (story 16): its own refusal code, distinct from the "schema version
+    # too old" sentence. A brand-new file has NO pre-existing tables, so
+    # `existing_tables` is what keeps the fresh create path out of this
+    # refusal — the version-0 stamp below is our own, not the file's.
+    if existing_tables and current == 0 and "items" not in existing_tables:
+        raise HalfCreatedDatabase(
+            "version 0 with no items table: this file never finished being created",
+            version=0,
+        )
     pending = [
-        (number, script) for number, script in _migration_scripts() if number > current
+        (number, script) for number, script in scripts if number > current
     ]
     # One backup per run, before the first above-version script: a no-op open
-    # must not churn the retention window (L2 §5.0).
-    if pending:
-        _backup_database(conn, int(current))
+    # must not churn the retention window (L2 §5.0). A brand-new file has
+    # nothing to back up (finding 4.5 #17): no pointless snapshot of an
+    # empty database.
+    if pending and existing_tables:
+        _backup_database(conn)
     conn.execute("PRAGMA foreign_keys = OFF")
     try:
         for number, script in pending:
@@ -302,24 +787,107 @@ def _apply_migrations(conn: sqlite3.Connection) -> None:
         conn.execute("PRAGMA foreign_keys = ON")
 
 
+def _existing_tables(conn: sqlite3.Connection) -> set[str]:
+    """Return the table names the file holds right now (a read, no writes)."""
+    return {
+        row["name"]
+        for row in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table'"
+        )
+    }
+
+
+# The one migration lock budget: the same 5000 ms every connection sets
+# (decision I8, chunk 10). SQLite's PRAGMA busy_timeout is the primary
+# busy retry on the lock request itself; this deadline bounds the extra
+# explicit retries below to the same visible limit.
+_MIGRATION_LOCK_TIMEOUT_SECONDS = 5.0
+
+
+def _begin_exclusive(conn: sqlite3.Connection) -> None:
+    """Open ONE `BEGIN EXCLUSIVE` transaction, retrying while busy.
+
+    `BEGIN EXCLUSIVE` is what makes four parallel openers serialize
+    (chunk 11, finding 4.3 #1): the full write lock is taken BEFORE the
+    first statement, so a second opener just waits inside its 5000 ms
+    busy timeout (I8) instead of racing a deferred transaction upgrade —
+    the one `SQLITE_BUSY` shape no busy timeout can help, because two
+    waiting writers holding the file's SHARED lock are a deadlock the
+    busy handler must not sleep on. Retries here are bounded by the same
+    5000 ms budget the pragma owns; past the deadline the error surfaces.
+    """
+    deadline = time.monotonic() + _MIGRATION_LOCK_TIMEOUT_SECONDS
+    while True:
+        try:
+            conn.execute("BEGIN EXCLUSIVE")
+            return
+        except sqlite3.OperationalError as exc:
+            message = str(exc)
+            if "locked" not in message and "busy" not in message:
+                raise
+            if time.monotonic() >= deadline:
+                raise
+
+
 def _apply_migration(conn: sqlite3.Connection, number: int, script: str) -> None:
     """Apply one migration and its version bump in one transaction.
 
-    Scripts must contain plain statements only. The runner owns the
-    transaction and the foreign-key switch, so a script with its own
-    `BEGIN` / `COMMIT` would nest transactions.
+    The transaction is `BEGIN EXCLUSIVE` (chunk 11): a plain `executescript`
+    ran a DEFERRED `BEGIN`, so two parallel openers could each hold the
+    file's SHARED lock and both try to upgrade — an immediate
+    `database is locked` crash on ~3 of 4 openers of a brand-new file.
+
+    Inside the lock the version is RE-READ: every opener computed its
+    `pending` list from a pre-lock read, so an opener that lost the race
+    skips each step the winner already applied instead of re-running it
+    on a changed schema.
+
+    Scripts must contain plain statements only. They are executed
+    statement by statement here — `executescript` commits any pending
+    transaction first, which would surrender this step's exclusive lock
+    mid-migration — and the runner owns the transaction and the
+    foreign-key switch, so a script with its own `BEGIN` / `COMMIT`
+    would nest transactions.
     """
-    wrapped = (
-        "BEGIN;\n"
-        f"{script}\n"
-        f"UPDATE schema_version SET version = {int(number)};\n"
-        "COMMIT;"
-    )
+    _begin_exclusive(conn)
     try:
-        conn.executescript(wrapped)
+        current = int(
+            conn.execute("SELECT version FROM schema_version").fetchone()[0]
+        )
+        if current >= number:
+            # Another opener applied this step while we waited for the
+            # lock; keep the file exactly as the winner left it.
+            conn.rollback()
+            return
+        for statement in _script_statements(script):
+            conn.execute(statement)
+        conn.execute(
+            "UPDATE schema_version SET version = ?", (int(number),)
+        )
+        conn.commit()
     except sqlite3.Error:
         conn.rollback()
         raise
+
+
+def _script_statements(script: str) -> list[str]:
+    """Split a migration script into complete SQL statements.
+
+    Boundaries come from `sqlite3.complete_statement`, which understands
+    trigger bodies (`BEGIN ... END;`) and quoted strings, so the
+    semicolons inside them never split a statement mid-body. Comments
+    ride along with the statement they precede.
+    """
+    statements: list[str] = []
+    buffer = ""
+    for char in script:
+        buffer += char
+        if char == ";" and sqlite3.complete_statement(buffer):
+            statements.append(buffer)
+            buffer = ""
+    if buffer.strip():
+        raise ValueError("migration script ends with an incomplete statement")
+    return statements
 
 
 def _migration_scripts() -> list[tuple[int, str]]:
@@ -329,11 +897,65 @@ def _migration_scripts() -> list[tuple[int, str]]:
         if entry.name.endswith(".sql"):
             number = int(entry.name.split("_", 1)[0])
             scripts.append((number, entry.read_text(encoding="utf-8")))
-    return sorted(scripts)
+    scripts.sort()
+    _require_pinned_script_set(scripts)
+    return scripts
+
+
+def _require_pinned_script_set(scripts: list[tuple[int, str]]) -> None:
+    """Refuse unless the discovered script numbers are exactly 1..latest.
+
+    The latest version comes from `ember.adapters.migrations.LATEST_VERSION`
+    (issue #45), derived from the scripts the repository ships. The check
+    lives on the discovery path (not in the injected or patched script
+    list), so it pins what the repository actually ships: a dropped or
+    renamed `.sql` is caught before ANY open migrates anything —
+    `ScriptSetInvalid` (MIGRATION-001), raised before even the version
+    table is created.
+    """
+    numbers = [number for number, _ in scripts]
+    if numbers != list(range(1, _LATEST_VERSION + 1)):
+        raise ScriptSetInvalid(
+            f"migration scripts are not exactly 1..{_LATEST_VERSION}",
+            expected=f"1..{_LATEST_VERSION}",
+            found=numbers,
+        )
 
 
 def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+class SqliteGroupIdPort:
+    """`GroupIdPort` on SQLite: the next undo group id from `change_log`.
+
+    `MAX(group_id)+1` over the ledger, `1` when there is no group yet, so
+    ids grow monotonically and NULL (pre-013, sweep, capture, relate) rows
+    never join a group. One read, one call: the caller stamps every row of
+    one human action with the SAME returned id (engine-undo-plan §5.1).
+
+    A failed read raises the raw `sqlite3.Error` fail-fast (I5): the step's
+    error budget (§4) adds no new code, and a failure here means the opened
+    connection itself is broken, which no existing per-module code names.
+    """
+
+    def __init__(self, conn: sqlite3.Connection) -> None:
+        self._conn = conn
+
+    def next_group_id(self) -> int:
+        """Return `MAX(group_id)+1` over `change_log`, `1` when none.
+
+        Chunk 13 (D-03): call this INSIDE the write transaction that will
+        stamp the group's rows. Inside the `unit_of_work`'s `BEGIN
+        IMMEDIATE` the read and the write are one lock, so two concurrent
+        writers never read the same next group id; read outside it, both
+        can read the same id and their two actions merge into one undo
+        group (4.3 #19, 4.6 #4).
+        """
+        row = self._conn.execute(
+            "SELECT COALESCE(MAX(group_id), 0) FROM change_log"
+        ).fetchone()
+        return int(row[0]) + 1
 
 
 class SqliteSourceStore:
@@ -371,7 +993,12 @@ class SqliteSourceStore:
     def insert_source(self, *, title: str, full_text: str, content_hash: str) -> int:
         """Insert one source, return the new id.
 
-        Raise `SourceDbWriteError` (CAPTURE-006) on a write failure.
+        Raise `SourceDbWriteError` (CAPTURE-006) on a write failure. Inside a
+        `unit_of_work` the caller owns the commit (Batch 4, 4.3 #9): the
+        source-reuse decision and this insert are one transaction, so the
+        insert must not end the caller's `BEGIN IMMEDIATE` early — a
+        mid-transaction commit would release the write two writers serialize
+        on (D-03, chunk 13: id, group and source decisions in one action).
         """
         timestamp = self._clock()
         try:
@@ -380,8 +1007,11 @@ class SqliteSourceStore:
                 " VALUES (?, ?, ?, ?)",
                 (title, full_text, timestamp, content_hash),
             )
-            self._conn.commit()
+            if not in_unit_of_work(self._conn):
+                self._conn.commit()
         except sqlite3.Error as exc:
+            if not in_unit_of_work(self._conn):
+                self._conn.rollback()
             raise SourceDbWriteError("db write fail", content_hash=content_hash) from exc
         return int(cursor.lastrowid)
 
@@ -712,15 +1342,18 @@ class SqliteMaintainContext:
     def list_items(self) -> list[ItemState]:
         """Return every item: id, type, status, close_reason, status_origin,
         the two authorial columns `rationale` / `source` (migration 004)
-        that `edit-item` reads its observed old values from, and `statement`
-        (the additive Phase-5 display column the AI proposal judges).
+        that `edit-item` reads its observed old values from, `statement`
+        (the additive Phase-5 display column the AI proposal judges), and
+        `validated` as the ledger encodes it (`true` / `false` / NULL, undo
+        step 02: the refusal rule compares each grouped row against the
+        live value).
 
         Raise `ItemsReadFailed` (MAINTAIN-010) on a read failure.
         """
         try:
             rows = self._conn.execute(
                 "SELECT id, type, status, close_reason, status_origin,"
-                " rationale, source, statement FROM items"
+                " rationale, source, statement, validated FROM items"
             ).fetchall()
         except sqlite3.Error as exc:
             raise MaintainItemsReadFailed("item read fail") from exc
@@ -734,6 +1367,11 @@ class SqliteMaintainContext:
                 rationale=row["rationale"],
                 source=row["source"],
                 statement=row["statement"],
+                validated=(
+                    "true" if row["validated"]
+                    else "false" if row["validated"] is not None
+                    else None
+                ),
             )
             for row in rows
         ]
@@ -762,26 +1400,75 @@ class SqliteMaintainContext:
             for row in rows
         ]
 
-    def list_reversed_link_ids(self) -> set[int]:
-        """Return the link ids carrying a `link_reversed` change_log row.
+    def list_all_links(self) -> list[Link]:
+        """Return every `links` row, any status, carrying `reversed_at`.
+
+        Undo step 04 (deviation U3-3): the undo refusal rule compares each
+        grouped row against the LIVE link state, so the snapshot needs
+        links of ANY status with the `reversed_at` column, which the
+        Confirmed-only read above cannot give for a removed or reversed
+        link. Read-only.
 
         Raise `ItemsReadFailed` (MAINTAIN-010) on a read failure.
         """
         try:
             rows = self._conn.execute(
-                "SELECT DISTINCT link_id FROM change_log"
-                " WHERE field_changed = 'link_reversed' AND link_id IS NOT NULL"
+                "SELECT id, source_item_id, target_item_id, link_type, status,"
+                " created_at, reversed_at FROM links"
+            ).fetchall()
+        except sqlite3.Error as exc:
+            raise MaintainItemsReadFailed("link read fail") from exc
+        return [
+            Link(
+                id=row["id"],
+                source_item_id=row["source_item_id"],
+                target_item_id=row["target_item_id"],
+                link_type=row["link_type"],
+                status=row["status"],
+                created_at=row["created_at"],
+                reversed_at=row["reversed_at"],
+            )
+            for row in rows
+        ]
+
+    def list_reversed_link_ids(self) -> set[int]:
+        """Return the link ids whose reversal state reads "reversed".
+
+        The rule (undo step 03, engine-undo-plan §5.4): a link is reversed
+        when its highest-id marker among `link_reversed` and
+        `link_unreversed` is a `link_reversed` — the undo of a reversal
+        appends `link_unreversed`, so the link reads live again, and a redo
+        appends a later `link_reversed` and reads reversed again.
+
+        Raise `ItemsReadFailed` (MAINTAIN-010) on a read failure.
+        """
+        try:
+            rows = self._conn.execute(
+                "SELECT id, link_id, field_changed FROM change_log"
+                " WHERE field_changed IN"
+                "       ('link_reversed', 'link_unreversed')"
+                "   AND link_id IS NOT NULL"
+                " ORDER BY id"
             ).fetchall()
         except sqlite3.Error as exc:
             raise MaintainItemsReadFailed("change_log read fail") from exc
-        return {int(row["link_id"]) for row in rows}
+        latest: dict[int, str] = {}
+        for row in rows:
+            latest[int(row["link_id"])] = row["field_changed"]
+        return {
+            link_id
+            for link_id, field_changed in latest.items()
+            if field_changed == "link_reversed"
+        }
 
     def list_shield_log(self) -> list[ChangeLogEntry]:
         """Return the ledger slice the timestamp-scoped manual shield reads
         (L2 §13.5), in id order: the manual-clear rows (written by
-        `apply_status_origin`) and the `link_confirmed` rows (written by the
-        relate gatekeeper). One query over `change_log`, which the engine
-        already owns (no migration, L2 §13.6).
+        `apply_status_origin`, or re-set by a redo of a clear — a clear is
+        `status_origin` / `new_value='manual'` with cause `user_set_status`
+        OR `user_redo`, undo step 03) and the `link_confirmed` rows
+        (written by the relate gatekeeper). One query over `change_log`,
+        which the engine already owns (no migration, L2 §13.6).
 
         Raise `ItemsReadFailed` (MAINTAIN-010) on a read failure.
         """
@@ -791,8 +1478,9 @@ class SqliteMaintainContext:
                 " new_value, timestamp, trigger_cause"
                 " FROM change_log"
                 " WHERE (field_changed = 'status_origin'"
-                "        AND trigger_cause = 'user_set_status'"
-                "        AND new_value = 'manual')"
+                "        AND new_value = 'manual'"
+                "        AND trigger_cause IN"
+                "            ('user_set_status', 'user_redo'))"
                 "    OR field_changed = 'link_confirmed'"
                 " ORDER BY id"
             ).fetchall()
@@ -811,6 +1499,110 @@ class SqliteMaintainContext:
             )
             for row in rows
         ]
+
+    def list_grouped_ledger(self) -> list[LedgerGroup]:
+        """Return every undo group: only `change_log` rows with a non-NULL
+        `group_id`, wrapped per group, ordered by group id then row id
+        (undo step 02, L2 §5.1). Read-only: nothing is written or migrated.
+
+        Rows from before migration 013 carry no group id and are invisible
+        here by definition (story 123); the undo core is told separately
+        whether such rows exist, so its refusal message can say so.
+
+        Raise `ItemsReadFailed` (MAINTAIN-010) on a read failure.
+        """
+        if not column_exists(self._conn, "change_log", "group_id"):
+            # G2-B: a pre-013 file has no `group_id` column. Every row
+            # predates the undo groups, so there is no group to read;
+            # `has_ungrouped_rows()` carries the honest story-123 note.
+            # The export reader gates the same column the same way.
+            return []
+        try:
+            rows = self._conn.execute(
+                "SELECT id, item_id, link_id, field_changed, old_value,"
+                " new_value, timestamp, trigger_cause, group_id"
+                " FROM change_log"
+                " WHERE group_id IS NOT NULL"
+                " ORDER BY group_id, id"
+            ).fetchall()
+        except sqlite3.Error as exc:
+            raise MaintainItemsReadFailed("change_log read fail") from exc
+        groups: list[LedgerGroup] = []
+        by_id: dict[int, list[ChangeLogEntry]] = {}
+        order: list[int] = []
+        for row in rows:
+            group_id = int(row["group_id"])
+            if group_id not in by_id:
+                by_id[group_id] = []
+                order.append(group_id)
+            by_id[group_id].append(
+                ChangeLogEntry(
+                    id=row["id"],
+                    item_id=row["item_id"],
+                    link_id=row["link_id"],
+                    field_changed=row["field_changed"],
+                    old_value=row["old_value"],
+                    new_value=row["new_value"],
+                    timestamp=row["timestamp"],
+                    trigger_cause=row["trigger_cause"],
+                )
+            )
+        for group_id in order:
+            groups.append(
+                LedgerGroup(group_id=group_id, rows=by_id[group_id])
+            )
+        return groups
+
+    def has_ungrouped_rows(self) -> bool:
+        """Return whether `change_log` rows WITHOUT a `group_id` exist.
+
+        Undo step 04 (story 123): the grouped read can never see these by
+        definition, so the `MAINTAIN-023` user message is told about them
+        separately.
+
+        Raise `ItemsReadFailed` (MAINTAIN-010) on a read failure.
+        """
+        if not column_exists(self._conn, "change_log", "group_id"):
+            # G2-B: on a pre-013 file EVERY row is ungrouped, so the
+            # honest story-123 answer is "any ledger rows exist at all".
+            try:
+                row = self._conn.execute(
+                    "SELECT 1 FROM change_log LIMIT 1"
+                ).fetchone()
+            except sqlite3.Error as exc:
+                raise MaintainItemsReadFailed("change_log read fail") from exc
+            return row is not None
+        try:
+            row = self._conn.execute(
+                "SELECT 1 FROM change_log WHERE group_id IS NULL LIMIT 1"
+            ).fetchone()
+        except sqlite3.Error as exc:
+            raise MaintainItemsReadFailed("change_log read fail") from exc
+        return row is not None
+
+
+def column_exists(conn: sqlite3.Connection, table: str, column: str) -> bool:
+    """Whether `table` has `column` (`PRAGMA table_info`, the export rule).
+
+    Readers select an additive column ONLY through this check (I5): a file
+    from before the migration that added the column keeps reading, with the
+    model default (`None`) in its place. Precedent: `export.py` gates
+    `change_log.group_id` the same way.
+
+    The table name is interpolated into `PRAGMA table_info(...)`, so only
+    the fixed Ember table set is ever executed (finding 4.3 #21): anything
+    else refuses. Every caller passes a literal schema name, so an unknown
+    table can only be a code bug — the house internal error `EmberError`
+    (EMBER-000) is the fit; no new code is minted for it.
+    """
+    if table not in _EXPECTED_TABLES_AT_LATEST:
+        raise EmberError(
+            f"column_exists: unknown table {table!r} -"
+            " the Ember table set only"
+        )
+    return column in {
+        row["name"] for row in conn.execute(f"PRAGMA table_info({table})")
+    }
 
 
 class SqliteQueryContext:
@@ -832,7 +1624,8 @@ class SqliteQueryContext:
         try:
             rows = self._conn.execute(
                 "SELECT id, type, statement, status, close_reason,"
-                " status_origin, rationale, created_at, source_id"
+                " status_origin, rationale, created_at, source_id, source,"
+                " validated"
                 " FROM items ORDER BY id"
             ).fetchall()
         except sqlite3.Error as exc:
@@ -848,6 +1641,11 @@ class SqliteQueryContext:
                 rationale=row["rationale"],
                 created_at=row["created_at"],
                 source_id=row["source_id"],
+                # Bridge step 02 additive columns (migration 004 / 002).
+                source=row["source"],
+                validated=(
+                    bool(row["validated"]) if row["validated"] is not None else None
+                ),
             )
             for row in rows
         ]
@@ -855,12 +1653,21 @@ class SqliteQueryContext:
     def list_links(self) -> list[Link]:
         """Return every link, ordered by id ascending.
 
-        Raise `ItemsReadFailed` (QUERY-005) on a read failure.
+        `reversed_at` is selected only when the column exists (migration
+        011): on a pre-011 file every `Link` keeps the model default `None`
+        and nothing fails. Raise `ItemsReadFailed` (QUERY-005) on a read
+        failure.
         """
         try:
+            columns = (
+                "id, source_item_id, target_item_id, link_type, status,"
+                " created_at"
+            )
+            has_reversed = column_exists(self._conn, "links", "reversed_at")
+            if has_reversed:
+                columns += ", reversed_at"
             rows = self._conn.execute(
-                "SELECT id, source_item_id, target_item_id, link_type, status,"
-                " created_at FROM links ORDER BY id"
+                f"SELECT {columns} FROM links ORDER BY id"
             ).fetchall()
         except sqlite3.Error as exc:
             raise QueryItemsReadFailed("link read fail", table="links") from exc
@@ -872,21 +1679,67 @@ class SqliteQueryContext:
                 link_type=row["link_type"],
                 status=row["status"],
                 created_at=row["created_at"],
+                reversed_at=row["reversed_at"] if has_reversed else None,
             )
             for row in rows
         ]
 
-    def list_change_log(self) -> list[ChangeRow]:
-        """Return every `change_log` row, ordered by id ascending.
+    def list_change_log(
+        self,
+        item_id: int | None = None,
+        window: HistoryPage | None = None,
+    ) -> list[ChangeRow]:
+        """Return `change_log` rows, filtered and bounded in SQL.
 
-        Raise `ItemsReadFailed` (QUERY-005) on a read failure.
+        `item_id` keeps only the rows about that item by subject or by link
+        — exactly the `_belongs_to` rule of `ember/query/history.py`:
+        `item_id = ?` or the row's link touches the item on either side.
+        `window.limit` bounds the read to at most `offset + limit` rows of
+        the NEWEST `(timestamp, id)` prefix (`ORDER BY ... DESC`, hitting
+        migration 016's index; Batch 8, finding 4.7 #12) — `history()` sorts
+        descending and crops `events[:limit]`, so a newest prefix is the
+        correct prefix. `window.since` pre-filters on the stored TEXT: the
+        in-memory check in `history()` still compares parsed instants, so
+        the pre-filter only ever narrows what the full window would keep.
+        `None` on either parameter keeps the whole-ledger read (I10).
+        `group_id` is selected only when the column exists (migration 013):
+        on a pre-013 file every `ChangeRow` keeps the model default `None`
+        (finding 4.7 #11). Raise `ItemsReadFailed` (QUERY-005) on a read
+        failure.
         """
         try:
-            rows = self._conn.execute(
-                "SELECT id, item_id, link_id, field_changed, old_value,"
-                " new_value, timestamp, trigger_cause"
-                " FROM change_log ORDER BY id"
-            ).fetchall()
+            columns = (
+                "id, item_id, link_id, field_changed, old_value, new_value,"
+                " timestamp, trigger_cause"
+            )
+            has_groups = column_exists(self._conn, "change_log", "group_id")
+            if has_groups:
+                columns += ", group_id"
+            has_source_id = column_exists(self._conn, "change_log", "source_id")
+            if has_source_id:
+                columns += ", source_id"
+            clauses: list[str] = []
+            params: list[object] = []
+            if item_id is not None:
+                clauses.append(
+                    "(item_id = ? OR link_id IN (SELECT id FROM links"
+                    " WHERE source_item_id = ? OR target_item_id = ?))"
+                )
+                params += [item_id, item_id, item_id]
+            if window is not None and window.since is not None:
+                clauses.append("timestamp >= ?")
+                params.append(window.since)
+            where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
+            sql = (
+                f"SELECT {columns} FROM change_log{where}"
+                " ORDER BY timestamp DESC, id DESC"
+            )
+            if window is not None and window.limit is not None:
+                # Offset only widens the prefix; `history()` still applies
+                # the full window, so the final view is unchanged.
+                sql += " LIMIT ?"
+                params.append((window.offset or 0) + window.limit)
+            rows = self._conn.execute(sql, params).fetchall()
         except sqlite3.Error as exc:
             raise QueryItemsReadFailed(
                 "change_log read fail", table="change_log"
@@ -901,6 +1754,14 @@ class SqliteQueryContext:
                 new_value=row["new_value"],
                 timestamp=row["timestamp"],
                 trigger_cause=row["trigger_cause"],
+                group_id=(
+                    int(row["group_id"]) if has_groups and row["group_id"] is not None else None
+                ),
+                source_id=(
+                    int(row["source_id"])
+                    if has_source_id and row["source_id"] is not None
+                    else None
+                ),
             )
             for row in rows
         ]
@@ -918,6 +1779,47 @@ class SqliteQueryContext:
             raise QueryItemsReadFailed("item read fail", table="items") from exc
         return row is not None
 
+    def source_text_for(self, item_id: int) -> str:
+        """Return the verbatim `sources.full_text` behind the item's source.
+
+        Bridge step 02's one new read (Query's boot is read-only, no write
+        path). Raise `ItemsReadFailed` (QUERY-005) on a read failure, or
+        when the item the gatekeeper just validated has no joinable source
+        row (a dangling `items.source_id`: read failure, not a user error).
+        """
+        try:
+            row = self._conn.execute(
+                "SELECT s.full_text FROM items AS i"
+                " JOIN sources AS s ON s.id = i.source_id"
+                " WHERE i.id = ?",
+                (item_id,),
+            ).fetchone()
+        except sqlite3.Error as exc:
+            raise QueryItemsReadFailed(
+                "source text read fail", item_id=item_id
+            ) from exc
+        if row is None:
+            raise QueryItemsReadFailed("source text read fail", item_id=item_id)
+        return str(row["full_text"])
+
+    @contextmanager
+    def read_transaction(self) -> Iterator[None]:
+        """Run reads inside one explicit read transaction (a fixed snapshot).
+
+        `show-item` and `why` join items, links and source text, so the
+        three reads must see one instant: a concurrent writer between two
+        separate SELECTs can leave the caller a link whose other end is
+        already gone (finding 4.7 #2). SQLite gives the consistent read
+        inside one transaction, opened before the first read and ended
+        after the last; it is read-only, so there is nothing to commit and
+        ending it never touches the file (byte-identical proof stays true).
+        """
+        self._conn.execute("BEGIN")
+        try:
+            yield
+        finally:
+            self._conn.rollback()
+
 
 class SqliteMaintainStore:
     """`MaintainStorePort` on SQLite: one atomic status write per batch.
@@ -926,6 +1828,11 @@ class SqliteMaintainStore:
     transaction with a single `commit()` at the end, so the batch is
     all-or-nothing (Constitution D3). A failure on either half rolls the whole
     batch back, so a caller never sees a status written without its log row.
+
+    Inside a `unit_of_work` (Batch 4 chunk 8, 4.3 #9) the store skips its
+    own commit and rollback: the unit of work owns the transaction, so a
+    whole user action — e.g. a status batch plus its manual shield — is
+    one all-or-nothing write.
     """
 
     def __init__(
@@ -937,7 +1844,9 @@ class SqliteMaintainStore:
         self._conn = conn
         self._clock = clock or _utc_now
 
-    def apply_status_changes(self, changes: list[StatusChange]) -> int:
+    def apply_status_changes(
+        self, changes: list[StatusChange], group_id: int | None = None
+    ) -> int:
         """Write every change's status and its `change_log` row in one batch.
 
         A `rearm` change (the timestamp-scoped shield's re-arm, L2 §13.4)
@@ -946,6 +1855,10 @@ class SqliteMaintainStore:
         the observed prior origin (read, never hardcoded), `new_value`
         `'derived'`, `trigger_cause='sweep_rearm'`, `link_id` the causing
         link, all from the same ONE clock read, inside the same transaction.
+
+        `group_id` stamps every ledger row of this batch (one group id = one
+        user action, engine-undo-plan §5.1). The sweep passes nothing, so
+        sweep rows read NULL (undo step 01).
 
         Return `len(changes)`. Raise `StatusWriteFailed` (MAINTAIN-011) when an
         `items` UPDATE fails, and `ChangeLogWriteFailed` (MAINTAIN-012) when a
@@ -977,7 +1890,8 @@ class SqliteMaintainStore:
                         (change.new_status, change.close_reason, change.item_id),
                     )
             except sqlite3.Error as exc:
-                self._conn.rollback()
+                if not in_unit_of_work(self._conn):
+                    self._conn.rollback()
                 raise MaintainStatusWriteFailed(
                     "status update fail", item_id=change.item_id
                 ) from exc
@@ -987,7 +1901,8 @@ class SqliteMaintainStore:
                 self._conn.execute(
                     "INSERT INTO change_log"
                     " (item_id, link_id, field_changed, old_value, new_value,"
-                    " timestamp, trigger_cause) VALUES (?, ?, 'status', ?, ?, ?, ?)",
+                    " timestamp, trigger_cause, group_id)"
+                    " VALUES (?, ?, 'status', ?, ?, ?, ?, ?)",
                     (
                         change.item_id,
                         change.link_id,
@@ -995,36 +1910,46 @@ class SqliteMaintainStore:
                         _status_new_value(change),
                         timestamp,
                         change.trigger_cause,
+                        group_id,
                     ),
                 )
                 if change.rearm:
                     self._conn.execute(
                         "INSERT INTO change_log"
                         " (item_id, link_id, field_changed, old_value, new_value,"
-                        " timestamp, trigger_cause)"
+                        " timestamp, trigger_cause, group_id)"
                         " VALUES (?, ?, 'status_origin', ?, 'derived', ?,"
-                        " 'sweep_rearm')",
+                        " 'sweep_rearm', ?)",
                         (
                             change.item_id,
                             change.link_id,
                             rearm_old_values.get(change.item_id),
                             timestamp,
+                            group_id,
                         ),
                     )
             except sqlite3.Error as exc:
-                self._conn.rollback()
+                if not in_unit_of_work(self._conn):
+                    self._conn.rollback()
                 raise MaintainChangeLogWriteFailed(
                     "change_log insert fail", item_id=change.item_id
                 ) from exc
-        self._conn.commit()
+        if not in_unit_of_work(self._conn):
+            self._conn.commit()
         return len(changes)
 
-    def apply_status_origin(self, item_id: int, origin: str) -> None:
+    def apply_status_origin(
+        self, item_id: int, origin: str, group_id: int | None = None
+    ) -> None:
         """Write one item's `status_origin` and its `change_log` row atomically.
 
-        Raise `StatusWriteFailed` (MAINTAIN-011) when the `items` UPDATE fails,
-        and `ChangeLogWriteFailed` (MAINTAIN-012) when the `change_log` INSERT
-        fails. Either failure rolls the whole write back.
+        `group_id` stamps the ledger row (undo step 01); `None` leaves it
+        NULL. Raise `StatusWriteFailed` (MAINTAIN-011) when the `items` UPDATE
+        fails, and `ChangeLogWriteFailed` (MAINTAIN-012) when the `change_log`
+        INSERT fails. Either failure surfaces as those errors. Outside a
+        `unit_of_work` a failure also rolls the whole write back itself;
+        inside one, the unit of work owns commit and rollback (Batch 4,
+        4.3 #9).
         """
         try:
             row = self._conn.execute(
@@ -1036,7 +1961,8 @@ class SqliteMaintainStore:
                 (origin, item_id),
             )
         except sqlite3.Error as exc:
-            self._conn.rollback()
+            if not in_unit_of_work(self._conn):
+                self._conn.rollback()
             raise MaintainStatusWriteFailed(
                 "status_origin update fail", item_id=item_id
             ) from exc
@@ -1044,25 +1970,35 @@ class SqliteMaintainStore:
             self._conn.execute(
                 "INSERT INTO change_log"
                 " (item_id, link_id, field_changed, old_value, new_value,"
-                " timestamp, trigger_cause)"
+                " timestamp, trigger_cause, group_id)"
                 " VALUES (?, NULL, 'status_origin', ?, ?, ?,"
-                " 'user_set_status')",
-                (item_id, old_origin, origin, self._clock()),
+                " 'user_set_status', ?)",
+                (item_id, old_origin, origin, self._clock(), group_id),
             )
         except sqlite3.Error as exc:
-            self._conn.rollback()
+            if not in_unit_of_work(self._conn):
+                self._conn.rollback()
             raise MaintainChangeLogWriteFailed(
                 "change_log insert fail", item_id=item_id
             ) from exc
-        self._conn.commit()
+        if not in_unit_of_work(self._conn):
+            self._conn.commit()
 
-    def apply_reversal(self, change: StatusChange, marker: ChangeLogEntry) -> int:
+    def apply_reversal(
+        self,
+        change: StatusChange,
+        marker: ChangeLogEntry,
+        group_id: int | None = None,
+    ) -> int:
         """Restore one item and pair the reversal column with its marker.
 
         One implicit transaction, one `commit()` at the end: the `items`
         UPDATE, the `status` `change_log` row derived from `change`, the
         `reversed_at` column on the `links` row, and the `link_reversed`
         marker row taken from `marker` are all-or-nothing (L2 §6 pairing rule).
+
+        `group_id` stamps both ledger rows (undo step 01); `None` leaves
+        them NULL.
 
         The adapter owns time: it stamps all three writes from ONE
         `self._clock()` read and **overwrites** the passed `marker.timestamp`
@@ -1090,7 +2026,8 @@ class SqliteMaintainStore:
             self._conn.execute(
                 "INSERT INTO change_log"
                 " (item_id, link_id, field_changed, old_value, new_value,"
-                " timestamp, trigger_cause) VALUES (?, ?, 'status', ?, ?, ?, ?)",
+                " timestamp, trigger_cause, group_id)"
+                " VALUES (?, ?, 'status', ?, ?, ?, ?, ?)",
                 (
                     change.item_id,
                     change.link_id,
@@ -1098,6 +2035,7 @@ class SqliteMaintainStore:
                     _status_new_value(change),
                     timestamp,
                     change.trigger_cause,
+                    group_id,
                 ),
             )
         except sqlite3.Error as exc:
@@ -1119,7 +2057,8 @@ class SqliteMaintainStore:
             self._conn.execute(
                 "INSERT INTO change_log"
                 " (item_id, link_id, field_changed, old_value, new_value,"
-                " timestamp, trigger_cause) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                " timestamp, trigger_cause, group_id)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     marker.item_id,
                     marker.link_id,
@@ -1128,6 +2067,7 @@ class SqliteMaintainStore:
                     marker.new_value,
                     timestamp,
                     marker.trigger_cause,
+                    group_id,
                 ),
             )
         except sqlite3.Error as exc:
@@ -1138,7 +2078,7 @@ class SqliteMaintainStore:
         self._conn.commit()
         return 1
 
-    def apply_item_edit(self, change: EditChange) -> int:
+    def apply_item_edit(self, change: EditChange, group_id: int | None = None) -> int:
         """Write one item's authorial column and its `change_log` row atomically.
 
         One implicit transaction, one `commit()` at the end: the `items`
@@ -1146,6 +2086,9 @@ class SqliteMaintainStore:
         `old_value` = the observed prior value, NULL stays NULL,
         trigger_cause from the change) are all-or-nothing, so the ledger row
         and the column can never diverge.
+
+        `group_id` stamps the ledger row (undo step 01); `None` leaves it
+        NULL.
 
         Return `1`. Raise `ItemEditWriteFailed` (MAINTAIN-016) when the
         `items` UPDATE fails, and `ChangeLogWriteFailed` (MAINTAIN-012) when
@@ -1175,7 +2118,8 @@ class SqliteMaintainStore:
             self._conn.execute(
                 "INSERT INTO change_log"
                 " (item_id, link_id, field_changed, old_value, new_value,"
-                " timestamp, trigger_cause) VALUES (?, NULL, ?, ?, ?, ?, ?)",
+                " timestamp, trigger_cause, group_id)"
+                " VALUES (?, NULL, ?, ?, ?, ?, ?, ?)",
                 (
                     change.item_id,
                     change.field,
@@ -1183,6 +2127,7 @@ class SqliteMaintainStore:
                     change.new_value,
                     self._clock(),
                     change.trigger_cause,
+                    group_id,
                 ),
             )
         except sqlite3.Error as exc:
@@ -1193,15 +2138,21 @@ class SqliteMaintainStore:
         self._conn.commit()
         return 1
 
-    def apply_remove_link(self, change: LinkChange) -> int:
+    def apply_remove_link(
+        self, change: LinkChange, group_id: int | None = None
+    ) -> int:
         """Write the ONE removal and its `link_removed` ledger row atomically.
 
         One implicit transaction, one `commit()` at the end: the `links`
         status UPDATE (`Confirmed -> Rejected`, never an INSERT, never a
-        DELETE, never flipped back, `reversed_at` untouched) and the ledger
+        DELETE, never flipped back — except as an undo, see
+        `apply_inverse_group`, `reversed_at` untouched) and the ledger
         INSERT (`field_changed='link_removed'`, `item_id` = the link's
         source, the `insert_link_with_log` discipline) are all-or-nothing,
         so the row can never flip without its ledger row (Constitution D3).
+
+        `group_id` stamps the ledger row (undo step 01); `None` leaves it
+        NULL.
 
         Return `1`. Raise `RemoveLinkWriteFailed` (MAINTAIN-017) when the
         `links` UPDATE fails, and `ChangeLogWriteFailed` (MAINTAIN-012) when
@@ -1222,8 +2173,8 @@ class SqliteMaintainStore:
             self._conn.execute(
                 "INSERT INTO change_log"
                 " (item_id, link_id, field_changed, old_value, new_value,"
-                " timestamp, trigger_cause) VALUES (?, ?, 'link_removed', ?,"
-                " ?, ?, ?)",
+                " timestamp, trigger_cause, group_id)"
+                " VALUES (?, ?, 'link_removed', ?, ?, ?, ?, ?)",
                 (
                     change.item_id,
                     change.link_id,
@@ -1231,6 +2182,7 @@ class SqliteMaintainStore:
                     change.new_status,
                     self._clock(),
                     change.trigger_cause,
+                    group_id,
                 ),
             )
         except sqlite3.Error as exc:
@@ -1242,6 +2194,225 @@ class SqliteMaintainStore:
             ) from exc
         self._conn.commit()
         return 1
+
+    def apply_inverse_group(self, plan: UndoResult) -> int:
+        """Write one undo or redo plan atomically (undo step 03, L2 §5.5).
+
+        ONE transaction, ONE clock read: the `items` / `links` UPDATEs of
+        `plan.changes` first (a redo of a close sets `status` and
+        `close_reason` in the ONE UPDATE, so the migration-011 trigger sees
+        the paired reason), then the inverse `change_log` rows and the
+        `undo_of` / `redo_of` marker row, each stamped with the ONE new
+        group id (read from the ledger inside this write, `MAX(group_id)+1`)
+        and the ONE clock read — the same timestamp the `reversed_at`
+        redraw of a redo stamps, so the db-check replay rule holds by
+        construction. All-or-nothing.
+
+        The declared B2 exception lives here: an undo of the `validated`
+        flag writes `items.validated`, a Capture-owned column — the only
+        cross-module write, covered by a test.
+
+        Return the number of inverse changes applied (the marker row is not
+        counted). Raise `UndoWriteFailed` (MAINTAIN-026) when any UPDATE
+        fails, `ChangeLogWriteFailed` (MAINTAIN-012) when any INSERT fails,
+        and `InverseTargetMoved` (MAINTAIN-028, fix G3) when an UPDATE
+        matched no row because the row moved between the derivation's
+        read and this write; any of the three rolls the whole group back,
+        so the ledger never gains a half-undone group and no row state
+        moves half way.
+        """
+        group_id = SqliteGroupIdPort(self._conn).next_group_id()
+        timestamp = self._clock()
+        try:
+            for change in plan.changes:
+                self._apply_inverse_update(change, timestamp)
+        except sqlite3.Error as exc:
+            self._conn.rollback()
+            raise MaintainUndoWriteFailed(
+                "inverse update fail", group_id=group_id
+            ) from exc
+        except MaintainGroupRecordInvalid:
+            self._conn.rollback()
+            raise
+        except MaintainInverseTargetMoved:
+            # Fix G3: the mid-flight target moved — roll the whole group
+            # back (nothing was written) and raise; never half-undone.
+            self._conn.rollback()
+            raise
+        for change in plan.changes:
+            try:
+                self._conn.execute(
+                    "INSERT INTO change_log"
+                    " (item_id, link_id, field_changed, old_value, new_value,"
+                    " timestamp, trigger_cause, group_id)"
+                    " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        change.ledger_row.item_id,
+                        change.ledger_row.link_id,
+                        change.ledger_row.field_changed,
+                        change.ledger_row.old_value,
+                        change.ledger_row.new_value,
+                        timestamp,
+                        change.ledger_row.trigger_cause,
+                        group_id,
+                    ),
+                )
+            except sqlite3.Error as exc:
+                self._conn.rollback()
+                raise MaintainChangeLogWriteFailed(
+                    "change_log insert fail",
+                    item_id=change.ledger_row.item_id,
+                    link_id=change.ledger_row.link_id,
+                ) from exc
+        try:
+            self._conn.execute(
+                "INSERT INTO change_log"
+                " (item_id, link_id, field_changed, old_value, new_value,"
+                " timestamp, trigger_cause, group_id)"
+                " VALUES (?, ?, ?, NULL, ?, ?, ?, ?)",
+                (
+                    plan.marker.item_id,
+                    plan.marker.link_id,
+                    plan.marker.field_changed,
+                    plan.marker.new_value,
+                    timestamp,
+                    plan.marker.trigger_cause,
+                    group_id,
+                ),
+            )
+        except sqlite3.Error as exc:
+            self._conn.rollback()
+            raise MaintainChangeLogWriteFailed(
+                "change_log insert fail", item_id=plan.marker.item_id
+            ) from exc
+        self._conn.commit()
+        return len(plan.changes)
+
+    def _apply_inverse_update(
+        self, change: InverseChange, timestamp: str
+    ) -> None:
+        """Run the ONE row UPDATE one inverse change describes (undo step 03).
+
+        Item fields: `status` (split from the ledgers's encoded
+        `<status>:<reason>` value), `status_origin`, `validated` (the B2
+        exception) and the two authorial columns behind the
+        `_EDIT_COLUMNS` whitelist. Link fields: `status` (the removal
+        flip-back; no migration-011 trigger fires on a `status`-only UPDATE)
+        and the symbolic `reversed_at` (`Reversed` stamps the write time,
+        `None` clears it). An unknown shape raises `GroupRecordInvalid`
+        (fail closed; the core never emits one).
+
+        Fix G3 (the contract `InverseChange` always documented): every
+        UPDATE carries the row's `expected_value` in its WHERE clause, so
+        the write happens ONLY when the row still holds the value the
+        refusal rule verified. A moved row matches no row and raises
+        `InverseTargetMoved` (MAINTAIN-028) — the caller rolls the whole
+        group back, so a later write can never overwrite the newer value.
+        """
+        if change.item_id is not None:
+            if change.field == "status":
+                value = split_status_value(change.new_value or "")
+                expected = split_status_value(change.expected_value or "")
+                rowcount = self._conn.execute(
+                    "UPDATE items SET status = ?, close_reason = ?"
+                    " WHERE id = ? AND status IS ? AND close_reason IS ?",
+                    (
+                        value.status,
+                        value.close_reason,
+                        change.item_id,
+                        expected.status,
+                        expected.close_reason,
+                    ),
+                ).rowcount
+            elif change.field == "status_origin":
+                rowcount = self._conn.execute(
+                    "UPDATE items SET status_origin = ?"
+                    " WHERE id = ? AND status_origin IS ?",
+                    (change.new_value, change.item_id, change.expected_value),
+                ).rowcount
+            elif change.field == "validated":
+                rowcount = self._conn.execute(
+                    "UPDATE items SET validated = ?"
+                    " WHERE id = ? AND validated IS ?",
+                    (
+                        _validated_column_value(change.new_value),
+                        change.item_id,
+                        _validated_column_value(change.expected_value),
+                    ),
+                ).rowcount
+            elif change.field in _EDIT_COLUMNS:
+                rowcount = self._conn.execute(
+                    f"UPDATE items SET {_EDIT_COLUMNS[change.field]} = ?"
+                    f" WHERE id = ? AND {_EDIT_COLUMNS[change.field]} IS ?",
+                    (change.new_value, change.item_id, change.expected_value),
+                ).rowcount
+            else:
+                raise MaintainGroupRecordInvalid(
+                    "unknown item field in undo plan", field_changed=change.field
+                )
+            if rowcount == 0:
+                # Fix G3: the contract the docstring always claimed — the
+                # store RE-CHECKS the expected value in the same
+                # transaction it writes (fail closed). The row moved
+                # between the derivation's read and this write; nothing
+                # may change, or an undo would overwrite a newer value.
+                raise MaintainInverseTargetMoved(
+                    "inverse write matched no row: the target moved",
+                    field_changed=change.field,
+                    item_id=change.item_id,
+                    link_id=change.link_id,
+                )
+            return
+        if change.link_id is None:
+            raise MaintainGroupRecordInvalid(
+                "inverse change names neither an item nor a link",
+                field_changed=change.field,
+            )
+        if change.field == "status":
+            rowcount = self._conn.execute(
+                "UPDATE links SET status = ?"
+                " WHERE id = ? AND status IS ?",
+                (change.new_value, change.link_id, change.expected_value),
+            ).rowcount
+        elif change.field == "reversed_at":
+            # Fix G3: the EXPECTED state decides the guard, not the
+            # write: expected 'Reversed' means the marker must be live
+            # (IS NOT NULL), 'Confirmed' that it must be clear. The
+            # write itself stamps the time or clears NULL.
+            if change.new_value == "Reversed":
+                set_sql = "UPDATE links SET reversed_at = ?"
+                set_arg = (timestamp, change.link_id)
+            else:
+                set_sql = "UPDATE links SET reversed_at = NULL"
+                set_arg = (change.link_id,)
+            guard = (
+                " AND reversed_at IS NOT NULL"
+                if change.expected_value == "Reversed"
+                else " AND reversed_at IS NULL"
+            )
+            rowcount = self._conn.execute(
+                f"{set_sql} WHERE id = ?{guard}", set_arg
+            ).rowcount
+        else:
+            raise MaintainGroupRecordInvalid(
+                "unknown link field in undo plan", field_changed=change.field
+            )
+        if rowcount == 0:
+            # Fix G3: the same re-check rule as the item fields above.
+            raise MaintainInverseTargetMoved(
+                "inverse write matched no row: the target moved",
+                field_changed=change.field,
+                item_id=change.item_id,
+                link_id=change.link_id,
+            )
+
+
+def _validated_column_value(flag: str | None) -> int | None:
+    """Map the ledger's flag text (`true` / `false` / NULL) to the
+    `items.validated` column value (the B2 exception's encoding)."""
+    if flag is None:
+        return None
+    return 1 if flag == "true" else 0
 
 
 def _status_old_value(change: StatusChange) -> str:
@@ -1262,6 +2433,158 @@ def _status_new_value(change: StatusChange) -> str:
     return change.new_status
 
 
+# N10: the id-conflict retry is bounded — after 5 conflicting insert
+# attempts the stored error surfaces instead of a live-lock.
+_MAX_ITEM_ID_ATTEMPTS = 5
+
+
+class SqliteForgetSourceStore:
+    """The `ember forget-source` write boundary (Batch 6, D-07 / D-26).
+
+    The pure rule (`ember/capture/forget_source.py`) decides; this store
+    only performs the ONE transaction it names. One user action, one
+    transaction (Batch 4 chunk 8, 4.3 #9): the command wraps the reads and
+    this write in `unit_of_work`, so the source row, its raw AI answers
+    (`ai_responses.source_id`, migrations 005/009) and the one textless
+    ledger line are all-or-nothing — a failed ledger insert rolls the
+    deletions back too and the note stays untouched.
+    """
+
+    def __init__(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        clock: Callable[[], str] | None = None,
+    ) -> None:
+        self._conn = conn
+        self._clock = clock or _utc_now
+
+    def source_exists(self, source_id: int) -> bool:
+        """Return whether a `sources` row with this id exists.
+
+        Raise `SourceDbReadError` (CAPTURE-005) on a read failure.
+        """
+        try:
+            row = self._conn.execute(
+                "SELECT 1 FROM sources WHERE id = ?", (source_id,)
+            ).fetchone()
+        except sqlite3.Error as exc:
+            raise SourceDbReadError("db read fail", source_id=source_id) from exc
+        return row is not None
+
+    def item_count_for_source(self, source_id: int) -> int:
+        """Return how many `items` rows cite this source (any status).
+
+        The forget refusal counts EVERY item the capture produced, Closed
+        ones included. Raise `ItemDbReadError` (CAPTURE-011) on a read
+        failure.
+        """
+        try:
+            row = self._conn.execute(
+                "SELECT COUNT(*) FROM items WHERE source_id = ?", (source_id,)
+            ).fetchone()
+        except sqlite3.Error as exc:
+            raise ItemDbReadError(
+                "item read fail", source_id=source_id
+            ) from exc
+        return int(row[0])
+
+    def forget_source(
+        self, source_id: int, *, field: str, cause: str
+    ) -> None:
+        """Delete the note and its raw AI answers; append the ONE ledger line.
+
+        Exact write order inside the caller's transaction: the
+        `ai_responses` rows first (children of `sources`), then the
+        `sources` row, then the ONE `change_log` INSERT — `item_id` and
+        `link_id` NULL, `old_value` and `new_value` NULL (NO text, D-26),
+        `timestamp` from ONE clock read, `field_changed=field` /
+        `trigger_cause=cause` (the writer encoding lives in the pure rule),
+        `group_id` NULL (invisible to undo, migration 013's own rule) and
+        `source_id` naming the forgotten note (migration 014, D-07).
+
+        Raise `SourceDbWriteError` (CAPTURE-006) on any write failure; the
+        caller's `unit_of_work` (or, outside one, this method's own
+        rollback) undoes the whole action.
+        """
+        timestamp = self._clock()
+        try:
+            self._conn.execute(
+                "DELETE FROM ai_responses WHERE source_id = ?", (source_id,)
+            )
+            self._conn.execute("DELETE FROM sources WHERE id = ?", (source_id,))
+            self._conn.execute(
+                "INSERT INTO change_log"
+                " (item_id, link_id, field_changed, old_value, new_value,"
+                " timestamp, trigger_cause, source_id)"
+                " VALUES (NULL, NULL, ?, NULL, NULL, ?, ?, ?)",
+                (field, timestamp, cause, source_id),
+            )
+        except sqlite3.Error as exc:
+            if not in_unit_of_work(self._conn):
+                self._conn.rollback()
+            raise SourceDbWriteError(
+                "forget-source write fail", source_id=source_id
+            ) from exc
+        if not in_unit_of_work(self._conn):
+            self._conn.commit()
+
+
+class SqliteSourcesWithoutItemsRead:
+    """The Cleanup list's ONE read (Batch 6 Chunk 12, D-09).
+
+    Notes whose every proposal was rejected (or never confirmed) have zero
+    `items` rows — exactly the notes `ember forget-source` may remove, so
+    the Cleanup screen lists them by id. A note that still has items never
+    appears: the forget would refuse it (`CAPTURE-023`), and listing it
+    would only invite that refusal. The preview carries the note's first
+    words, enough to recognise it without putting its whole text on screen
+    (raw notes are the sensitive bytes — the same spirit as D-26). Opened
+    on the read-only query boot; an empty base is an empty list, never
+    None (I4).
+    """
+
+    _PREVIEW_WORDS = 8
+
+    def __init__(self, conn: sqlite3.Connection) -> None:
+        self._conn = conn
+
+    def sources_without_items(self) -> list[dict[str, object]]:
+        """Return every itemless source as `id` / `created_at` / `preview`.
+
+        `created_at` is the note's `sources.timestamp` (the column that
+        holds its creation time). Raise `SourceDbReadError` (CAPTURE-005)
+        on a read failure.
+        """
+        try:
+            rows = self._conn.execute(
+                "SELECT s.id, s.timestamp, s.full_text"
+                " FROM sources AS s"
+                " LEFT JOIN items AS i ON i.source_id = s.id"
+                " WHERE i.id IS NULL"
+                " ORDER BY s.id"
+            ).fetchall()
+        except sqlite3.Error as exc:
+            raise SourceDbReadError(
+                "sources-without-items read fail"
+            ) from exc
+        return [
+            {
+                "id": int(row["id"]),
+                "created_at": str(row["timestamp"]),
+                "preview": _first_words(
+                    str(row["full_text"]), self._PREVIEW_WORDS
+                ),
+            }
+            for row in rows
+        ]
+
+
+def _first_words(text: str, count: int) -> str:
+    """The first `count` whitespace-separated words of `text`."""
+    return " ".join(text.split()[:count])
+
+
 class SqliteItemGatekeeper:
     """Gatekeeper boundary for `items` and `change_log`, plus item reads.
 
@@ -1274,9 +2597,14 @@ class SqliteItemGatekeeper:
         conn: sqlite3.Connection,
         *,
         clock: Callable[[], str] | None = None,
+        group_ids: GroupIdPort | None = None,
     ) -> None:
         self._conn = conn
         self._clock = clock or _utc_now
+        # The neutral undo-group id source (B2): injected, never invented
+        # here. The validated-flag human action stamps its ledger row with
+        # one id from this port (undo step 01).
+        self._group_ids = group_ids
         self._next_id: int | None = None
 
     def statements(self) -> list[ExistingItem]:
@@ -1319,6 +2647,12 @@ class SqliteItemGatekeeper:
     def next_item_id(self) -> int:
         """Return a fresh item id, counting up from the highest stored id.
 
+        Chunk 13 (D-03): call this INSIDE the write transaction — the
+        `unit_of_work` around the item insert and its `created` row. The
+        `BEGIN IMMEDIATE` lock then covers the read and the insert, so two
+        writers never read the same next id; read outside it, the id can
+        collide and the loser gets a PK error (4.3 #20).
+
         Raise `ItemDbReadError` (CAPTURE-011) on a read failure.
         """
         try:
@@ -1333,46 +2667,100 @@ class SqliteItemGatekeeper:
         self._next_id += 1
         return value
 
-    def insert_item(self, item: ValidatedItem, *, validated: bool | None) -> None:
+    def insert_item(self, item: ValidatedItem, *, validated: bool | None) -> int:
         """Insert one accepted item, with `validated` set only for Assumptions.
 
-        Raise `ItemDbWriteError` (CAPTURE-013) on a write failure.
+        Return the id the row actually carries. Normally that is `item.id`;
+        on a unique-key conflict on `items.id` (another writer took the id
+        between the show and the write, 4.3 #20) the next free id is re-read
+        INSIDE the open transaction and the insert retried, at most 5
+        attempts (N10 / D-03: inside `BEGIN IMMEDIATE` no other writer can
+        insert between the re-read and the retry, so the retry suffices).
+        When a retry cannot help — the re-read did not move past the failed
+        id, or the attempt bound ran out — the stored error is raised:
+        `ItemDbWriteError` (CAPTURE-013). Callers must take the ledger row
+        and the reported id from the RETURNED value, never from `item.id`.
+        Inside a `unit_of_work` the caller owns the commit (Batch 4, 4.3 #9):
+        the item row and its `created` row are one transaction.
+        """
+        saved_id = item.id
+        attempts = 0
+        while True:
+            try:
+                self._conn.execute(
+                    "INSERT INTO items"
+                    " (id, type, statement, source_id, status, created_at, validated,"
+                    " metadata)"
+                    " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        saved_id,
+                        item.type,
+                        item.statement,
+                        item.source_id,
+                        item.status,
+                        item.created_at,
+                        validated,
+                        item.metadata,
+                    ),
+                )
+                break
+            except sqlite3.IntegrityError as exc:
+                attempts += 1
+                next_free = self._next_free_id_on_conflict(failed_id=saved_id)
+                if next_free is None or attempts >= _MAX_ITEM_ID_ATTEMPTS:
+                    raise ItemDbWriteError("db write fail", item_id=item.id) from exc
+                saved_id = next_free
+        if saved_id != item.id:
+            # Keep the run's monotonic counter past the repaired id, so the
+            # next allocation never re-issues the id that was just saved.
+            if self._next_id is None or self._next_id <= saved_id:
+                self._next_id = saved_id + 1
+        if not in_unit_of_work(self._conn):
+            self._conn.commit()
+        return saved_id
+
+    def _next_free_id_on_conflict(self, *, failed_id: int) -> int | None:
+        """Re-read `MAX+1` inside the open transaction after an id conflict.
+
+        Return the next free id, or None when a retry cannot help: the
+        re-read did not move past `failed_id`, so the conflict is not the
+        id allocation and the same insert would fail again.
+
+        Raise `ItemDbReadError` (CAPTURE-011) when the re-read itself fails.
         """
         try:
-            self._conn.execute(
-                "INSERT INTO items"
-                " (id, type, statement, source_id, status, created_at, validated,"
-                " metadata)"
-                " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                (
-                    item.id,
-                    item.type,
-                    item.statement,
-                    item.source_id,
-                    item.status,
-                    item.created_at,
-                    validated,
-                    item.metadata,
-                ),
-            )
-            self._conn.commit()
+            row = self._conn.execute(
+                "SELECT COALESCE(MAX(id), 0) FROM items"
+            ).fetchone()
         except sqlite3.Error as exc:
-            raise ItemDbWriteError("db write fail", item_id=item.id) from exc
+            raise ItemDbReadError("item read fail") from exc
+        value = int(row[0]) + 1
+        if value <= failed_id:
+            return None
+        return value
 
-    def log_created(self, item: ValidatedItem) -> None:
+    def log_created(self, item: ValidatedItem, *, group_id: int | None = None) -> None:
         """Append the `created` change_log row for an accepted item.
 
-        Raise `ItemDbWriteError` (CAPTURE-013) on a write failure.
+        Raise `ItemDbWriteError` (CAPTURE-013) on a write failure. Inside a
+        `unit_of_work` the caller owns the commit (Batch 4, 4.3 #9): the
+        item row and this row are one transaction.
+
+        `group_id` stamps the ledger row (undo step 01); `None` leaves it
+        NULL (today's capture behaviour, byte for byte). The caller reads
+        the id from the `GroupIdPort` INSIDE the write transaction (chunk
+        13, D-03: two writers never read the same next group id).
         """
         try:
             self._conn.execute(
                 "INSERT INTO change_log"
                 " (item_id, link_id, field_changed, old_value, new_value, timestamp,"
-                " trigger_cause)"
-                " VALUES (?, NULL, 'created', NULL, ?, ?, 'user_confirmed')",
-                (item.id, item.statement, self._clock()),
+                " trigger_cause, group_id)"
+                " VALUES (?, NULL, 'created', NULL, ?, ?, 'user_confirmed', ?)",
+                (item.id, item.statement, self._clock(), group_id),
             )
-            self._conn.commit()
+            if not in_unit_of_work(self._conn):
+                self._conn.commit()
         except sqlite3.Error as exc:
             raise ItemDbWriteError("db write fail", item_id=item.id) from exc
 
@@ -1393,10 +2781,13 @@ class SqliteItemGatekeeper:
         except sqlite3.Error as exc:
             raise ItemDbWriteError("db write fail") from exc
 
-    def save_validated_flag(self, item: StoredItem, *, validated: bool) -> None:
+    def save_validated_flag(
+        self, item: StoredItem, *, validated: bool, group_id: int | None = None
+    ) -> None:
         """Write the `validated` flag and append a `validated` change_log row.
 
-        Raise `ItemDbWriteError` (CAPTURE-013) on a write failure.
+        `group_id` stamps the ledger row (undo step 01); `None` leaves it
+        NULL. Raise `ItemDbWriteError` (CAPTURE-013) on a write failure.
         """
         try:
             self._conn.execute(
@@ -1406,13 +2797,14 @@ class SqliteItemGatekeeper:
             self._conn.execute(
                 "INSERT INTO change_log"
                 " (item_id, link_id, field_changed, old_value, new_value, timestamp,"
-                " trigger_cause)"
-                " VALUES (?, NULL, 'validated', ?, ?, ?, 'user_set_validated')",
+                " trigger_cause, group_id)"
+                " VALUES (?, NULL, 'validated', ?, ?, ?, 'user_set_validated', ?)",
                 (
                     item.id,
                     _flag_text(item.validated),
                     _flag_text(validated),
                     self._clock(),
+                    group_id,
                 ),
             )
             self._conn.commit()
@@ -1597,8 +2989,13 @@ class SqliteEmbedderStore:
         try:
             self._conn.execute(
                 "INSERT OR REPLACE INTO item_embeddings"
-                " (item_id, vector, model_name, embedded_at) VALUES (?, ?, ?, ?)",
-                (item_id, blob, model_name, timestamp),
+                " (item_id, vector, model_name, embedded_at, vector_format)"
+                " VALUES (?, ?, ?, ?, ?)",
+                # The tag names the ONE format `ember.relate.vector_format`
+                # defines: little-endian float32. Pre-015 rows (and files not
+                # yet migrated, which lack the column) read the same float32,
+                # so NULL/missing/`float32` all mean one format.
+                (item_id, blob, model_name, timestamp, VECTOR_FORMAT),
             )
             self._conn.commit()
         except sqlite3.Error as exc:
@@ -1646,6 +3043,25 @@ class SqliteEmbedderStore:
         except sqlite3.Error as exc:
             raise EmbeddingWriteFailed("embedding wipe fail") from exc
 
+    def delete(self, item_id: int) -> None:
+        """Delete one cached vector row, for repairing a damaged cache.
+
+        The candidate pool deletes a wrong-length or undecodable row and
+        re-encodes the item in the same run; the cache is derived data, so
+        the row is rebuilt immediately.
+
+        Raise `EmbeddingWriteFailed` (RELATE-019) on a write failure.
+        """
+        try:
+            self._conn.execute(
+                "DELETE FROM item_embeddings WHERE item_id = ?", (item_id,)
+            )
+            self._conn.commit()
+        except sqlite3.Error as exc:
+            raise EmbeddingWriteFailed(
+                "embedding delete fail", item_id=item_id
+            ) from exc
+
 
 def build_embedding_store(conn: sqlite3.Connection) -> EmbeddingStorePort:
     """Build the `item_embeddings` cache adapter for the relate engine.
@@ -1664,16 +3080,9 @@ def build_ai_response_store(conn: sqlite3.Connection) -> SqliteAiResponseStore:
 
 def _pack_vector(vector: list[float]) -> bytes:
     """Pack a float vector as little-endian float32, the on-disk format."""
-    values = array("f", vector)
-    if sys.byteorder != "little":
-        values.byteswap()
-    return values.tobytes()
+    return pack_vector(vector)
 
 
 def _unpack_vector(blob: bytes) -> list[float]:
     """Decode a little-endian float32 blob back into floats."""
-    values = array("f")
-    values.frombytes(blob)
-    if sys.byteorder != "little":
-        values.byteswap()
-    return values.tolist()
+    return unpack_vector(blob)

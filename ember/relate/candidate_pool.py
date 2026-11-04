@@ -10,6 +10,7 @@ this module reads no database driver and knows no model.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import datetime, timedelta
 from math import sqrt
 
@@ -17,10 +18,15 @@ from pydantic import BaseModel
 
 from ember.relate.embedder import EmbedderPort
 from ember.relate.embedding_store import EmbeddingStorePort
-from ember.relate.errors import CosineComputeFailed, MetadataReadFailed
+from ember.relate.errors import (
+    CosineComputeFailed,
+    EmbeddingReadFailed,
+    MetadataReadFailed,
+)
 from ember.relate.link_lookup import LinkLookupPort
 from ember.relate.load_filter import LoadedCandidates
 from ember.relate.rows import NewItem, Pool, RankedCandidate, SignalKind
+from ember.relate.vector_format import pack_vector, unpack_vector
 
 MODEL_CHANGED_LINE = (
     "embedding model changed: wiping cache (this is a one-time minutes-long cost on large DBs)"
@@ -28,6 +34,15 @@ MODEL_CHANGED_LINE = (
 CONTENT_TOP_K = 10
 FLAT_COSINE = 0.5
 METADATA_WINDOW = timedelta(days=30)
+# Spec line 63: at most this many candidates reach the relate AI, chosen
+# dense first, then graph, then labels. This is the planned initial value,
+# tuned after the batch (decision I11).
+CANDIDATE_POOL_CAP = 40
+# Batch 8 finding 4.8 #1, N23: encode cache misses in slices of this many
+# texts, new item included. A module-level constant on purpose — never read
+# from config or the environment; tuning happens only if the 2,000-item
+# manual check (Batch 8 testing decision 5) misses its 10-minute bound.
+EMBED_BATCH_SIZE = 32
 
 
 class Signals(BaseModel):
@@ -52,12 +67,15 @@ def build_candidate_pool(
     link_lookup: LinkLookupPort,
     embedding_store: EmbeddingStorePort,
     embedder: EmbedderPort,
+    echo: Callable[[str], None] | None = None,
 ) -> Pool:
     """Run the three Phase 2 signals and return the merged, ranked pool.
 
-    Inputs: the Phase 1 `LoadedCandidates` plus the three ports. `link_lookup`
-    reads 1-hop neighbors, `embedding_store` reads and writes the vector cache,
-    and `embedder` turns statements into vectors.
+    Inputs: the Phase 1 `LoadedCandidates` plus the three ports and one
+    optional progress sink. `link_lookup` reads 1-hop neighbors,
+    `embedding_store` reads and writes the vector cache, and `embedder` turns
+    statements into vectors. `echo` receives one `encoding embeddings:
+    <done>/<total>` line per encoded batch and stays silent when None.
 
     Output: `Pool(ranked, counts, warning)`. `ranked` is sorted by cosine
     descending, then item id ascending. `counts` holds the pre-merge signal
@@ -65,41 +83,50 @@ def build_candidate_pool(
     text, or None.
 
     Raises (propagated from the ports and the two core helpers):
-    - `RELATE-037 EmbeddingReadFailed` when a cache read fails.
+    - `RELATE-037 EmbeddingReadFailed` when a cache read fails (a failed
+      vector `get` is instead repaired by delete-and-re-encode; the raise
+      remains for the model-name reads and any repair that cannot write).
     - `RELATE-018 EmbedderEncodeFailed` when the model cannot encode.
-    - `RELATE-019 EmbeddingWriteFailed` when a cache write or wipe fails.
+    - `RELATE-019 EmbeddingWriteFailed` when a cache write, delete, or wipe fails.
     - `RELATE-021 GraphReadFailed` when the neighbor read fails.
-    - `RELATE-022 CosineComputeFailed` on a zero or unequal-length vector.
+    - `RELATE-022 CosineComputeFailed` on a zero or unequal-length vector
+      (a damaged cached vector is repaired before cosine, so only a zero
+      cached vector or a wrong-length fresh encoding raises).
     - `RELATE-023 MetadataReadFailed` on a malformed or mixed-zone timestamp.
     - `RELATE-017 EmbedderLoadFailed` if the model failed to load.
 
-    Side effects: may upsert vectors into `item_embeddings`, and may wipe the
-    cache (returning `warning`) when the cached model differs from the active
-    model. The caller prints `warning`; this module writes no output itself.
+    Side effects: may upsert vectors into `item_embeddings`, delete a damaged
+    cache row for immediate re-encode, and may wipe the cache (returning
+    `warning`) when the universe is non-empty and the cached model differs
+    from the active model. When `echo` is not None, it is called once per
+    encoded batch with an `encoding embeddings: <done>/<total>` progress
+    line; when it is None (the default) nothing is written anywhere — this
+    module still produces no output of its own. On an empty universe nothing
+    runs: no model check, no wipe, no warning. The returned pool carries at
+    most `CANDIDATE_POOL_CAP` ranked candidates. The caller prints `warning`;
+    except for the `echo` lines, this module writes no output itself.
     """
     model = embedder.model_name()
-    warning = _model_change_warning(embedding_store, model=model)
     items = loaded.universe.items
     if not items:
-        return Pool.empty(warning=warning)
+        return Pool.empty()
+    warning = _model_change_warning(embedding_store, model=model, echo=echo)
     new_item = loaded.new_item
     dimension = embedder.dim()
-    new_vector = _resolve_vector(
-        new_item, embedder, embedding_store, model=model, dimension=dimension
-    )
-    content = _content_signal(
-        items,
-        new_vector,
+    vectors = _resolve_vectors(
+        [new_item, *items],
         embedder,
         embedding_store,
         model=model,
         dimension=dimension,
+        echo=echo,
     )
+    content = _content_signal(items, vectors[new_item.id], vectors)
     graph = _graph_signal(link_lookup, items, new_item_id=new_item.id)
     metadata = _metadata_signal(items, new_item)
     signals = Signals(content=content, graph=graph, metadata=metadata)
     return Pool(
-        ranked=_merge(items, signals),
+        ranked=_cap_ranked(_merge(items, signals)),
         counts={
             "dense": len(signals.content),
             "graph": len(signals.graph),
@@ -109,62 +136,114 @@ def build_candidate_pool(
     )
 
 
-def _model_change_warning(store: EmbeddingStorePort, *, model: str) -> str | None:
-    """Wipe a cache written by another embedder and return the warning text."""
+def _model_change_warning(
+    store: EmbeddingStorePort,
+    *,
+    model: str,
+    echo: Callable[[str], None] | None = None,
+) -> str | None:
+    """Wipe a cache written by another embedder and return the warning text.
+
+    Batch 8 finding 4.8 #2: when the cached model differs, `echo` (when not
+    None) receives `MODEL_CHANGED_LINE` BEFORE `store.wipe()` runs, so the
+    caller sees the warning at the moment the wipe starts rather than after
+    the whole encode phase. The returned warning text is unchanged.
+    """
     cached = store.first_model_name()
     if cached is None or cached == model:
         return None
+    if echo is not None:
+        echo(MODEL_CHANGED_LINE)
     store.wipe()
     return MODEL_CHANGED_LINE
 
 
-def _resolve_vector(
-    item: NewItem,
+def _resolve_vectors(
+    items: list[NewItem],
     embedder: EmbedderPort,
     store: EmbeddingStorePort,
     *,
     model: str,
     dimension: int,
-) -> list[float]:
-    """Return the item's vector from the cache, or encode it and cache it."""
-    cached = store.get(item.id)
-    if cached is not None and store.model_name_of(item.id) == model:
-        if len(cached) != dimension:
-            raise CosineComputeFailed(
-                "cached vector length mismatch",
-                item_id=item.id,
-                expected=dimension,
-                got=len(cached),
-            )
-        return cached
-    vector = list(embedder.embed([item.statement])[0])
-    if len(vector) != dimension:
-        raise CosineComputeFailed(
-            "embedder vector length mismatch",
-            item_id=item.id,
-            expected=dimension,
-            got=len(vector),
-        )
-    store.upsert(item.id, vector, model)
-    return vector
+    echo: Callable[[str], None] | None = None,
+) -> dict[int, list[float]]:
+    """Return every item's vector, from the cache or from batched encoding.
+
+    Per item the cache decides, exactly as the old per-item `_resolve_vector`
+    did (Batch 7 chunk 11): a hit under the active model at the right length
+    comes from the store; a read failure (`EmbeddingReadFailed`, RELATE-037,
+    from an undecodable blob), a wrong-length vector, a stale model name, or
+    a missing row is a miss. Damaged rows are deleted through the port and
+    the item re-encodes in the same run — the cache is derived, rebuildable
+    data, so the delete loses nothing.
+
+    Batch 8 finding 4.8 #1: the misses (new item included) encode TOGETHER,
+    in slices of `EMBED_BATCH_SIZE` texts, then each vector upserts into the
+    store per item. A fresh encoding that comes back the wrong length is an
+    embedder bug, not cache damage, and raises `CosineComputeFailed`
+    (RELATE-022) with the item id; embedder failures propagate as RELATE-018.
+
+    Batch 8 finding 4.8 #2: after each finished batch, `echo` (when not None)
+    receives one `encoding embeddings: <done>/<total>` line, where `total`
+    is the number of cache-miss texts in the run (new item included).
+    """
+    vectors: dict[int, list[float]] = {}
+    misses: list[NewItem] = []
+    for item in items:
+        damaged = False
+        try:
+            cached = store.get(item.id)
+        except EmbeddingReadFailed:
+            cached = None
+            damaged = True
+        else:
+            if cached is not None and store.model_name_of(item.id) == model:
+                if len(cached) != dimension:
+                    damaged = True
+                else:
+                    vectors[item.id] = cached
+                    continue
+        if damaged:
+            store.delete(item.id)
+        misses.append(item)
+    total = len(misses)
+    done = 0
+    for start in range(0, len(misses), EMBED_BATCH_SIZE):
+        batch = misses[start : start + EMBED_BATCH_SIZE]
+        batch_vectors = embedder.embed([item.statement for item in batch])
+        # Index (not zip) so a short embedder reply crashes with IndexError
+        # exactly as the old per-item `[0]` did: a code bug, never wrapped.
+        for index, item in enumerate(batch):
+            vector = list(batch_vectors[index])
+            if len(vector) != dimension:
+                raise CosineComputeFailed(
+                    "embedder vector length mismatch",
+                    item_id=item.id,
+                    expected=dimension,
+                    got=len(vector),
+                )
+            vector = unpack_vector(pack_vector(vector))
+            store.upsert(item.id, vector, model)
+            vectors[item.id] = vector
+        done += len(batch)
+        if echo is not None:
+            echo(f"encoding embeddings: {done}/{total}")
+    return vectors
 
 
 def _content_signal(
     items: list[NewItem],
     new_vector: list[float],
-    embedder: EmbedderPort,
-    store: EmbeddingStorePort,
-    *,
-    model: str,
-    dimension: int,
+    vectors: dict[int, list[float]],
 ) -> dict[int, float]:
-    """Score every universe item by cosine, keeping the top `CONTENT_TOP_K`."""
+    """Score every universe item by cosine, keeping the top `CONTENT_TOP_K`.
+
+    Every vector was already resolved (cache hit or batched encoding) by
+    `_resolve_vectors`; this only scores and crops.
+    """
     scores: dict[int, float] = {}
     for item in items:
-        vector = _resolve_vector(
-            item, embedder, store, model=model, dimension=dimension
-        )
-        scores[item.id] = _cosine(new_vector, vector, item_id=item.id)
+        scores[item.id] = _cosine(new_vector, vectors[item.id], item_id=item.id)
     order = sorted(scores, key=lambda item_id: (-scores[item_id], item_id))
     return {item_id: scores[item_id] for item_id in order[:CONTENT_TOP_K]}
 
@@ -264,6 +343,23 @@ def _merge(items: list[NewItem], signals: Signals) -> list[RankedCandidate]:
         )
         for item_id in order
     ]
+
+
+def _cap_ranked(ranked: list[RankedCandidate]) -> list[RankedCandidate]:
+    """Cap the pool, keeping dense candidates first, then graph, then labels.
+
+    Within each source band the merged order (cosine descending, then item id
+    ascending) decides who survives; the survivors keep the merged order.
+    """
+    if len(ranked) <= CANDIDATE_POOL_CAP:
+        return ranked
+    kept = [
+        candidate
+        for kind in (SignalKind.dense, SignalKind.graph, SignalKind.metadata)
+        for candidate in ranked
+        if candidate.source is kind
+    ][:CANDIDATE_POOL_CAP]
+    return sorted(kept, key=lambda candidate: (-candidate.cosine, candidate.item.id))
 
 
 def _cosine(left: list[float], right: list[float], *, item_id: int) -> float:

@@ -14,7 +14,13 @@ from ember.relate.rows import Link
 
 
 class QueryItem(BaseModel):
-    """One `items` row as this engine reads it (Phase 1 input)."""
+    """One `items` row as this engine reads it (Phase 1 input).
+
+    `source` (the authorial note, migration 004) and `validated` (the human
+    0/1 flag) grow the read model additively for the bridge reads (bridge
+    step 02): both default to `None`, so every pre-existing constructor and
+    reader keeps working unchanged.
+    """
 
     id: int
     type: str
@@ -25,6 +31,8 @@ class QueryItem(BaseModel):
     rationale: str | None
     created_at: str
     source_id: int
+    source: str | None = None
+    validated: bool | None = None
 
 
 class CurrentStateRow(BaseModel):
@@ -45,7 +53,14 @@ class CurrentStateRow(BaseModel):
 
 
 class ChangeRow(BaseModel):
-    """One `change_log` row as this engine reads it (item_id may be NULL)."""
+    """One `change_log` row as this engine reads it (item_id may be NULL).
+
+    `group_id` is the additive undo-group stamp (migration 013, undo step
+    05): export renders it, defaulting to `None` so every pre-013 caller and
+    reader keeps working unchanged. `source_id` is the additive forget
+    stamp (migration 014, Batch 6 D-07): a forgotten note's ledger row
+    names its source; every other row, and every pre-014 file, reads `None`.
+    """
 
     id: int
     item_id: int | None
@@ -55,18 +70,23 @@ class ChangeRow(BaseModel):
     new_value: str | None
     timestamp: str
     trigger_cause: str
+    group_id: int | None = None
+    source_id: int | None = None
 
 
 class TopicFilter(BaseModel):
-    """What `topic_search` may narrow before it scores (V1.x amendment D).
+    """What `topic_search` may narrow and page (V1.x amendment D, Batch 6).
 
-    `None` means no restriction on that axis. `limit` crops the ranked list
-    behind the sort, so `limit` 0 is an explicit empty result, never an error.
+    `None` means no restriction on that axis. `offset` skips behind the
+    final sort and `limit` crops the ranked list, so `limit` 0 is an
+    explicit empty result, never an error, and neither crop changes the
+    pre-page count the envelope reports as `total`.
     """
 
     status: str | None = None
     type: str | None = None
     limit: int | None = None
+    offset: int | None = None
 
 
 class HistoryPage(BaseModel):
@@ -129,7 +149,9 @@ class HistoryEvent(BaseModel):
     `link_*_item_id` fields sit beside it so the two possible meanings never
     blur. `cause` is the raw `trigger_cause`, and `close_reason` is the one
     derived field (non-null only on a `status_changed` event whose new value
-    is a `Closed` status).
+    is a `Closed` status). `source_id` is non-null only on a
+    `source_forgotten` event (Batch 6, D-26): the forgotten raw note is
+    named by id, never by text.
     """
 
     timestamp: str
@@ -144,3 +166,45 @@ class HistoryEvent(BaseModel):
     old_value: str | None
     new_value: str | None
     close_reason: str | None
+    source_id: int | None = None
+
+
+class ListPage(BaseModel):
+    """What `list_items` may crop before the render (bridge step 02).
+
+    `None` means no restriction on that axis: no cap, no skip, as `history`.
+    `limit` 0 is an explicit empty result, never an error. The status/type
+    narrowing never lives here: it stays the existing `TopicFilter` (D3).
+    """
+
+    limit: int | None = None
+    offset: int | None = None
+
+
+class ShowLink(BaseModel):
+    """One of the shown item's links, in one direction (bridge step 02).
+
+    `type` is the link type, `status` travels with it so a Rejected or
+    reversed link stays visible. The `other_item_*` fields describe the item
+    at the far end of the edge, whichever side that is. `reversed_at` is the
+    migration-011 timestamp, `null` on a live link and on every pre-011
+    (schema v10) file, where the column does not exist.
+    """
+
+    id: int
+    type: str
+    status: str
+    other_item_id: int
+    other_item_type: str
+    other_item_statement: str
+    other_item_status: str
+    reversed_at: str | None
+
+
+class ShowItemResult(BaseModel):
+    """The `show_item` output view: the item, its source text, its links."""
+
+    item: QueryItem
+    source: str
+    links_out: list[ShowLink]
+    links_in: list[ShowLink]

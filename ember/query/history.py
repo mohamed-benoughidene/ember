@@ -1,12 +1,18 @@
 """The `change_log` classifier and the `history` derivation (pure Phase 2).
 
-The ledger is read, never rewritten: `old_value` / `new_value` render verbatim
-and the one derived field, `close_reason`, comes from the same splitter that
-documents the writer's encoding, so the two cannot disagree.
+The ledger is read, never rewritten: `old_value` renders verbatim, and a
+status row's new value renders its DECODED status beside the one derived
+field, `close_reason` — the raw `Closed:<reason>` writer encoding stays
+only in the ledger. Both derived fields come from the same public splitter
+that documents the writer's encoding (`split_status_value`, maintain rows),
+so the two cannot disagree.
 """
 
 from __future__ import annotations
 
+from datetime import datetime
+
+from ember.maintain.rows import split_status_value
 from ember.query.rows import ChangeRow, HistoryEvent, HistoryPage
 from ember.relate.rows import Link
 
@@ -28,33 +34,58 @@ _KIND_BY_PAIR: dict[tuple[str, str], str] = {
     ("status_origin", "user_set_status"): "status_origin_changed",
     ("status_origin", "sweep_rearm"): "status_origin_changed",
     ("link_reversed", "reversal"): "link_reversed",
+    # Undo/redo inverse rows (undo step 05, L2 §5.6): every grouped row a
+    # human action can inverse carries the SAME kind as its original, so an
+    # undone close still reads `status_changed` (with its close reason) and
+    # no inverse row falls to `unknown`.
+    ("status", "user_undo"): "status_changed",
+    ("status", "user_redo"): "status_changed",
+    ("validated", "user_undo"): "validated",
+    ("validated", "user_redo"): "validated",
+    ("status_origin", "user_undo"): "status_origin_changed",
+    ("status_origin", "user_redo"): "status_origin_changed",
+    ("link_reversed", "user_undo"): "link_reversed",
+    ("link_reversed", "user_redo"): "link_reversed",
+    # The three fields whose ORIGINAL pairs render `unknown` (pinned by the
+    # edit-item / remove-link tests this step may not change): their inverse
+    # rows are mapped by the state they PRODUCE, reusing existing kinds where
+    # one exists. Deviation U5-1.
+    ("link_removed", "user_undo"): "link_confirmed",
+    ("link_removed", "user_redo"): "link_removed",
+    ("rationale", "user_undo"): "item_edited",
+    ("rationale", "user_redo"): "item_edited",
+    ("source", "user_undo"): "item_edited",
+    ("source", "user_redo"): "item_edited",
+    # The edit / remove-link causes the REAL writer uses (Batch 6,
+    # finding 4.7 #4): `user_edit_item` writes a `rationale` (or `source`)
+    # field row and `user_remove_link` writes the `link_removed` row.
+    # Deviation U5-1 already mapped their inverse rows; the originals
+    # belong here too, so a plain edit no longer reads `unknown`.
+    # The `source` pair is issue #44: `edit-item --field source` writes
+    # exactly this row, and it renders the same `item_edited` kind as the
+    # rationale edit — the app already has a sentence for that kind.
+    ("rationale", "user_edit_item"): "item_edited",
+    ("source", "user_edit_item"): "item_edited",
+    ("link_removed", "user_remove_link"): "link_removed",
+    # The undo/redo pointers and the undo-of-reversal marker.
+    ("undo_of", "user_undo"): "undone",
+    ("redo_of", "user_redo"): "redone",
+    ("link_unreversed", "user_undo"): "link_unreversed",
+    # The forget-source write (Batch 6, D-07/D-26): one textless row that
+    # names the forgotten note by its migration-014 `source_id`.
+    ("source_forgotten", "user_forget_source"): "source_forgotten",
 }
 
 
 def classify_change_row(row: ChangeRow) -> str:
     """Return the row's `kind`, derived from the `(field, cause)` pair.
 
-    Neither half works alone: `status` covers seven causes, and both
-    `user_set_status` and `reversal` cover two different field types. A pair
-    this build does not know is `unknown`, a future engine's row or a hand
-    edit, and it still renders with its raw values.
+    Neither half works alone: `status` covers nine causes, and
+    `user_set_status` covers two different field types. A pair this build
+    does not know is `unknown`, a future engine's row or a hand edit, and it
+    still renders with its raw values.
     """
     return _KIND_BY_PAIR.get((row.field_changed, row.trigger_cause), UNKNOWN_KIND)
-
-
-def _close_reason(new_value: str | None) -> str | None:
-    """Return the reason from a `Closed` status value, else `None`.
-
-    The writer encodes a status row as `<status>` or `<status>:<reason>`, and
-    formats a null reason as the literal `None`, so `Closed:None` means no
-    reason. Split on the **first** colon only.
-    """
-    if new_value is None:
-        return None
-    status, separator, reason = new_value.partition(":")
-    if status != "Closed" or not separator or not reason or reason == "None":
-        return None
-    return reason
 
 
 def _belongs_to(row: ChangeRow, item_id: int, links: dict[int, Link]) -> bool:
@@ -69,9 +100,32 @@ def _belongs_to(row: ChangeRow, item_id: int, links: dict[int, Link]) -> bool:
     return item_id in (link.source_item_id, link.target_item_id)
 
 
+def _instant(stored: str) -> datetime | None:
+    """Parse one stored timestamp into an aware instant, or `None`.
+
+    A hand-edited row can hold text that does not parse, or a naive
+    spelling with no offset — there is no instant without an offset, and
+    comparing one to an aware `--since` would crash. Either way the row
+    renders everywhere else but is invisible to a `--since` cut (recorded
+    here, not hidden).
+    """
+    try:
+        parsed = datetime.fromisoformat(stored)
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo is not None else None
+
+
 def _to_event(row: ChangeRow, link: Link | None) -> HistoryEvent:
     """Build the rendered event for one row, filling the link's fields."""
     kind = classify_change_row(row)
+    # The status VALUE renders decoded (Batch 6, finding 4.7 #14): what a
+    # status row shows is the status itself plus the derived close reason
+    # below — the raw `Closed:<reason>` writer encoding stays only in the
+    # ledger. A NULL value renders NULL, as before.
+    new_value = row.new_value
+    if kind == "status_changed" and new_value:
+        new_value = split_status_value(new_value).status
     return HistoryEvent(
         timestamp=row.timestamp,
         kind=kind,
@@ -83,10 +137,15 @@ def _to_event(row: ChangeRow, link: Link | None) -> HistoryEvent:
         link_target_item_id=link.target_item_id if link else None,
         link_type=link.link_type if link else None,
         old_value=row.old_value,
-        new_value=row.new_value,
-        close_reason=_close_reason(row.new_value)
+        new_value=new_value,
+        # The close reason comes from the PUBLIC splitter that documents
+        # the writer's encoding (D3), never a private re-implementation.
+        close_reason=split_status_value(row.new_value or "").close_reason
         if kind == "status_changed"
         else None,
+        # The forgotten note is named by its id, never by text (Batch 6,
+        # D-26): NULL on every other kind of event.
+        source_id=row.source_id,
     )
 
 
@@ -101,16 +160,19 @@ def history(
     A row belongs to an item when its `item_id` is that item **or** its
     `link_id` names a link touching that item. A row matching both appears
     once. A row with no subject and no link belongs to no item and appears in
-    the global view only. Order is `(timestamp, id)`, unchanged.
+    the global view only. Order is `(timestamp, id)` DESCENDING (Batch 6,
+    finding 4.7 #13): the newest write first, and `--offset` pages BACK in
+    time.
 
     The window composes strictly after that union and sort: `page.since`
-    keeps rows with `timestamp >= since` as opaque ISO text (the exact
-    comparison the sort already uses, the validator has normalised it to
-    UTC), then `page.offset` skips, then `page.limit` caps. `None` on an
+    keeps rows whose parsed INSTANT is `>=` the `--since` instant (the
+    validator has normalised `since` to UTC, but stored spellings may name
+    any offset, and TEXT order can run opposite instant order — finding
+    4.7 #9), then `page.offset` skips, then `page.limit` caps. `None` on an
     axis means no cut, so the default page crops nothing and the no-page
     call behaves exactly as before. A stored timestamp that cannot parse
-    renders everywhere today but is invisible to a `--since` view (a
-    hand-edited row, recorded here, not hidden).
+    (or names no offset) renders everywhere today but is invisible to a
+    `--since` view (a hand-edited row, recorded here, not hidden).
     """
     links_by_id = {int(link.id): link for link in links if link.id is not None}
     selected: list[tuple[ChangeRow, HistoryEvent]] = []
@@ -118,10 +180,19 @@ def history(
         if item_id is not None and not _belongs_to(row, item_id, links_by_id):
             continue
         selected.append((row, _to_event(row, links_by_id.get(row.link_id))))
-    selected.sort(key=lambda pair: (pair[0].timestamp, pair[0].id))
+    # Newest first (Batch 6, finding 4.7 #13): `(timestamp, id)`
+    # descending, so the default page starts at the most recent write and
+    # a growing `--offset` walks back in time.
+    selected.sort(key=lambda pair: (pair[0].timestamp, pair[0].id), reverse=True)
     events = [event for _, event in selected]
     if page.since is not None:
-        events = [event for event in events if event.timestamp >= page.since]
+        since_instant = datetime.fromisoformat(page.since)
+        events = [
+            event
+            for event in events
+            if (instant := _instant(event.timestamp)) is not None
+            and instant >= since_instant
+        ]
     if page.offset is not None:
         events = events[page.offset :]
     if page.limit is not None:

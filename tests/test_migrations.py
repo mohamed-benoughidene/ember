@@ -7,6 +7,7 @@ import sqlite3
 
 import pytest
 
+from ember.adapters.migrations import LATEST_VERSION
 from ember.adapters.sqlite import open_database
 from tests.fakes import FIXED_TIME, insert_item, insert_source
 
@@ -62,7 +63,15 @@ def test_item_embeddings_table_has_expected_columns(db_path) -> None:
     conn = open_database(db_path)
 
     columns = _columns(conn, "item_embeddings")
-    assert list(columns) == ["item_id", "vector", "model_name", "embedded_at"]
+    # 015 appended the optional format tag; NULL and missing both mean the
+    # float32 format `ember.relate.vector_format` defines.
+    assert list(columns) == [
+        "item_id",
+        "vector",
+        "model_name",
+        "embedded_at",
+        "vector_format",
+    ]
 
 
 def test_change_log_table_has_expected_columns(db_path) -> None:
@@ -78,6 +87,8 @@ def test_change_log_table_has_expected_columns(db_path) -> None:
         "new_value",
         "timestamp",
         "trigger_cause",
+        "group_id",
+        "source_id",
     ]
 
 
@@ -213,7 +224,7 @@ def test_migrations_008_009_preserve_existing_rows(db_path) -> None:
 
     conn = open_database(db_path)
 
-    assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == 12
+    assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == LATEST_VERSION
     assert conn.execute(
         "SELECT COUNT(*) FROM change_log WHERE id = 7"
     ).fetchone()[0] == 1

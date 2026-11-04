@@ -1,4 +1,5 @@
-"""Unit tests for the stale pre-filter, the boundary parser, and the retry.
+"""Unit tests for the stale pre-filter, the boundary parser, and the single
+core AI call (no engine retry; the adapter owns the retry).
 
 Pure (T1/T7): fake-lookup snapshots plus recorded answer fixtures, fixed
 `now`s, no DB, no AI.
@@ -162,6 +163,27 @@ def test_prefilter_uses_newest_answers_link_when_two_exist() -> None:
     assert candidate.newest_answer_created_at == OLD
 
 
+def test_the_close_proposer_handles_a_missing_link_id_before_comparing() -> None:
+    # Finding 4.6 #8 (story 39): a Confirmed answers link with id=None is
+    # skipped, not a TypeError. Today the (created_at, link.id) tuple
+    # comparison runs before the id guard, so two links with the same
+    # created_at — one synthetic with id=None — raise `None > int`.
+    orphan = Link(
+        id=None,
+        source_item_id=4,
+        target_item_id=7,
+        link_type="answers",
+        status="Confirmed",
+        created_at=OLD,
+    )
+    snapshot = _snapshot([_item(7)], [_link(11, target=7), orphan])
+
+    shortlist = stale_close_candidates(snapshot, now=NOW)
+
+    assert [candidate.item_id for candidate in shortlist.candidates] == [7]
+    assert shortlist.candidates[0].newest_answers_link_id == 11
+
+
 def test_prefilter_boundary_exactly_stale_days_is_candidate() -> None:
     boundary_now = datetime(2026, 1, 31, tzinfo=timezone.utc)
     snapshot = _snapshot([_item(7)], [_link(11, target=7)])
@@ -276,49 +298,37 @@ def test_parser_confidence_out_of_range_raises_close_ai_schema_invalid() -> None
             parse_close_proposal(answer)
 
 
-# --- the one engine retry -------------------------------------------------
+# --- the single port call (Batch 7, Chunk 5: no engine retry) --------------
 
 
-def test_retry_once_on_call_failure() -> None:
-    proposer = FakeCloseProposer(
-        [CloseAiCallFailed("call fail", item_id=7), _proposal_response()]
-    )
+def test_proposal_response_returns_after_one_call() -> None:
+    proposer = FakeCloseProposer([_proposal_response()])
 
     outcome = propose_close_with_retry(proposer, candidate=_candidate())
 
     assert outcome.proposal is not None
     assert outcome.proposal.reason == "expired"
     assert outcome.raw_response == "RAW-PROPOSAL"
-    assert len(proposer.calls) == 2
+    assert len(proposer.calls) == 1
 
 
-def test_retry_once_on_schema_failure() -> None:
-    proposer = FakeCloseProposer(
-        [
-            CloseAiSchemaInvalid("bad schema", item_id=7),
-            _proposal_response(),
-        ]
-    )
+def test_schema_failure_propagates_after_one_call() -> None:
+    proposer = FakeCloseProposer([CloseAiSchemaInvalid("bad schema", item_id=7)])
 
-    outcome = propose_close_with_retry(proposer, candidate=_candidate())
+    with pytest.raises(CloseAiSchemaInvalid):
+        propose_close_with_retry(proposer, candidate=_candidate())
 
-    assert outcome.proposal is not None
-    assert len(proposer.calls) == 2
+    assert len(proposer.calls) == 1
 
 
-def test_second_failure_propagates_coded_error() -> None:
-    proposer = FakeCloseProposer(
-        [
-            CloseAiCallFailed("call fail 1", item_id=7),
-            CloseAiCallFailed("call fail 2", item_id=7),
-        ]
-    )
+def test_call_failure_propagates_coded_error_after_one_call() -> None:
+    proposer = FakeCloseProposer([CloseAiCallFailed("call fail", item_id=7)])
 
     with pytest.raises(CloseAiCallFailed) as excinfo:
         propose_close_with_retry(proposer, candidate=_candidate())
 
     assert excinfo.value.code == "MAINTAIN-018"
-    assert len(proposer.calls) == 2
+    assert len(proposer.calls) == 1
 
 
 # --- the display block ----------------------------------------------------

@@ -1,0 +1,418 @@
+/*
+ * The app frame (L3 app step 04): sidebar + content, title rows, tabs,
+ * filters, the setup (first-run) frame. Layout and values come from the
+ * approved prototype (docs/PROTOTYPE-ember-interface-v3.html); every
+ * colour/spacing/type value comes ONLY from tokens.css — this file
+ * never invents one. The step-03 component styles (components.css) are
+ * consumed, never restyled.
+ */
+
+.app {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+}
+
+.app-notice:empty { display: none; }
+
+.shell {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+}
+
+/* ---------- the sidebar (dark: --nav-bg, DESIGN.md) ---------- */
+
+.nav {
+  width: 15rem;
+  flex: 0 0 15rem;
+  background: var(--nav-bg);
+  color: var(--nav-ink);
+  padding: var(--s4) var(--s3);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  overflow: auto;
+}
+.nav[hidden] { display: none; } /* first run: the setup uses the whole frame */
+.nav button {
+  display: flex;
+  align-items: center;
+  gap: var(--s3);
+  text-align: left;
+  background: none;
+  border: 0;
+  padding: var(--s3) var(--s4);
+  cursor: pointer;
+  color: var(--nav-ink);
+  border-radius: var(--radius);
+  width: 100%;
+}
+.nav button .t small {
+  display: block;
+  font-size: var(--type-label-size); /* Label: the menu hints (DESIGN.md) */
+  opacity: 0.85;
+  font-weight: 400;
+}
+.nav button:hover { background: rgba(255, 255, 255, 0.09); }
+.nav button[aria-current='true'] {
+  background: var(--sel-bg);
+  color: var(--sel-ink);
+  font-weight: var(--type-heading-weight);
+}
+.nav button[aria-current='true'] small { opacity: 1; }
+
+/* Largest text: the sidebar narrows and hides its hints (DESIGN.md).
+   Under an 800px window the rail narrows too — but the button NAMES
+   stay readable: the rail widens enough for the names, and the HINTS
+   hide (they wrapped into 2-3 ragged lines per row at the floor —
+   "Update / statuses / (sweep)"). The prototype hides every rail text
+   here; Batch 6 deliberately kept the names (finding 11 #4: no clipped
+   labels), the hints are the part that does not fit. */
+@media (max-width: 800px) {
+  .nav { width: 9rem; flex-basis: 9rem; }
+  .nav button { padding: var(--s3); }
+  .nav button .t small { display: none; }
+  .nav button .t { white-space: normal; min-width: 0; }
+}
+
+/* ---------- the content column ---------- */
+
+.main {
+  flex: 1;
+  padding: var(--s6) var(--s7);
+  overflow: auto;
+  min-width: 0;
+  outline: none; /* the pane itself is not a stop; controls carry the ring */
+}
+
+.titlerow {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--s5);
+  margin-bottom: var(--s6);
+}
+.titlerow .grow { flex: 1; min-width: 0; }
+h1 {
+  font-size: var(--type-title-size);
+  line-height: var(--type-title-lh);
+  font-weight: var(--type-title-weight);
+  letter-spacing: var(--type-title-ls);
+  margin: 0 0 var(--s1);
+}
+h2 {
+  font-size: var(--type-heading-size);
+  font-weight: var(--type-heading-weight);
+  margin: var(--s7) 0 var(--s3);
+}
+.sub {
+  color: var(--ink-2);
+  margin: 0;
+  max-width: 62ch;
+  font-size: var(--type-label-size);
+}
+label {
+  display: block;
+  font-weight: var(--type-heading-weight);
+  font-size: var(--type-label-size); /* Label: field labels (DESIGN.md) */
+  margin: var(--s5) 0 var(--s2);
+}
+.help {
+  color: var(--ink-2);
+  font-size: var(--type-label-size);
+  margin: var(--s2) 0 0;
+  /* Help rows carry file paths and details codes whose unbreakable
+     stem must never push the screen wider (same reason as .mono
+     above; keep-safe e2e overflow at Largest, Batch 6 design audit). */
+  overflow-wrap: anywhere;
+}
+
+textarea,
+input[type='text'],
+input[type='password'],
+input[type='date'],
+input[type='number'],
+select {
+  width: 100%;
+  padding: var(--s3) var(--s4);
+  background: var(--surface);
+  color: var(--ink);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius);
+  min-height: 2.4rem;
+}
+textarea { min-height: 7rem; resize: vertical; }
+select { width: auto; }
+input:disabled,
+textarea:disabled {
+  background: var(--surface-2);
+  color: var(--ink-2);
+}
+
+/* ---------- home: the attention finding and the counts ---------- */
+
+.finding {
+  margin: 0 0 var(--s6);
+  padding: var(--s4) var(--s5);
+  background: var(--surface-2);
+  border-radius: var(--radius);
+  display: flex;
+  gap: var(--s5);
+  align-items: center;
+}
+.finding .grow { flex: 1; }
+.finding strong { display: block; font-size: var(--type-heading-size); }
+.finding span { color: var(--ink-2); }
+
+.split { display: flex; }
+.split > div { flex: 1; padding: var(--s4) var(--s5); }
+.split > div + div { border-left: 1px solid var(--line); }
+.fig {
+  font-size: var(--type-title-size);
+  font-weight: var(--type-heading-weight);
+  line-height: 1.2;
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+.lbl-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s2);
+  color: var(--ink-2);
+  font-size: var(--type-label-size);
+}
+
+/* ---------- tabs, filters, paging ---------- */
+
+.tabs {
+  display: flex;
+  gap: var(--s5);
+  border-bottom: 1px solid var(--line);
+  margin: var(--s5) 0;
+}
+.tabs button {
+  background: none;
+  border: 0;
+  padding: var(--s3) 0;
+  cursor: pointer;
+  color: var(--ink-2);
+  font-weight: var(--type-heading-weight);
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+}
+.tabs button[aria-selected='true'] {
+  color: var(--ink);
+  border-bottom-color: var(--ink);
+}
+.filters {
+  display: flex;
+  gap: var(--s3);
+  flex-wrap: wrap;
+  align-items: center;
+}
+.filters input[type='text'] { flex: 1; min-width: 10rem; width: auto; }
+.filters input[type='date'], .filters input[type='number'] { width: 10rem; min-width: 8rem; }
+.ledger-narrow { width: 7rem; min-width: 6rem; }
+
+.pager {
+  display: flex;
+  gap: var(--s3);
+  align-items: center;
+  margin-top: var(--s4);
+}
+
+/* selectable rows (Look up table) */
+tr.row-click { cursor: pointer; }
+tr.row-click:hover { background: var(--surface-2); }
+tr.row-click[aria-selected='true'] { background: var(--worn-paper); }
+td.row-detail { border-top: 1px solid var(--line-strong); }
+
+/* source text shown verbatim in the detail pane */
+.source-verbatim {
+  font-family: var(--font-mono);
+  font-size: var(--type-label-size);
+  white-space: pre-wrap;
+  background: var(--surface-2);
+  border-radius: var(--radius);
+  padding: var(--s3) var(--s4);
+  margin: var(--s2) 0 0;
+}
+
+/* ---------- first run (setup): prototype .setup-grid frame ---------- */
+
+.setup-grid {
+  display: grid;
+  grid-template-columns: minmax(14rem, 17rem) minmax(0, 1fr);
+  gap: var(--s7);
+  align-items: start;
+}
+.setup-grid .form { max-width: 38rem; }
+.steps { list-style: none; margin: 0; padding: 0; }
+.steps li {
+  padding: var(--s3) 0;
+  color: var(--ink-2);
+  display: flex;
+  gap: var(--s3);
+}
+.steps li[aria-current='step'] {
+  color: var(--ink);
+  font-weight: var(--type-heading-weight);
+}
+.steps li .n { min-width: 1.4rem; font-weight: var(--type-heading-weight); }
+.progress {
+  height: 6px;
+  background: var(--surface-3);
+  border-radius: 3px;
+  overflow: hidden;
+  margin: var(--s4) 0 var(--s6);
+}
+.progress i { display: block; height: 100%; background: var(--ink); }
+
+.actions.end { justify-content: flex-end; }
+.actions.center { justify-content: center; }
+
+/* Largest/Larger text (the DESIGN.md Text Size Rule): the
+      sidebar narrows to 11rem, hints hide, rows and notices wrap. */
+
+:root.big .nav { width: 11rem; flex-basis: 11rem; }
+:root.big .nav .t small { display: none; }
+:root.big .split { flex-wrap: wrap; }
+:root.big .split > div { flex: 1 1 40%; }
+:root.big .titlerow { flex-wrap: wrap; }
+:root.big .finding { flex-wrap: wrap; }
+:root.big .setup-grid { grid-template-columns: 1fr; gap: var(--s6); }
+:root.big .nowrap { white-space: normal; }
+/* The Text Size Rule at Largest (200%), after the Batch 9 UI audit
+   (finding 2): prose table cells keep their word-shaped minimum
+   (break-word breaks within a word ONLY when that word alone cannot
+   fit a line). The old `anywhere` collapsed every cell's intrinsic
+   minimum to a single letter, so a narrow window squeezed the Item
+   column to 2-4 letters per line ("The / repor / t"). Buttons and
+   status pills never take the inherited rule — a Remove label split
+   "Rem / ove" was the audit's measured proof. .sub keeps `anywhere`:
+   the intro sentence must be free to shrink inside the flexing title
+   row at any width. Cells that carry an unbreakable stem (file paths,
+   detail codes) sit in .mono or .help rows, which keep their own
+   `anywhere` rule — they were never governed by td. */
+:root.big td { overflow-wrap: break-word; }
+:root.big .sub { overflow-wrap: anywhere; }
+:root.big .ember-table .btn, :root.big .st, :root.big .lbl-pill { overflow-wrap: normal; }
+:root.big .ember-table th, :root.big .ember-table td { padding-left: var(--s2); padding-right: var(--s2); }
+/* The Batch 9 UI audit remedy (finding 2): with whole-word minima a
+   4-column table may genuinely exceed the content column at Largest.
+   It then scrolls INSIDE its own panel — a visible, deliberate
+   in-panel scrollbar — instead of crushing prose to single letters
+   (the old `anywhere` behavior) or pushing the whole screen wide.
+   The a11y scan exempts exactly this shape (a panel whose only child
+   is an ember-table). */
+:root.big .panel:has(> .ember-table) { overflow-x: auto; }
+:root.big .lineage li { flex-wrap: wrap; }
+:root.big .lineage .k { flex: 0 1 auto; flex-basis: 9rem; min-width: 0; }
+
+.nowrap { white-space: nowrap; }
+
+@media (max-width: 900px) {
+  .setup-grid { grid-template-columns: 1fr; gap: var(--s6); }
+  .split { flex-wrap: wrap; }
+  .split > div { flex: 1 1 45%; }
+  .titlerow, .finding { flex-wrap: wrap; }
+}
+
+/* ---------- app step 07 (Fix and close) — appended at the END: the
+   only new things the screen needs beyond the step-04 frame and the
+   step-03 components; values come only from tokens.css. ---------- */
+
+/* The undo bar sits in the title row (prototype); it may wrap inside
+   itself and takes the full row at the Largest text size. */
+.titlerow [data-testid='undo-bar'] { margin-top: 0; flex: 0 1 auto; min-width: 0; max-width: 100%; }
+:root.big .titlerow [data-testid='undo-bar'] { flex-basis: 100%; }
+:root.big [data-testid='undo-bar'] .kbd { display: none; }
+
+td.num .btn { margin-left: var(--s2); }
+
+/* ---------- [app 10] Settings (the approved prototype's .setrow,
+      .seg, .menu-list, .saved, .kbdkey — tokens only) ---------- */
+
+.setrow { display: flex; gap: var(--s7); padding: var(--s6) 0; border-bottom: 1px solid var(--line); }
+.setrow:last-child { border-bottom: 0; }
+.setrow .l { flex: 0 0 15rem; }
+.setrow .l b { display: block; }
+.setrow .l span { color: var(--ink-2); font-size: var(--type-label-size); }
+.setrow .r { flex: 1; min-width: 0; max-width: 34rem; }
+
+.seg { display: inline-flex; border: 1px solid var(--line-strong); border-radius: var(--radius); overflow: hidden; flex-wrap: wrap; }
+.seg button { background: var(--surface); border: 0; padding: var(--s3) var(--s5); cursor: pointer; font-weight: var(--type-heading-weight); min-height: 2.4rem; }
+.seg button + button { border-left: 1px solid var(--line-strong); }
+.seg button[aria-pressed='true'] { background: var(--ink); color: var(--surface); }
+
+.menu-list { list-style: none; margin: 0; padding: 0; }
+.menu-list li { display: flex; align-items: center; gap: var(--s3); padding: var(--s2) 0; border-bottom: 1px solid var(--line); }
+.menu-list li:last-child { border-bottom: 0; }
+.menu-list label { display: flex; align-items: center; gap: var(--s3); margin: 0; font-weight: 400; flex: 1; }
+
+.saved { color: var(--ink-2); font-size: var(--type-label-size); min-height: 1.2rem; margin: var(--s1) 0 0; }
+/* The Settings tab row holds five labels: it wraps instead of scrolling
+   at the Largest text step (the 200% floor, story 82). */
+.settings-tabs { flex-wrap: wrap; row-gap: 0; }
+.kbdkey { display: inline-block; padding: 0.1rem var(--s3); background: var(--surface-2); border: 1px solid var(--line-strong); border-radius: var(--radius); font-size: var(--type-label-size); font-weight: var(--type-heading-weight); margin-right: var(--s1); }
+.menu-list .btn--text { padding: var(--s1) var(--s2); }
+
+@media (max-width: 900px) {
+  .setrow { flex-direction: column; gap: var(--s4); }
+}
+:root.big .setrow { flex-direction: column; gap: var(--s3); }
+:root.big .setrow .l { flex-basis: auto; }
+
+/* ---------- App 08 (Clean up): the sidebar pending-count badge
+   (story 68; the approved prototype's .count rules, tokens only). The
+   badge sets no display of its own, so the hidden attribute truly
+   hides it. ---------- */
+.nav .count {
+  margin-left: auto;
+  font-size: var(--type-label-size); /* Label: the small badge text (DESIGN.md) */
+  font-weight: 600;
+  background: var(--sel-bg);
+  color: var(--sel-ink);
+  padding: 0 var(--s2);
+  border-radius: 9px;
+}
+.nav button[aria-current='true'] .count { background: var(--sel-ink); color: var(--sel-bg); }
+
+/* ---------- App 11 (ticket A40): the quick popup page (stories 90-95;
+   DESIGN.md Layout: "a 440px window with only Add and a path to the
+   full window". Frameless window, tokens only. The wrap rules keep the
+   step-03/05 components inside the 440px width at EVERY text size,
+   including the Largest step the a11y scan measures. ---------- */
+
+/* Everything is scoped to body.quick — the main window's body layout
+   (step 04's scrolled shell) must not feel this block at all. */
+body.quick { margin: 0; background: var(--ground); height: 100vh; overflow: hidden; }
+.quick-app { display: flex; flex-direction: column; height: 100vh; }
+.quick-top {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: var(--s3); padding: var(--s4) var(--s5);
+  background: var(--surface-2); border-bottom: 1px solid var(--line);
+}
+.quick-top .quick-title { font-weight: var(--type-heading-weight); }
+.quick-top .btn--text { padding: var(--s1) var(--s2); }
+.quick-pane { flex: 1; min-height: 0; overflow-y: auto; overflow-x: hidden; padding: var(--s5); }
+.quick-pane:focus { outline: none; } /* the frame's own focus target, not a control */
+
+/* Everything the Add screen reuses must wrap, never clip, in 440px: */
+.quick-pane .actions { flex-wrap: wrap; }
+.quick-pane .ember-table { table-layout: fixed; }
+.quick-pane .ember-table td, .quick-pane .ember-table th { word-break: break-word; }
+.quick-pane .source-verbatim { white-space: pre-wrap; word-break: break-word; }
+.quick-pane textarea, .quick-pane input[type='text'] { width: 100%; }
+.quick-pane .panel { max-width: 100%; }
+
+/* ---------- Keep safe spacing (design audit, measured): the four
+   blocks stacked with ZERO gap (panel bottoms = next panel tops), the
+   knowledge-base line touched the first panel, and the error/verdict
+   boxes touched the text above them. Groups sit apart (step 6, 20px),
+   short block gaps (step 4, 12px), the label-to-text gap comes from
+   .help's own step-2 margin once the screens' inline margin:0 is
+   gone. ---------- */
+[data-testid='keepsafe-pane'] .panel + .panel { margin-top: var(--s6); }
+[data-testid='keepsafe-pane'] .errbox { margin-top: var(--s4); }
+[data-testid='ks-kb-line'] { margin-bottom: var(--s4); }

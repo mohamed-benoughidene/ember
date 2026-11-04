@@ -1,0 +1,33 @@
+{
+  "name": "ember-app",
+  "version": "0.3.2",
+  "private": true,
+  "description": "Ember desktop app shell (L3 app step 02): Electron shell, bridge client, settings and key stores.",
+  "main": "main/main.js",
+  "license": "BUSL-1.1",
+  "scripts": {
+    "start": "electron .",
+    "test": "node test/run.js",
+    "test:design": "node test/run.js design",
+    "e2e": "node test/e2e/run-all.js",
+    "test:e2e": "node test/e2e/smoke.js",
+    "test:e2e:design": "node test/e2e/design.js",
+    "test:e2e:04": "node test/e2e/first-run-home-lookup.js",
+    "test:e2e:add": "node test/e2e/add.js",
+    "test:e2e:07": "node test/e2e/fix-close-undo.js",
+    "test:e2e:09": "node test/e2e/keep-safe.js",
+    "test:e2e:10": "node test/e2e/settings.js",
+    "test:e2e:11": "node test/e2e/popup.js",
+    "test:e2e:12": "node test/e2e/menus.js",
+    "test:e2e:13": "node test/e2e/no-network.js",
+    "test:e2e:08": "node test/e2e/cleanup.js",
+    "test:e2e:link": "node test/e2e/link.js",
+    "gallery": "electron gallery/main.js",
+    "check:launch": "node test/launch-check.js",
+    "package": "node scripts/pack.js"
+  },
+  "devDependencies": {
+    "electron": "45.1.0",
+    "playwright": "1.64.1"
+  }
+}

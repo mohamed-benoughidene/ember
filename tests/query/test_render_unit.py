@@ -57,10 +57,11 @@ def test_empty_input_renders_count_zero_and_no_error() -> None:
 def test_topic_search_document_round_trips_and_keys_match_the_model() -> None:
     hits = [SearchHit(item_id=1, score=0.5, type="Decision", statement="alpha", status="Active")]
 
-    document = json.loads(render_topic_search(hits, "alpha"))
+    document = json.loads(render_topic_search(hits, "alpha", total=1))
 
     assert document["mode"] == "topic_search"
     assert document["query"] == "alpha"
+    assert document["total"] == 1
     assert document["count"] == 1
     assert set(document["results"][0]) == set(SearchHit.model_fields)
 
@@ -86,7 +87,14 @@ def test_why_document_round_trips_and_keys_match_the_models() -> None:
 
     assert document["mode"] == "why"
     assert document["count"] == 1
-    assert set(document["item"]) == set(QueryItem.model_fields)
+    # The `why` item block is pinned to the pre-bridge key set (the raw
+    # byte-golden pins the same output): the read model grew the additive
+    # `source` / `validated` fields for the bridge reads, and `why`'s
+    # output must not change with it.
+    assert set(document["item"]) == set(QueryItem.model_fields) - {
+        "source",
+        "validated",
+    }
     assert set(document["reasons"][0]) == set(WhyReason.model_fields)
 
 

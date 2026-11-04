@@ -50,8 +50,11 @@ def compute_content_hash(raw_text: str) -> str:
 
 
 def default_title(raw_text: str) -> str:
-    """First 80 characters of the raw text."""
-    return raw_text[:TITLE_LENGTH]
+    """First non-blank line of the raw text, cut to 80 characters."""
+    for line in raw_text.splitlines():
+        if line.strip():
+            return line[:TITLE_LENGTH]
+    return ""
 
 
 def store_source(port: SourceStorePort, raw_text: str) -> StoredSource:

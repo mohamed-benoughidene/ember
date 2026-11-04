@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 import ember.adapters.sqlite as sqlite_adapter
+from ember.adapters.migrations import LATEST_VERSION
 from ember.adapters.sqlite import ensure_maintain_schema, open_maintain_database
 from ember.maintain.errors import (
     DbMigrationFailed as MaintainDbMigrationFailed,
@@ -119,4 +120,4 @@ def test_open_maintain_database_applies_all_migrations(db_path) -> None:
     conn = open_maintain_database(db_path)
 
     version = conn.execute("SELECT version FROM schema_version").fetchone()["version"]
-    assert version == 12
+    assert version == LATEST_VERSION

@@ -1,0 +1,143 @@
+/*
+ * Ember design tokens (L3 app step 03).
+ *
+ * Source of truth: docs/DESIGN.md (approved 2026-10-30) and the approved
+ * prototype docs/PROTOTYPE-ember-interface-v3.html. Every raw value below
+ * comes from those two files — nothing is invented here.
+ *
+ * Layers:
+ *   1. raw palettes: the Ledger Page (light) and Soot (dark) colours from
+ *      DESIGN.md, always defined, never switched;
+ *   2. role variables: which raw colour plays each interface role, per theme
+ *      (values taken from the approved prototype's :root blocks);
+ *   3. the spacing scale (--s1..--s7, rem so it scales with the text-size
+ *      setting), the one radius, the type scale and the five text-size steps.
+ *
+ * D3: tokens are defined ONCE, here. No CSS value of this shape may appear
+ * twice anywhere else; the token contract test (test/design-tokens.test.js)
+ * pins every name and value against DESIGN.md.
+ */
+
+:root {
+  /* --- raw palette: Ledger Page (light), DESIGN.md "Colors" --- */
+  --paper-ground: #D6CCBA;  /* window background */
+  --ledger-paper: #E9E2D4;  /* panels, tables, inputs, content area */
+  --aged-paper:   #DDD3C1;  /* notices and the title bar */
+  --worn-paper:   #CFC4B0;  /* selected table row, status tint */
+  --rule-line:    #CBBFAA;  /* panel and table separators */
+  --control-line: #8E8068;  /* input and button outlines */
+  --iron-ink:     #2B2118;  /* main text and the sidebar */
+  --faded-ink:    #5A4B3D;  /* secondary text */
+  --brick-wash:   #9C3B2B;  /* the one main button per screen */
+  --brick-deep:   #7A2D20;  /* main button hover */
+  --ember-heat:   #B8421F;  /* status marks only */
+  --ochre-wash:   #E0C88F;  /* the "Challenged" tint */
+  --ochre-ink:    #3A2A0A;  /* the "Challenged" tint text */
+
+  /* --- raw palette: Soot (dark), DESIGN.md "Colors" --- */
+  --soot-ground:     #14100E;
+  --soot-surface:    #1D1714;
+  --soot-raised:     #261E1A;
+  --soot-line:       #2E2520;
+  --soot-sidebar:    #0D0A09;
+  --soot-ink:        #EDEAE6;
+  --soot-faded-ink:  #B0ABA4;
+  --soot-heat:       #F08A3E;
+  --warm-apricot:    #F5C090;
+
+  /* --- roles: light theme (Ledger Page) — from the approved prototype --- */
+  --ground: var(--paper-ground);
+  --surface: var(--ledger-paper);
+  --surface-2: var(--aged-paper);
+  --surface-3: var(--worn-paper);
+  --line: var(--rule-line);
+  --line-strong: var(--control-line);
+  --ink: var(--iron-ink);
+  --ink-2: var(--faded-ink);
+  --heat: var(--ember-heat);
+  --accent: var(--brick-wash);        /* the one main button (DESIGN.md) */
+  --accent-hover: var(--brick-deep);
+  --accent-ink: #FFFFFF;              /* DESIGN.md button-primary textColor */
+  --focus: var(--brick-wash);
+  --danger: var(--brick-wash);
+  --sel-bg: var(--ledger-paper);      /* nav-item-selected */
+  --sel-ink: var(--iron-ink);
+  --warn-bg: var(--ochre-wash);
+  --warn-ink: var(--ochre-ink);
+  --nav-bg: var(--iron-ink);          /* "Iron Ink: main text and the sidebar" */
+  --nav-ink: var(--ledger-paper);
+  --banner-bg: var(--iron-ink);
+  --banner-ink: var(--ledger-paper);
+
+  /* --- spacing: the seven DESIGN.md steps, in rem (px below are at the
+         Default 15px root size) --- */
+  --s1: 0.267rem;  /*  4px  tight gaps: title to subtitle, list row padding */
+  --s2: 0.4rem;    /*  6px  label to field, field to help text */
+  --s3: 0.533rem;  /*  8px  sideways between controls, button vertical padding */
+  --s4: 0.8rem;    /* 12px  table cell sideways padding, short block gaps */
+  --s5: 1.067rem;  /* 16px  panel padding, button sideways padding */
+  --s6: 1.333rem;  /* 20px  window and content margin, between groups */
+  --s7: 2.133rem;  /* 32px  between major sections, settings row gap */
+
+  /* --- shape: one corner radius for controls and panels --- */
+  --radius: 6px;
+
+  /* --- type: the five DESIGN.md styles (Atkinson Hyperlegible Next/Mono) --- */
+  --font-body: 'Atkinson Hyperlegible Next', system-ui, -apple-system, 'Segoe UI', Roboto, 'Noto Sans', sans-serif;
+  --font-mono: 'Atkinson Hyperlegible Mono', ui-monospace, 'SF Mono', Menlo, Consolas, 'DejaVu Sans Mono', monospace;
+
+  --type-title-size: 1.6rem;        /* Title: one noun per screen */
+  --type-title-weight: 600;
+  --type-title-lh: 1.2;
+  --type-title-ls: -0.01em;
+  --type-heading-size: 1.1rem;      /* Heading: section names */
+  --type-heading-weight: 600;
+  --type-heading-lh: 1.5;
+  --type-body-size: 1rem;           /* Body: reading text, 65-75 chars */
+  --type-body-weight: 400;
+  --type-body-lh: 1.5;
+  --type-label-size: 0.87rem;       /* Label: field labels, table headers */
+  --type-label-weight: 500;
+  --type-label-lh: 1.5;
+  --type-figure-size: 1rem;         /* Figure: mono, numbers, dates, counts */
+  --type-figure-weight: 400;
+  --type-figure-lh: 1.5;
+
+  /* --- the Text Size Rule: five user-setting steps, DESIGN.md.
+         Largest (30px) is 200% of Default (15px). The active step is set
+         at runtime on the root element (see shared design text-scale). --- */
+  --text-small: 14px;
+  --text-default: 15px;
+  --text-large: 17px;
+  --text-larger: 22px;
+  --text-largest: 30px;
+}
+
+:root[data-theme='dark'] {
+  /* --- roles: dark theme (Soot) — from the approved prototype.
+         DESIGN.md: the dark main button is light (#EDEAE6 with dark text,
+         the Soot ink) so orange never means two things; the selected menu
+         row is Warm Apricot with Charred Wood text. --- */
+  --ground: var(--soot-ground);
+  --surface: var(--soot-surface);
+  --surface-2: var(--soot-raised);
+  --surface-3: #342A24;             /* prototype dark, raised-er (skeletons) */
+  --line: var(--soot-line);
+  --line-strong: #5C4E44;           /* prototype dark control line */
+  --ink: var(--soot-ink);
+  --ink-2: var(--soot-faded-ink);
+  --heat: var(--soot-heat);
+  --accent: var(--soot-ink);        /* light main button on dark */
+  --accent-hover: var(--warm-apricot);
+  --accent-ink: #17110E;            /* prototype dark button text */
+  --focus: var(--warm-apricot);
+  --danger: var(--warm-apricot);
+  --sel-bg: var(--warm-apricot);    /* Warm Apricot selected row */
+  --sel-ink: #3D0C02;               /* "Charred Wood", prototype */
+  --warn-bg: #4A2F14;               /* prototype dark challenged tint */
+  --warn-ink: var(--warm-apricot);
+  --nav-bg: var(--soot-sidebar);
+  --nav-ink: #E6E2DC;               /* prototype dark sidebar text */
+  --banner-bg: var(--soot-sidebar);
+  --banner-ink: #E6E2DC;
+}

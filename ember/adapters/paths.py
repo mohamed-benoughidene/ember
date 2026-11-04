@@ -16,4 +16,7 @@ def same_path(first: str, second: str) -> bool:
             return os.path.samefile(first, second)
         except OSError:
             return False
-    return os.path.abspath(first) == os.path.abspath(second)
+    # At least one path does not exist yet: resolve every symlink in the
+    # directory spelling so a symlinked path names the same file as the
+    # real path. Case stays the file system's own (Linux only).
+    return os.path.realpath(first) == os.path.realpath(second)

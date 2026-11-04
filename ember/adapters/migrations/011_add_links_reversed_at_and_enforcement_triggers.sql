@@ -8,14 +8,35 @@ DROP TABLE _guard_011;
 -- change_log (master plan rule 7). D5: new optional field, no rename.
 ALTER TABLE links ADD COLUMN reversed_at TEXT;
 
--- Backfill = the replay rule (§6) applied once at migration time.
+-- Backfill = the replay rule (§6) applied once at migration time. The
+-- replay reads a link's ledger rows by id order (maintain_lookup step 03:
+-- the HIGHEST-id marker among link_reversed / link_unreversed decides),
+-- so a link that was reversed and then un-reversed must end with
+-- reversed_at NULL. The EXISTS therefore pins the link's LAST
+-- link_reversed row AND requires that no later link_unreversed row
+-- follows it (chunk 11, finding 4.3 #18) — the guard keys off change_log
+-- rows for the same link, the reversal state's master data (D3).
 UPDATE links SET reversed_at = (
     SELECT cl.timestamp FROM change_log AS cl
     WHERE cl.link_id = links.id AND cl.field_changed = 'link_reversed'
     ORDER BY cl.id DESC LIMIT 1
 ) WHERE EXISTS (
     SELECT 1 FROM change_log AS cl
-    WHERE cl.link_id = links.id AND cl.field_changed = 'link_reversed'
+    WHERE cl.link_id = links.id
+      AND cl.field_changed = 'link_reversed'
+      -- cl is the LAST link_reversed row for this link...
+      AND cl.id = (
+          SELECT MAX(r.id) FROM change_log AS r
+          WHERE r.link_id = links.id
+            AND r.field_changed = 'link_reversed'
+      )
+      -- ...and NO later link_unreversed row undoes it.
+      AND NOT EXISTS (
+          SELECT 1 FROM change_log AS un
+          WHERE un.link_id = links.id
+            AND un.field_changed = 'link_unreversed'
+            AND un.id > cl.id
+      )
 );
 
 -- #17: pair table, 16 rows generated from compat.py TYPE_COMPAT (drift test §7).

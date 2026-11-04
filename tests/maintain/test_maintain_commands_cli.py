@@ -6,6 +6,8 @@ DB, and asserts the stable error code (not the message) on failure.
 
 from __future__ import annotations
 
+import hashlib
+import importlib.resources
 import sqlite3
 from pathlib import Path
 
@@ -112,6 +114,22 @@ def test_close_item_reversed_reason_exits_1_with_003(db_path) -> None:
     assert "MAINTAIN-003" in _error_text(result)
 
 
+def test_close_item_refuses_a_bad_reason_before_opening_the_database(
+    tmp_path,
+) -> None:
+    missing_db = str(tmp_path / "never-created.db")
+
+    result = _invoke(
+        ["close-item", "--item", "1", "--reason", "typo", "--db", missing_db]
+    )
+
+    assert result.exit_code == 1
+    stderr_lines = (getattr(result, "stderr", None) or "").splitlines()
+    assert len(stderr_lines) == 1
+    assert "MAINTAIN-002" in stderr_lines[0]
+    assert not Path(missing_db).exists()
+
+
 def test_close_item_twice_second_exits_1_with_004(db_path) -> None:
     Path(db_path).touch()
     _seed(db_path)
@@ -153,6 +171,32 @@ def test_close_item_dry_run_prints_close_and_dependents_writes_nothing(
     assert "item 1: Active -> Closed (invalidated)" in result.output
     assert "item 2: Active -> Challenged" in result.output
     assert _row_counts(db_path) == before
+
+
+def test_close_item_dry_run_output_ends_with_the_preview_marker(db_path) -> None:
+    Path(db_path).touch()
+    _seed(db_path)
+
+    result = _invoke(
+        [
+            "close-item",
+            "--item",
+            "1",
+            "--reason",
+            "invalidated",
+            "--dry-run",
+            "--format",
+            "text",
+            "--db",
+            db_path,
+        ]
+    )
+
+    assert result.exit_code == 0
+    output_lines = result.output.splitlines()
+    assert output_lines  # the report printed at least one line
+    for line in output_lines:
+        assert line.endswith(" (dry-run)"), line
 
 
 def test_set_status_to_closed_exits_1_with_006(db_path) -> None:
@@ -351,3 +395,146 @@ def test_maintain_cli_silent_on_preclear_evidence(db_path) -> None:
         conn.close()
     assert row[0] == "Active"
     assert row[1] == "manual"
+
+
+def test_edit_item_refuses_a_bad_field_before_opening_the_database(
+    tmp_path,
+) -> None:
+    missing_db = str(tmp_path / "never-created.db")
+
+    result = _invoke(
+        [
+            "edit-item",
+            "--item",
+            "1",
+            "--field",
+            "bogus",
+            "--value",
+            "x",
+            "--db",
+            missing_db,
+        ]
+    )
+
+    assert result.exit_code == 1
+    stderr_lines = (getattr(result, "stderr", None) or "").splitlines()
+    assert len(stderr_lines) == 1
+    assert "MAINTAIN-013" in stderr_lines[0]
+    assert not Path(missing_db).exists()
+
+
+# --- Dry-run on an older (v12) file never migrates or backs up (B4-02) ---
+#
+# The three human maintain dry-runs are reads: opening a v12 file must not
+# migrate it to 13 and must not write a `.bak-v12` pre-migration copy beside
+# it. Same build pattern as `_build_v12_db` in tests/test_db_check.py.
+
+_MIGRATIONS_TO_12 = (
+    "001_create_sources.sql",
+    "002_create_items.sql",
+    "003_create_change_log.sql",
+    "004_add_item_detail_columns.sql",
+    "005_create_ai_responses.sql",
+    "006_create_links.sql",
+    "007_create_item_embeddings.sql",
+    "008_add_change_log_link_fk.sql",
+    "009_drop_source_id_not_null_and_add_item_id.sql",
+    "010_add_item_close_reason.sql",
+    "011_add_links_reversed_at_and_enforcement_triggers.sql",
+    "012_add_items_metadata.sql",
+)
+
+
+def _build_v12_db(db_str: str) -> None:
+    """Build a real untouched v12 file (scripts 001-012, version stamped 12)."""
+    conn = sqlite3.connect(db_str)
+    conn.execute("CREATE TABLE schema_version (version INTEGER NOT NULL)")
+    conn.execute("INSERT INTO schema_version (version) VALUES (12)")
+    package = importlib.resources.files("ember.adapters.migrations")
+    for name in _MIGRATIONS_TO_12:
+        conn.executescript(package.joinpath(name).read_text(encoding="utf-8"))
+    source_id = insert_source(conn)
+    insert_item(conn, source_id=source_id, item_id=1, item_type="Decision")
+    insert_item(conn, source_id=source_id, item_id=2, item_type="Decision")
+    insert_link(conn, 2, 1, "depends_on")
+    conn.commit()
+    conn.close()
+
+
+def _file_sha256(db_str: str) -> str:
+    return hashlib.sha256(Path(db_str).read_bytes()).hexdigest()
+
+
+def _schema_version(db_str: str) -> int:
+    conn = sqlite3.connect(db_str)
+    try:
+        row = conn.execute("SELECT version FROM schema_version").fetchone()
+    finally:
+        conn.close()
+    return int(row[0])
+
+
+def _no_bak_file(db_str: str) -> bool:
+    return not list(Path(db_str).parent.glob(Path(db_str).name + ".bak-v*"))
+
+
+def test_close_item_dry_run_leaves_an_older_file_byte_identical(db_path) -> None:
+    _build_v12_db(db_path)
+    before_hash = _file_sha256(db_path)
+
+    result = _invoke(
+        [
+            "close-item",
+            "--item",
+            "1",
+            "--reason",
+            "invalidated",
+            "--dry-run",
+            "--db",
+            db_path,
+        ]
+    )
+
+    assert result.exit_code == 0
+    assert _schema_version(db_path) == 12
+    assert _file_sha256(db_path) == before_hash
+    assert _no_bak_file(db_path)
+
+
+def test_edit_item_dry_run_leaves_an_older_file_byte_identical(db_path) -> None:
+    _build_v12_db(db_path)
+    before_hash = _file_sha256(db_path)
+
+    result = _invoke(
+        [
+            "edit-item",
+            "--item",
+            "1",
+            "--field",
+            "rationale",
+            "--value",
+            "new text",
+            "--dry-run",
+            "--db",
+            db_path,
+        ]
+    )
+
+    assert result.exit_code == 0
+    assert _schema_version(db_path) == 12
+    assert _file_sha256(db_path) == before_hash
+    assert _no_bak_file(db_path)
+
+
+def test_remove_link_dry_run_leaves_an_older_file_byte_identical(db_path) -> None:
+    _build_v12_db(db_path)
+    before_hash = _file_sha256(db_path)
+
+    result = _invoke(
+        ["remove-link", "--link", "1", "--dry-run", "--db", db_path]
+    )
+
+    assert result.exit_code == 0
+    assert _schema_version(db_path) == 12
+    assert _file_sha256(db_path) == before_hash
+    assert _no_bak_file(db_path)

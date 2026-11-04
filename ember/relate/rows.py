@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from enum import Enum
+from typing import Protocol
 
 from pydantic import BaseModel
 
@@ -37,6 +38,18 @@ class Link(BaseModel):
     # Reversal timestamp from the paired maintain write (L2 hardening §6/§9).
     # NULL means the row is live and readers (rules 8/9) walk it.
     reversed_at: str | None = None
+
+
+class GroupIdPort(Protocol):
+    """Neutral undo-group id source (engine-undo-plan §5.1, rule B2).
+
+    The one construct Maintain and Capture share: each receives an
+    implementation by injection, and neither reaches into the other.
+    """
+
+    def next_group_id(self) -> int:
+        """Return the next ledger group id: `MAX(group_id)+1`, `1` when none."""
+        ...
 
 
 class ChangeLogEntry(BaseModel):

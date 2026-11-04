@@ -1,0 +1,179 @@
+'use strict';
+
+/**
+ * The shortcut + tray manager seams (plan §5.5, APP-005). Faked OS
+ * objects everywhere (T3); the real registration is step 11's story.
+ */
+
+const test = require('node:test');
+const assert = require('node:assert/strict');
+const { createShortcutManager, createTrayManager, registerSettingsShortcut, bootTrayFor } = require('../main/shortcuts');
+
+function fakeGlobalShortcut(result) {
+  const calls = [];
+  return {
+    calls,
+    register(accelerator, cb) {
+      calls.push({ accelerator, cb });
+      if (result instanceof Error) throw result;
+      return result;
+    },
+    unregisterAll() {},
+  };
+}
+
+test('a granted shortcut registers with the quick-add action and no failure', () => {
+  const failures = [];
+  let fired = false;
+  const globalShortcut = fakeGlobalShortcut(true);
+  const manager = createShortcutManager({
+    globalShortcut,
+    onFailure: (info) => failures.push(info),
+    onQuickAdd: () => {
+      fired = true;
+    },
+  });
+  const result = manager.register('CommandOrControl+Alt+E');
+  assert.deepEqual(result, { ok: true });
+  assert.deepEqual(failures, []);
+  assert.equal(globalShortcut.calls.length, 1);
+  globalShortcut.calls[0].cb();
+  assert.equal(fired, true, 'the callback was not wired to the shortcut');
+});
+
+test('a refused shortcut is APP-005 and the tray fallback is asked for', () => {
+  const failures = [];
+  const manager = createShortcutManager({
+    globalShortcut: fakeGlobalShortcut(false),
+    onFailure: (info) => failures.push(info),
+    onQuickAdd: () => {},
+  });
+  const result = manager.register('CommandOrControl+Alt+E');
+  assert.equal(result.ok, false);
+  assert.equal(result.error.code, 'APP-005');
+  assert.equal(result.error.name, 'ShortcutRegistrationFailed');
+  assert.equal(failures.length, 1);
+});
+
+test('an OS-level throw is also APP-005, never a crash', () => {
+  const failures = [];
+  const manager = createShortcutManager({
+    globalShortcut: fakeGlobalShortcut(new Error('no compositor')),
+    onFailure: (info) => failures.push(info),
+    onQuickAdd: () => {},
+  });
+  const result = manager.register('CommandOrControl+Alt+E');
+  assert.equal(result.ok, false);
+  assert.equal(result.error.code, 'APP-005');
+  assert.equal(failures.length, 1);
+  assert.ok(result.error.detail.includes('no compositor'));
+});
+
+test('an empty accelerator is APP-005 (nothing is registered "somehow")', () => {
+  const failures = [];
+  const globalShortcut = fakeGlobalShortcut(true);
+  const manager = createShortcutManager({
+    globalShortcut,
+    onFailure: (info) => failures.push(info),
+    onQuickAdd: () => {},
+  });
+  assert.equal(manager.register('').ok, false);
+  assert.equal(globalShortcut.calls.length, 0, 'nothing was registered');
+});
+
+test('an unchanged re-register never touches the OS again (fix #41 dedupe)', () => {
+  // Issue 41's ghost factory: every settings save re-registered the
+  // SAME key — on KDE Wayland the portal refuses the reused session
+  // handle yet answers true, so each save minted a stale entry and
+  // could drop a working bind. An unchanged key must be a no-op.
+  const globalShortcut = fakeGlobalShortcut(true);
+  const manager = createShortcutManager({ globalShortcut, onFailure: () => {}, onQuickAdd: () => {} });
+  assert.equal(manager.register('CommandOrControl+Alt+E').ok, true);
+  assert.equal(globalShortcut.calls.length, 1);
+  const result = registerSettingsShortcut({ manager, accelerator: 'CommandOrControl+Alt+E' });
+  assert.deepEqual(result, { ok: true, unchanged: true }, 'the save with the same key is a no-op');
+  assert.equal(globalShortcut.calls.length, 1, 'the OS saw no second registration');
+  assert.equal(manager.current(), 'CommandOrControl+Alt+E', 'the working bind is still the one the OS holds');
+});
+
+test('a CHANGED re-register forgets the old key, then tries the new one (real manager)', () => {
+  const globalShortcut = fakeGlobalShortcut(true);
+  const manager = createShortcutManager({ globalShortcut, onFailure: () => {}, onQuickAdd: () => {} });
+  assert.equal(manager.register('CommandOrControl+Alt+E').ok, true);
+  const result = registerSettingsShortcut({ manager, accelerator: 'CommandOrControl+Alt+K' });
+  assert.deepEqual(result, { ok: true });
+  assert.deepEqual(globalShortcut.calls.map((c) => c.accelerator), ['CommandOrControl+Alt+E', 'CommandOrControl+Alt+K']);
+  assert.equal(manager.current(), 'CommandOrControl+Alt+K');
+});
+
+test('a refused register leaves nothing current, so a later save retries', () => {
+  const globalShortcut = fakeGlobalShortcut(false);
+  const manager = createShortcutManager({ globalShortcut, onFailure: () => {}, onQuickAdd: () => {} });
+  assert.equal(manager.register('CommandOrControl+Alt+E').ok, false);
+  assert.equal(manager.current(), null);
+  const second = registerSettingsShortcut({ manager, accelerator: 'CommandOrControl+Alt+E' });
+  assert.equal(second.ok, false);
+  assert.equal(globalShortcut.calls.length, 2, 'the refused key was retried, not deduped away');
+  assert.equal(manager.current(), null);
+});
+
+test('the tray fallback builds the pinned three-item menu', () => {
+  const templates = [];
+  const TrayCtor = class FakeTray {
+    constructor(icon) {
+      this.icon = icon;
+    }
+    setToolTip(t) {
+      this.tooltip = t;
+    }
+    setContextMenu(menu) {
+      this.menu = menu;
+    }
+    destroy() {}
+  };
+  const MenuBuilder = { buildFromTemplate: (t) => (templates.push(t), { t }) };
+  const tray = createTrayManager({ TrayCtor, MenuBuilder, iconPath: null });
+  let quickAdd = false;
+  const result = tray.show({
+    onQuickAdd: () => {
+      quickAdd = true;
+    },
+    onOpenEmber: () => {},
+    onQuit: () => {},
+  });
+  assert.deepEqual(result, { ok: true });
+  assert.equal(tray.builtCount, 1);
+  const template = templates[0];
+  assert.deepEqual(
+    template.filter((entry) => entry.label).map((entry) => entry.label),
+    ['Quick add', 'Open Ember', 'Quit'],
+  );
+  template[0].click();
+  assert.equal(quickAdd, true);
+});
+
+test('bootTrayFor: the tray boots once a knowledge base is set, never before first run (fix #40)', () => {
+  // The tray is no longer an error-only artefact (issue 40): D-24's
+  // close-to-tray must always leave a reachable icon, even when the
+  // shortcut registration falsely "succeeds" (issue 41's portal lie).
+  // Same boot gate as the shortcut registration (story 90): before
+  // first run the wizard owns the screen and its own Quit is reachable.
+  assert.equal(bootTrayFor({ knowledgeBasePath: '', quickPopup: { shortcut: 'CommandOrControl+Alt+E' } }), false, 'no knowledge base chosen yet: no tray at boot');
+  assert.equal(bootTrayFor({}), false);
+  assert.equal(bootTrayFor(undefined), false);
+  assert.equal(bootTrayFor({ knowledgeBasePath: '/x/ember.db' }), true, 'a knowledge base is the boot gate');
+  assert.equal(bootTrayFor({ knowledgeBasePath: '   ' }), false, 'a blank path is not a knowledge base');
+});
+
+test('a tray failure reports honestly (the File -> Add text route remains)', () => {
+  const BrokenTray = class {
+    constructor() {
+      throw new Error('StatusNotifierWatcher missing');
+    }
+  };
+  const tray = createTrayManager({ TrayCtor: BrokenTray, MenuBuilder: { buildFromTemplate: () => ({}) } });
+  const result = tray.show({ onQuickAdd: () => {}, onOpenEmber: () => {}, onQuit: () => {} });
+  assert.equal(result.ok, false);
+  assert.equal(result.error.code, 'APP-005');
+  assert.ok(result.error.detail.includes('File -> Add text'), result.error.detail);
+});

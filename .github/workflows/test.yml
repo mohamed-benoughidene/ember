@@ -15,4 +15,102 @@ jobs:
       - name: Install the package and dev tools
         run: pip install -e ".[dev]"
       - name: Run the test suite (includes the architecture test, rule T9)
-        run: pytest
+        run: pytest -m "not live"
+
+  # App step 13 (decision 2, spec story 109): the desktop app is BUILT and
+  # LAUNCH-CHECKED on all three systems. Debian is the only real installer
+  # for V1 (no installer for Windows/macOS — deferred GitHub issue #38
+  # tracks them); these jobs prove only that the app starts, opens a
+  # throwaway knowledge base, runs one read command, prints the item
+  # count and exits 0. The full E2E suite stays Linux-only (step file §2).
+  app-launch-check:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: Create the venv the launch check reads
+        run: python -m venv .venv
+      - name: Install Ember into the venv (Linux/macOS)
+        if: runner.os != 'Windows'
+        run: .venv/bin/python -m pip install -e .
+      - name: Install Ember into the venv (Windows)
+        if: runner.os == 'Windows'
+        run: .venv\Scripts\python.exe -m pip install -e .
+      - name: Install the app's pinned dev dependencies (electron 45.1.0, playwright)
+        run: npm ci
+        working-directory: app
+      # Electron 45 ships its runtime download as an explicit installer
+      # (bin "install-electron"); the npm package has NO postinstall
+      # script, so `npm ci` alone leaves node_modules/electron/dist
+      # EMPTY on a fresh machine (npm ci finished in 1.6 s on the CI
+      # run of 2026-11-02 — proof). Download it explicitly here; the
+      # installer is idempotent (exits 0 when dist already exists).
+      # On Linux the sandbox fix must also run BEFORE npm test: the
+      # suite launches Electron once (the harness-no-key case) and
+      # aborts without a fixed sandbox helper.
+      - name: Download Electron's runtime (electron 45 ships no postinstall)
+        run: node node_modules/electron/install.js
+        working-directory: app
+      - name: Fix chrome-sandbox ownership and mode (Electron's sandbox helper)
+        if: runner.os == 'Linux'
+        run: sudo chown root:root node_modules/electron/dist/chrome-sandbox && sudo chmod 4755 node_modules/electron/dist/chrome-sandbox
+        working-directory: app
+      - name: The app's own import check (T9, renderer imports no Node) — Linux only
+        if: runner.os == 'Linux'
+        # The suite launches Electron once (the harness-no-key case).
+        # A CI runner has no X server of its own, and Chromium exits
+        # with "The platform failed to initialize" (the DBus error is
+        # only the last line its stderr shows) — the same reason the
+        # launch check below runs under xvfb.
+        run: xvfb-run --auto-servernum npm test
+        working-directory: app
+      - name: Install-size report (the bundled Electron runtime)
+        run: |
+          node -e "const fs=require('fs');function du(p){let s=0;for(const e of fs.readdirSync(p,{withFileTypes:true})){const f=p+'/'+e.name;s+=e.isDirectory()?du(f):fs.statSync(f).size}return s};for(const d of ['app/node_modules/electron/dist','app/node_modules/playwright']){try{console.log(d,Math.round(du(d)/1048576)+' MB')}catch(e){console.log(d,'missing')}}"
+      - name: Launch check (story 109) — Linux needs a virtual display
+        if: runner.os == 'Linux'
+        run: xvfb-run --auto-servernum npm run check:launch --prefix app
+      - name: Launch check (story 109) — macOS
+        if: runner.os == 'macOS'
+        run: npm run check:launch --prefix app
+      - name: Launch check (story 109) — Windows
+        if: runner.os == 'Windows'
+        run: npm run check:launch --prefix app
+
+  # Story 34 (decision 7, spec §Infra-1, D-13): the full E2E suite runs
+  # in CI on a virtual screen, with the fake engine stub and a throwaway
+  # config (never the developer's own settings, never real AI keys).
+  app-e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: Create the venv the e2e reads
+        run: python -m venv .venv
+      - name: Install Ember into the venv
+        run: .venv/bin/python -m pip install -e .
+      - name: Install the app's pinned dev dependencies (electron 45.1.0, playwright)
+        run: npm ci
+        working-directory: app
+      # Same reason as the launch-check job: electron 45 has no
+      # postinstall; without this step dist is empty and every Electron
+      # launch would lazily download mid-run (hidden, slow, and AFTER
+      # the sandbox fix below would already have failed on the missing
+      # file).
+      - name: Download Electron's runtime (electron 45 ships no postinstall)
+        run: node node_modules/electron/install.js
+        working-directory: app
+      - name: Fix chrome-sandbox ownership and mode (Electron's sandbox helper)
+        run: sudo chown root:root node_modules/electron/dist/chrome-sandbox && sudo chmod 4755 node_modules/electron/dist/chrome-sandbox
+        working-directory: app
+      - name: Run the E2E suite under xvfb (fake engine, fake AI, throwaway config)
+        run: env -u EMBER_AI_API_KEY -u OPENROUTER_API_KEY XDG_CONFIG_HOME=$(mktemp -d) xvfb-run --auto-servernum npm run e2e
+        working-directory: app

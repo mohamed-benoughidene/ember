@@ -44,3 +44,15 @@ class EmbeddingStorePort(Protocol):
         Raise `RELATE-019 EmbeddingWriteFailed` on a write failure.
         """
         ...
+
+    def delete(self, item_id: int) -> None:
+        """Delete one cached vector row, for repairing a damaged cache.
+
+        The candidate pool's repair use: a wrong-length vector or a row whose
+        blob cannot decode is deleted, then immediately re-encoded and
+        re-upserted. The cache is derived, rebuildable data, so deleting one
+        row loses nothing.
+
+        Raise `RELATE-019 EmbeddingWriteFailed` on a write failure.
+        """
+        ...

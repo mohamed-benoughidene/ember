@@ -19,6 +19,9 @@ Thumbs.db
 __pycache__/
 *.py[cod]
 .venv/
+# A lane worktree may SYMLINK .venv to a shared virtualenv (a symlink
+# is not matched by the directory pattern above, but must never ship).
+.venv
 *.egg-info/
 .pytest_cache/
 build/
@@ -38,3 +41,6 @@ uv.lock
 # Local secrets and env files, never committed
 .env
 *.env
+
+# Desktop app deps (never tracked)
+app/node_modules/

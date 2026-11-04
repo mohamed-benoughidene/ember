@@ -1,0 +1,2 @@
+item 1: Closed -> Active
+closed: 0, challenged: 0, reopened: 1, unchanged: 1

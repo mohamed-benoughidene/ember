@@ -48,14 +48,23 @@ class FakeMaintainStore:
         self.origins: list[tuple[int, str]] = []
         self.reversals: list[tuple[StatusChange, ChangeLogEntry]] = []
 
-    def apply_status_changes(self, changes: list[StatusChange]) -> int:
+    def apply_status_changes(
+        self, changes: list[StatusChange], group_id: int | None = None
+    ) -> int:
         self.applied_changes.append(list(changes))
         return len(changes)
 
-    def apply_status_origin(self, item_id: int, origin: str) -> None:
+    def apply_status_origin(
+        self, item_id: int, origin: str, group_id: int | None = None
+    ) -> None:
         self.origins.append((item_id, origin))
 
-    def apply_reversal(self, change: StatusChange, marker: ChangeLogEntry) -> int:
+    def apply_reversal(
+        self,
+        change: StatusChange,
+        marker: ChangeLogEntry,
+        group_id: int | None = None,
+    ) -> int:
         self.reversals.append((change, marker))
         return 1
 

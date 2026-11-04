@@ -36,3 +36,13 @@ def test_digits_are_tokens() -> None:
 def test_punctuation_only_and_empty_yield_no_tokens() -> None:
     assert tokenize("!!! ???") == []
     assert tokenize("   ") == []
+
+
+def test_nfc_then_casefold() -> None:
+    """NFC-normalize first, then full case folding, before splitting."""
+    # NFD cafe-with-acute (e + combining mark) and NFC (U+00E9) are one token.
+    assert tokenize("caf\u0065\u0301") == tokenize("caf\u00e9") == ["caf\u00e9"]
+    # Full case folding: STRASSE and Straße both fold to strasse.
+    assert tokenize("STRASSE") == tokenize("Stra\u00dfe") == ["strasse"]
+    # Dotted capital I folds identically in both spellings.
+    assert tokenize("\u0130stanbul") == tokenize("\u0130STANBUL")

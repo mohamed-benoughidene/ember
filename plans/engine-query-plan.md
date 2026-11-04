@@ -777,3 +777,7 @@ Continue from QUERY-005; numbers never reused. Verified no `FilterInvalid` / `Si
 | T10 | one golden fixture file; the hash test already exists — no harness bloat. |
 
 **Untouched, said untouched:** B2 (`QueryLookupPort` unchanged — §D), B4; D1 (nothing written — hash proof stays), D2, D3, D5, D6, D7, D8 (no AI call); P2, P4 (no new port, no new layer); I8 (empty result still not an error), I13 (no config), I14, I15, I16, I20's format; T2 (side-effect edges unchanged), T7, T8 (no AI), T9 (no new imports; architecture test unchanged), S2, S4.
+
+## Amendment: Undo read side (built 2026-10-30, commit `Undo 05`)
+
+§4.6's vocabulary grows additively (`plans/engine-undo-plan.md` §5.6): every `user_undo` / `user_redo` inverse row re-renders as the SAME kind its original pair maps to — a status row stays `status_changed` and keeps its `close_reason`, now derived by the PUBLIC `split_status_value` from `ember.maintain.rows` (maintain rows.py, never a private Query splitter). The pointers get the new kinds `undone` (`undo_of` / `user_undo`) and `redone` (`redo_of` / `user_redo`), and the reversal-undo marker `link_unreversed` / `user_undo` gets its sibling kind `link_unreversed`. `unknown` remains the fallback for anything else. Nothing previously classified changed meaning; no new Query error codes.

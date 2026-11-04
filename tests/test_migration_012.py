@@ -14,6 +14,7 @@ import pytest
 
 import ember.adapters.sqlite as sqlite_adapter
 from ember.adapters.sqlite import open_database
+from ember.capture.errors import DbOpenFailed as CaptureDbOpenFailed
 from tests.fakes import FIXED_TIME, insert_item, insert_source
 
 _MIGRATIONS_TO_11 = (
@@ -69,6 +70,24 @@ def _build_v11_db(db_path: str) -> None:
 
 def _rows(conn: sqlite3.Connection, sql: str) -> list[tuple]:
     return [tuple(row) for row in conn.execute(sql).fetchall()]
+
+
+def _pre_migration_snapshot(db_path: str) -> Path:
+    """The one timestamped `.bak-<UTC stamp>-<hex>` pre-migration snapshot.
+
+    Since B4-16 the runner names the copy `<db>.bak-<stamp>-<6hex>`, never
+    again the reusable `.bak-v<version>`, so a repeated run leaves its own
+    snapshot instead of overwriting one file.
+    """
+    directory = Path(db_path).parent
+    name = Path(db_path).name
+    snapshots = sorted(
+        p
+        for p in directory.glob(f"{name}.bak-*")
+        if not p.name.startswith(f"{name}.bak-v")  # the legacy family
+    )
+    assert len(snapshots) == 1, f"expected one snapshot, got {snapshots}"
+    return snapshots[0]
 
 
 def test_migration_012_adds_nullable_metadata_column(db_path) -> None:
@@ -142,12 +161,27 @@ def test_migration_012_preserves_existing_schema(db_path) -> None:
     raw.close()
 
     # No object was renamed, rebuilt or dropped. ADD COLUMN rewrites the stored
-    # CREATE text of `items`, so its truth comes from the column diff below.
+    # CREATE text of `items`, `change_log` and `item_embeddings`, so their
+    # truth comes from the column diff below.
     for name, sql in objects_before.items():
-        if name != "items":
+        if name not in {"items", "change_log", "item_embeddings"}:
             assert objects_after[name] == sql
     for table in tables:
         if table == "items":
+            continue
+        # 013 rides every open, and 014 appends its own nullable column
+        # (source_id) after 013's group_id. 015 appends the cache's optional
+        # format tag to item_embeddings.
+        if table == "change_log":
+            assert columns_after[table] == columns_before[table] + [
+                (8, "group_id", "INTEGER", 0, None, 0),
+                (9, "source_id", "INTEGER", 0, None, 0),
+            ]
+            continue
+        if table == "item_embeddings":
+            assert columns_after[table] == columns_before[table] + [
+                (4, "vector_format", "TEXT", 0, None, 0)
+            ]
             continue
         assert columns_after[table] == columns_before[table], table
     # items gains exactly one trailing nullable column.
@@ -177,7 +211,8 @@ def test_fresh_install_applies_all_migrations_through_012(db_path) -> None:
     conn = open_database(db_path)
 
     version = conn.execute("SELECT version FROM schema_version").fetchone()[0]
-    assert version == 12
+    # Fresh installs go through 012 AND everything after it (014 today).
+    assert version >= 13
     triggers = {
         row["name"]
         for row in conn.execute(
@@ -210,19 +245,19 @@ def test_failed_migration_leaves_intact_prior_database_012(
         lambda: real_scripts[:11] + [(12, "CREATE TABLE half;\nTHIS IS NOT SQL;")],
     )
 
-    with pytest.raises(sqlite3.Error):
+    with pytest.raises(CaptureDbOpenFailed):
         open_database(db_path)
 
     # The prior database file is intact at v11, and the pre-migration backup
-    # was taken before the failing script ran.
+    # was taken before the failing script ran — its own timestamped
+    # snapshot (B4-16), a healthy copy at the pre-migration version.
     raw = sqlite3.connect(db_path)
     assert raw.execute("SELECT version FROM schema_version").fetchone()[0] == 11
     assert _rows(raw, f"SELECT {_ITEM_COLUMNS} FROM items ORDER BY id") == items_before
     raw.close()
 
-    backup_path = Path(f"{db_path}.bak-v11")
-    assert backup_path.is_file()
-    backup = sqlite3.connect(backup_path)
+    backup = sqlite3.connect(str(_pre_migration_snapshot(db_path)))
+    assert backup.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
     assert backup.execute("SELECT version FROM schema_version").fetchone()[0] == 11
     assert (
         _rows(backup, f"SELECT {_ITEM_COLUMNS} FROM items ORDER BY id") == items_before

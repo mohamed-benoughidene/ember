@@ -8,6 +8,8 @@ candidates whose evidence does not beat the item's latest manual clear.
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 from ember.maintain.rows import ItemState, MaintainSnapshot, StatusChange
 from ember.relate.rows import ChangeLogEntry
 
@@ -93,33 +95,44 @@ def merge_and_filter(
     return sorted(chosen.values(), key=lambda change: change.item_id)
 
 
-def _shield_sort_key(row: ChangeLogEntry) -> tuple[str, int]:
-    """Return the row's `(timestamp, id)` ordering key (the history sort
-    convention: timestamps are UTC `isoformat()`, so the string compare is
-    chronological, and equal timestamps go to the higher id). A missing id
-    counts as 0: store rows always carry ids, and the fallback only keeps
-    the rule total on synthetic snapshots."""
-    return (row.timestamp, row.id if row.id is not None else 0)
+def _shield_sort_key(row: ChangeLogEntry) -> tuple[datetime, int]:
+    """Return the row's `(instant, id)` ordering key (the history sort
+    convention: the timestamp string is PARSED with `fromisoformat` and the
+    comparison uses the instant, so offsets like `+02:00` order by real
+    time, not by text (finding 4.6 #7); equal instants go to the higher id.
+    A missing id counts as 0: store rows always carry ids, and the fallback
+    only keeps the rule total on synthetic snapshots. Fail-closed: a
+    timestamp that cannot be parsed sorts as the oldest instant, never
+    wins, and never raises."""
+    try:
+        moment = datetime.fromisoformat(row.timestamp)
+        if moment.tzinfo is None:
+            moment = moment.replace(tzinfo=timezone.utc)
+    except ValueError:
+        moment = datetime.min.replace(tzinfo=timezone.utc)
+    return (moment, row.id if row.id is not None else 0)
 
 
 def _latest_clear(
     shield_log: list[ChangeLogEntry], item_id: int
 ) -> ChangeLogEntry | None:
     """Return the item's latest manual-clear row, latest = max
-    `(timestamp, id)` (L2 §13.3). A clear is exactly the row
-    `apply_status_origin` writes: `field_changed='status_origin'`,
-    `trigger_cause='user_set_status'`, `new_value='manual'`. Older clears
-    are inert. Only clears set the boundary: the re-arm rows of this
-    amendment (`new_value='derived'`, cause `sweep_rearm`) can never read
-    back as one."""
+    `(timestamp, id)` (L2 §13.3). A clear is the row
+    `apply_status_origin` writes (`field_changed='status_origin'`,
+    `new_value='manual'`, cause `user_set_status`) — or the same-shaped row
+    a redo of a clear writes (cause `user_redo`, undo step 03), so a redo
+    re-sets the shield boundary to the redo time. Older clears are inert.
+    An undo of a clear (`new_value='derived'`) is never one, and neither
+    are the re-arm rows of this amendment (`new_value='derived'`, cause
+    `sweep_rearm`): only `new_value='manual'` sets the boundary."""
     best: ChangeLogEntry | None = None
-    best_key: tuple[str, int] | None = None
+    best_key: tuple[datetime, int] | None = None
     for row in shield_log:
         if row.item_id != item_id:
             continue
         if (
             row.field_changed != "status_origin"
-            or row.trigger_cause != "user_set_status"
+            or row.trigger_cause not in ("user_set_status", "user_redo")
             or row.new_value != "manual"
         ):
             continue
@@ -135,7 +148,7 @@ def _evidence_row(
     """Return the link's `link_confirmed` ledger row (L2 §13.2): the pinned
     evidence event for every derived cause family, one deterministic source."""
     best: ChangeLogEntry | None = None
-    best_key: tuple[str, int] | None = None
+    best_key: tuple[datetime, int] | None = None
     for row in shield_log:
         if row.field_changed != "link_confirmed" or row.link_id != link_id:
             continue

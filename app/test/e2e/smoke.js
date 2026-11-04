@@ -1,0 +1,184 @@
+'use strict';
+
+// [shortcut graveyard fix] Boots here must not really register the global
+// shortcut — every real bind left a stale KDE portal entry on the founder's
+// machine. Nothing in this file asserts registration; the scenarios that do
+// (popup.js, settings.js) opt out explicitly.
+process.env.EMBER_APP_SHORTCUT_REFUSED ??= '1';
+
+/**
+ * The Playwright E2E walking skeleton (dev-only, Linux) — same
+ * guarantees as the step-02 smoke, now over the real step-04 shell:
+ *
+ *  1. the app boots into Home (settings seeded with the KB override),
+ *  2. the preload seam answers (`window.ember.ping()` and the full
+ *     runtime allowlist — the renderer sees EXACTLY the named calls),
+ *  3. real read-command data reaches the DOM (the counts panel),
+ *  4. the page world has no `process`/`require` (sandbox +
+ *     contextIsolation),
+ *  5. no error banner.
+ *
+ * The bridge runs against the fake ember stub (FAKE_MODE=app) so the
+ * smoke is deterministic and independent of the Python venv. The
+ * XDG_CONFIG_HOME points into a throwaway directory, so the smoke
+ * never touches the developer's own settings.
+ */
+
+const { _electron } = require('playwright');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
+const { APP_ROOT } = require('../util');
+const { launchShell } = require('./helpers/shell.js');
+
+const EXPECTED_API = [
+  'ping',
+  'getState',
+  'saveSettings',
+  'crashReport',
+  'crashReportFolder',
+  'kbStatus',
+  'pickKnowledgeBaseFile',
+  'listItems',
+  'topicSearch',
+  'showItem',
+  'history',
+  'currentState',
+  'maintainDryRun',
+  'keyStatus',
+  'setKey',
+  'setSessionKey',
+  'removeKey',
+  /* App 05 (ticket A34): the Add confirm-session joins the pinned
+     surface: three invoke calls, the buffered attach, two event
+     subscriptions. */
+  'startAdd',
+  'answerAdd',
+  'stopAdd',
+  'attachAdd',
+  'onAddEvent',
+  'onAddExit',
+  // App step 09 (Keep safe) — appended as this step's own block.
+  'pickSaveFile',
+  'backupTo',
+  'exportTo',
+  'dbCheck',
+  'switchKnowledgeBase',
+  // app step 07 (Fix and close), appended at the END
+  'fixAction',
+  'undoPlan',
+  // App 10 (ticket A39): the Settings panes join the pinned surface.
+  'registerShortcut',
+  'keyHint',
+  'shortcutStatus', // fix #42: the pane's real shortcut status line
+  // App 08 (ticket A37): the Clean up screen joins the pinned surface —
+  // preview and apply only; the session's answer()/stop() ride the
+  // handle maintainApply returns, and its events ride the
+  // ember:maintainEvent push channel (neither is a window-level name).
+  'maintainPreview',
+  'maintainApply',
+  /* App 06 (ticket A35): the Link items confirm-session joins the
+     pinned surface at the END: four invoke calls, the buffered
+     attach, two event subscriptions. */
+  'startRelate',
+  'answerRelate',
+  'stopRelate',
+  'attachRelate',
+  'onRelateEvent',
+  'onRelateExit',
+  // App 11 (ticket A40): the quick popup joins the pinned surface —
+  // the always-works route to it, the popup's route back to the full
+  // window (93/94), and the push subscription for the setup request.
+  'openQuickPopup',
+  'quickOpenMain',
+  'onOpenRequest',
+  // App 12 (ticket A41): the application menu's one push subscription.
+  'onMenuRequest',
+  // Batch 5 (story 13): the renderer's text-field focus reporter the
+  // Edit menu's role-vs-Ember switching reads.
+  'textFocusChanged',
+  /* Batch 6 Chunk 13 (D-07/D-09/D-10): "Forget this note" joins the
+     pinned surface — the permanent write and the itemless-sources
+     read (the Add screen's note-naming read; Cleanup rides it in
+     Chunk 14). */
+  'forgetSource',
+  'listSourcesWithoutItems',
+];
+
+async function main() {
+  const workDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ember-smoke-'));
+  const { app, workDir: work } = await launchShell({ workDir, mode: 'app' });
+  void work;
+  try {
+    const win = await app.firstWindow();
+
+    // 1. the shell renders: sidebar + Home pane
+    await win.waitForSelector('[data-testid="home-pane"]');
+    const navButtons = await win.locator('#nav button').count();
+    if (navButtons !== 8) throw new Error(`expected the eight job buttons in the sidebar, saw ${navButtons}`);
+
+    // 2. real read-command data reaches the DOM (5 items in the fixture)
+    await win.waitForSelector('[data-testid="counts-panel"]');
+    const total = await win.textContent('[data-testid="count-total"]');
+    if (total.trim() !== '5') throw new Error(`the total count from list-items should be 5, saw ${total.trim()}`);
+
+    // 3. the preload seam answers from the PAGE world
+    const pong = await win.evaluate(() => window.ember.ping());
+    if (pong !== 'pong') throw new Error(`window.ember.ping() returned ${JSON.stringify(pong)}`);
+
+    // 4. the runtime allowlist is EXACTLY the named list (B5)
+    //    (App 05 adds the six Add-session calls; see EXPECTED_API)
+    const runtimeApi = await win.evaluate(() => Object.keys(window.ember).sort());
+    if (JSON.stringify(runtimeApi) !== JSON.stringify([...EXPECTED_API].sort())) {
+      throw new Error(`window.ember exposes ${JSON.stringify(runtimeApi)}, expected exactly ${JSON.stringify(EXPECTED_API)}`);
+    }
+
+    // 5. no Node in the page world (T9 at runtime)
+    const leaked = await win.evaluate(() => ({
+      process: typeof process,
+      require: typeof window.require,
+      nodeRequire: typeof window.nodeRequire,
+    }));
+    if (leaked.process !== 'undefined' || leaked.require !== 'undefined' || leaked.nodeRequire !== 'undefined') {
+      throw new Error(`Node leaked into the renderer: ${JSON.stringify(leaked)}`);
+    }
+
+    // 6. no notice banner, no boot error
+    const banner = await win.locator('#top-banner').innerHTML();
+    if (banner.trim() !== '') throw new Error(`a notice banner appeared: ${banner.slice(0, 200)}`);
+
+    // 7. the window floor (Batch 9 UI audit, finding 3): at the Largest
+    //    text size the sidebar alone is 11rem = 330px, so a window
+    //    narrower than ~800px cannot render the screens readably —
+    //    tables scroll their panels and the title row starves. The
+    //    shell refuses to shrink below the 800px floor instead.
+    const WINDOW_FLOOR = 800;
+    await app.evaluate(({ BrowserWindow }, floor) => {
+      const win = BrowserWindow.getAllWindows()[0];
+      win.setBounds({ width: 300, height: 400 });
+      const { width, height } = win.getBounds();
+      if (width < floor) throw new Error(`window width ${width} is below the ${floor}px floor (finding 3)`);
+      if (height < 400) throw new Error(`window height ${height} is below the requested 400px (height stays free)`);
+    }, WINDOW_FLOOR);
+
+    process.stdout.write('e2e smoke OK: real shell boots into Home, the counts from list-items reach the DOM (total 5), the seam answers exactly the pinned 47-name allowlist, no Node in the page world\n');
+  } finally {
+    // The step-11 portal-registered global shortcut can hold the app
+    // past a plain close(): bound it, then SIGKILL the Electron process
+    // if it will not exit within 5s (dev-only harness; the assertions
+    // have all run by this point).
+    await Promise.race([
+      app.close(),
+      new Promise((resolve) => setTimeout(() => {
+        try { app.process().kill('SIGKILL'); } catch { /* already gone */ }
+        resolve();
+      }, 5000)),
+    ]);
+    fs.rmSync(workDir, { recursive: true, force: true });
+  }
+}
+
+main().catch((err) => {
+  process.stderr.write(`e2e smoke FAILED: ${err.message}\n`);
+  process.exit(1);
+});

@@ -105,6 +105,23 @@ def test_upsert_stores_a_little_endian_float32_blob(db_path) -> None:
     assert struct.unpack(f"<{len(VECTOR_A)}f", blob) == pytest.approx(VECTOR_A)
 
 
+def test_upsert_tags_the_row_with_the_vector_format(db_path) -> None:
+    """The cache's format tag (finding 4.8 #7): every row an upsert writes
+    carries the ONE format `ember.relate.vector_format` defines —
+    little-endian float32. A pre-tag row (NULL, or a pre-015 file without
+    the column) reads as the same float32, so a future second format can
+    never pass as an untouched row."""
+    conn = open_database(db_path)
+    _seed_items(conn, 1)
+
+    SqliteEmbedderStore(conn).upsert(1, VECTOR_A, MODEL_A)
+
+    row = conn.execute(
+        "SELECT vector_format FROM item_embeddings WHERE item_id = 1"
+    ).fetchone()
+    assert row["vector_format"] == "float32"
+
+
 def test_upsert_stores_model_name_and_embedded_at_from_the_clock(db_path) -> None:
     conn = open_database(db_path)
     _seed_items(conn, 1)

@@ -24,7 +24,7 @@ def _items_from(rows: list[dict]) -> list:
 def test_scores_match_the_hand_computed_golden_fixture() -> None:
     items = _items_from(GOLDEN["corpus"])
 
-    hits = topic_search(items, GOLDEN["query"])
+    hits = topic_search(items, GOLDEN["query"])[1]
 
     expected = GOLDEN["expected"]
     assert [hit.item_id for hit in hits] == [row["item_id"] for row in expected]
@@ -44,7 +44,7 @@ def test_golden_fixture_ties_are_broken_by_item_id() -> None:
 def test_term_present_in_every_document_still_scores_above_zero() -> None:
     items = [make_item(i, statement="alpha") for i in (1, 2, 3)]
 
-    hits = topic_search(items, "alpha")
+    hits = topic_search(items, "alpha")[1]
 
     assert len(hits) == 3
     assert all(hit.score > 0 for hit in hits)
@@ -53,11 +53,11 @@ def test_term_present_in_every_document_still_scores_above_zero() -> None:
 def test_every_statement_tokenizing_to_nothing_returns_empty() -> None:
     items = [make_item(1, statement="!!!"), make_item(2, statement="???")]
 
-    assert topic_search(items, "alpha") == []
+    assert topic_search(items, "alpha") == (0, [])
 
 
 def test_empty_corpus_returns_an_empty_list() -> None:
-    assert topic_search([], "alpha") == []
+    assert topic_search([], "alpha") == (0, [])
 
 
 def test_item_without_a_query_token_is_not_a_result() -> None:
@@ -66,7 +66,7 @@ def test_item_without_a_query_token_is_not_a_result() -> None:
         make_item(2, statement="alpha delta"),
     ]
 
-    hits = topic_search(items, "alpha")
+    hits = topic_search(items, "alpha")[1]
 
     assert [hit.item_id for hit in hits] == [2]
 
@@ -74,8 +74,8 @@ def test_item_without_a_query_token_is_not_a_result() -> None:
 def test_repeated_query_terms_are_counted_once() -> None:
     items = [make_item(1, statement="alpha beta")]
 
-    once = topic_search(items, "alpha")
-    twice = topic_search(items, "alpha alpha")
+    once = topic_search(items, "alpha")[1]
+    twice = topic_search(items, "alpha alpha")[1]
 
     assert once[0].score == pytest.approx(twice[0].score)
 
@@ -83,9 +83,43 @@ def test_repeated_query_terms_are_counted_once() -> None:
 def test_hit_carries_the_item_fields() -> None:
     items = [make_item(7, statement="alpha", status="Closed", item_type="Question")]
 
-    hit = topic_search(items, "alpha")[0]
+    hit = topic_search(items, "alpha")[1][0]
 
     assert hit.item_id == 7
     assert hit.status == "Closed"
     assert hit.type == "Question"
     assert hit.statement == "alpha"
+
+
+def test_matching_ignores_encoding_and_case() -> None:
+    """NFD cafe-accented matches NFC cafe-accented; STRASSE matches Straße.
+
+    D-17: the tokenizer NFC-normalizes, so the decomposed and composed
+    spellings of cafe-with-acute are one word, but accents keep their
+    meaning, so plain "cafe" must not match.
+
+    N22 pins a known limit, not a bug: case-folding the dotted capital I
+    yields i + combining dot above, and the tokenizer splits on combining
+    marks, so a word that differs from another only by a combining mark
+    never matches the plain form ("istanbul" does not find "\u0130stanbul").
+    Fixing it (stripping or keeping combining marks) conflicts with the
+    accent rule D-17, so the limit is pinned here instead of fixed.
+    """
+    items = [
+        make_item(1, statement="caf\u00e9 review"),
+        make_item(2, statement="Stra\u00dfe migration"),
+        make_item(3, statement="\u0130stanbul trip"),
+    ]
+
+    # NFD cafe-accented query finds the NFC cafe-accented item.
+    assert [hit.item_id for hit in topic_search(items, "caf\u0065\u0301")[1]] == [1]
+
+    # Full case folding: STRASSE finds the Straße item.
+    assert [hit.item_id for hit in topic_search(items, "STRASSE")[1]] == [2]
+
+    # Accents count (D-17): plain cafe finds none of them.
+    assert topic_search(items, "cafe") == (0, [])
+
+    # The N22 limit: istanbul finds NOTHING, while \u0130STANBUL finds item 3.
+    assert topic_search(items, "istanbul") == (0, [])
+    assert [hit.item_id for hit in topic_search(items, "\u0130STANBUL")[1]] == [3]

@@ -14,6 +14,7 @@ import pytest
 
 import ember.adapters.sqlite as sqlite_adapter
 from ember.adapters.sqlite import open_database
+from ember.capture.errors import DbOpenFailed as CaptureDbOpenFailed
 from tests.fakes import FIXED_TIME, insert_item, insert_link, insert_source
 
 _MIGRATIONS_TO_10 = (
@@ -106,6 +107,24 @@ def _rows(conn: sqlite3.Connection, sql: str) -> list[tuple]:
     return [tuple(row) for row in conn.execute(sql).fetchall()]
 
 
+def _pre_migration_snapshot(db_path: str) -> Path:
+    """The one timestamped `.bak-<UTC stamp>-<hex>` pre-migration snapshot.
+
+    Since B4-16 the runner names the copy `<db>.bak-<stamp>-<6hex>`, never
+    again the reusable `.bak-v<version>`, so a repeated run leaves its own
+    snapshot instead of overwriting one file.
+    """
+    directory = Path(db_path).parent
+    name = Path(db_path).name
+    snapshots = sorted(
+        p
+        for p in directory.glob(f"{name}.bak-*")
+        if not p.name.startswith(f"{name}.bak-v")  # the legacy family
+    )
+    assert len(snapshots) == 1, f"expected one snapshot, got {snapshots}"
+    return snapshots[0]
+
+
 def test_migration_011_preserves_all_rows_and_values(db_path) -> None:
     _build_v10_db(db_path)
     raw = sqlite3.connect(db_path)
@@ -118,12 +137,16 @@ def test_migration_011_preserves_all_rows_and_values(db_path) -> None:
 
     raw = sqlite3.connect(db_path)
     # 012 rides the same open, so every pre-existing items row gains one
-    # trailing NULL for the new metadata column (rows and values unchanged).
+    # trailing NULL for the new metadata column, and 013 (undo step 01)
+    # rides too: every change_log row gains one trailing NULL for group_id
+    # (rows and values unchanged).
     assert _rows(raw, "SELECT * FROM items ORDER BY id") == [
         row + (None,) for row in items_before
     ]
     assert _rows(raw, _LINKS_SELECT) == links_before
-    assert _rows(raw, "SELECT * FROM change_log ORDER BY id") == log_before
+    assert _rows(raw, "SELECT * FROM change_log ORDER BY id") == [
+        row + (None, None) for row in log_before
+    ]
     raw.close()
 
 
@@ -193,15 +216,16 @@ def test_migration_011_preserves_existing_schema(db_path) -> None:
     indexes_after = _index_lists(raw)
     fks_after = _fk_lists(raw)
 
-    # Every pre-011 object keeps its exact sqlite_master SQL, except `links`
-    # and `items`: ADD COLUMN rewrites the stored CREATE text, so their truth
-    # comes from the PRAGMA diffs below.
+    # Every pre-011 object keeps its exact sqlite_master SQL, except `links`,
+    # `items`, `change_log` and `item_embeddings`: ADD COLUMN rewrites the
+    # stored CREATE text, so their truth comes from the PRAGMA diffs below.
     for name, sql in master_before.items():
-        if name not in {"links", "items"}:
+        if name not in {"links", "items", "change_log", "item_embeddings"}:
             assert master_after[name] == sql
 
     # Every pre-011 table keeps its columns, indexes and foreign keys, except
-    # `links` (011) and `items` (012), each gaining trailing nullable columns.
+    # `links` (011), `items` (012), `change_log` (013) and `item_embeddings`
+    # (015), each gaining one trailing nullable column.
     for name, info in infos_before.items():
         if name == "links":
             assert [row[-1] for row in info] == [
@@ -223,9 +247,40 @@ def test_migration_011_preserves_existing_schema(db_path) -> None:
             assert added[3] == 0  # notnull
             assert added[4] is None  # no default
             assert added[5] == 0  # not pk
+        elif name == "change_log":
+            # 014 rides the same open, so change_log gains a SECOND trailing
+            # nullable column (source_id) after 013's group_id.
+            assert [row[-1] for row in info] == [
+                row[-1] for row in infos_after[name][:-2]
+            ]
+            added = infos_after[name][-2]
+            assert added[1] == "group_id"
+            assert added[2] == "INTEGER"
+            assert added[3] == 0  # notnull
+            assert added[4] is None  # no default
+            assert added[5] == 0  # not pk
+            assert added[5] == 0  # not pk
+        elif name == "item_embeddings":
+            # 015 appends the cache's optional format tag.
+            assert [row[-1] for row in info] == [
+                row[-1] for row in infos_after[name][:-1]
+            ]
+            added = infos_after[name][-1]
+            assert added[1] == "vector_format"
+            assert added[2] == "TEXT"
+            assert added[3] == 0  # notnull
+            assert added[4] is None  # no default
+            assert added[5] == 0  # not pk
         else:
             assert infos_after[name] == info
-        assert indexes_after[name] == indexes_before[name]
+        if name == "change_log":
+            # 016 rides the same open, adding the history read's one
+            # ordering index — the only non-column change in the chain.
+            assert indexes_after[name] == indexes_before[name] + [
+                (len(indexes_before[name]), "idx_change_log_ts_id", 0, "c", 0)
+            ]
+        else:
+            assert indexes_after[name] == indexes_before[name]
         assert fks_after[name] == fks_before[name]
     raw.close()
 
@@ -283,7 +338,7 @@ def test_migration_011_guard_rejects_closed_row_without_close_reason(db_path) ->
     raw.commit()
     raw.close()
 
-    with pytest.raises(sqlite3.IntegrityError):
+    with pytest.raises(CaptureDbOpenFailed):
         open_database(db_path)
 
     raw = sqlite3.connect(db_path)
@@ -312,7 +367,7 @@ def test_migration_011_links_guard_rejects_preexisting_illegal_pair(db_path) -> 
     raw.commit()
     raw.close()
 
-    with pytest.raises(sqlite3.IntegrityError):
+    with pytest.raises(CaptureDbOpenFailed):
         open_database(db_path)
 
     raw = sqlite3.connect(db_path)
@@ -323,27 +378,45 @@ def test_migration_011_links_guard_rejects_preexisting_illegal_pair(db_path) -> 
 def test_backup_only_when_pending_and_keeps_newest_three(db_path) -> None:
     _build_v10_db(db_path)
     backup_dir = Path(db_path).parent
-    for version in (1, 2, 3):
+    for version in (1, 2, 3, 4):
         Path(f"{db_path}.bak-v{version}").write_text("old", encoding="utf-8")
 
     open_database(db_path).close()
 
-    # The 011 run backed up once (v10) and pruned to the newest 3 backups.
+    # The 011 run backed up once (v10), into its own timestamped snapshot
+    # (B4-16): healthy, at the pre-migration version. Both name families
+    # prune to the newest 3, so the oldest planted `.bak-v1` is evicted.
+    snapshots = sorted(
+        p
+        for p in backup_dir.glob("test.db.bak-*")
+        if not p.name.startswith("test.db.bak-v")
+    )
+    assert len(snapshots) == 1
+    backup = sqlite3.connect(str(snapshots[0]))
+    assert backup.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+    assert backup.execute("SELECT version FROM schema_version").fetchone()[0] == 10
+    backup.close()
     names = sorted(p.name for p in backup_dir.glob("*.bak-v*"))
-    assert len(names) == 3
-    assert {"test.db.bak-v2", "test.db.bak-v3", "test.db.bak-v10"} == set(names)
+    assert names == ["test.db.bak-v2", "test.db.bak-v3", "test.db.bak-v4"]
 
     # A no-op open has no pending scripts, so it must not churn the window.
     open_database(db_path).close()
     names_after = sorted(p.name for p in backup_dir.glob("*.bak-v*"))
+    snapshots_after = sorted(
+        p
+        for p in backup_dir.glob("test.db.bak-*")
+        if not p.name.startswith("test.db.bak-v")
+    )
     assert names_after == names
+    assert snapshots_after == snapshots
 
 
 def test_fresh_install_applies_all_migrations_through_012(db_path) -> None:
     conn = open_database(db_path)
 
     version = conn.execute("SELECT version FROM schema_version").fetchone()[0]
-    assert version == 12
+    # Fresh installs go through 012 AND everything after it (014 today).
+    assert version >= 13
     triggers = {
         row["name"]
         for row in conn.execute(
@@ -375,20 +448,20 @@ def test_failed_migration_leaves_intact_prior_database(db_path, monkeypatch) -> 
         lambda: real_scripts[:10] + [(11, "CREATE TABLE half;\nTHIS IS NOT SQL;")],
     )
 
-    with pytest.raises(sqlite3.Error):
+    with pytest.raises(CaptureDbOpenFailed):
         open_database(db_path)
 
     # The prior database file is intact at v10, and the pre-migration backup
-    # was taken before the failing script ran.
+    # was taken before the failing script ran — its own timestamped
+    # snapshot (B4-16), a healthy copy at the pre-migration version.
     raw = sqlite3.connect(db_path)
     assert raw.execute("SELECT version FROM schema_version").fetchone()[0] == 10
     assert _rows(raw, "SELECT * FROM items ORDER BY id") == items_before
     assert _rows(raw, _LINKS_SELECT) == links_before
     raw.close()
 
-    backup_path = Path(f"{db_path}.bak-v10")
-    assert backup_path.is_file()
-    backup = sqlite3.connect(f"{db_path}.bak-v10")
+    backup = sqlite3.connect(str(_pre_migration_snapshot(db_path)))
+    assert backup.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
     assert backup.execute("SELECT version FROM schema_version").fetchone()[0] == 10
     assert _rows(backup, _LINKS_SELECT) == links_before
     backup.close()

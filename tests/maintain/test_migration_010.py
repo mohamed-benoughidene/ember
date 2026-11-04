@@ -5,6 +5,7 @@ from __future__ import annotations
 import importlib.resources
 import sqlite3
 
+from ember.adapters.migrations import LATEST_VERSION
 from ember.adapters.sqlite import open_database
 from tests.fakes import FIXED_TIME, insert_source
 
@@ -40,7 +41,7 @@ def test_migration_010_preserves_existing_rows(db_path) -> None:
 
     conn = open_database(db_path)
 
-    assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == 12
+    assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == LATEST_VERSION
     row = conn.execute(
         "SELECT close_reason, status_origin FROM items WHERE id = 1"
     ).fetchone()

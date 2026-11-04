@@ -13,6 +13,8 @@ unchanged, and the generic-failure tests prove a code bug is never wrapped
 
 from __future__ import annotations
 
+import re
+import struct
 from datetime import datetime, timedelta
 
 import pytest
@@ -296,7 +298,14 @@ def test_empty_universe_returns_an_empty_pool_without_running_signals() -> None:
     assert store.model_names == {}
 
 
-def test_empty_universe_still_reports_a_model_change_warning() -> None:
+def test_empty_universe_with_a_different_cached_model_wipes_nothing_and_warns_nothing(
+) -> None:
+    """Batch 7: the model check moved AFTER the empty-universe return.
+
+    An empty universe never touches the cache: no wipe, no warning, even when
+    the cached model differs from the active one. The old-model row for a
+    dropped id survives, which proves the wipe never ran.
+    """
     store = _UntouchedStore({DROPPED_ID: [9.0, 9.0, 9.0]}, model_name="old-model")
 
     pool = _build(
@@ -308,10 +317,10 @@ def test_empty_universe_still_reports_a_model_change_warning() -> None:
 
     assert pool.ranked == []
     assert pool.counts == {"dense": 0, "graph": 0, "metadata": 0}
-    assert pool.warning == WARNING_LINE
-    # The dropped id's row is gone, so the pre-flight wipe really ran.
-    assert store.rows == {}
-    assert store.model_names == {}
+    assert pool.warning is None
+    # The dropped id's row is still there, so the pre-flight wipe never ran.
+    assert store.rows == {DROPPED_ID: [9.0, 9.0, 9.0]}
+    assert store.model_names == {DROPPED_ID: "old-model"}
 
 
 # --- content signal --------------------------------------------------------
@@ -712,6 +721,50 @@ def test_merge_prefers_dense_source_when_all_three_signals_match() -> None:
     assert shared[0].source is SignalKind.dense
 
 
+# --- candidate cap (spec line 63) ------------------------------------------
+
+
+def test_three_hundred_labeled_items_cap_the_pool_at_forty() -> None:
+    """300 labeled candidates merge into a pool capped at 40 (spec line 63).
+
+    The dense signal keeps its top 10 (ids 2-11, cosine 1.0), the graph signal
+    adds 10 neighbors (ids 292-301, flat 0.5), and the label signal matches all
+    300 candidates. The cap keeps dense candidates first, then graph, then the
+    remaining labels in merged order — a plain first-40 slice of the merged
+    ranking would take only labels (ids 12-41) and drop every graph neighbor.
+    The initial cap value 40 is tuned after the batch (decision I11).
+    """
+    new_item = _item(1, metadata="sqlite storage")
+    items = [
+        _item(item_id, days=FAR_DAYS, metadata="sqlite storage")
+        for item_id in range(2, 302)
+    ]
+    embedder = FakeEmbedder(model_name=MODEL)
+    store = FakeEmbeddingStore({1: [1.0, 0.0, 0.0]}, model_name=MODEL)
+    lookup = FakeLinkLookup(
+        [new_item, *items],
+        [_link(900 + offset, 1, 292 + offset) for offset in range(10)],
+    )
+
+    pool = _build(
+        _loaded(new_item, items),
+        embedder=embedder,
+        store=store,
+        lookup=lookup,
+    )
+
+    assert len(pool.ranked) == 40
+    assert _ids_with_source(pool.ranked, SignalKind.dense) == list(range(2, 12))
+    assert _ids_with_source(pool.ranked, SignalKind.graph) == list(range(292, 302))
+    assert _ids_with_source(pool.ranked, SignalKind.metadata) == list(range(12, 32))
+    # The pool keeps the standard merged order: cosine descending, then id.
+    assert [candidate.item.id for candidate in pool.ranked] == (
+        list(range(2, 12)) + list(range(12, 32)) + list(range(292, 302))
+    )
+    # counts stay the pre-merge signal sizes; the cap never touches them.
+    assert pool.counts == {"dense": 10, "graph": 10, "metadata": 300}
+
+
 # --- pre-flight model check and the cache contract -------------------------
 
 
@@ -816,15 +869,88 @@ def test_zero_vector_embedding_raises_relate_022(
     assert excinfo.value.context == {"item_id": 2, "length": 3}
 
 
-def test_wrong_length_cached_vector_raises_relate_022() -> None:
+def test_wrong_length_cached_vector_is_deleted_and_recomputed() -> None:
+    """A damaged cached vector is repaired, not raised (Batch 7 chunk 11).
+
+    The row for item 2 holds an invalid 2-length vector. Today that raises
+    `CosineComputeFailed` RELATE-022; the repair change deletes the row
+    through the port and re-encodes the item instead.
+
+    Unlike every other test in this file, this one asserts calls: the plan
+    names `delete` plus a re-`embed` as the repair contract, and cache state
+    alone cannot tell "deleted, then re-upserted" from a plain upsert.
+    """
     store = FakeEmbeddingStore({1: [1.0, 0.0, 0.0], 2: [1.0, 0.0]}, model_name=MODEL)
+    embedder = FakeEmbedder(
+        {"statement 1": [1.0, 0.0, 0.0], "statement 2": [1.0, 0.0, 0.0]},
+        model_name=MODEL,
+    )
+
+    pool = _build(_candidate(), embedder=embedder, store=store)
+
+    # The damaged row was deleted first, then re-encoded and re-cached.
+    assert store.deleted == [2]
+    assert "statement 2" in [text for call in embedder.calls for text in call]
+    assert store.rows == {1: [1.0, 0.0, 0.0], 2: [1.0, 0.0, 0.0]}
+    assert store.model_names == {1: MODEL, 2: MODEL}
+    assert pool.warning is None
+    assert pool.counts == {"dense": 1, "graph": 0, "metadata": 0}
+    assert _scored(pool.ranked) == [(2, 1.0)]
+
+
+class _UndecodableStore(FakeEmbeddingStore):
+    """Raises RELATE-037 from `get` for given ids, like an undecodable blob."""
+
+    def __init__(
+        self,
+        bad_ids: list[int],
+        rows: dict[int, list[float]] | None = None,
+        *,
+        model_name: str = MODEL,
+    ) -> None:
+        super().__init__(rows, model_name=model_name)
+        self._bad_ids = set(bad_ids)
+
+    def get(self, item_id: int) -> list[float] | None:
+        if item_id in self._bad_ids:
+            raise EmbeddingReadFailed("embedding decode fail", item_id=item_id)
+        return super().get(item_id)
+
+
+def test_cache_read_failure_row_is_deleted_and_recomputed() -> None:
+    """An undecodable cache row (RELATE-037) is repaired, not raised.
+
+    `store.get` raises `EmbeddingReadFailed` for item 2, the real
+    `SqliteEmbedderStore` shape for a blob that cannot decode. The repair
+    treats it exactly like a wrong-length vector: delete the row, re-encode,
+    re-cache.
+    """
+    store = _UndecodableStore([2], rows={2: [1.0, 0.0]})
+    embedder = FakeEmbedder(
+        {"statement 1": [1.0, 0.0, 0.0], "statement 2": [1.0, 0.0, 0.0]},
+        model_name=MODEL,
+    )
+
+    pool = _build(_candidate(), embedder=embedder, store=store)
+
+    assert store.deleted == [2]
+    assert "statement 2" in [text for call in embedder.calls for text in call]
+    assert store.rows == {1: [1.0, 0.0, 0.0], 2: [1.0, 0.0, 0.0]}
+    assert store.model_names == {1: MODEL, 2: MODEL}
+    assert _scored(pool.ranked) == [(2, 1.0)]
+
+
+def test_fresh_encoding_still_wrong_length_raises_relate_022() -> None:
+    """Only the cache is repaired: a re-encode that comes back the wrong
+    length is an embedder bug, and still raises RELATE-022."""
+    store = FakeEmbeddingStore({1: [1.0, 0.0, 0.0], 2: [1.0, 0.0]}, model_name=MODEL)
+    embedder = FakeEmbedder(
+        {"statement 1": [1.0, 0.0, 0.0], "statement 2": [1.0, 0.0]},
+        model_name=MODEL,
+    )
 
     with pytest.raises(CosineComputeFailed) as excinfo:
-        _build(
-            _candidate(),
-            embedder=_NoEncodeEmbedder(model_name=MODEL),
-            store=store,
-        )
+        _build(_candidate(), embedder=embedder, store=store)
 
     assert excinfo.value.code == "RELATE-022"
     assert excinfo.value.context == {"item_id": 2, "expected": 3, "got": 2}
@@ -909,8 +1035,14 @@ def test_embedder_load_failure_is_reraised_unchanged() -> None:
     assert excinfo.value is error
 
 
-@pytest.mark.parametrize("method", ["get", "first_model_name"])
+@pytest.mark.parametrize("method", ["first_model_name"])
 def test_store_read_failure_propagates_relate_037(method: str) -> None:
+    """A pre-flight read failure still propagates RELATE-037 unchanged.
+
+    Batch 7 chunk 11 removed the `get` case: a failed vector read is now
+    repaired by delete-and-re-encode (see the repair tests above), so only
+    the model-name reads keep the propagate contract here.
+    """
     error = EmbeddingReadFailed("cache row unreadable", item_id=1)
     embedder, store, lookup = _ports_with_failure(method, error)
 
@@ -1095,3 +1227,151 @@ def test_signals_holds_exactly_three_fields() -> None:
     assert wrapper.content == {1: 0.5}
     assert wrapper.graph == {1, 2}
     assert wrapper.metadata == set()
+
+
+def test_fresh_query_vector_and_float32_cache_hit_score_same_score() -> None:
+    """A fresh float64 query vector and the identical vector returned from a
+    float32 cache hit produce the SAME cosine score (Batch 7 chunk 12, N20).
+
+    The embedder answers `statement 1` with a float64 vector whose values are
+    not float32-representable. One run encodes it fresh; the other starts from
+    the same vector as it comes back from the float32 cache (widened to
+    float64 exactly as `_unpack_vector` returns it, quantized here with
+    `struct` so the test needs no import from the code under test). The score
+    against the same cached candidate must be bit-identical, so the query is
+    scored at the cache's precision.
+    """
+
+    def as_float32(vector: list[float]) -> list[float]:
+        return list(
+            struct.unpack(f"<{len(vector)}f", struct.pack(f"<{len(vector)}f", *vector))
+        )
+
+    statement = "statement 1"
+    float64_vector = [0.1, 0.2, 0.3]
+    candidate_vector = [0.4, 0.5, 0.6]
+    embedder = FakeEmbedder(vectors={statement: float64_vector}, dim=3)
+
+    def _score(store: FakeEmbeddingStore) -> list[tuple[int, float | None]]:
+        loaded = _loaded(_item(1), [_item(2, days=FAR_DAYS)])
+        embedder.calls.clear()
+        return _scored(_build(loaded, embedder=embedder, store=store).ranked)
+
+    # Run A: the query vector is freshly encoded, full float64 precision.
+    fresh_run = _score(FakeEmbeddingStore(rows={2: candidate_vector}))
+    # Run B: the identical vector comes back from the float32 cache.
+    cached_run = _score(
+        FakeEmbeddingStore(
+            rows={1: as_float32(float64_vector), 2: candidate_vector}
+        )
+    )
+
+    a_float32_loss_is_real = as_float32(float64_vector) != float64_vector
+    assert a_float32_loss_is_real
+    assert fresh_run == cached_run
+
+
+# --- embedding call batching (Batch 8 finding 4.8 #1) -----------------------
+
+
+class _RecordingEmbedder(FakeEmbedder):
+    """Recording embedder for the batching test.
+
+    Defined inline by subclassing the shared `FakeEmbedder` so the shared
+    fake keeps its today's behavior for every other test in this file.
+    """
+
+
+def test_embedding_calls_are_batched() -> None:
+    """The pool encodes cache misses in batches, not one item per call.
+
+    41 texts (the new item plus a 40-item universe) all miss the cache, so
+    today's loop calls `embed([statement])` once per item — 41 one-text
+    calls. The pin: every recorded call carries at most 32 texts and the
+    whole run needs fewer than 41 calls. Committed red on purpose; chunk 7
+    collapses the count to ⌈41/32⌉ = 2 batched calls.
+    """
+    new_item = _item(1)
+    items = [_item(item_id, days=FAR_DAYS) for item_id in range(2, 42)]
+    embedder = _RecordingEmbedder(model_name=MODEL)
+    store = FakeEmbeddingStore(model_name=MODEL)
+
+    _build(_loaded(new_item, items), embedder=embedder, store=store)
+
+    assert all(
+        len(texts) <= 32 for texts in embedder.embed_calls
+    ), embedder.embed_calls
+    assert len(embedder.embed_calls) < 41, embedder.embed_calls
+
+
+def test_progress_lines_report_done_and_total() -> None:
+    """The batched encode loop reports a done/total line after every batch.
+
+    Same 41-miss setup as `test_embedding_calls_are_batched`, plus the NEW
+    optional `echo` keyword (Batch 8 finding 4.8 #2): the capture list must
+    collect at least two lines, each shaped `encoding embeddings: <n>/41`
+    (41 = the number of cache-miss texts in the run, new item included),
+    ending at `41/41`. A pool built with NO `echo` argument (today's default)
+    captures nothing — the calls stay silent.
+    """
+    new_item = _item(1)
+    items = [_item(item_id, days=FAR_DAYS) for item_id in range(2, 42)]
+
+    capture: list[str] = []
+    build_candidate_pool(
+        _loaded(new_item, items),
+        link_lookup=FakeLinkLookup(items=[]),
+        embedding_store=FakeEmbeddingStore(model_name=MODEL),
+        embedder=_RecordingEmbedder(model_name=MODEL),
+        echo=capture.append,
+    )
+
+    assert len(capture) >= 2, capture
+    for line in capture:
+        assert re.fullmatch(r"encoding embeddings: (\d+)/41", line), capture
+    assert capture[-1] == "encoding embeddings: 41/41", capture
+
+    silent_capture: list[str] = []
+    build_candidate_pool(
+        _loaded(new_item, items),
+        link_lookup=FakeLinkLookup(items=[]),
+        embedding_store=FakeEmbeddingStore(model_name=MODEL),
+        embedder=_RecordingEmbedder(model_name=MODEL),
+    )
+    assert silent_capture == []
+
+
+def test_model_change_warning_prints_before_wipe() -> None:
+    """The model-change warning rides `echo` BEFORE the cache wipe runs (4.8 #2).
+
+    The store is cached under `other-model` while the embedder reports
+    `fake-model`, so the pre-flight wipe fires. The store subclass appends
+    `"WIPE"` into the SAME capture list the `echo` sink writes into, so the
+    capture order proves the order of the two side effects: the warning line
+    through `echo` first, then the wipe. The `Pool` contract does not change —
+    the returned warning is still `MODEL_CHANGED_LINE`.
+    """
+    capture: list[str] = []
+
+    class _WipeRecordingStore(FakeEmbeddingStore):
+        """Appends `"WIPE"` to the same capture the `echo` sink writes into."""
+
+        def wipe(self) -> None:
+            capture.append("WIPE")
+            super().wipe()
+
+    store = _WipeRecordingStore(
+        {DROPPED_ID: [9.0, 9.0, 9.0]}, model_name="other-model"
+    )
+    embedder = _RecordingEmbedder(model_name=MODEL)
+
+    pool = build_candidate_pool(
+        _candidate(),
+        link_lookup=FakeLinkLookup(items=[]),
+        embedding_store=store,
+        embedder=embedder,
+        echo=capture.append,
+    )
+
+    assert capture[:2] == [MODEL_CHANGED_LINE, "WIPE"], capture
+    assert pool.warning == MODEL_CHANGED_LINE

@@ -1,0 +1,68 @@
+/*
+ * Self-hosted fonts, app step 03. No font CDN anywhere (story 107: the
+ * app makes no request to an outside host; here the window loads only
+ * these files through a `font-src 'self'` content-security rule).
+ *
+ * Typeface: Atkinson Hyperlegible Next (text) and Atkinson Hyperlegible
+ * Mono (figures), chosen by the founder (docs/DESIGN.md, approved).
+ * Files and words come from the Fontsource distribution cited by the
+ * design doc; the SIL OFL 1.1 licence text and copyright notice ship
+ * next to the files (atkinson-hyperlegible-*-OFL.txt) as the licence
+ * requires each copy to carry them (story 108).
+ *
+ * Subsets: Latin only, the step-03 default until the founder names the
+ * languages his users need (steps stay additive: more subsets later are
+ * new @font-face blocks + files, nothing here changes).
+ * Weights: 400/500/600 Next (DESIGN.md "Weights used"), 400/600 Mono
+ * (the weights the approved prototype embeds).
+ */
+
+/* atkinson-hyperlegible-next-latin-400-normal */
+@font-face {
+  font-family: 'Atkinson Hyperlegible Next';
+  font-style: normal;
+  font-display: swap;
+  font-weight: 400;
+  src: url(../../assets/fonts/atkinson-hyperlegible-next-latin-400-normal.woff2) format('woff2');
+  unicode-range: U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD;
+}
+
+/* atkinson-hyperlegible-next-latin-500-normal */
+@font-face {
+  font-family: 'Atkinson Hyperlegible Next';
+  font-style: normal;
+  font-display: swap;
+  font-weight: 500;
+  src: url(../../assets/fonts/atkinson-hyperlegible-next-latin-500-normal.woff2) format('woff2');
+  unicode-range: U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD;
+}
+
+/* atkinson-hyperlegible-next-latin-600-normal */
+@font-face {
+  font-family: 'Atkinson Hyperlegible Next';
+  font-style: normal;
+  font-display: swap;
+  font-weight: 600;
+  src: url(../../assets/fonts/atkinson-hyperlegible-next-latin-600-normal.woff2) format('woff2');
+  unicode-range: U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD;
+}
+
+/* atkinson-hyperlegible-mono-latin-400-normal */
+@font-face {
+  font-family: 'Atkinson Hyperlegible Mono';
+  font-style: normal;
+  font-display: swap;
+  font-weight: 400;
+  src: url(../../assets/fonts/atkinson-hyperlegible-mono-latin-400-normal.woff2) format('woff2');
+  unicode-range: U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD;
+}
+
+/* atkinson-hyperlegible-mono-latin-600-normal */
+@font-face {
+  font-family: 'Atkinson Hyperlegible Mono';
+  font-style: normal;
+  font-display: swap;
+  font-weight: 600;
+  src: url(../../assets/fonts/atkinson-hyperlegible-mono-latin-600-normal.woff2) format('woff2');
+  unicode-range: U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD;
+}

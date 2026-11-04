@@ -1,0 +1,1 @@
+link 1: contradicts 2 -> 1 removed (Confirmed -> Rejected)
