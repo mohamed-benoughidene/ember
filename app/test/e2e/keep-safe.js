@@ -384,7 +384,9 @@ async function openDifferentFile() {
     // the health check on the opened file still reports no floor drift
     // for v12 (it opens; the first WRITE would migrate it).
     await win.click('[data-testid="ks-open-reload"]');
-    await win.waitForSelector('[data-testid="keepsafe-pane"]', { timeout: 60000 }).catch(() => {});
+    await win.waitForSelector('[data-testid="keepsafe-pane"]', { timeout: 60000 }).catch((err) => {
+      throw new Error(`keep_safe scenario 5 (open different file): the app did not return to the Keep safe pane within 60 s: ${err.message}`);
+    });
     await gotoKeepSafe(win);
     const currentAfter = await win.textContent('[data-testid="ks-open-current"]');
     if (currentAfter.trim() !== v12File) fail(`after the switch the app must use the opened file, saw ${currentAfter}`);
