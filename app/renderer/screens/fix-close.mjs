@@ -114,7 +114,9 @@ export function createFixCloseScreen(ctx) {
             <p class="sub">Change an item or a link. Every change is written to the ledger, and Undo adds a new line instead of erasing one. Closing needs a preview first.</p></div>
           <div class="actions" data-testid="undo-bar"></div>
         </div>
-        <p class="help" data-testid="undo-note" style="margin-top:calc(-1 * var(--s4))">Adding text, confirming links and applying the sweep are not undone by Undo. To reverse an add, close the item here; to reverse a link, remove it below (it is marked Rejected, never deleted); the sweep follows the links, so the next sweep redraws its own results.</p>
+        <p class="help" data-testid="undo-reason" hidden></p>
+        <p class="help" data-testid="undo-bar-hint" hidden></p>
+        <p class="help" data-testid="undo-note">Adding text, confirming links and applying the sweep are not undone by Undo. To reverse an add, close the item here; to reverse a link, remove it below (it is marked Rejected, never deleted); the sweep follows the links, so the next sweep redraws its own results.</p>
         <div data-testid="fix-message-region" role="status" aria-live="polite"></div>
         <div data-testid="fix-gated"></div>
       </div>`,
@@ -193,9 +195,23 @@ export function createFixCloseScreen(ctx) {
       : view.undoBar.redo.kind === 'disabled' ? view.undoBar.redo.reason
       : null;
     const refusedState = view.undoBar.undo.kind === 'refused' ? view.undoBar.undo : view.undoBar.redo.kind === 'refused' ? view.undoBar.redo : null;
-    bar.innerHTML = `${one('undo')} ${one('redo')}` +
-      (disabledReason ? `<p class="help" data-testid="undo-reason" style="flex-basis:100%;max-width:26rem">${esc(disabledReason)}</p>` : '') +
-      (refusedState ? `<p class="help" data-testid="undo-bar-hint" style="flex-basis:100%;max-width:26rem">${esc(refusalLine(refusedState.error))}</p>` : '');
+    // The bar carries ONLY the two buttons. The reason/refusal lines
+    // render under the title row (frame level), never inside this bar:
+    // a prose paragraph in here inflates the bar's width to its
+    // max-content and crushes the title to a sliver at the default
+    // window size (Batch 9 UI audit, finding 1). Same room the undo
+    // note already uses; `hidden` keeps the rows invisible when empty.
+    bar.innerHTML = `${one('undo')} ${one('redo')}`;
+    const reasonEl = ctx.paneEl().querySelector('[data-testid="undo-reason"]');
+    const hintEl = ctx.paneEl().querySelector('[data-testid="undo-bar-hint"]');
+    if (reasonEl) {
+      reasonEl.hidden = disabledReason === null;
+      reasonEl.textContent = disabledReason ?? '';
+    }
+    if (hintEl) {
+      hintEl.hidden = refusedState === null;
+      hintEl.textContent = refusedState ? refusalLine(refusedState.error) : '';
+    }
     bar.querySelector('[data-action="fix-undo"]')?.addEventListener('click', () => applyUndoRedo('undo'));
     bar.querySelector('[data-action="fix-redo"]')?.addEventListener('click', () => applyUndoRedo('redo'));
   }
