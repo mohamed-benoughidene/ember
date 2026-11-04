@@ -19,8 +19,13 @@
 #     line (the old gate swallowed those at :186-189), never another
 #     "error: ..." code, never a traceback.
 #  2. db-check on the SAME file: the capture migrated it before the key
-#     check, so it must end 0 and report "version: 13" and
-#     "result: OK".
+#     check, so it must end 0 and report a schema version line
+#     ("version: <digits>") and "result: OK". The number itself is NOT
+#     pinned: the gate's file is built by THIS runtime, so whatever
+#     version this engine reports is by definition its latest. A
+#     hardcoded number would rot at the next migration (13 rotted when
+#     Batch 8 shipped migration 016; the gate only runs on real builds,
+#     never in CI, so nothing would have gone red until a build failed).
 #
 # Failure behavior (finding 4.1 #20): on ANY failure the FULL error is
 # printed (no 200-byte cut at :184/:191) and the gate log folder is
@@ -95,7 +100,7 @@ case "$FIRST_ERR" in
   *) gate_fail "the gate capture's one stderr line must start 'error: CAPTURE-008' (a traceback or another code means the bundle is broken): $FIRST_ERR" "$SCRATCH/gate-capture.err" ;;
 esac
 
-# == check 2: db-check on the SAME file → version 13, result OK ======
+# == check 2: db-check on the SAME file → a version line, result OK ====
 set +e
 env -u EMBER_AI_API_KEY -u OPENROUTER_API_KEY \
   "$RUNTIME/ember" db-check --db "$GATE_KB" --format json \
@@ -108,10 +113,13 @@ if [ "$DBCHECK_RC" -ne 0 ]; then
 fi
 
 DBCHECK_JSON="$(cat "$SCRATCH/gate-dbcheck.out")"
-case "$DBCHECK_JSON" in
-  *'"version: 13"'*) : ;;
-  *) gate_fail "the gate db-check must report the file migrated to version 13; its lines were:" "$SCRATCH/gate-dbcheck.out" ;;
-esac
+# The shape rule: one "version: <digits>" line (a numberless or missing
+# version means the file did not really migrate) + the OK verdict. The
+# NUMBER is never pinned — see the header comment on check 2.
+if ! printf '%s' "$DBCHECK_JSON" | grep -Eq '"version: [0-9]+"'; then
+  gate_fail "the gate db-check must report a schema version line ('version: <digits>'); its lines were:" "$SCRATCH/gate-dbcheck.out"
+fi
+GATE_DB_VERSION="$(printf '%s' "$DBCHECK_JSON" | grep -Eo '"version: [0-9]+"' | head -n1)"
 case "$DBCHECK_JSON" in
   *'"result: OK"'*) : ;;
   *) gate_fail "the gate db-check must end 'result: OK'; its lines were:" "$SCRATCH/gate-dbcheck.out" ;;
@@ -123,5 +131,5 @@ rm -f "$GATE_NOTE" "$GATE_KB" "$GATE_KB".bak-v*
 rm -rf "$SCRATCH"
 
 echo "gate capture: exit 1, one line ok ($FIRST_ERR)"
-echo "gate db-check: version 13, result OK"
+echo "gate db-check: $GATE_DB_VERSION, result OK"
 echo "gate PASSED: $RUNTIME"
