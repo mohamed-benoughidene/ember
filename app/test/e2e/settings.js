@@ -186,6 +186,23 @@ async function changeRestartIntact() {
     await win.waitForSelector('[data-testid="settings-saved"]:not(:empty)');
     await assertCleanScan(win, 'Settings (Quick popup)');
 
+    // [fix #42 + #41 companion] The status line reads the REAL
+    // registration state, and this same-key save exercises the
+    // registerShortcut channel end to end — a channel that used to
+    // refuse every call silently (it expected a bare string). The
+    // unchanged key is a deduped no-op in main, and the line stays.
+    await win.waitForSelector('[data-testid="popup-shortcut-status"]');
+    const activeLine = await win.textContent('[data-testid="popup-shortcut-status"]');
+    if (!/accepted/.test(activeLine)) fail(`the boot-registered shortcut must read active on the pane: ${activeLine}`);
+    await win.click('[data-testid="popup-capture"]');
+    await win.keyboard.press('Control+Alt+E');
+    await win.waitForSelector('[data-testid="popup-keep"]');
+    await win.click('[data-testid="popup-keep"]');
+    await win.waitForSelector('[data-testid="settings-saved"]:not(:empty)');
+    const afterSave = await win.textContent('[data-testid="popup-shortcut-status"]');
+    if (!/accepted/.test(afterSave)) fail(`the save through the registerShortcut channel must keep the shortcut active: ${afterSave}`);
+    await assertCleanScan(win, 'Settings (Quick popup, after a same-key save)');
+
     // Story 89: the AI connection pane — masked status only.
     await switchPaneByKeyboard(win, 'AI connection');
     await win.waitForSelector('[data-testid="ai-set-up"]', { timeout: 15000 });
@@ -441,10 +458,39 @@ async function recoveryAndA11y() {
   }
 }
 
+/* -------- scenario 3: the persistent shortcut status line (fix #42) -------- */
+
+async function shortcutRefusedStatus() {
+  process.stdout.write('--- refused shortcut: the pane marks it not working when you come back ---\n');
+  const workDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ember-e2e-settings-refused-'));
+  seedSettings(path.join(workDir, 'config'), path.join(workDir, 'kb.db'));
+  const { app, kbPath } = await launchShell({ workDir, withDb: false, extraEnv: { EMBER_APP_SHORTCUT_REFUSED: '1' } });
+  try {
+    const win = await app.firstWindow();
+    await win.waitForSelector('[data-testid="home-pane"]');
+    const settingsRunning = await app.evaluate(({ globalShortcut }) => globalShortcut.isRegistered('CommandOrControl+Alt+E'), undefined).catch(() => null);
+    if (settingsRunning) fail('the refused seam must keep the boot registration off');
+    await win.keyboard.press('Control+Comma');
+    await win.waitForSelector('[data-testid="pane-settings"]');
+    await switchPaneByKeyboard(win, 'Quick popup');
+    await win.waitForSelector('[data-testid="popup-shortcut-status"]');
+    const line = await win.textContent('[data-testid="popup-shortcut-status"]');
+    if (!/Not working right now/.test(line)) fail(`a refused shortcut must be marked when you come back: ${line}`);
+    if (!/tried again next time Ember starts/.test(line)) fail(`the saved-and-retried promise must stay: ${line}`);
+    await assertCleanScan(win, 'Settings (Quick popup, refused shortcut)');
+    void kbPath;
+    process.stdout.write('status line OK: the refused shortcut reads "Not working right now" on a fresh visit (fix 42)\n');
+  } finally {
+    await app.close().catch(() => {});
+    fs.rmSync(workDir, { recursive: true, force: true });
+  }
+}
+
 async function main() {
   await changeRestartIntact();
   await recoveryAndA11y();
-  process.stdout.write('e2e settings OK: both scenarios green (real Python-seeded KB, fake ember app mode, no AI service touched)\n');
+  await shortcutRefusedStatus();
+  process.stdout.write('e2e settings OK: all three scenarios green (real Python-seeded KB, fake ember app mode, no AI service touched)\n');
 }
 
 main().catch((err) => {

@@ -144,10 +144,45 @@ test('a refused shortcut comes back failed after the manager told the shell', ()
   assert.equal(onFailureArgs, 'called', 'the shell was notified for the tray fallback');
 });
 
+/* ---------- fix #42: the persistent shortcut status line ---------- */
+
+const POPUP_STATE = {
+  settings: { quickPopup: { shortcut: 'CommandOrControl+Alt+E', position: 'bottom-right' } },
+  candidate: null,
+  capturing: false,
+};
+
+test('the shortcut status line says so when the system accepted the keys', async () => {
+  const { popupHtml } = await screen();
+  const html = popupHtml({ ...POPUP_STATE, shortcutStatus: { configured: 'CommandOrControl+Alt+E', live: 'CommandOrControl+Alt+E', active: true } });
+  assert.ok(html.includes('data-testid="popup-shortcut-status"'), 'the status line is rendered with its test id');
+  assert.ok(html.includes('accepted'), 'the active words name the acceptance');
+  assert.ok(!html.includes('Not working right now'), 'no contradiction with the active state');
+});
+
+test('the shortcut status line marks refused keys as not working when you come back (fix #42)', async () => {
+  const { popupHtml } = await screen();
+  const html = popupHtml({ ...POPUP_STATE, shortcutStatus: { configured: 'CommandOrControl+Alt+E', live: null, active: false } });
+  assert.ok(html.includes('data-testid="popup-shortcut-status"'), 'the status line is rendered with its test id');
+  assert.ok(html.includes('Not working right now'), 'the honest not-active marker is on the pane');
+  assert.ok(html.includes('tried again next time Ember starts'), 'the saved-and-retried promise stays');
+});
+
+test('the status line is absent when no shortcut is configured at all', async () => {
+  const { popupHtml } = await screen();
+  const html = popupHtml({
+    settings: { quickPopup: { shortcut: '', position: 'bottom-right' } },
+    candidate: null,
+    capturing: false,
+    shortcutStatus: { configured: null, live: null, active: false },
+  });
+  assert.ok(!html.includes('data-testid="popup-shortcut-status"'), 'nothing configured: no line, no noise');
+});
+
 test('every preloaded name the Settings screen calls exists in preload and ipc', () => {
   const preload = fs.readFileSync(path.join(APP_ROOT, 'preload', 'preload.js'), 'utf8');
   const ipc = fs.readFileSync(path.join(APP_ROOT, 'main', 'ipc.js'), 'utf8');
-  for (const channel of ['registerShortcut', 'keyHint', 'saveSettings', 'keyStatus', 'setKey', 'setSessionKey', 'removeKey', 'kbStatus', 'pickKnowledgeBaseFile']) {
+  for (const channel of ['registerShortcut', 'shortcutStatus', 'keyHint', 'saveSettings', 'keyStatus', 'setKey', 'setSessionKey', 'removeKey', 'kbStatus', 'pickKnowledgeBaseFile']) {
     assert.ok(preload.includes(channel), `${channel} is preloaded`);
     assert.ok(ipc.includes(`ember:${channel}'`), `${channel} is registered`);
   }

@@ -66,7 +66,7 @@ const FIX_CLOSE_CHANNELS = ['ember:fixAction', 'ember:undoPlan'];
 /* App 10 (ticket A39): the Settings channels, merged after the
    Fix and close block (merged file order: base, Add, Keep safe,
    Fix and close, Settings). */
-const SETTINGS_CHANNELS = ['ember:registerShortcut', 'ember:keyHint'];
+const SETTINGS_CHANNELS = ['ember:registerShortcut', 'ember:keyHint', 'ember:shortcutStatus'];
 /* App 08 (ticket A37): the Clean up screen's four invoke channels,
    merged after the Settings block (merged file order: base, Add,
    Keep safe, Fix and close, Settings, Clean up). */
