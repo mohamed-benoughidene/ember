@@ -181,7 +181,7 @@ async function changeRestartIntact() {
     await switchPaneByKeyboard(win, 'Quick popup');
     await win.waitForSelector('select[data-set="quickPopupPosition"]');
     const keys = await win.locator('.kbdkey').allTextContents();
-    if (!keys.some((k) => /E/i.test(k))) fail(`the current shortcut keys must be shown: ${JSON.stringify(keys)}`);
+    if (!keys.some((k) => /N/i.test(k))) fail(`the current shortcut keys must be shown: ${JSON.stringify(keys)}`);
     await win.selectOption('select[data-set="quickPopupPosition"]', 'top-center');
     await win.waitForSelector('[data-testid="settings-saved"]:not(:empty)');
     await assertCleanScan(win, 'Settings (Quick popup)');
@@ -195,7 +195,7 @@ async function changeRestartIntact() {
     const activeLine = await win.textContent('[data-testid="popup-shortcut-status"]');
     if (!/accepted/.test(activeLine)) fail(`the boot-registered shortcut must read active on the pane: ${activeLine}`);
     await win.click('[data-testid="popup-capture"]');
-    await win.keyboard.press('Control+Alt+E');
+    await win.keyboard.press('Control+Alt+N');
     await win.waitForSelector('[data-testid="popup-keep"]');
     await win.click('[data-testid="popup-keep"]');
     await win.waitForSelector('[data-testid="settings-saved"]:not(:empty)');
@@ -410,7 +410,7 @@ async function recoveryAndA11y() {
     await win.keyboard.press('Escape');
     await win.waitForSelector('[data-testid="popup-capture"]');
     const warnings = await win.locator('[data-testid="popup-warning"]').count();
-    process.stdout.write(`the default shortcut shows ${warnings} warnings (story 86: none expected for CommandOrControl+Alt+E)\n`);
+    process.stdout.write(`the default shortcut shows ${warnings} warnings (story 86: none expected for the default)\n`);
     if (warnings !== 0) fail('the default shortcut must warn nowhere');
     await assertCleanScan(win, 'Settings (Quick popup after cancel)');
 
@@ -468,7 +468,7 @@ async function shortcutRefusedStatus() {
   try {
     const win = await app.firstWindow();
     await win.waitForSelector('[data-testid="home-pane"]');
-    const settingsRunning = await app.evaluate(({ globalShortcut }) => globalShortcut.isRegistered('CommandOrControl+Alt+E'), undefined).catch(() => null);
+    const settingsRunning = await app.evaluate(({ globalShortcut }) => globalShortcut.isRegistered('CommandOrControl+Alt+N'), undefined).catch(() => null);
     if (settingsRunning) fail('the refused seam must keep the boot registration off');
     await win.keyboard.press('Control+Comma');
     await win.waitForSelector('[data-testid="pane-settings"]');

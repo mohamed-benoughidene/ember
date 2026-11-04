@@ -102,7 +102,7 @@ async function launch({ workDir, dbPath = null, lastPane = 'home', menuOrder = n
             schema: 1,
             textSize: 'default',
             colourTheme: 'system',
-            quickPopup: { shortcut: 'CommandOrControl+Alt+E', position: 'bottom-right' },
+            quickPopup: { shortcut: 'CommandOrControl+Alt+N', position: 'bottom-right' },
             menuOrder: menuOrder ?? ['add', 'lookup', 'link', 'fix', 'cleanup', 'keepsafe'],
             menuHidden: menuHidden ?? [],
             lastPane,

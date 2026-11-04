@@ -301,7 +301,7 @@ Defined here as a proposal to confirm at build. It follows Apple's standard orde
 
 ### 10. Shortcuts
 
-- **Quick popup (global).** Default Option+Command+E on a Mac, Ctrl+Alt+E on Windows and Linux. Apple says to avoid Control as a modifier and to prefer Command with Option for power features (Fact). Conflicts with other programs are not detected (*Open*). Fallback: the tray icon.
+- **Quick popup (global).** Default Option+Command+N on a Mac, Ctrl+Alt+N on Windows and Linux. Apple says to avoid Control as a modifier and to prefer Command with Option for power features (Fact). Conflicts with other programs are not detected (*Open*). Fallback: the tray icon.
 - **Settings.** Command+Comma on a Mac, Ctrl+Comma elsewhere.
 - **Proposal loop.** Return confirms, Esc stops, `e` edits, `n` rejects. `y` and `q` also work. Link proposals use Return (confirm), `s` (skip), `n` (reject).
 - Modifier order in any shown shortcut: Control, Option, Shift, Command (Fact, Apple).

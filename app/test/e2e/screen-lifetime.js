@@ -375,7 +375,7 @@ async function launchRealEmberShell(workDir, kbPath, lastPane, aiUrl) {
         schema: 1,
         textSize: 'default',
         colourTheme: 'system',
-        quickPopup: { shortcut: 'CommandOrControl+Alt+E', position: 'bottom-right' },
+        quickPopup: { shortcut: 'CommandOrControl+Alt+N', position: 'bottom-right' },
         menuOrder: ['add', 'lookup', 'link', 'fix', 'cleanup', 'keepsafe'],
         menuHidden: [],
         lastPane,
