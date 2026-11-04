@@ -400,7 +400,7 @@ export function createFixCloseScreen(ctx) {
         <h2 style="margin-top:var(--s5)">Item ${esc(String(item.id))}</h2>
         <div class="panel tone"><div class="pad">
           <p class="lbl-pill">${esc(item.type ?? '')}${item.validated ? ' (verified)' : ''}</p>
-          <p style="margin:.15rem 0 var(--s3)"><strong>${esc(item.statement ?? '')}</strong> ${statusPillHtml(item.status, { settle })}</p>
+          <p style="margin:var(--s1) 0 var(--s3)"><strong>${esc(item.statement ?? '')}</strong> ${statusPillHtml(item.status, { settle })}</p>
           ${closed && item.close_reason ? `<p class="help">Closed because: ${esc(item.close_reason)}.</p>` : ''}
           <div class="actions">
             ${fixButtonHtml({ label: 'Mark Active', action: 'fix-status-active', testid: 'mark-active', enabled: markActiveOn })}
@@ -552,10 +552,12 @@ export function createFixCloseScreen(ctx) {
       ? `<div class="actions">${buttonHtml({ label: `Close item ${item.id}…`, action: 'fix-close-ask', variant: 'danger', testid: 'close-ask' })}</div>`
       : '';
     return `<div class="filters" data-testid="close-row" style="margin-bottom:var(--s3)">
-        <label for="fix-close-reason" style="margin:0">Reason</label>
-        <select id="fix-close-reason" data-testid="close-reason" aria-label="Close reason">
-          ${CLOSE_REASONS.map(([value, text]) => `<option value="${value}"${view.close.reason === value ? ' selected' : ''}>${esc(text)}</option>`).join('')}
-        </select>
+        <span style="display:inline-flex;align-items:center;gap:var(--s2)">
+          <label for="fix-close-reason" style="margin:0">Reason</label>
+          <select id="fix-close-reason" data-testid="close-reason" aria-label="Close reason">
+            ${CLOSE_REASONS.map(([value, text]) => `<option value="${value}"${view.close.reason === value ? ' selected' : ''}>${esc(text)}</option>`).join('')}
+          </select>
+        </span>
         ${buttonHtml({ label: 'Preview closing', action: 'fix-close-preview', testid: 'close-preview-btn' })}
       </div>
       ${preview}${ask}${view.close.asking ? closeConfirmHtml(item) : ''}`;
@@ -639,7 +641,7 @@ export function createFixCloseScreen(ctx) {
     const rows = [...linksOut.map((l) => ({ link: l, direction: 'out' })), ...linksIn.map((l) => ({ link: l, direction: 'in' }))];
     const body = rows.length > 0 ? rows.map(({ link, direction }) => linkRowHtml(item, link, direction)).join('') : '<tr><td class="dim" colspan="3">No links.</td></tr>';
     return `<div class="panel"><table class="ember-table" data-testid="fix-links">
-      <thead><tr><th class="nowrap">Link</th><th>What it says</th><th class="nowrap">Actions</th></tr></thead>
+      <thead><tr><th class="num nowrap">Link</th><th>What it says</th><th class="nowrap">Actions</th></tr></thead>
       <tbody>${body}</tbody></table></div>`;
   }
 
