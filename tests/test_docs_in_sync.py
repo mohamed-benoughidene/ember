@@ -8,6 +8,7 @@ is gone, or when the code gains something the docs do not list.
 
 from __future__ import annotations
 
+import os
 import re
 import subprocess
 import urllib.parse
@@ -71,8 +72,42 @@ def _tracked_files() -> list[str]:
             cwd=ROOT, capture_output=True, check=True,
         ).stdout.decode("utf-8")
     except (OSError, subprocess.CalledProcessError):
+        if os.environ.get("CI"):
+            pytest.fail("git is not available, and CI never skips this gate")
         pytest.skip("git is not available here")
     return [p for p in out.split("\0") if p and not p.endswith(".pyc")]
+
+
+def test_missing_git_fails_in_ci(monkeypatch: pytest.MonkeyPatch) -> None:
+    """When git is gone on CI, the gate must fail, not silently skip.
+
+    GitHub Actions sets CI=true; a skip there would hide the map going out
+    of sync from every pull request.
+    """
+    monkeypatch.setenv("CI", "true")
+
+    def gone(*args: object, **kwargs: object) -> None:
+        raise OSError("git is gone")
+
+    monkeypatch.setattr(subprocess, "run", gone)
+    with pytest.raises(pytest.fail.Exception):
+        _tracked_files()
+
+
+def test_missing_git_skips_outside_ci(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Without CI set, a missing git still skips, as it always has.
+
+    A developer's machine without git on PATH is an environment gap, not a
+    gate failure.
+    """
+    monkeypatch.delenv("CI", raising=False)
+
+    def gone(*args: object, **kwargs: object) -> None:
+        raise OSError("git is gone")
+
+    monkeypatch.setattr(subprocess, "run", gone)
+    with pytest.raises(pytest.skip.Exception):
+        _tracked_files()
 
 
 def _slug(heading: str) -> str:
