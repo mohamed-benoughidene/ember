@@ -23,10 +23,19 @@ const WHERE = 'main.shortcuts';
  */
 function createShortcutManager(options) {
   const { globalShortcut, onFailure, onQuickAdd } = options;
+  // [fix #41] the accelerator the OS last told us is live, or null.
+  // The dedupe BELOW exists because every settings save used to
+  // re-register the SAME key: on KDE Wayland the XDG GlobalShortcuts
+  // portal refuses a reused session handle yet Electron answers true,
+  // so each no-change save minted a stale KDE entry and could drop a
+  // working bind (issue 41's 1,529 stale entries on the founder's
+  // machine). One registration per real key change; the working bind
+  // from boot stays untouched.
+  let current = null;
 
   /**
    * @param {string} accelerator e.g. "CommandOrControl+Alt+E"
-   * @returns {{ok: true} | {ok: false, error: info}}
+   * @returns {{ok: true, unchanged?: boolean} | {ok: false, error: info}}
    */
   function register(accelerator) {
     if (typeof accelerator !== 'string' || accelerator.trim() === '') {
@@ -34,19 +43,23 @@ function createShortcutManager(options) {
       onFailure(error);
       return { ok: false, error };
     }
+    if (current === accelerator) return { ok: true, unchanged: true };
     let registered = false;
     try {
       registered = globalShortcut.register(accelerator, onQuickAdd);
     } catch (err) {
+      current = null;
       const error = appErrorInfo('APP-005', `${WHERE}.register`, `the quick-popup shortcut was refused (${err instanceof Error ? err.message : 'unknown error'}); the tray menu and File -> Add text still work`);
       onFailure(error);
       return { ok: false, error };
     }
     if (!registered) {
+      current = null;
       const error = appErrorInfo('APP-005', `${WHERE}.register`, 'the quick-popup shortcut was refused; the tray menu and File -> Add text still work');
       onFailure(error);
       return { ok: false, error };
     }
+    current = accelerator;
     return { ok: true };
   }
 
@@ -56,9 +69,10 @@ function createShortcutManager(options) {
     } catch {
       /* nothing registered / no OS support */
     }
+    current = null;
   }
 
-  return { register, unregisterAll };
+  return { register, unregisterAll, current: () => current };
 }
 
 /**
@@ -125,14 +139,21 @@ function createTrayManager(options) {
  * must not keep working), then try the new one. On refusal the APP-005
  * error comes back to the pane AND the manager's onFailure ran, which
  * is where the shell builds the tray fallback (plan §5.5).
+ * [fix #41] Except when nothing changed — then it is a no-op (see body).
  *
  * @param {object} args
- * @param {{register: (a: string, cb: () => void) => boolean, unregisterAll: () => void}} args.manager
+ * @param {{register: (a: string, cb: () => void) => boolean, unregisterAll: () => void, current: () => string|null}} args.manager
  *   the createShortcutManager instance
  * @param {string} args.accelerator the new shortcut
- * @returns {{ok: true} | {ok: false, error: info}}
+ * @returns {{ok: true, unchanged?: true} | {ok: false, error: info}}
  */
 function registerSettingsShortcut({ manager, accelerator }) {
+  // [fix #41] An UNCHANGED accelerator is a no-op — no unregister, no
+  // OS call — so saving a pane that never touched the shortcut can
+  // neither mint a stale KDE portal entry nor drop the working bind
+  // the boot registration holds. Changed keys keep the forget-then-try
+  // flow below.
+  if (manager.current() === accelerator) return { ok: true, unchanged: true };
   manager.unregisterAll();
   return manager.register(accelerator);
 }

@@ -7,7 +7,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { createShortcutManager, createTrayManager, bootTrayFor } = require('../main/shortcuts');
+const { createShortcutManager, createTrayManager, registerSettingsShortcut, bootTrayFor } = require('../main/shortcuts');
 
 function fakeGlobalShortcut(result) {
   const calls = [];
@@ -79,6 +79,42 @@ test('an empty accelerator is APP-005 (nothing is registered "somehow")', () => 
   });
   assert.equal(manager.register('').ok, false);
   assert.equal(globalShortcut.calls.length, 0, 'nothing was registered');
+});
+
+test('an unchanged re-register never touches the OS again (fix #41 dedupe)', () => {
+  // Issue 41's ghost factory: every settings save re-registered the
+  // SAME key — on KDE Wayland the portal refuses the reused session
+  // handle yet answers true, so each save minted a stale entry and
+  // could drop a working bind. An unchanged key must be a no-op.
+  const globalShortcut = fakeGlobalShortcut(true);
+  const manager = createShortcutManager({ globalShortcut, onFailure: () => {}, onQuickAdd: () => {} });
+  assert.equal(manager.register('CommandOrControl+Alt+E').ok, true);
+  assert.equal(globalShortcut.calls.length, 1);
+  const result = registerSettingsShortcut({ manager, accelerator: 'CommandOrControl+Alt+E' });
+  assert.deepEqual(result, { ok: true, unchanged: true }, 'the save with the same key is a no-op');
+  assert.equal(globalShortcut.calls.length, 1, 'the OS saw no second registration');
+  assert.equal(manager.current(), 'CommandOrControl+Alt+E', 'the working bind is still the one the OS holds');
+});
+
+test('a CHANGED re-register forgets the old key, then tries the new one (real manager)', () => {
+  const globalShortcut = fakeGlobalShortcut(true);
+  const manager = createShortcutManager({ globalShortcut, onFailure: () => {}, onQuickAdd: () => {} });
+  assert.equal(manager.register('CommandOrControl+Alt+E').ok, true);
+  const result = registerSettingsShortcut({ manager, accelerator: 'CommandOrControl+Alt+K' });
+  assert.deepEqual(result, { ok: true });
+  assert.deepEqual(globalShortcut.calls.map((c) => c.accelerator), ['CommandOrControl+Alt+E', 'CommandOrControl+Alt+K']);
+  assert.equal(manager.current(), 'CommandOrControl+Alt+K');
+});
+
+test('a refused register leaves nothing current, so a later save retries', () => {
+  const globalShortcut = fakeGlobalShortcut(false);
+  const manager = createShortcutManager({ globalShortcut, onFailure: () => {}, onQuickAdd: () => {} });
+  assert.equal(manager.register('CommandOrControl+Alt+E').ok, false);
+  assert.equal(manager.current(), null);
+  const second = registerSettingsShortcut({ manager, accelerator: 'CommandOrControl+Alt+E' });
+  assert.equal(second.ok, false);
+  assert.equal(globalShortcut.calls.length, 2, 'the refused key was retried, not deduped away');
+  assert.equal(manager.current(), null);
 });
 
 test('the tray fallback builds the pinned three-item menu', () => {
