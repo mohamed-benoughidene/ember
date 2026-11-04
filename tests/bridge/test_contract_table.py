@@ -162,7 +162,7 @@ ROWS: tuple[Row, ...] = (
         sample_args=("relate", "--item", "1", "--db", "{db}"),
         format_flag=True,
         confirm_flag=True,
-        events=("block", "prompt", "summary"),
+        events=("block", "message", "prompt", "summary"),
     ),
     # --- Engine C: Maintain ---
     Row(

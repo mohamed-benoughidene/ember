@@ -273,7 +273,14 @@ def test_migration_011_preserves_existing_schema(db_path) -> None:
             assert added[5] == 0  # not pk
         else:
             assert infos_after[name] == info
-        assert indexes_after[name] == indexes_before[name]
+        if name == "change_log":
+            # 016 rides the same open, adding the history read's one
+            # ordering index — the only non-column change in the chain.
+            assert indexes_after[name] == indexes_before[name] + [
+                (len(indexes_before[name]), "idx_change_log_ts_id", 0, "c", 0)
+            ]
+        else:
+            assert indexes_after[name] == indexes_before[name]
         assert fks_after[name] == fks_before[name]
     raw.close()
 

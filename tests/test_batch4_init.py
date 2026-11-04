@@ -133,6 +133,30 @@ def test_init_refuses_a_non_ember_file(tmp_path: Path) -> None:
     assert _sha256(db_path) == before
 
 
+def test_an_empty_touched_file_is_a_transient_init_shape(tmp_path: Path) -> None:
+    """A 0-byte file is the transient first-init shape (Batch 8 follow-up,
+    story 11, founder decision A): the creating `ember init` has touched the
+    path but not yet committed its version table, so the shape settles like
+    a behind-version file — while a NON-empty file with no version table
+    stays a permanent refusal. Acceptance never widens; refusal only waits
+    (a corrupted empty file is refused after the settle window, not kept).
+    """
+    from ember.adapters.sqlite import _inspect_health
+
+    empty = tmp_path / "empty.db"
+    empty.write_bytes(b"")
+    where, _detail, transient = _inspect_health(str(empty), LATEST_VERSION)
+    assert (where, transient) == ("no schema_version table", True)
+
+    garbage = tmp_path / "garbage.db"
+    garbage.write_bytes(b"not an ember database")
+    where, _detail, transient = _inspect_health(str(garbage), LATEST_VERSION)
+    # A non-empty non-Ember file never reaches the version-table check: it
+    # refuses outright as "not an ember database" (permanent), exactly as
+    # before this follow-up.
+    assert (where, transient) == ("not an ember database", False)
+
+
 def test_init_refuses_an_older_version_file(tmp_path: Path) -> None:
     """`ember init` on a real v12 file refuses, named code, file unchanged."""
     db_path = tmp_path / "kb.db"

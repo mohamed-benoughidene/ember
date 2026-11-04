@@ -142,9 +142,11 @@ class FakeEmbedder:
         self._dim = dim
         self._error = error
         self.calls: list[list[str]] = []
+        self.embed_calls: list[list[str]] = []
 
     def embed(self, texts: list[str]) -> list[list[float]]:
         self.calls.append(list(texts))
+        self.embed_calls.append(list(texts))
         if self._error is not None:
             raise self._error
         vectors: list[list[float]] = []

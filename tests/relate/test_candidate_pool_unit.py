@@ -13,6 +13,7 @@ unchanged, and the generic-failure tests prove a code bug is never wrapped
 
 from __future__ import annotations
 
+import re
 import struct
 from datetime import datetime, timedelta
 
@@ -1268,3 +1269,109 @@ def test_fresh_query_vector_and_float32_cache_hit_score_same_score() -> None:
     a_float32_loss_is_real = as_float32(float64_vector) != float64_vector
     assert a_float32_loss_is_real
     assert fresh_run == cached_run
+
+
+# --- embedding call batching (Batch 8 finding 4.8 #1) -----------------------
+
+
+class _RecordingEmbedder(FakeEmbedder):
+    """Recording embedder for the batching test.
+
+    Defined inline by subclassing the shared `FakeEmbedder` so the shared
+    fake keeps its today's behavior for every other test in this file.
+    """
+
+
+def test_embedding_calls_are_batched() -> None:
+    """The pool encodes cache misses in batches, not one item per call.
+
+    41 texts (the new item plus a 40-item universe) all miss the cache, so
+    today's loop calls `embed([statement])` once per item — 41 one-text
+    calls. The pin: every recorded call carries at most 32 texts and the
+    whole run needs fewer than 41 calls. Committed red on purpose; chunk 7
+    collapses the count to ⌈41/32⌉ = 2 batched calls.
+    """
+    new_item = _item(1)
+    items = [_item(item_id, days=FAR_DAYS) for item_id in range(2, 42)]
+    embedder = _RecordingEmbedder(model_name=MODEL)
+    store = FakeEmbeddingStore(model_name=MODEL)
+
+    _build(_loaded(new_item, items), embedder=embedder, store=store)
+
+    assert all(
+        len(texts) <= 32 for texts in embedder.embed_calls
+    ), embedder.embed_calls
+    assert len(embedder.embed_calls) < 41, embedder.embed_calls
+
+
+def test_progress_lines_report_done_and_total() -> None:
+    """The batched encode loop reports a done/total line after every batch.
+
+    Same 41-miss setup as `test_embedding_calls_are_batched`, plus the NEW
+    optional `echo` keyword (Batch 8 finding 4.8 #2): the capture list must
+    collect at least two lines, each shaped `encoding embeddings: <n>/41`
+    (41 = the number of cache-miss texts in the run, new item included),
+    ending at `41/41`. A pool built with NO `echo` argument (today's default)
+    captures nothing — the calls stay silent.
+    """
+    new_item = _item(1)
+    items = [_item(item_id, days=FAR_DAYS) for item_id in range(2, 42)]
+
+    capture: list[str] = []
+    build_candidate_pool(
+        _loaded(new_item, items),
+        link_lookup=FakeLinkLookup(items=[]),
+        embedding_store=FakeEmbeddingStore(model_name=MODEL),
+        embedder=_RecordingEmbedder(model_name=MODEL),
+        echo=capture.append,
+    )
+
+    assert len(capture) >= 2, capture
+    for line in capture:
+        assert re.fullmatch(r"encoding embeddings: (\d+)/41", line), capture
+    assert capture[-1] == "encoding embeddings: 41/41", capture
+
+    silent_capture: list[str] = []
+    build_candidate_pool(
+        _loaded(new_item, items),
+        link_lookup=FakeLinkLookup(items=[]),
+        embedding_store=FakeEmbeddingStore(model_name=MODEL),
+        embedder=_RecordingEmbedder(model_name=MODEL),
+    )
+    assert silent_capture == []
+
+
+def test_model_change_warning_prints_before_wipe() -> None:
+    """The model-change warning rides `echo` BEFORE the cache wipe runs (4.8 #2).
+
+    The store is cached under `other-model` while the embedder reports
+    `fake-model`, so the pre-flight wipe fires. The store subclass appends
+    `"WIPE"` into the SAME capture list the `echo` sink writes into, so the
+    capture order proves the order of the two side effects: the warning line
+    through `echo` first, then the wipe. The `Pool` contract does not change —
+    the returned warning is still `MODEL_CHANGED_LINE`.
+    """
+    capture: list[str] = []
+
+    class _WipeRecordingStore(FakeEmbeddingStore):
+        """Appends `"WIPE"` to the same capture the `echo` sink writes into."""
+
+        def wipe(self) -> None:
+            capture.append("WIPE")
+            super().wipe()
+
+    store = _WipeRecordingStore(
+        {DROPPED_ID: [9.0, 9.0, 9.0]}, model_name="other-model"
+    )
+    embedder = _RecordingEmbedder(model_name=MODEL)
+
+    pool = build_candidate_pool(
+        _candidate(),
+        link_lookup=FakeLinkLookup(items=[]),
+        embedding_store=store,
+        embedder=embedder,
+        echo=capture.append,
+    )
+
+    assert capture[:2] == [MODEL_CHANGED_LINE, "WIPE"], capture
+    assert pool.warning == MODEL_CHANGED_LINE

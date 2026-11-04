@@ -177,14 +177,19 @@ def test_history_rows_carry_their_group_id(db_path) -> None:
     finally:
         conn.close()
 
-    # The undo's inverse rows and its `undo_of` marker are the newest rows;
-    # every one of them carries the undo's OWN new group id.
+    # Newest first now (Batch 8, finding 4.7 #13): the undo's inverse rows
+    # and its `undo_of` marker sort FIRST, every one stamped with the
+    # undo's OWN new group id; the group-stamped human action's status row
+    # sorts LAST with its own different group id.
     fields = [row.field_changed for row in rows]
-    assert fields[0] == "status"  # the group-stamped human action
-    assert "undo_of" in fields
+    assert fields[0] == "undo_of"  # the undo's marker row, newest
+    assert fields[-1] == "status"  # the group-stamped human action, oldest
     marker = next(row for row in rows if row.field_changed == "undo_of")
     assert marker.group_id is not None
-    assert marker.group_id != rows[0].group_id
+    action = rows[-1]
+    assert action.trigger_cause == "user_set_status"
+    assert action.group_id is not None
+    assert action.group_id != marker.group_id
     # And the inverse rows the undo wrote are stamped like their marker.
     inverses = [row for row in rows if row.group_id == marker.group_id]
     assert len(inverses) >= 2

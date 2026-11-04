@@ -178,8 +178,11 @@ def test_port_reads_return_rows_in_id_order(db_path) -> None:
     assert items[2].close_reason == "expired"
     assert [link.id for link in links] == [1]
     assert links[0].source_item_id == 1
-    assert [row.id for row in rows] == [1, 2]
-    assert rows[1].item_id is None
+    # The ledger read is newest-first (Batch 8, finding 4.7 #13): the same
+    # `(timestamp, id)` DESCENDING key `history()` sorts. Both seeded rows
+    # share one timestamp, so the read comes back [2, 1].
+    assert [row.id for row in rows] == [2, 1]
+    assert rows[0].item_id is None  # the subject-less `proposed` row
     assert exists is True
     assert missing is False
 

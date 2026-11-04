@@ -102,7 +102,7 @@ def run_history(
     page = validate_history_page(page)
     if item_id is not None:
         validate_query_item(lookup, item_id)
-    events = history(lookup.list_change_log(), lookup.list_links(), item_id, page)
+    events = history(lookup.list_change_log(item_id, page), lookup.list_links(), item_id, page)
     return render_history(events, item_id)
 
 

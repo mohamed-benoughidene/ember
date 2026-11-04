@@ -242,7 +242,11 @@ def test_relate_json_every_line_parses_and_the_sequence_is_pinned(
 
     assert result.exit_code == 0
     events = _events(result)
+    # The stream opens with the Batch 8 encoding-progress line (the core
+    # prints `encoding embeddings: n/total` through the CLI's echo callable;
+    # in JSON mode it rides stdout message events — 4 cache misses here).
     assert [event["event"] for event in events] == [
+        "message",  # encoding progress: 4 cache misses, one batch
         "block",  # link-preview 1
         "prompt",
         "block",  # link (the accepted write's YAML)
@@ -252,8 +256,9 @@ def test_relate_json_every_line_parses_and_the_sequence_is_pinned(
         "prompt",
         "summary",
     ]
-    assert events[0]["kind"] == "link-preview"
-    assert events[0]["fields"] == {
+    assert events[0]["text"] == "encoding embeddings: 4/4"
+    assert events[1]["kind"] == "link-preview"
+    assert events[1]["fields"] == {
         "index": 1,
         "total": 3,
         "source_item_id": 1,
@@ -261,8 +266,8 @@ def test_relate_json_every_line_parses_and_the_sequence_is_pinned(
         "link_type": "depends_on",
         "rationale": None,
     }
-    assert events[2]["kind"] == "link"
-    assert events[2]["fields"] == {
+    assert events[3]["kind"] == "link"
+    assert events[3]["fields"] == {
         "link_id": 3,
         "source_item_id": 1,
         "target_item_id": 4,
@@ -270,8 +275,8 @@ def test_relate_json_every_line_parses_and_the_sequence_is_pinned(
         "status": "Confirmed",
         "rationale": None,
     }
-    assert events[3]["fields"]["index"] == 2
-    assert events[5]["fields"]["index"] == 3
+    assert events[4]["fields"]["index"] == 2
+    assert events[6]["fields"]["index"] == 3
     assert events[-1] == {
         "event": "summary",
         "line": "accepted: 1, rejected: 1, skipped: 1, aborted: false",
@@ -289,11 +294,19 @@ def test_relate_json_rejection_lines_are_message_events(tmp_path: Path) -> None:
 
     assert result.exit_code == 0
     events = _events(result)
-    assert [event["event"] for event in events] == ["message", "message", "summary"]
+    # The encoding-progress line opens the stream (Batch 8; 3 cache misses
+    # here), then the two gatekeeper rejects, then the summary.
+    assert [event["event"] for event in events] == [
+        "message",
+        "message",
+        "message",
+        "summary",
+    ]
+    assert events[0]["text"] == "encoding embeddings: 3/3"
     # Rule-8 gatekeeper rejects (a supersedes cycle), one line each, full
     # detail preserved as data.
-    assert events[0]["text"].startswith("relate rejected: RELATE-028 | ")
-    assert events[0]["text"] != events[1]["text"]
+    assert events[1]["text"].startswith("relate rejected: RELATE-028 | ")
+    assert events[1]["text"] != events[2]["text"]
     assert events[-1] == {
         "event": "summary",
         "line": "accepted: 0, rejected: 2, skipped: 0, aborted: false",

@@ -15,6 +15,7 @@ import ember.adapters.sqlite as sqlite_adapter
 from ember.adapters.embedder import validate_embedder_config
 from ember.adapters.sqlite import SqliteEmbedderStore, open_database
 from ember.cli import main
+from ember.relate.candidate_pool import MODEL_CHANGED_LINE
 from ember.relate.errors import EmbedderLoadFailed
 from ember.relate.rows import Pool
 from tests.fakes import FIXED_TIME, insert_item, insert_link, insert_source
@@ -245,14 +246,20 @@ def test_relate_prints_pool_warning_to_stderr(db_path, monkeypatch) -> None:
     _seed_six_items_two_links(db_path)
     _patch_phase2_ports(monkeypatch)
     _patch_phase34_ports(monkeypatch)
-    monkeypatch.setattr(
-        "ember.cli.build_candidate_pool",
-        lambda *args, **kwargs: Pool(
+
+    def _fake_pool(*args, **kwargs):
+        # Since Chunk 10 the core (not the CLI) prints the warning through
+        # the `echo` callable the CLI wires — on the terminal that lands on
+        # stderr. The fake mirrors the real core's one print.
+        if kwargs.get("echo") is not None:
+            kwargs["echo"]("cache wiped")
+        return Pool(
             ranked=[],
             counts={"dense": 0, "graph": 0, "metadata": 0},
             warning="cache wiped",
-        ),
-    )
+        )
+
+    monkeypatch.setattr("ember.cli.build_candidate_pool", _fake_pool)
 
     result = CliRunner().invoke(main, ["relate", "--item", "1", "--db", db_path])
 
@@ -616,3 +623,43 @@ def test_relate_refuses_an_unmigrated_v12_file_and_never_migrates_it(
 
 def _no_bak_file(db_str: str) -> bool:
     return not list(Path(db_str).parent.glob(Path(db_str).name + ".bak-v*"))
+
+
+# --- the warning and the progress lines choose their stream (Batch 8, 4.8 #2) ---
+#
+# The `--confirm json` mode is the program-facing mode: the app never shows
+# stderr, so the model-change warning must arrive as one `message` event on
+# stdout. On the terminal it stays on stderr. The CLI hands the Phase 2 core
+# ONE `echo` callable (`sink.echo` in JSON mode, `click.echo(..., err=True)`
+# on the terminal) and the core prints the warning before the wipe and the
+# progress lines after each encoded batch — the CLI never re-prints.
+
+
+def test_json_mode_warning_is_a_stdout_message_event(db_path, monkeypatch) -> None:
+    _seed_six_items_two_links(db_path)
+    # One cached vector under a foreign model name forces the model-change
+    # warning (and the wipe) on the real `SqliteEmbedderStore` cache the run
+    # reads through `_patch_phase2_ports`.
+    conn = open_database(db_path)
+    try:
+        SqliteEmbedderStore(conn).upsert(1, [0.1, 0.2, 0.3], "other-model")
+    finally:
+        conn.close()
+    _patch_phase2_ports(monkeypatch)
+    # `--confirm json` runs into Phase 3 after the pool: keep responses canned.
+    _patch_phase34_ports(monkeypatch)
+
+    result = CliRunner().invoke(
+        main, ["relate", "--item", "1", "--confirm", "json", "--db", db_path], input=""
+    )
+
+    # Every stdout line is one JSON event object (the event stream owns
+    # stdout when confirm is json).
+    events = [json.loads(line) for line in result.stdout.splitlines()]
+    warnings = [
+        event
+        for event in events
+        if event.get("event") == "message" and event.get("text") == MODEL_CHANGED_LINE
+    ]
+    assert warnings, _error_text(result)
+    assert len(warnings) == 1
