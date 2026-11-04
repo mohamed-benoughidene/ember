@@ -38,10 +38,30 @@ test('undo labels', async (t) => {
   });
 
   await t.test('every engine source_action has a label; unknown ones fail loudly', () => {
-    // The engine can return exactly these (ember/maintain/undo.py):
-    for (const action of ['close-item', 'set-status', 'set-validated', 'clear-validated', 'edit-item', 'remove-link', 'reverse-supersedes']) {
+    // The engine can return exactly what ember/maintain/undo.py's two
+    // readers return; walk the real returns (the same read-the-source
+    // way the errors.py walk below works) instead of repeating them.
+    const source = fs.readFileSync(path.join(REPO_ROOT, 'ember/maintain/undo.py'), 'utf8');
+    const real = new Set();
+    for (const name of ['_source_action_of_original', '_source_action_of_undo']) {
+      const start = source.indexOf(`def ${name}(`);
+      assert.ok(start !== -1, `${name} exists in ember/maintain/undo.py`);
+      const end = source.indexOf('\ndef ', start + 1);
+      const body = source.slice(start, end === -1 ? source.length : end);
+      // Bare returns plus the `set-validated ... else clear-validated`
+      // ternaries; the Set dedupes close-item's two return sites.
+      for (const match of body.matchAll(/return "([a-z-]+)"(?: if [^\n]*? else "([a-z-]+)")?/g)) {
+        real.add(match[1]);
+        if (match[2]) real.add(match[2]);
+      }
+    }
+    // Unknown finds must fail loudly (the throw below names them); the
+    // size pin after the loop means an empty or rotted walk also fails:
+    // the regex cannot rot silently.
+    for (const action of real) {
       assert.ok(undoActionWords(action), action);
     }
+    assert.equal(real.size, 7, `the walk finds exactly the engine's 7 source_actions; found: ${[...real].sort().join(', ')}`);
     assert.throws(() => undoActionWords('maintain'), /unknown source_action/);
     assert.throws(() => undoRedoLabel({ direction: 'sideways', source_action: 'close-item', target_label: 'item 1' }), /unknown direction/);
     assert.throws(() => undoRedoLabel(null), /missing/);
