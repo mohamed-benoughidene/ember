@@ -6,7 +6,7 @@ import importlib.resources
 import sqlite3
 
 from ember.adapters.sqlite import open_database
-from ember.query.rows import ChangeRow, CurrentStateRow, QueryItem
+from ember.query.rows import ChangeRow, CurrentStateRow, HistoryPage, QueryItem
 from ember.relate.rows import Link
 from tests.fakes import FIXED_TIME
 
@@ -57,9 +57,47 @@ class FakeQueryLookup:
         self.calls.append("list_links")
         return list(self._links)
 
-    def list_change_log(self) -> list[ChangeRow]:
+    def list_change_log(
+        self,
+        item_id: int | None = None,
+        window: HistoryPage | None = None,
+    ) -> list[ChangeRow]:
+        """Mirror the adapter's SQL filter in memory.
+
+        The item filter is exactly `history`'s `_belongs_to` rule (subject
+        or touching link), `since` a TEXT `>=` prefilter, the crop the
+        NEWEST `offset + limit` rows by `(timestamp, id)` DESCENDING — the
+        same prefix the SQL read returns (Batch 8, finding 4.7 #12).
+        """
         self.calls.append("list_change_log")
-        return list(self._change_rows)
+        rows = list(self._change_rows)
+        if item_id is not None:
+            links = {
+                int(link.id): link
+                for link in self._links
+                if link.id is not None
+            }
+            rows = [
+                row
+                for row in rows
+                if row.item_id == item_id
+                or (
+                    row.link_id is not None
+                    and row.link_id in links
+                    and item_id
+                    in (
+                        links[row.link_id].source_item_id,
+                        links[row.link_id].target_item_id,
+                    )
+                )
+            ]
+        if window is not None and window.since is not None:
+            rows = [row for row in rows if row.timestamp >= window.since]
+        rows.sort(key=lambda row: (row.timestamp, row.id), reverse=True)
+        if window is not None and window.limit is not None:
+            start = window.offset or 0
+            rows = rows[start : start + window.limit]
+        return rows
 
     def item_exists(self, item_id: int) -> bool:
         self.calls.append(f"item_exists:{item_id}")
