@@ -48,6 +48,11 @@ _TRIGGER_DEFINITIONS_SCRIPT = (
 _EXPECTED_TRIGGER_SQL: dict[str, str] | None = None
 
 FLOORS: tuple[tuple[str, int], ...] = (
+    # "relate" stays at 12 (the migration that added `items.metadata`, which
+    # this walk reads): db-check never reads `item_embeddings.vector_format`,
+    # so a 15 floor would report every healthy pre-015 file as drift — a
+    # false alarm. The write side carries the real requirement instead
+    # (`ensure_relate_schema` refuses cache writes below 15).
     ("relate", 12),
     ("maintain", 11),
     ("query", 10),

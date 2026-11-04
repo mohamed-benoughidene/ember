@@ -5,17 +5,29 @@ from __future__ import annotations
 import json
 
 import pytest
-from openai import OpenAIError
+import openai._httpx2  # the SDK's own vendored httpx2 (request shape only)
+from openai import APITimeoutError, OpenAIError
 
 from ember.adapters.llm import (
     REQUEST_TIMEOUT_SECONDS,
+    OpenAiCloseProposer,
     OpenAiItemProposer,
+    OpenAiLinkProposer,
     build_item_proposer,
     build_link_proposer,
 )
-from ember.capture.errors import AiCallError, AiSchemaError
+from ember.capture.errors import (
+    AiCallError,
+    AiRateLimitError,
+    AiSchemaError,
+    AiTimeoutError,
+)
 from ember.capture.item_proposal import ContextItem, ItemType
 from ember.errors import EmberError
+from ember.maintain.close_proposer import StaleCandidate
+from ember.maintain.errors import CloseAiCallFailed, CloseAiCallTimedOut
+from ember.relate.errors import AiCallFailed, AiCallTimedOut
+from ember.relate.rows import NewItem
 
 RAW_TEXT = "We decided to use SQLite."
 ANSWER = json.dumps(
@@ -23,7 +35,7 @@ ANSWER = json.dumps(
         {
             "type": "Decision",
             "statement": "Use SQLite",
-            "source_quote": "use SQLite",
+            "source_quote": "decided to use SQLite",
             "confidence": 0.9,
         },
         {
@@ -38,6 +50,27 @@ ANSWER = json.dumps(
 
 class _Boom(OpenAIError):
     pass
+
+
+class _RateLimitedBoom(_Boom):
+    """A 429-shaped provider error: the shape the SDK raises as
+    `APIStatusError` with `status_code = 429` (Chunk 1)."""
+
+    status_code = 429
+
+
+class _TimeoutBoom(APITimeoutError):
+    """A timeout-shaped provider error: the exact class real request
+    timeouts arrive as (`openai.APITimeoutError`), so the fake copies no
+    shape by hand."""
+
+    pass
+
+
+def _timeout_boom() -> _TimeoutBoom:
+    """Build the timeout fake; the SDK's constructor wants a request."""
+    request = openai._httpx2.httpx2.Request("POST", "http://127.0.0.1")
+    return _TimeoutBoom(request=request)
 
 
 class _Message:
@@ -82,8 +115,23 @@ class _FakeClient:
         self.chat = type("_Chat", (), {"completions": self.completions})()
 
 
-def _proposer(outcome: object, model: str = "test-model") -> OpenAiItemProposer:
-    return OpenAiItemProposer(_FakeClient(outcome), model)
+def _proposer(
+    outcome: object,
+    model: str = "test-model",
+    *,
+    sleep=None,
+    jitter=None,
+    clock=None,
+) -> OpenAiItemProposer:
+    """Build a proposer with the retry injectables faked out (no real
+    waiting, deterministic backoff) unless a test passes its own."""
+    return OpenAiItemProposer(
+        _FakeClient(outcome),
+        model,
+        sleep=sleep if sleep is not None else (lambda _seconds: None),
+        jitter=jitter if jitter is not None else (lambda: 0.0),
+        clock=clock if clock is not None else (lambda: 0.0),
+    )
 
 
 # --- request shape --------------------------------------------------------
@@ -108,6 +156,25 @@ def test_propose_sends_the_context_items() -> None:
 
     user = proposer._client.completions.calls[0]["messages"][1]["content"]
     assert "[7] Finding: Old finding" in user
+
+
+def test_user_content_wraps_the_note_in_delimiter_lines() -> None:
+    """Chunk 8: the raw note travels between two visible delimiter lines,
+    and the instruction above them states that text inside is data, never
+    instructions — a note that itself reads like a prompt stays data."""
+    proposer = _proposer(_Response(ANSWER))
+
+    proposer.propose(RAW_TEXT, [])
+
+    lines = proposer._client.completions.calls[0]["messages"][1][
+        "content"
+    ].splitlines()
+    begin = lines.index("=== BEGIN RAW NOTE ===")
+    end = lines.index("=== END RAW NOTE ===")
+    assert end == begin + 2
+    assert lines[begin + 1] == RAW_TEXT
+    header = "\n".join(lines[:begin])
+    assert "data" in header
 
 
 def test_model_name_goes_into_the_request() -> None:
@@ -202,6 +269,152 @@ def test_strange_reply_without_choices_attr_becomes_schema_error() -> None:
     assert excinfo.value.code == "CAPTURE-009"
 
 
+def test_429_provider_failure_raises_the_capture_rate_limited_code() -> None:
+    """A 429 reply carries its OWN capture code (Chunk 1); the number is
+    the next free one in the family, not pinned here."""
+    proposer = _proposer(_RateLimitedBoom("rate limit exceeded"))
+
+    with pytest.raises(AiCallError) as excinfo:
+        proposer.propose(RAW_TEXT, [])
+
+    assert isinstance(excinfo.value, AiRateLimitError)
+    assert excinfo.value.code == AiRateLimitError.code
+
+
+def test_timeout_provider_failure_raises_the_capture_timed_out_code() -> None:
+    """A request timeout carries its OWN capture code (Chunk 1); the
+    number is the next free one in the family, not pinned here."""
+    proposer = _proposer(_timeout_boom())
+
+    with pytest.raises(AiCallError) as excinfo:
+        proposer.propose(RAW_TEXT, [])
+
+    assert isinstance(excinfo.value, AiTimeoutError)
+    assert excinfo.value.code == AiTimeoutError.code
+
+
+# --- the one capture retry policy (Chunk 2) --------------------------------
+
+
+def test_429_retried_once_with_a_backoff_sleep_between_attempts() -> None:
+    """Chunk 2: a 429 is not fatal at once — the policy retries once. The
+    fake sees exactly 2 attempts, and the ONE wait between them goes
+    through the injected `sleep` (no real waiting in tests)."""
+    client = _FakeClient(_RateLimitedBoom("rate limit exceeded"))
+    sleeps: list[tuple[int, float]] = []
+
+    def controlled_sleep(seconds: float) -> None:
+        # Record how many calls the fake had seen when the sleep began.
+        sleeps.append((len(client.completions.calls), seconds))
+
+    proposer = OpenAiItemProposer(
+        client,
+        "test-model",
+        sleep=controlled_sleep,
+        jitter=lambda: 0.0,
+        clock=lambda: 0.0,
+    )
+
+    with pytest.raises(AiRateLimitError):
+        proposer.propose(RAW_TEXT, [])
+
+    assert len(client.completions.calls) == 2
+    # Exactly one sleep, and it happened AFTER attempt 1, BEFORE attempt 2.
+    assert len(sleeps) == 1
+    assert sleeps[0][0] == 1
+    assert 0 < sleeps[0][1]
+
+
+def test_the_budget_covers_the_whole_next_attempt_retries_included() -> None:
+    """The spec (one total time budget per AI call, RETRIES INCLUDED, under
+    the app's idle limit): a timed-out attempt already burned 60 s of the
+    90 s budget, so the whole next attempt — wait plus one more full 60 s
+    request timeout — cannot fit. The policy must raise at once (the
+    timeout's capture code) with EXACTLY one port call and no wait, never
+    start attempt 2."""
+    read = {"calls": 0}
+
+    def clock() -> float:
+        # One 60 s read per clock call: deterministic, no real waiting.
+        read["calls"] += 1
+        return read["calls"] * REQUEST_TIMEOUT_SECONDS
+
+    sleeps: list[float] = []
+    proposer = OpenAiItemProposer(
+        _FakeClient(_timeout_boom()),
+        "test-model",
+        sleep=sleeps.append,
+        jitter=lambda: 0.0,
+        clock=clock,
+    )
+
+    with pytest.raises(AiTimeoutError) as excinfo:
+        proposer.propose(RAW_TEXT, [])
+
+    assert len(proposer._client.completions.calls) == 1
+    assert sleeps == []  # the next attempt cannot fit: no wait, no retry
+    assert excinfo.value.code == AiTimeoutError.code
+
+
+def test_relate_and_maintain_route_through_the_whole_attempt_budget() -> None:
+    """Proof of routing: relate AND maintain propose through the shared
+    `_send_with_one_retry` policy (Chunk 3), so the whole-next-attempt
+    budget binds them too — a timeout-shaped failure under a spent clock
+    leaves EXACTLY one provider call and each family's OWN timeout code
+    (RELATE-042, MAINTAIN-030), never a second attempt."""
+    read = {"calls": 0}
+
+    def clock() -> float:
+        # One 60 s read per clock call: one read == one request timeout.
+        read["calls"] += 1
+        return read["calls"] * REQUEST_TIMEOUT_SECONDS
+
+    # relate (OpenAiLinkProposer.propose_links)
+    link = OpenAiLinkProposer(
+        _FakeClient(_timeout_boom()),
+        "test-model",
+        sleep=lambda _s: None,
+        jitter=lambda: 0.0,
+        clock=clock,
+    )
+    new_item = NewItem(id=1, type="Decision", statement="s", created_at="t")
+    with pytest.raises(AiCallFailed) as link_exc:
+        link.propose_links(new_item, [])
+    assert len(link._client.completions.calls) == 1
+    assert link_exc.value.code == AiCallTimedOut.code
+
+    # maintain (OpenAiCloseProposer.propose_close)
+    closer = OpenAiCloseProposer(
+        _FakeClient(_timeout_boom()),
+        "test-model",
+        sleep=lambda _s: None,
+        jitter=lambda: 0.0,
+        clock=clock,
+    )
+    stale = StaleCandidate(
+        item_id=1,
+        item_type="Decision",
+        statement="s",
+        newest_answers_link_id=1,
+        answered_by_item_id=2,
+        newest_answer_created_at="t",
+    )
+    with pytest.raises(CloseAiCallFailed) as close_exc:
+        closer.propose_close(stale)
+    assert len(closer._client.completions.calls) == 1
+    assert close_exc.value.code == CloseAiCallTimedOut.code
+
+
+def test_propose_sends_temperature_zero() -> None:
+    """Chunk 2: capture sends temperature=0 (deterministic), through the
+    same policy that owns the retry."""
+    proposer = _proposer(_Response("[]"))
+
+    proposer.propose(RAW_TEXT, [])
+
+    assert proposer._client.completions.calls[0]["temperature"] == 0
+
+
 # --- config ---------------------------------------------------------------
 
 
@@ -246,3 +459,42 @@ def test_build_bounds_the_timeout_and_sdk_retries(monkeypatch) -> None:
     assert recorded["api_key"] == "k"
     assert recorded["timeout"] == REQUEST_TIMEOUT_SECONDS
     assert recorded["max_retries"] == 0
+
+
+def test_build_item_proposer_sends_default_base_url(monkeypatch) -> None:
+    """Chunk 17 pin: with no `EMBER_AI_BASE_URL`, the capture client gets
+    the module's default OpenRouter URL (`DEFAULT_BASE_URL` in
+    ember/adapters/llm.py). The value is pinned as a literal so a change
+    to the constant fails this test (the mutation proof)."""
+    recorded: dict = {}
+
+    def fake_openai(**kwargs):
+        recorded.update(kwargs)
+        return object()
+
+    monkeypatch.setattr("ember.adapters.llm.OpenAI", fake_openai)
+
+    build_item_proposer({"OPENROUTER_API_KEY": "k"})
+
+    assert recorded["base_url"] == "https://openrouter.ai/api/v1"
+
+
+def test_build_item_proposer_base_url_env_override_reaches_the_client(
+    monkeypatch,
+) -> None:
+    """Chunk 17 pin: an `EMBER_AI_BASE_URL` override reaches the OpenAI
+    client as its `base_url` (same recording pattern as the close-side
+    test_build_close_proposer_uses_env_overrides)."""
+    recorded: dict = {}
+
+    def fake_openai(**kwargs):
+        recorded.update(kwargs)
+        return object()
+
+    monkeypatch.setattr("ember.adapters.llm.OpenAI", fake_openai)
+
+    build_item_proposer(
+        {"OPENROUTER_API_KEY": "k", "EMBER_AI_BASE_URL": "http://example.internal/v1"}
+    )
+
+    assert recorded["base_url"] == "http://example.internal/v1"

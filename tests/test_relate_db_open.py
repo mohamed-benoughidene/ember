@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 import ember.adapters.sqlite as sqlite_adapter
+from ember.adapters.migrations import LATEST_VERSION
 from ember.adapters.sqlite import ensure_relate_schema, open_relate_database
 from ember.relate.errors import DbMigrationFailed, DbOpenFailed, SchemaOutdated
 
@@ -76,14 +77,14 @@ def test_ensure_relate_schema_rejects_version_8(tmp_path) -> None:
         ensure_relate_schema(conn)
 
     assert exc.value.code == "RELATE-014"
-    assert exc.value.context["required"] == 12
+    assert exc.value.context["required"] == 15
 
 
-def test_ensure_relate_schema_accepts_version_12(tmp_path) -> None:
+def test_ensure_relate_schema_accepts_version_15(tmp_path) -> None:
     conn = sqlite3.connect(str(tmp_path / "raw.db"))
     conn.row_factory = sqlite3.Row
     conn.execute("CREATE TABLE schema_version (version INTEGER NOT NULL)")
-    conn.execute("INSERT INTO schema_version (version) VALUES (12)")
+    conn.execute("INSERT INTO schema_version (version) VALUES (15)")
 
     ensure_relate_schema(conn)
 
@@ -107,7 +108,7 @@ def test_open_relate_database_applies_all_migrations(db_path) -> None:
     conn = open_relate_database(db_path)
 
     version = conn.execute("SELECT version FROM schema_version").fetchone()["version"]
-    assert version == 14
+    assert version == LATEST_VERSION
 
     tables = {
         row["name"]

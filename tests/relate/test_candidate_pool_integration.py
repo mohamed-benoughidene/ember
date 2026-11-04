@@ -23,11 +23,19 @@ own content cosine is lower.
 A fourth test drives the RELATE-021 graph read failure through
 `build_candidate_pool` by dropping the `links` table, so the real
 `SqliteLinkContext.neighbors_of` raises and the core re-raises it unchanged.
+
+Batch 7 chunk 11 adds the damaged-row repair target: an `item_embeddings` row
+holding a wrong-length float32 blob is deleted and re-encoded instead of
+killing the run (today: `CosineComputeFailed` RELATE-022). The test drives the
+real `SqliteEmbedderStore` on a temp database — the same port the CLI
+`ember relate` path wraps with `_RelateEmbeddingCache`, whose own `delete`
+routing is exercised through the CLI tests.
 """
 
 from __future__ import annotations
 
 import sqlite3
+import struct
 from datetime import datetime, timedelta
 from math import sqrt
 
@@ -472,6 +480,76 @@ def test_seeded_mixed_corpus_routes_labels_and_the_time_proxy(db_path) -> None:
     # candidates only: the same-day unlabeled item 5 joins, every labeled
     # partner (in-window or far) is excluded, and the mixed pairs never match.
     assert mirror_pool.counts == {"dense": 5, "graph": 0, "metadata": 1}
+
+
+def test_wrong_length_cache_row_is_repaired_by_reencode(db_path) -> None:
+    """A cache row holding a wrong-length blob is repaired, not raised.
+
+    Batch 7 chunk 11: the row for item 2 is seeded directly with a 2-value
+    float32 blob where the active model's `dim` is 384 (today that run dies
+    with `CosineComputeFailed` RELATE-022). After `build_candidate_pool` the
+    run succeeds and the row was rewritten: a new blob of the correct length
+    and a new `embedded_at`, because the embedder re-encoded that item.
+    """
+    conn = open_database(db_path)
+    source_id = insert_source(conn)
+    insert_item(
+        conn,
+        source_id=source_id,
+        item_id=1,
+        item_type="Finding",
+        statement=NEW_STATEMENT,
+        created_at=NEW_TIME,
+    )
+    insert_item(
+        conn,
+        source_id=source_id,
+        item_id=2,
+        item_type="Decision",
+        statement=_candidate_statement(2),
+        created_at=NEW_TIME,
+    )
+    conn.commit()
+
+    store = SqliteEmbedderStore(conn, clock=_AdvancingClock())
+    damaged_blob = struct.pack("<2f", 1.0, 2.0)
+    conn.execute(
+        "INSERT INTO item_embeddings (item_id, vector, model_name, embedded_at)"
+        " VALUES (?, ?, ?, ?)",
+        (2, damaged_blob, MODEL, "2025-06-01T00:00:00+00:00"),
+    )
+    conn.commit()
+    blob_before = _vector_blob_by_item(conn)[2]
+    at_before = _embedded_at_by_item(conn)[2]
+
+    vectors = {NEW_STATEMENT: _unit(1.0), _candidate_statement(2): _unit(0.9)}
+    embedder = FakeEmbedder(vectors, model_name=MODEL, dim=DIM)
+    lookup = SqliteLinkContext(conn)
+    loaded = load_item_candidates(lookup, item_id=1, db_path=db_path)
+
+    pool = build_candidate_pool(
+        loaded,
+        link_lookup=lookup,
+        embedding_store=store,
+        embedder=embedder,
+    )
+
+    # The run survived the damaged row and scored the re-encoded vector.
+    assert pool.warning is None
+    assert [candidate.item.id for candidate in pool.ranked] == [2]
+    assert pool.ranked[0].cosine == pytest.approx(0.9)
+    # The embedder re-ran for the damaged item.
+    assert _candidate_statement(2) in [
+        text for call in embedder.calls for text in call
+    ]
+    # The row was rewritten: a new, correct-length blob at a new timestamp.
+    blob_after = _vector_blob_by_item(conn)[2]
+    at_after = _embedded_at_by_item(conn)[2]
+    assert blob_after != blob_before
+    assert len(blob_after) == DIM * 4
+    assert at_after != at_before
+    assert store.get(2) == pytest.approx(vectors[_candidate_statement(2)])
+    assert store.model_name_of(2) == MODEL
 
 
 def test_graph_read_failure_surfaces_as_relate_021(db_path) -> None:

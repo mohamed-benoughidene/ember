@@ -17,9 +17,13 @@ from typing import Mapping, Protocol
 
 from pydantic import BaseModel, Field, ValidationError, field_validator
 
-from ember.capture.errors import AiError, AiSchemaError, ContextModeInvalid
+from ember.capture.errors import AiSchemaError, ContextModeInvalid
 
 CONTEXT_WINDOW = 50
+
+# A grounded quote must be a meaningful span, not one word (Chunk 8; spec
+# line 59). Planned initial value, tuned after the batch (decision I11).
+MIN_QUOTE_WORDS = 3
 
 SYSTEM_PROMPT = (
     "You turn one raw project note into typed items. "
@@ -29,7 +33,8 @@ SYSTEM_PROMPT = (
     "Each item has these keys: "
     "type (one of the four), "
     "statement (the item in your own words), "
-    "source_quote (an exact substring copied from the raw note), "
+    "source_quote (an exact substring copied from the raw note, "
+    "at least three words long), "
     "confidence (your own score from 0.0 to 1.0). "
     "An item may also carry an optional fifth key, metadata: "
     "one short project-area label. Omit the key when unsure. "
@@ -118,7 +123,8 @@ class ItemProposerPort(Protocol):
         travels back untouched so the edge can store it verbatim (rule D8).
 
         Raise `AiCallError` when the provider call fails, and
-        `AiSchemaError` when the answer cannot be read. Both are retried.
+        `AiSchemaError` when the answer cannot be read. Both propagate to
+        the caller; the retry policy lives in the adapter.
         """
         ...
 
@@ -153,9 +159,9 @@ def build_context(
 def parse_proposals(ai_response: str, raw_text: str) -> ProposalBatch:
     """Check one raw AI answer at the boundary.
 
-    The whole answer must be a JSON list; anything else is a schema failure and
-    is retried. Each entry is checked alone, so one bad entry is dropped with a
-    reason instead of sinking the whole answer.
+    The whole answer must be a JSON list; anything else is a schema failure
+    that propagates to the caller. Each entry is checked alone, so one bad
+    entry is dropped with a reason instead of sinking the whole answer.
     """
     entries = _load_entries(ai_response)
     proposals: list[ItemProposal] = []
@@ -175,14 +181,12 @@ def propose_items(
     raw_text: str,
     context: list[ContextItem],
 ) -> ProposalResponse:
-    """Ask the AI for proposals. One retry, no wait (plan section 5).
+    """Ask the AI for proposals, exactly once.
 
-    The second call is not wrapped, so its failure reaches the caller.
+    Any `AiError` from the port propagates to the caller. The retry policy
+    lives in the adapter, not in this core.
     """
-    try:
-        return proposer.propose(raw_text, context)
-    except AiError:
-        return proposer.propose(raw_text, context)
+    return proposer.propose(raw_text, context)
 
 
 def _load_entries(ai_response: str) -> list[object]:
@@ -214,6 +218,8 @@ def _check_entry(entry: object, raw_text: str) -> tuple[ItemProposal | None, str
     except ValidationError as exc:
         return None, _rule_for(exc)
     if proposal.source_quote not in raw_text:
+        return None, "quote"
+    if len(proposal.source_quote.split()) < MIN_QUOTE_WORDS:
         return None, "quote"
     return proposal, ""
 

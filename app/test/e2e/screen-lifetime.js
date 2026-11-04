@@ -315,7 +315,7 @@ async function lateResultPaintsInsideKeepSafe() {
 const ADD_NOTE = 'We decided to use SQLite for local storage. We assume the team ships weekly.';
 const ADD_PROPOSALS = [
   { type: 'Decision', statement: 'Use SQLite for local storage', source_quote: 'use SQLite for local storage', confidence: 0.9 },
-  { type: 'Assumption', statement: 'The team ships weekly', source_quote: 'ships weekly', confidence: 0.8 },
+  { type: 'Assumption', statement: 'The team ships weekly', source_quote: 'the team ships weekly', confidence: 0.8 },
 ];
 
 /** Two confirmed answers links make items 7 and 9 stale (the sweep's

@@ -167,3 +167,39 @@ class SourceHasItems(CaptureError):
 
     code = "CAPTURE-023"
     name = "SourceHasItems"
+
+
+class AiRateLimitError(AiCallError):
+    """The AI service refused the call as rate-limited (HTTP 429).
+
+    Its own code (Batch 7, D-29) so capture can tell "ask again shortly"
+    from any other call failure — Chunk 2's retry budget lives on this —
+    and the app can say so in one sentence.
+    """
+
+    code = "CAPTURE-024"
+    name = "AiRateLimitError"
+
+
+class AiTimeoutError(AiCallError):
+    """The AI call gave up waiting: the request timed out.
+
+    Its own code (Batch 7, D-29) so capture can tell a slow or unreachable
+    AI service from any other call failure — Chunk 2's total call budget
+    ends here — and the app can say so in one sentence.
+    """
+
+    code = "CAPTURE-025"
+    name = "AiTimeoutError"
+
+
+class SourceEmpty(CaptureError):
+    """The captured text is empty (or whitespace only) (Batch 7 chunk 6).
+
+    Refused in `read_raw_text` right after the UTF-8 decode, BEFORE any AI
+    call and before the source is stored — there is nothing to propose
+    from, and no request should ever be sent (finding 4.5 #16).
+    """
+
+    code = "CAPTURE-026"
+    name = "SourceEmpty"

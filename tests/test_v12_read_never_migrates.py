@@ -2,8 +2,10 @@
 
 Undo step 01 §2: an untouched v12 file (scripts 001-012 applied, version
 stamped 12, no group_id column) must stay at v12 — the query boot is
-read-only and db-check never migrates — and all three commands must
-succeed on it.
+read-only and db-check never migrates. `history`, `export` and `db-check` succeed on
+it (the db-check floors name what the walk reads; migration 015's tag column
+is not among them, so a v12 file passes the check)
+floor gap as drift on the untouched file — reading it, never migrating it.
 """
 
 from __future__ import annotations

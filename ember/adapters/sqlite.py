@@ -7,10 +7,8 @@ import os
 import re
 import secrets
 import sqlite3
-import sys
 import time
 import urllib.parse
-from array import array
 from collections import deque
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -22,6 +20,7 @@ from ember.adapters.errors import (
     ScriptSetInvalid,
     VersionTableMissing,
 )
+from ember.adapters.migrations import LATEST_VERSION as _LATEST_VERSION
 from ember.capture.errors import (
     DbFileMissing as CaptureDbFileMissing,
     DbOpenFailed as CaptureDbOpenFailed,
@@ -79,14 +78,17 @@ from ember.relate.errors import (
     SchemaOutdated,
 )
 from ember.relate.rows import ChangeLogEntry, GroupIdPort, Link, NewItem
+from ember.relate.vector_format import VECTOR_FORMAT, pack_vector, unpack_vector
 
 _MIGRATIONS_MODULE = "ember.adapters.migrations"
 
-# The pinned latest migration version (Batch 4 chunk 9, story 14). The
-# script set discovered on disk must be exactly 1.._LATEST_VERSION before
-# any open migrates anything; a dropped or renamed `.sql` refuses up front
-# with `ScriptSetInvalid` (MIGRATION-001) instead of building a half schema.
-_LATEST_VERSION = 14
+# The latest migration version is DERIVED from the scripts directory (issue
+# #45): `ember.adapters.migrations` computes it from the shipped `NN_*.sql`
+# listing at import time, so adding the next migration `.sql` file is the
+# whole bump — no by-hand pin. The script set discovered on disk must still
+# be exactly 1.._LATEST_VERSION before any open migrates anything; a
+# dropped or renamed `.sql` refuses up front with `ScriptSetInvalid`
+# (MIGRATION-001) instead of building a half schema.
 
 _BACKUPS_TO_KEEP = 3
 
@@ -404,16 +406,19 @@ def ensure_relate_schema(conn: sqlite3.Connection) -> None:
     """Check the applied schema version is new enough for the relate engine.
 
     Raise `DbOpenFailed` (RELATE-012) if the version cannot be read, and
-    `SchemaOutdated` (RELATE-014) if the version is below the required 12
-    (the relate engine reads `items.metadata` from migration 012 on).
+    `SchemaOutdated` (RELATE-014) if the version is below the required 15
+    (the cache writes tag `item_embeddings.vector_format`, migration 015,
+    and read `items.metadata` from migration 012 on).
     """
     try:
         row = conn.execute("SELECT version FROM schema_version").fetchone()
         version = 0 if row is None else int(row["version"])
     except (sqlite3.Error, ValueError, TypeError) as exc:
         raise DbOpenFailed("schema version read fail") from exc
-    if version < 12:
-        raise SchemaOutdated("schema version too old", version=version, required=12)
+    if version < 15:
+        raise SchemaOutdated(
+            "schema version too old", version=version, required=15
+        )
 
 
 def open_relate_database_readonly(db_path: str) -> sqlite3.Connection:
@@ -884,11 +889,13 @@ def _migration_scripts() -> list[tuple[int, str]]:
 
 
 def _require_pinned_script_set(scripts: list[tuple[int, str]]) -> None:
-    """Refuse unless the discovered script numbers are exactly 1..13 (story 14).
+    """Refuse unless the discovered script numbers are exactly 1..latest.
 
-    The check lives on the discovery path (not in the injected or patched
-    script list), so it pins what the repository actually ships: a dropped
-    or renamed `.sql` is caught before ANY open migrates anything —
+    The latest version comes from `ember.adapters.migrations.LATEST_VERSION`
+    (issue #45), derived from the scripts the repository ships. The check
+    lives on the discovery path (not in the injected or patched script
+    list), so it pins what the repository actually ships: a dropped or
+    renamed `.sql` is caught before ANY open migrates anything —
     `ScriptSetInvalid` (MIGRATION-001), raised before even the version
     table is created.
     """
@@ -2934,8 +2941,13 @@ class SqliteEmbedderStore:
         try:
             self._conn.execute(
                 "INSERT OR REPLACE INTO item_embeddings"
-                " (item_id, vector, model_name, embedded_at) VALUES (?, ?, ?, ?)",
-                (item_id, blob, model_name, timestamp),
+                " (item_id, vector, model_name, embedded_at, vector_format)"
+                " VALUES (?, ?, ?, ?, ?)",
+                # The tag names the ONE format `ember.relate.vector_format`
+                # defines: little-endian float32. Pre-015 rows (and files not
+                # yet migrated, which lack the column) read the same float32,
+                # so NULL/missing/`float32` all mean one format.
+                (item_id, blob, model_name, timestamp, VECTOR_FORMAT),
             )
             self._conn.commit()
         except sqlite3.Error as exc:
@@ -2983,6 +2995,25 @@ class SqliteEmbedderStore:
         except sqlite3.Error as exc:
             raise EmbeddingWriteFailed("embedding wipe fail") from exc
 
+    def delete(self, item_id: int) -> None:
+        """Delete one cached vector row, for repairing a damaged cache.
+
+        The candidate pool deletes a wrong-length or undecodable row and
+        re-encodes the item in the same run; the cache is derived data, so
+        the row is rebuilt immediately.
+
+        Raise `EmbeddingWriteFailed` (RELATE-019) on a write failure.
+        """
+        try:
+            self._conn.execute(
+                "DELETE FROM item_embeddings WHERE item_id = ?", (item_id,)
+            )
+            self._conn.commit()
+        except sqlite3.Error as exc:
+            raise EmbeddingWriteFailed(
+                "embedding delete fail", item_id=item_id
+            ) from exc
+
 
 def build_embedding_store(conn: sqlite3.Connection) -> EmbeddingStorePort:
     """Build the `item_embeddings` cache adapter for the relate engine.
@@ -3001,16 +3032,9 @@ def build_ai_response_store(conn: sqlite3.Connection) -> SqliteAiResponseStore:
 
 def _pack_vector(vector: list[float]) -> bytes:
     """Pack a float vector as little-endian float32, the on-disk format."""
-    values = array("f", vector)
-    if sys.byteorder != "little":
-        values.byteswap()
-    return values.tobytes()
+    return pack_vector(vector)
 
 
 def _unpack_vector(blob: bytes) -> list[float]:
     """Decode a little-endian float32 blob back into floats."""
-    values = array("f")
-    values.frombytes(blob)
-    if sys.byteorder != "little":
-        values.byteswap()
-    return values.tolist()
+    return unpack_vector(blob)

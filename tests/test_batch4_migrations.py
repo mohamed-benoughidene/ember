@@ -2,8 +2,9 @@
 
 Covers stories 14, 15, 16 (finding 4.3 #2, 4.3 #5, 4.7 #1, 4.5 #17):
 
-- story 14: the migration scripts on disk must be exactly 1..13 before any
-  open migrates anything; a dropped or renamed `.sql` refuses up front
+- story 14: the migration scripts on disk must be exactly 1..latest before
+  any open migrates anything (latest is derived from the shipped scripts,
+  issue #45); a dropped or renamed `.sql` refuses up front
   (`MIGRATION-001 ScriptSetInvalid`) instead of building a half schema.
 - story 15: a file that has tables but no `schema_version` table is never
   adopted; it refuses with `MIGRATION-002 VersionTableMissing`.
@@ -35,6 +36,7 @@ from pathlib import Path
 import pytest
 
 import ember.adapters.sqlite as sqlite_adapter
+from ember.adapters.migrations import LATEST_VERSION
 from ember.adapters.sqlite import open_database, open_maintain_database
 from tests.fakes import insert_item, insert_link, insert_source
 
@@ -125,7 +127,7 @@ def _tables(db_path: Path) -> set[str]:
 def _craft_scripts_package_missing_one(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Point script discovery at a package whose scripts are NOT exactly 1..13.
+    """Point script discovery at a package whose scripts are NOT exactly 1..latest.
 
     The crafted package holds the REAL scripts 001-012 but migration 013 is
     missing — the honest stand-in for a dropped or renamed `.sql`. No file
@@ -164,7 +166,7 @@ def _build_pre_version_file(db_path: Path) -> None:
 def test_a_dropped_migration_script_is_refused_before_any_change(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A script set that is not exactly 1..13 refuses before any open change."""
+    """A script set that is not exactly 1..latest refuses before any open change."""
     db_path = tmp_path / "kb.db"
     _craft_scripts_package_missing_one(tmp_path, monkeypatch)
     script_set_invalid, _, _ = _pinned_error_classes()
@@ -233,7 +235,7 @@ def test_migrating_a_brand_new_file_makes_no_backup(tmp_path: Path) -> None:
 
     assert result.returncode == 0, result.stderr.decode()
     assert db_path.exists()
-    assert _version(db_path) == 14
+    assert _version(db_path) == LATEST_VERSION
     backups = sorted(tmp_path.glob("kb.db.bak*"))
     assert backups == []
 
@@ -259,7 +261,7 @@ def test_every_opened_connection_sets_busy_timeout_to_5000(tmp_path: Path) -> No
 
     # `open_maintain_database` refuses a missing file (N8), so the fresh
     # path starts as a zero-byte file — SQLite's "brand-new" database,
-    # which the open path then migrates to 13.
+    # which the open path then migrates to the latest version.
     maintain_path = tmp_path / "maintain.db"
     maintain_path.touch()
     conn_maintain = open_maintain_database(str(maintain_path))
@@ -327,7 +329,7 @@ def test_migration_011_backfill_accounts_for_reversed_links(tmp_path: Path) -> N
 
     conn = open_database(str(db_path))
     try:
-        assert _version(db_path) == 14
+        assert _version(db_path) == LATEST_VERSION
         reversed_at = conn.execute(
             "SELECT reversed_at FROM links WHERE id = ?", (link_id,)
         ).fetchone()[0]
@@ -378,4 +380,4 @@ def test_four_parallel_openers_of_a_new_file_all_succeed(tmp_path: Path) -> None
     # The headline: no opener crashed, nobody got a half-migrated file.
     assert failures == [], f"{len(failures)} of {openers} openers failed"
 
-    assert _version(db_path) == 14
+    assert _version(db_path) == LATEST_VERSION

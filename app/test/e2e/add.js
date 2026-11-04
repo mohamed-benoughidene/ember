@@ -57,7 +57,13 @@ const assert = require('node:assert/strict');
 const path = require('node:path');
 const { APP_ROOT, REPO_ROOT, FAKE_EMBER, PYTHON } = require('../util');
 
+// The shared venv's console script. Its editable install points at the
+// MAIN checkout, so EVERY engine spawn below pins PYTHONPATH to
+// REPO_ROOT (the forget-note/keep-safe convention): the path finder
+// precedes the editable finder's appended hook, so `import ember`
+// resolves to THIS repo's code — the repo the e2e run lives in.
 const EMBER = path.join(REPO_ROOT, '.venv', 'bin', 'ember');
+const ENGINE_ENV = { ...process.env, PYTHONPATH: REPO_ROOT };
 const KEY = 'sk-or-v1-ember-e2e-fake-key-0123456789';
 
 /* Batch 2 Chunk 14: the sentinel crash id the fake EMBER-000 death
@@ -161,6 +167,9 @@ async function launchApp({ workDir, aiBaseUrl, withKey = true, childDies = false
   env.XDG_STATE_HOME = path.join(workDir, 'state');
   fs.mkdirSync(env.XDG_STATE_HOME, { recursive: true });
   env.EMBER_APP_DB = kbPath;
+  // The REAL engine IS this repo's code (see EMBER above): the bridge
+  // child inherits PYTHONPATH so `import ember` stays this checkout's.
+  env.PYTHONPATH = REPO_ROOT;
   if (crash) {
     // A fake EMBER-000 engine death mid-session: the Chunks 2/14 shape.
     env.EMBER_APP_COMMAND = `node ${FAKE_EMBER}`;
@@ -229,7 +238,7 @@ async function addText(win, text) {
 /* ---------- real-knowledge-base reads (the engine's own door) ---------- */
 
 function dbItems(dbPath) {
-  return JSON.parse(execFileSync(EMBER, ['list-items', '--db', dbPath], { encoding: 'utf8', cwd: REPO_ROOT }));
+  return JSON.parse(execFileSync(EMBER, ['list-items', '--db', dbPath], { encoding: 'utf8', cwd: REPO_ROOT, env: ENGINE_ENV }));
 }
 
 function dbCounts(dbPath) {
@@ -306,7 +315,7 @@ async function fullLoopAndParity(ai) {
       status: 200,
       content: JSON.stringify([
         { type: 'Decision', statement: 'Use SQLite for local storage', source_quote: 'use SQLite for local storage', confidence: 0.9 },
-        { type: 'Assumption', statement: 'The team ships weekly', source_quote: 'ships weekly', confidence: 0.8 },
+        { type: 'Assumption', statement: 'The team ships weekly', source_quote: 'the team ships weekly', confidence: 0.8 },
       ]),
     }));
     await goToAdd(win);
@@ -379,7 +388,7 @@ async function fullLoopAndParity(ai) {
     fs.mkdirSync(parityDir, { recursive: true });
     const noteFile = path.join(parityDir, 'note.txt');
     fs.writeFileSync(noteFile, NOTE);
-    const parityEnv = { ...process.env, EMBER_AI_BASE_URL: ai.url, EMBER_AI_API_KEY: KEY };
+    const parityEnv = { ...process.env, EMBER_AI_BASE_URL: ai.url, EMBER_AI_API_KEY: KEY, PYTHONPATH: REPO_ROOT };
     delete parityEnv.OPENROUTER_API_KEY;
     await new Promise((resolve, reject) => {
       const child = spawn(EMBER, ['capture', '--file', noteFile, '--db', path.join(parityDir, 'par.db')], {
@@ -417,7 +426,7 @@ async function stopPartWay(ai) {
       status: 200,
       content: JSON.stringify([
         { type: 'Decision', statement: 'Use SQLite for local storage', source_quote: 'use SQLite for local storage', confidence: 0.9 },
-        { type: 'Assumption', statement: 'The team ships weekly', source_quote: 'ships weekly', confidence: 0.8 },
+        { type: 'Assumption', statement: 'The team ships weekly', source_quote: 'the team ships weekly', confidence: 0.8 },
       ]),
     }));
     await goToAdd(win);

@@ -231,7 +231,7 @@ pytest
 pytest -m live
 ```
 
-`pytest` runs the offline tests. `pytest -m live` calls the real AI service, needs `EMBER_AI_API_KEY`, and costs money.
+`pytest` runs the offline tests; the one `slow` test (a hung provider, about a minute) is skipped locally and runs in CI. `pytest -m live` calls the real AI service, needs `EMBER_AI_API_KEY`, and costs money; the live tests are skipped without the key and are never run in CI.
 
 ## What is in this repository
 

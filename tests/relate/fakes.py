@@ -141,8 +141,10 @@ class FakeEmbedder:
         self._model_name = model_name
         self._dim = dim
         self._error = error
+        self.calls: list[list[str]] = []
 
     def embed(self, texts: list[str]) -> list[list[float]]:
+        self.calls.append(list(texts))
         if self._error is not None:
             raise self._error
         vectors: list[list[float]] = []
@@ -172,6 +174,7 @@ class FakeEmbeddingStore:
         self.rows = {item_id: list(vector) for item_id, vector in (rows or {}).items()}
         self.model_names = {item_id: model_name for item_id in self.rows}
         self.upserts: list[tuple[int, list[float], str]] = []
+        self.deleted: list[int] = []
 
     def get(self, item_id: int) -> list[float] | None:
         return self.rows.get(item_id)
@@ -180,6 +183,12 @@ class FakeEmbeddingStore:
         self.upserts.append((item_id, list(vector), model_name))
         self.rows[item_id] = list(vector)
         self.model_names[item_id] = model_name
+
+    def delete(self, item_id: int) -> None:
+        """Record the delete (the repair path's contract) and drop the row."""
+        self.deleted.append(item_id)
+        self.rows.pop(item_id, None)
+        self.model_names.pop(item_id, None)
 
     def model_name_of(self, item_id: int) -> str | None:
         return self.model_names.get(item_id)

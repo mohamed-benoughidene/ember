@@ -17,10 +17,15 @@ from pydantic import BaseModel
 
 from ember.relate.embedder import EmbedderPort
 from ember.relate.embedding_store import EmbeddingStorePort
-from ember.relate.errors import CosineComputeFailed, MetadataReadFailed
+from ember.relate.errors import (
+    CosineComputeFailed,
+    EmbeddingReadFailed,
+    MetadataReadFailed,
+)
 from ember.relate.link_lookup import LinkLookupPort
 from ember.relate.load_filter import LoadedCandidates
 from ember.relate.rows import NewItem, Pool, RankedCandidate, SignalKind
+from ember.relate.vector_format import pack_vector, unpack_vector
 
 MODEL_CHANGED_LINE = (
     "embedding model changed: wiping cache (this is a one-time minutes-long cost on large DBs)"
@@ -28,6 +33,10 @@ MODEL_CHANGED_LINE = (
 CONTENT_TOP_K = 10
 FLAT_COSINE = 0.5
 METADATA_WINDOW = timedelta(days=30)
+# Spec line 63: at most this many candidates reach the relate AI, chosen
+# dense first, then graph, then labels. This is the planned initial value,
+# tuned after the batch (decision I11).
+CANDIDATE_POOL_CAP = 40
 
 
 class Signals(BaseModel):
@@ -65,23 +74,31 @@ def build_candidate_pool(
     text, or None.
 
     Raises (propagated from the ports and the two core helpers):
-    - `RELATE-037 EmbeddingReadFailed` when a cache read fails.
+    - `RELATE-037 EmbeddingReadFailed` when a cache read fails (a failed
+      vector `get` is instead repaired by delete-and-re-encode; the raise
+      remains for the model-name reads and any repair that cannot write).
     - `RELATE-018 EmbedderEncodeFailed` when the model cannot encode.
-    - `RELATE-019 EmbeddingWriteFailed` when a cache write or wipe fails.
+    - `RELATE-019 EmbeddingWriteFailed` when a cache write, delete, or wipe fails.
     - `RELATE-021 GraphReadFailed` when the neighbor read fails.
-    - `RELATE-022 CosineComputeFailed` on a zero or unequal-length vector.
+    - `RELATE-022 CosineComputeFailed` on a zero or unequal-length vector
+      (a damaged cached vector is repaired before cosine, so only a zero
+      cached vector or a wrong-length fresh encoding raises).
     - `RELATE-023 MetadataReadFailed` on a malformed or mixed-zone timestamp.
     - `RELATE-017 EmbedderLoadFailed` if the model failed to load.
 
-    Side effects: may upsert vectors into `item_embeddings`, and may wipe the
-    cache (returning `warning`) when the cached model differs from the active
-    model. The caller prints `warning`; this module writes no output itself.
+    Side effects: may upsert vectors into `item_embeddings`, delete a damaged
+    cache row for immediate re-encode, and may wipe the cache (returning
+    `warning`) when the universe is non-empty and the cached model differs
+    from the active model. On an empty universe nothing runs: no model
+    check, no wipe, no warning. The returned pool carries at most
+    `CANDIDATE_POOL_CAP` ranked candidates. The caller prints `warning`; this
+    module writes no output itself.
     """
     model = embedder.model_name()
-    warning = _model_change_warning(embedding_store, model=model)
     items = loaded.universe.items
     if not items:
-        return Pool.empty(warning=warning)
+        return Pool.empty()
+    warning = _model_change_warning(embedding_store, model=model)
     new_item = loaded.new_item
     dimension = embedder.dim()
     new_vector = _resolve_vector(
@@ -99,7 +116,7 @@ def build_candidate_pool(
     metadata = _metadata_signal(items, new_item)
     signals = Signals(content=content, graph=graph, metadata=metadata)
     return Pool(
-        ranked=_merge(items, signals),
+        ranked=_cap_ranked(_merge(items, signals)),
         counts={
             "dense": len(signals.content),
             "graph": len(signals.graph),
@@ -126,17 +143,30 @@ def _resolve_vector(
     model: str,
     dimension: int,
 ) -> list[float]:
-    """Return the item's vector from the cache, or encode it and cache it."""
-    cached = store.get(item.id)
-    if cached is not None and store.model_name_of(item.id) == model:
-        if len(cached) != dimension:
-            raise CosineComputeFailed(
-                "cached vector length mismatch",
-                item_id=item.id,
-                expected=dimension,
-                got=len(cached),
-            )
-        return cached
+    """Return the item's vector from the cache, or encode it and cache it.
+
+    A damaged cached vector is repaired, not raised (Batch 7 chunk 11): a
+    wrong-length vector, or a read failure (`EmbeddingReadFailed`, RELATE-037,
+    from an undecodable blob), deletes the row through the port and re-encodes
+    the item in the same run. The cache is derived, rebuildable data, so the
+    delete loses nothing. A fresh encoding that still comes back the wrong
+    length is an embedder bug, not cache damage, and stays a
+    `CosineComputeFailed` raise (RELATE-022).
+    """
+    damaged = False
+    try:
+        cached = store.get(item.id)
+    except EmbeddingReadFailed:
+        cached = None
+        damaged = True
+    else:
+        if cached is not None and store.model_name_of(item.id) == model:
+            if len(cached) != dimension:
+                damaged = True
+            else:
+                return cached
+    if damaged:
+        store.delete(item.id)
     vector = list(embedder.embed([item.statement])[0])
     if len(vector) != dimension:
         raise CosineComputeFailed(
@@ -145,6 +175,7 @@ def _resolve_vector(
             expected=dimension,
             got=len(vector),
         )
+    vector = unpack_vector(pack_vector(vector))
     store.upsert(item.id, vector, model)
     return vector
 
@@ -264,6 +295,23 @@ def _merge(items: list[NewItem], signals: Signals) -> list[RankedCandidate]:
         )
         for item_id in order
     ]
+
+
+def _cap_ranked(ranked: list[RankedCandidate]) -> list[RankedCandidate]:
+    """Cap the pool, keeping dense candidates first, then graph, then labels.
+
+    Within each source band the merged order (cosine descending, then item id
+    ascending) decides who survives; the survivors keep the merged order.
+    """
+    if len(ranked) <= CANDIDATE_POOL_CAP:
+        return ranked
+    kept = [
+        candidate
+        for kind in (SignalKind.dense, SignalKind.graph, SignalKind.metadata)
+        for candidate in ranked
+        if candidate.source is kind
+    ][:CANDIDATE_POOL_CAP]
+    return sorted(kept, key=lambda candidate: (-candidate.cosine, candidate.item.id))
 
 
 def _cosine(left: list[float], right: list[float], *, item_id: int) -> float:

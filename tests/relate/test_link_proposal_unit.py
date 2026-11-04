@@ -1,7 +1,9 @@
-"""Unit tests for relate phase 3 proposal parsing, retry and boundary checks.
+"""Unit tests for relate phase 3 proposal parsing, the single AI call and
+boundary checks.
 
-No DB, no model. `parse_proposals` is driven with raw strings, the retry loop
-with a scripted `FakeLinkProposer`, and `validate_proposals` with plain rows.
+No DB, no model. `parse_proposals` is driven with raw strings, the core's
+single port call with a scripted `FakeLinkProposer`, and `validate_proposals`
+with plain rows.
 """
 
 from __future__ import annotations
@@ -111,10 +113,12 @@ def test_parse_bad_entry_shape():
         parse_proposals('{"proposals":[{"link_type":"supports"}]}')
 
 
-def test_retry_succeeds_on_second_call():
+# --- the single port call (Batch 7, Chunk 5: no engine retry) --------------
+
+
+def test_single_call_returns_the_response():
     proposer = FakeLinkProposer(
         [
-            AiCallFailed("x"),
             LinkProposalResponse(
                 raw_response="raw",
                 proposals=[LinkProposal(target_item_id=2, link_type="supports")],
@@ -126,19 +130,19 @@ def test_retry_succeeds_on_second_call():
     )
     assert response.raw_response == "raw"
     assert len(response.proposals) == 1
-    assert len(proposer.calls) == 2
+    assert len(proposer.calls) == 1
 
 
-def test_retry_exhausted_raises_032():
-    proposer = FakeLinkProposer([AiCallFailed("a"), AiCallFailed("b")])
+def test_call_failure_propagates_after_one_call():
+    proposer = FakeLinkProposer([AiCallFailed("a")])
     with pytest.raises(AiCallFailed):
         propose_links_with_retry(
             proposer, new_item=_item(1), candidates=[_item(2)]
         )
-    assert len(proposer.calls) == 2
+    assert len(proposer.calls) == 1
 
 
-def test_parse_failure_does_not_retry():
+def test_parse_failure_propagates_after_one_call():
     proposer = FakeLinkProposer([AiResponseSchemaInvalid("bad")])
     with pytest.raises(AiResponseSchemaInvalid):
         propose_links_with_retry(

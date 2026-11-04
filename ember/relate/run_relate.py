@@ -67,8 +67,9 @@ def run_relate(ports: RelatePorts, request: RelateRequest) -> ConfirmResult:
 
     Raises `RELATE-024` / `RELATE-025` on a bad AI target/source, `RELATE-030`
     when the raw-response owner pair is invalid, `RELATE-036` when the raw
-    response cannot be stored, `RELATE-032` after a failed retry, and
-    `RELATE-033` on an unparseable first answer. Gatekeeper rule failures are
+    response cannot be stored, `RELATE-032` when the AI call fails (one port
+    call; the adapter owns the ONE retry policy), and
+    `RELATE-033` on an unparseable answer. Gatekeeper rule failures are
     counted as `rejected` and returned on `ConfirmResult.gatekeeper_rejections`
     (code plus detail) for the CLI to print, not raised.
     """

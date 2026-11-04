@@ -204,3 +204,33 @@ class ApiKeyMissing(RelateError):
 
     code = "RELATE-038"
     name = "ApiKeyMissing"
+
+
+class AiRateLimited(AiCallFailed):
+    """The AI service refused the link-proposal request with a 429 reply
+    (Batch 7, Chunk 3 — `OpenAiLinkProposer`'s own retry policy).
+
+    Its own dedicated code RELATE-041: the fix is waiting and retrying,
+    different advice from the shared RELATE-032 call-failure code the
+    failure previously carried. Subclasses `AiCallFailed`, so only the
+    base ever needs catching.
+    """
+
+    code = "RELATE-041"
+    name = "AiRateLimited"
+
+
+class AiCallTimedOut(AiCallFailed):
+    """The link-proposal request timed out waiting for the AI service
+    (Batch 7, Chunk 3 — `OpenAiLinkProposer`'s own retry policy).
+
+    Its own dedicated code RELATE-042: the fix is retrying after a pause,
+    different advice from the shared RELATE-032 call-failure code. Also a
+    `LinkProposer`-shaped twin of the embedder timeout RELATE-040, but with
+    its own code: that one is about loading the local model, this one about
+    the provider request. Subclasses `AiCallFailed`, so only the base ever
+    needs catching.
+    """
+
+    code = "RELATE-042"
+    name = "AiCallTimedOut"
