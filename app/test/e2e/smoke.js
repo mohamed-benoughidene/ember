@@ -140,6 +140,20 @@ async function main() {
     const banner = await win.locator('#top-banner').innerHTML();
     if (banner.trim() !== '') throw new Error(`a notice banner appeared: ${banner.slice(0, 200)}`);
 
+    // 7. the window floor (Batch 9 UI audit, finding 3): at the Largest
+    //    text size the sidebar alone is 11rem = 330px, so a window
+    //    narrower than ~800px cannot render the screens readably —
+    //    tables scroll their panels and the title row starves. The
+    //    shell refuses to shrink below the 800px floor instead.
+    const WINDOW_FLOOR = 800;
+    await app.evaluate(({ BrowserWindow }, floor) => {
+      const win = BrowserWindow.getAllWindows()[0];
+      win.setBounds({ width: 300, height: 400 });
+      const { width, height } = win.getBounds();
+      if (width < floor) throw new Error(`window width ${width} is below the ${floor}px floor (finding 3)`);
+      if (height < 400) throw new Error(`window height ${height} is below the requested 400px (height stays free)`);
+    }, WINDOW_FLOOR);
+
     process.stdout.write('e2e smoke OK: real shell boots into Home, the counts from list-items reach the DOM (total 5), the seam answers exactly the pinned 47-name allowlist, no Node in the page world\n');
   } finally {
     // The step-11 portal-registered global shortcut can hold the app
