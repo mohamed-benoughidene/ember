@@ -295,10 +295,13 @@ def _require_healthy_current(db_path: str) -> str:
 
     Only the TRANSIENT shapes get a settle window (5 s, the busy-timeout
     scale): a file reading as an Ember database BEHIND the latest version,
-    or a busy read, may be another `ember init` mid-migration (story 11's
-    two first-Adds-at-once), so it is re-inspected until it reaches the
-    latest or the window ends. The permanent shapes — not an Ember
-    database, no readable version table, a version ABOVE the latest,
+    a busy read, or a still-EMPTY (0-byte) file — another `ember init` that
+    has touched the path but not yet committed its version table (the
+    batch-8 founder decision; acceptance never widens, refusal only ever
+    waits) — may be another `ember init` mid-flight (story 11's two
+    first-Adds-at-once), so it is re-inspected until it reaches the
+    latest or the window ends. The other permanent shapes — not an Ember
+    database, a no-version NON-empty file, a version ABOVE the latest,
     missing tables at the latest — are refused immediately; no waiting
     makes those healthy.
     """
@@ -333,6 +336,17 @@ def _inspect_health(db_path: str, latest: int) -> tuple[str, str, bool]:
             )
         }
         if "schema_version" not in tables:
+            # A brand-new path can present this shape mid-first-init: the
+            # creating `ember init` has touched the file but not yet
+            # committed the version table (story 11's two first-Adds-at-
+            # once). An EMPTY file (0 bytes — SQLite creates the main file
+            # on connect, before the first commit) is exactly that moment,
+            # so it is transient and settles; any OTHER no-version shape
+            # (a non-empty file that is not an Ember database) stays
+            # permanent — the batch-8 founder decision: acceptance never
+            # widens, refusal only ever waits.
+            if os.path.getsize(db_path) == 0:
+                return ("no schema_version table", "the version table is missing", True)
             return ("no schema_version table", "the version table is missing", False)
         row = conn.execute("SELECT version FROM schema_version").fetchone()
         if row is None:
