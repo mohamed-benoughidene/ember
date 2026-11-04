@@ -44,12 +44,16 @@ const OK_CAPTURE = 'error: CAPTURE-008 set-up | fake.ember.capture | ai api key 
 // The stub `ember`: on `capture ... --file ... --db ...` print nothing
 // on stdout, write the scripted line(s) on stderr, exit 1 (the healthy
 // no-key shape); on `db-check --db ... --format json` print the real
-// JSON document shape with `version: 13` and `result: OK`, exit 0.
-function stubEmberScript(captureStderr) {
+// JSON document shape with a `version: <N>` line and `result: OK`, exit
+// 0. The version is a parameter (default 13) so the tests can prove the
+// gate accepts whatever number THIS engine's latest migration makes —
+// the gate must pin the shape, never a number (Batch 9 follow-up).
+function stubEmberScript(captureStderr, dbcheckVersion = '13') {
   return [
     '#!/bin/sh',
     '# Stub `ember` for the gate tests (test seam 4). The scripted',
-    '# capture stderr comes from $STUB_CAPTURE_STDERR (may be multiline).',
+    '# capture stderr comes from $STUB_CAPTURE_STDERR (may be multiline),',
+    '# the db-check version from $STUB_DB_CHECK_VERSION.',
     'case "$1" in',
     '  capture)',
     '    db=""',
@@ -64,7 +68,8 @@ function stubEmberScript(captureStderr) {
     '    exit 1',
     '    ;;',
     '  db-check)',
-    "    printf '%s\\n' '{\"command\": \"db-check\", \"changes\": [], \"summary\": {\"result\": \"OK\", \"detail\": null, \"lines\": [\"version: 13\", \"triggers: on\", \"result: OK\"]}}'",
+    '    v="${STUB_DB_CHECK_VERSION-13}"',
+    '    printf \'%s\\n\' "{\\"command\\": \\"db-check\\", \\"changes\\": [], \\"summary\\": {\\"result\\": \\"OK\\", \\"detail\\": null, \\"lines\\": [\\"version: $v\\", \\"triggers: on\\", \\"result: OK\\"]}}"',
     '    exit 0',
     '    ;;',
     '  *)',
@@ -79,19 +84,27 @@ function stubEmberScript(captureStderr) {
 // One isolated run dir per case: the stub runtime folder lives in
 // <runDir>/stub-runtime, so the gate's scratch (which it creates NEXT
 // TO the runtime, the build script's disk rule) lands in <runDir>.
-function makeCase(name, captureStderr) {
+function makeCase(name, captureStderr, dbcheckVersion) {
   const runDir = path.join(tempRoot, name);
   const runtime = path.join(runDir, 'stub-runtime');
   fs.mkdirSync(runtime, { recursive: true });
-  fs.writeFileSync(path.join(runtime, 'ember'), stubEmberScript(captureStderr), { mode: 0o755 });
-  return { runDir, runtime, captureStderr };
+  fs.writeFileSync(
+    path.join(runtime, 'ember'),
+    stubEmberScript(captureStderr, dbcheckVersion),
+    { mode: 0o755 },
+  );
+  return { runDir, runtime, captureStderr, dbcheckVersion };
 }
 
 function runGate(c, runtime) {
   // The stub's capture stderr travels via STUB_CAPTURE_STDERR; the
   // gate itself strips BOTH key variables for the engine child.
   return spawnSync('bash', [GATE, runtime ?? c.runtime], {
-    env: { ...NO_KEY_ENV, STUB_CAPTURE_STDERR: c.captureStderr ?? '' },
+    env: {
+      ...NO_KEY_ENV,
+      STUB_CAPTURE_STDERR: c.captureStderr ?? '',
+      ...(c.dbcheckVersion !== undefined ? { STUB_DB_CHECK_VERSION: c.dbcheckVersion } : {}),
+    },
     encoding: 'utf8',
   });
 }
@@ -153,4 +166,29 @@ test('(e) a gate run on a missing runtime folder exits non-zero with one message
   assert.notEqual(result.status, 0, 'a missing runtime folder must fail the gate');
   assert.ok(result.stderr.startsWith('error: '), 'the one message is a house error line');
   assert.equal(result.stderr.trim().split('\n').length, 1, 'exactly one message line on stderr');
+});
+
+// Batch 9 follow-up: the gate pins the db-check SHAPE, never a number.
+// The gate's file is created by THIS runtime, so whatever schema version
+// it reports IS this engine's latest; a hardcoded number rots at the
+// next migration (13 rotted when Batch 8 shipped migration 016 → 16).
+test('(f) db-check reporting version 16 passes the gate (the number is not pinned)', () => {
+  const c = makeCase('f-version-16', OK_CAPTURE, '16');
+  const result = runGate(c);
+  assert.equal(result.status, 0, `gate should exit 0 on version 16, got ${result.status}\nstderr: ${result.stderr}`);
+  assert.ok(result.stdout.includes('version: 16'), 'the pass line carries the version the engine reported');
+  assert.equal(logFolders(c.runDir).length, 0, 'a PASSED gate must leave no log folder behind');
+});
+
+test('(g) a db-check with NO version line fails the gate; the log folder survives', () => {
+  // Empty string, on purpose: the stub then prints "version: " with no
+  // digits (the `${VAR-13}` default only fills in when the variable is
+  // UNSET, so an exported empty stays empty) — the missing-number shape.
+  const c = makeCase('g-no-version', OK_CAPTURE, '');
+  const result = runGate(c);
+  assert.notEqual(result.status, 0, 'a versionless db-check must fail the shape rule');
+  const folders = logFolders(c.runDir);
+  assert.ok(folders.length === 1, `the gate log folder must survive the failure, found ${folders.length}`);
+  const kept = fs.readFileSync(path.join(folders[0], 'gate-dbcheck.out'), 'utf8');
+  assert.ok(kept.includes('version: '), 'the kept log carries the db-check output verbatim');
 });

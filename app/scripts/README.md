@@ -31,10 +31,13 @@ never seen this pipeline.
 - `gate-ember-runtime.sh`: the standalone gate (ONE argument: a runtime
   folder). Runs the frozen program twice and demands honest behavior:
   `capture` without an API key exits 1 with exactly one stderr line
-  starting `error: CAPTURE-008`, and `db-check` answers
-  `version: 13` + `result: OK`. The gate keeps its log folder on failure
-  and prints the full error. Pass = the marker is written by the build
-  script, never by the gate itself.
+  starting `error: CAPTURE-008`, and `db-check` answers a schema
+  version line (`version: <digits>`) + `result: OK`. The version NUMBER
+  is not pinned — the gate's file is built by this runtime, so its
+  version IS the engine's latest; a hardcoded number would rot at the
+  next migration (13 rotted at Batch 8's 016). The gate keeps its log
+  folder on failure and prints the full error. Pass = the marker is
+  written by the build script, never by the gate itself.
 - `check-deb.sh`: the `.deb` acceptance check (ONE argument: a `.deb`
   path; optional second argument: the release folder, default
   `app/dist/release/`). Inspects modes, symlink targets, migrations,
