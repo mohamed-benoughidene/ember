@@ -30,9 +30,10 @@ never seen this pipeline.
   touches the previous runtime.
 - `gate-ember-runtime.sh`: the standalone gate (ONE argument: a runtime
   folder). Runs the frozen program twice and demands honest behavior:
-  `capture` without an API key exits 1 with exactly one stderr line
-  starting `error: CAPTURE-008`, and `db-check` answers a schema
-  version line (`version: <digits>`) + `result: OK`. The version NUMBER
+  `capture` asked the way the app bridge asks it (`--confirm json
+  --file --db`; D-20 refuses `--format json` here) without an API key
+  exits 1 with exactly one stderr line starting `error: CAPTURE-008`,
+  and `db-check` answers a schema version line (`version: <digits>`) + `result: OK`. The version NUMBER
   is not pinned — the gate's file is built by this runtime, so its
   version IS the engine's latest; a hardcoded number would rot at the
   next migration (13 rotted at Batch 8's 016). The gate keeps its log
