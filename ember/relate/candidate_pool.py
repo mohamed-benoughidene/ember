@@ -10,6 +10,7 @@ this module reads no database driver and knows no model.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import datetime, timedelta
 from math import sqrt
 
@@ -66,12 +67,15 @@ def build_candidate_pool(
     link_lookup: LinkLookupPort,
     embedding_store: EmbeddingStorePort,
     embedder: EmbedderPort,
+    echo: Callable[[str], None] | None = None,
 ) -> Pool:
     """Run the three Phase 2 signals and return the merged, ranked pool.
 
-    Inputs: the Phase 1 `LoadedCandidates` plus the three ports. `link_lookup`
-    reads 1-hop neighbors, `embedding_store` reads and writes the vector cache,
-    and `embedder` turns statements into vectors.
+    Inputs: the Phase 1 `LoadedCandidates` plus the three ports and one
+    optional progress sink. `link_lookup` reads 1-hop neighbors,
+    `embedding_store` reads and writes the vector cache, and `embedder` turns
+    statements into vectors. `echo` receives one `encoding embeddings:
+    <done>/<total>` line per encoded batch and stays silent when None.
 
     Output: `Pool(ranked, counts, warning)`. `ranked` is sorted by cosine
     descending, then item id ascending. `counts` holds the pre-merge signal
@@ -94,10 +98,13 @@ def build_candidate_pool(
     Side effects: may upsert vectors into `item_embeddings`, delete a damaged
     cache row for immediate re-encode, and may wipe the cache (returning
     `warning`) when the universe is non-empty and the cached model differs
-    from the active model. On an empty universe nothing runs: no model
-    check, no wipe, no warning. The returned pool carries at most
-    `CANDIDATE_POOL_CAP` ranked candidates. The caller prints `warning`; this
-    module writes no output itself.
+    from the active model. When `echo` is not None, it is called once per
+    encoded batch with an `encoding embeddings: <done>/<total>` progress
+    line; when it is None (the default) nothing is written anywhere — this
+    module still produces no output of its own. On an empty universe nothing
+    runs: no model check, no wipe, no warning. The returned pool carries at
+    most `CANDIDATE_POOL_CAP` ranked candidates. The caller prints `warning`;
+    except for the `echo` lines, this module writes no output itself.
     """
     model = embedder.model_name()
     items = loaded.universe.items
@@ -107,7 +114,12 @@ def build_candidate_pool(
     new_item = loaded.new_item
     dimension = embedder.dim()
     vectors = _resolve_vectors(
-        [new_item, *items], embedder, embedding_store, model=model, dimension=dimension
+        [new_item, *items],
+        embedder,
+        embedding_store,
+        model=model,
+        dimension=dimension,
+        echo=echo,
     )
     content = _content_signal(items, vectors[new_item.id], vectors)
     graph = _graph_signal(link_lookup, items, new_item_id=new_item.id)
@@ -140,6 +152,7 @@ def _resolve_vectors(
     *,
     model: str,
     dimension: int,
+    echo: Callable[[str], None] | None = None,
 ) -> dict[int, list[float]]:
     """Return every item's vector, from the cache or from batched encoding.
 
@@ -156,6 +169,10 @@ def _resolve_vectors(
     store per item. A fresh encoding that comes back the wrong length is an
     embedder bug, not cache damage, and raises `CosineComputeFailed`
     (RELATE-022) with the item id; embedder failures propagate as RELATE-018.
+
+    Batch 8 finding 4.8 #2: after each finished batch, `echo` (when not None)
+    receives one `encoding embeddings: <done>/<total>` line, where `total`
+    is the number of cache-miss texts in the run (new item included).
     """
     vectors: dict[int, list[float]] = {}
     misses: list[NewItem] = []
@@ -176,6 +193,8 @@ def _resolve_vectors(
         if damaged:
             store.delete(item.id)
         misses.append(item)
+    total = len(misses)
+    done = 0
     for start in range(0, len(misses), EMBED_BATCH_SIZE):
         batch = misses[start : start + EMBED_BATCH_SIZE]
         batch_vectors = embedder.embed([item.statement for item in batch])
@@ -193,6 +212,9 @@ def _resolve_vectors(
             vector = unpack_vector(pack_vector(vector))
             store.upsert(item.id, vector, model)
             vectors[item.id] = vector
+        done += len(batch)
+        if echo is not None:
+            echo(f"encoding embeddings: {done}/{total}")
     return vectors
 
 
