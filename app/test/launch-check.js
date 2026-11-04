@@ -110,36 +110,34 @@ function main() {
         EMBER_APP_LAUNCH_CHECK: '1',
         EMBER_APP_DB: kbPath,
         EMBER_APP_COMMAND: JSON.stringify(commandArgv),
-        RTI_FAKE_WORKDIR: workDir,
       },
       stdio: ['ignore', 'pipe', 'pipe'],
     });
 
-    let stdout = '';
-    let stderr = '';
+    let stdout = { text: '' };
+    let stderr = { text: '' };
     const timer = setTimeout(() => {
       child.kill('SIGKILL');
       fail('no "items: N" line within 90000 ms');
     }, TIMEOUT_MS);
 
-    child.stdout.on('data', (c) => {
-      stdout += String(c);
-    });
-    child.stderr.on('data', (c) => {
-      stderr += String(c);
-    });
+    const append = (sink) => (c) => {
+      sink.text += String(c);
+    };
+    child.stdout.on('data', append(stdout));
+    child.stderr.on('data', append(stderr));
     child.on('error', (err) => {
       clearTimeout(timer);
       fail(`could not start Electron: ${err.message}`);
     });
     child.on('close', (code) => {
       clearTimeout(timer);
-      const itemsLine = stdout.split('\n').find((line) => /^items: \d+$/.test(line));
+      const itemsLine = stdout.text.split('\n').find((line) => /^items: \d+$/.test(line));
       if (code !== 0) {
-        fail(`the app exited ${code}${stderr.trim() ? `: ${stderr.trim().split('\n').at(-1)}` : ''}`);
+        fail(`the app exited ${code}${stderr.text.trim() ? `: ${stderr.text.trim().split('\n').at(-1)}` : ''}`);
       }
       if (!itemsLine) {
-        fail(`exit 0 but no "items: N" line on stdout (stdout: ${JSON.stringify(stdout.slice(0, 200))})`);
+        fail(`exit 0 but no "items: N" line on stdout (stdout: ${JSON.stringify(stdout.text.slice(0, 200))})`);
       }
       process.stdout.write(`check:launch OK — window started, one read command answered: ${itemsLine}, config: ${configDir}\n`);
       fs.rmSync(workDir, { recursive: true, force: true });

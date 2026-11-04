@@ -30,14 +30,6 @@ function fail(what) {
   throw new Error(what);
 }
 
-async function waitFor(predicate, timeoutMs, what) {
-  const start = Date.now();
-  while (!(await predicate())) {
-    if (Date.now() - start > timeoutMs) throw new Error(`timed out waiting for ${what}`);
-    await new Promise((r) => setTimeout(r, 100));
-  }
-}
-
 async function main() {
   const outsideRequests = [];
   const app = await _electron.launch({
