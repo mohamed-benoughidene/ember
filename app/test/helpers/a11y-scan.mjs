@@ -85,6 +85,13 @@ export function scanInPage() {
     const style = getComputedStyle(el);
     const clips = ['hidden', 'auto', 'scroll'].includes(style.overflowX);
     if (!clips || !isVisible(el)) return;
+    // The ONE deliberate scroll region (Batch 9 UI audit, finding 2):
+    // at Largest a whole-word table may exceed its panel, and the
+    // design remedy is a visible in-panel scrollbar — NOT letters
+    // split mid-word and NOT the whole screen pushed wide. A panel
+    // that exists to hold an ember-table is that region, so it is
+    // exempt here; everything else that clips its content still fails.
+    if (el.children.length === 1 && el.querySelector(':scope > table.ember-table')) return;
     if (el.scrollWidth > el.clientWidth + 1) {
       overflow.push({
         where: describe(el),

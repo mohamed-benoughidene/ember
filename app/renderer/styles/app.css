@@ -279,8 +279,30 @@ td.row-detail { border-top: 1px solid var(--line-strong); }
 :root.big .finding { flex-wrap: wrap; }
 :root.big .setup-grid { grid-template-columns: 1fr; gap: var(--s6); }
 :root.big .nowrap { white-space: normal; }
-:root.big td, :root.big .sub { overflow-wrap: anywhere; }
-:root.big .ember-table th, :root.big .ember-table td { padding-left: var(--s3); padding-right: var(--s3); }
+/* The Text Size Rule at Largest (200%), after the Batch 9 UI audit
+   (finding 2): prose table cells keep their word-shaped minimum
+   (break-word breaks within a word ONLY when that word alone cannot
+   fit a line). The old `anywhere` collapsed every cell's intrinsic
+   minimum to a single letter, so a narrow window squeezed the Item
+   column to 2-4 letters per line ("The / repor / t"). Buttons and
+   status pills never take the inherited rule — a Remove label split
+   "Rem / ove" was the audit's measured proof. .sub keeps `anywhere`:
+   the intro sentence must be free to shrink inside the flexing title
+   row at any width. Cells that carry an unbreakable stem (file paths,
+   detail codes) sit in .mono or .help rows, which keep their own
+   `anywhere` rule — they were never governed by td. */
+:root.big td { overflow-wrap: break-word; }
+:root.big .sub { overflow-wrap: anywhere; }
+:root.big .ember-table .btn, :root.big .st, :root.big .lbl-pill { overflow-wrap: normal; }
+:root.big .ember-table th, :root.big .ember-table td { padding-left: var(--s2); padding-right: var(--s2); }
+/* The Batch 9 UI audit remedy (finding 2): with whole-word minima a
+   4-column table may genuinely exceed the content column at Largest.
+   It then scrolls INSIDE its own panel — a visible, deliberate
+   in-panel scrollbar — instead of crushing prose to single letters
+   (the old `anywhere` behavior) or pushing the whole screen wide.
+   The a11y scan exempts exactly this shape (a panel whose only child
+   is an ember-table). */
+:root.big .panel:has(> .ember-table) { overflow-x: auto; }
 :root.big .lineage li { flex-wrap: wrap; }
 :root.big .lineage .k { flex: 0 1 auto; flex-basis: 9rem; min-width: 0; }
 
