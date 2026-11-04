@@ -118,6 +118,7 @@ test('the Settings shortcut re-registration forgets the old keys first, then tri
     unregisterAll: () => {
       calls.push('unregisterAll');
     },
+    current: () => null, // this fake models "nothing yet registered"
   };
   const first = registerSettingsShortcut({ manager, accelerator: 'CommandOrControl+Alt+E' });
   const second = registerSettingsShortcut({ manager, accelerator: 'CommandOrControl+Alt+K' });
@@ -136,6 +137,7 @@ test('a refused shortcut comes back failed after the manager told the shell', ()
       return { ok: false };
     },
     unregisterAll: () => {},
+    current: () => null,
   };
   const result = registerSettingsShortcut({ manager, accelerator: 'CommandOrControl+Alt+K' });
   assert.equal(result.ok, false);
