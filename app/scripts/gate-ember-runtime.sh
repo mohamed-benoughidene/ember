@@ -78,9 +78,15 @@ gate_fail() { # $1 = reason, $2 = file whose FULL contents follow
 
 # == check 1: no-key capture → exit 1, EXACTLY ONE stderr line,
 # starting "error: CAPTURE-008" =====================================
+# The invocation is the APP BRIDGE's (App 03, add-session): `capture
+# --confirm json --file --db`. NOT `--format json`: D-20 refuses that
+# here (exit 2, usage error) — the program-facing mode is the
+# `--confirm json` event stream. (The stale --format pin survived
+# because this gate only runs on real builds, never in CI; the 2026-11
+# rebuild died here with the engine's own refusal line.)
 set +e
 env -u EMBER_AI_API_KEY -u OPENROUTER_API_KEY \
-  "$RUNTIME/ember" capture --format json --confirm json --file "$GATE_NOTE" --db "$GATE_KB" \
+  "$RUNTIME/ember" capture --confirm json --file "$GATE_NOTE" --db "$GATE_KB" \
   > "$SCRATCH/gate-capture.out" 2> "$SCRATCH/gate-capture.err"
 CAPTURE_RC=$?
 set -e
