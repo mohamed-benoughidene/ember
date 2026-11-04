@@ -14,10 +14,14 @@
 # The checks (TIGHTER than the old build gate):
 #  1. no-key capture on a fresh temp file. The env has EVERY AI key
 #     variable removed, so the gate can never make a real AI call.
-#     A healthy bundle exits 1 with EXACTLY ONE stderr line starting
-#     "error: CAPTURE-008" (the one honest house line) — never a second
-#     line (the old gate swallowed those at :186-189), never another
-#     "error: ..." code, never a traceback.
+#     A healthy bundle exits 1 with EXACTLY ONE stderr line in the
+#     house shape "error: CAPTURE-<digits> ApiKeyMissing | ..." — the
+#     missing-key refusal is deliberately its own code (Batch 6,
+#     D-08/I17: it used to share CAPTURE-008) — never a second line
+#     (the old gate swallowed those at :186-189), never another
+#     "error: ..." code or NAME, never a traceback. The NUMBER is not
+#     pinned: codes take the next free number at implementation, and a
+#     pinned 008 rotted at the 2026-11 rebuild exactly on this seam.
 #  2. db-check on the SAME file: the capture migrated it before the key
 #     check, so it must end 0 and report a schema version line
 #     ("version: <digits>") and "result: OK". The number itself is NOT
@@ -101,10 +105,13 @@ if [ "$ERR_LINES" -ne 1 ]; then
 fi
 
 FIRST_ERR="$(head -n1 "$SCRATCH/gate-capture.err")"
-case "$FIRST_ERR" in
-  "error: CAPTURE-008"*) : ;; # the one honest house line, by code
-  *) gate_fail "the gate capture's one stderr line must start 'error: CAPTURE-008' (a traceback or another code means the bundle is broken): $FIRST_ERR" "$SCRATCH/gate-capture.err" ;;
-esac
+# The shape rule over the number: the missing-key error carries the
+# stable NAME ApiKeyMissing (Batch 6, D-08/I17); the CODE number moves
+# with the next free number at implementation, so only the name is
+# pinned here. A traceback, another code, or another name = broken.
+if ! printf '%s' "$FIRST_ERR" | grep -Eq '^error: CAPTURE-[0-9]+ ApiKeyMissing( |$)'; then
+  gate_fail "the gate capture's one stderr line must be the missing-key refusal in the house shape 'error: CAPTURE-<digits> ApiKeyMissing | ...' (a traceback, another code, or another NAME means the bundle is broken): $FIRST_ERR" "$SCRATCH/gate-capture.err"
+fi
 
 # == check 2: db-check on the SAME file → a version line, result OK ====
 set +e

@@ -6,9 +6,11 @@
  * proof the build script runs today (build-ember-runtime.sh:174-202),
  * with its bugs fixed:
  * - the capture must end 1 with EXACTLY ONE stderr line starting
- *   `error: CAPTURE-008` (the old any-`error:`-prefix acceptance let a
- *   second line or another code through; a Python traceback was only
- *   caught by luck);
+ *   `error: CAPTURE-<digits> ApiKeyMissing` (the honest missing-key
+ *   refusal: the NAME is pinned, the CODE number is not — Batch 6
+ *   split ApiKeyMissing out of CAPTURE-008 as CAPTURE-022, and the old
+ *   any-`error:`-prefix acceptance let a second line or another code
+ *   through; a Python traceback was only caught by luck);
  * - the FULL error is printed and the gate log folder SURVIVES a
  *   failure (the build's trap deleted its gate files at :74-75 always);
  * - the temp files are cleaned only on success.
@@ -39,7 +41,7 @@ delete NO_KEY_ENV.OPENROUTER_API_KEY;
 const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'ember-runtime-gate-'));
 after(() => fs.rmSync(tempRoot, { recursive: true, force: true }));
 
-const OK_CAPTURE = 'error: CAPTURE-008 set-up | fake.ember.capture | ai api key missing | key=';
+const OK_CAPTURE = 'error: CAPTURE-022 ApiKeyMissing | fake.ember.capture | ai api key missing';
 
 // The stub `ember`: on `capture ... --file ... --db ...` print nothing
 // on stdout, write the scripted line(s) on stderr, exit 1 (the healthy
@@ -126,7 +128,7 @@ function logFolders(runDir) {
     .map((n) => path.join(runDir, n));
 }
 
-test('(a) a healthy stub runtime (one CAPTURE-008 line, db-check 13+OK) passes the gate; temp files cleaned', () => {
+test('(a) a healthy stub runtime (one CAPTURE-022 ApiKeyMissing line, db-check 13+OK) passes the gate; temp files cleaned', () => {
   const c = makeCase('a-pass', OK_CAPTURE);
   const result = runGate(c);
   assert.equal(result.status, 0, `gate should exit 0, got ${result.status}\nstderr: ${result.stderr}`);
@@ -146,7 +148,7 @@ test('(b) a second stderr line fails the gate; the log folder survives', () => {
 test('(c) a capture line starting error: CAPTURE-999 fails the gate; the log folder survives', () => {
   const c = makeCase('c-wrong-code', 'error: CAPTURE-999 other-failure | fake.ember.capture | not the no-key line');
   const result = runGate(c);
-  assert.notEqual(result.status, 0, 'the gate must pin CAPTURE-008, not any error: line');
+  assert.notEqual(result.status, 0, 'the gate must pin the ApiKeyMissing shape, not any error: line');
   const folders = logFolders(c.runDir);
   assert.ok(folders.length === 1, `the gate log folder must survive the failure, found ${folders.length}`);
   const kept = fs.readFileSync(path.join(folders[0], 'gate-capture.err'), 'utf8');

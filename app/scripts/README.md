@@ -32,7 +32,10 @@ never seen this pipeline.
   folder). Runs the frozen program twice and demands honest behavior:
   `capture` asked the way the app bridge asks it (`--confirm json
   --file --db`; D-20 refuses `--format json` here) without an API key
-  exits 1 with exactly one stderr line starting `error: CAPTURE-008`,
+  exits 1 with exactly one stderr line in the house shape
+  `error: CAPTURE-<digits> ApiKeyMissing | ...` (the missing-key
+  refusal is its own code since Batch 6, D-08/I17; the NAME is pinned,
+  the number is not — the pinned 008 rotted at the 2026-11 rebuild),
   and `db-check` answers a schema version line (`version: <digits>`) + `result: OK`. The version NUMBER
   is not pinned — the gate's file is built by this runtime, so its
   version IS the engine's latest; a hardcoded number would rot at the
