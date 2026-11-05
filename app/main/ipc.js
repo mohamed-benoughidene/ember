@@ -238,6 +238,9 @@ function registerIpcHandlers(options) {
         type: page.type ?? null,
         limit: page.limit ?? null,
         offset: page.offset ?? null,
+        // Batch 5 chunk 11 (N11): the counts-only form — Home's four
+        // counts come back in one call (the summary document).
+        counts: page.counts === true,
       });
       onCommand('list-items', args);
       return clientFor(dbPath()).runCommand('list-items', args);

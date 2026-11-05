@@ -210,29 +210,28 @@ export function createHomeScreen(ctx) {
       <strong>Nothing needs attention.</strong><span>Every status matches its links.</span></div></div>`;
   }
 
-  /** Stories 11-12: counts per status and total, from list-items only. */
+  /**
+   * Stories 11-12: the counts per status and total — since Batch 5
+   * chunk 11 (N11) in ONE call, `list-items --counts`, whose summary
+   * document carries all four numbers. Every figure goes into HTML
+   * through esc() (4.9 #25's escaping half): it comes from the engine
+   * document, never a hardcoded literal.
+   */
   async function loadCounts() {
     const host = blocks.counts();
     showLoadingBlock(host, 'Counting the items…');
-    const [all, active, challenged, closed] = await Promise.all([
-      ctx.api.listItems({ limit: COUNT_PAGE_SIZE, offset: 0 }),
-      ctx.api.listItems({ status: 'Active', limit: COUNT_PAGE_SIZE, offset: 0 }),
-      ctx.api.listItems({ status: 'Challenged', limit: COUNT_PAGE_SIZE, offset: 0 }),
-      ctx.api.listItems({ status: 'Closed', limit: COUNT_PAGE_SIZE, offset: 0 }),
-    ]);
-    const results = { all, active, challenged, closed };
-    for (const result of Object.values(results)) {
-      if (!result.ok) {
-        host.innerHTML = '';
-        recordFailure('the counts', result.error);
-        return;
-      }
+    const result = await ctx.api.listItems({ counts: true });
+    if (!result || !result.ok) {
+      host.innerHTML = '';
+      recordFailure('the counts', result ? result.error : null);
+      return;
     }
+    const counts = result.data.summary;
     host.innerHTML = `<div class="panel split" data-testid="counts-panel" aria-label="Items by status">
-      <div><span class="lbl-pill">Active</span><div class="fig" data-testid="count-active">${active.data.total}</div></div>
-      <div><span class="lbl-pill">Challenged</span><div class="fig" data-testid="count-challenged">${challenged.data.total}</div></div>
-      <div><span class="lbl-pill">Closed</span><div class="fig" data-testid="count-closed">${closed.data.total}</div></div>
-      <div><span class="lbl-pill">All items</span><div class="fig" data-testid="count-total">${all.data.total}</div></div>
+      <div><span class="lbl-pill">Active</span><div class="fig" data-testid="count-active">${esc(counts.active)}</div></div>
+      <div><span class="lbl-pill">Challenged</span><div class="fig" data-testid="count-challenged">${esc(counts.challenged)}</div></div>
+      <div><span class="lbl-pill">Closed</span><div class="fig" data-testid="count-closed">${esc(counts.closed)}</div></div>
+      <div><span class="lbl-pill">All items</span><div class="fig" data-testid="count-total">${esc(counts.total)}</div></div>
     </div>`;
   }
 
